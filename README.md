@@ -105,7 +105,9 @@ Reopen from the same project root to restore them. Credentials stay with Codex. 
 
 ## What’s next
 
-Stronger sandbox isolation and multiple Codex/Muse executors per mod. Shared context, memory, MCPs and skills follow in small batches.
+[Local VM validation](docs/sandbox-validation.md) connects a host Codex agent to an execution server inside Apple Container. The standalone probe checks model-driven runtime setup, edits and tests while the login stays on the Mac. It does not change code mod execution yet.
+
+Next: connect code mods to persistent local VMs, then add multiple Codex/Muse executors per mod. Shared context, memory, MCPs and skills follow in small batches.
 
 ## Development
 
