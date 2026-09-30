@@ -27,6 +27,7 @@ pub enum Action {
     Stop {
         turn: String,
     },
+    Shutdown(Sender<()>),
 }
 
 pub enum Event {
@@ -131,6 +132,10 @@ impl Client {
             return;
         }
         self.closed = true;
+        let (finished, receiver) = mpsc::channel();
+        if self.actions.send(Action::Shutdown(finished)).is_ok() {
+            let _ = receiver.recv_timeout(Duration::from_secs(2));
+        }
         #[cfg(unix)]
         unsafe {
             libc::kill(-(self.child.id() as i32), libc::SIGKILL);
@@ -325,6 +330,7 @@ fn serve(
         .send(Event::Ready(result["thread"].clone()))
         .map_err(io::Error::other)?;
     rpc.flush(outgoing);
+    let mut last_turn = None;
     loop {
         while let Ok(action) = actions.try_recv() {
             let (method, source, params) = match action {
@@ -347,6 +353,28 @@ fn serve(
                     String::new(),
                     json!({"threadId":thread,"turnId":turn}),
                 ),
+                Action::Shutdown(finished) => {
+                    // Let Codex reap command processes before terminating the server.
+                    if let Some(turn) = &last_turn {
+                        let _ =
+                            rpc.call("turn/interrupt", json!({"threadId":thread,"turnId":turn}));
+                    }
+                    let terminals = rpc.call(
+                        "thread/backgroundTerminals/list",
+                        json!({"threadId":thread}),
+                    )?;
+                    let terminals = terminals["data"]
+                        .as_array()
+                        .ok_or_else(|| io::Error::other("Codex returned no command inventory."))?;
+                    for terminal in terminals {
+                        rpc.call(
+                            "thread/backgroundTerminals/terminate",
+                            json!({"threadId":thread,"processId":terminal["processId"]}),
+                        )?;
+                    }
+                    let _ = finished.send(());
+                    return Ok(());
+                }
             };
             match rpc.call(method, params) {
                 Ok(result) if method != "turn/interrupt" => {
@@ -354,6 +382,7 @@ fn serve(
                         .as_str()
                         .or_else(|| result["turnId"].as_str())
                         .ok_or_else(|| io::Error::other("Codex returned no turn ID."))?;
+                    last_turn = Some(turn.to_owned());
                     let _ = outgoing.send(Event::Accepted {
                         source,
                         turn: turn.to_owned(),

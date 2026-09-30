@@ -243,6 +243,45 @@ impl Store {
         Ok(())
     }
 
+    pub fn delete_mod(&mut self, project_id: i64, mod_id: i64) -> Result<Option<i64>> {
+        let transaction = self.0.transaction()?;
+        let active: Option<i64> = transaction.query_row(
+            "SELECT active_mod_id FROM projects WHERE id = ?1
+             AND EXISTS (SELECT 1 FROM code_mods WHERE id = ?2 AND project_id = ?1)",
+            params![project_id, mod_id],
+            |row| row.get(0),
+        )?;
+        let selected = if active == Some(mod_id) {
+            transaction.query_row(
+                "SELECT id FROM code_mods WHERE project_id = ?1 AND id != ?2 ORDER BY id LIMIT 1",
+                params![project_id, mod_id],
+                |row| row.get(0),
+            ).optional()?
+        } else {
+            active
+        };
+        transaction.execute(
+            "DELETE FROM steering_messages WHERE request_id IN
+             (SELECT id FROM steering_requests WHERE mod_id = ?1)",
+            [mod_id],
+        )?;
+        for table in [
+            "steering_requests",
+            "queued_messages",
+            "messages",
+            "workers",
+        ] {
+            transaction.execute(&format!("DELETE FROM {table} WHERE mod_id = ?1"), [mod_id])?;
+        }
+        transaction.execute(
+            "UPDATE projects SET active_mod_id = ?1 WHERE id = ?2",
+            params![selected, project_id],
+        )?;
+        transaction.execute("DELETE FROM code_mods WHERE id = ?1", [mod_id])?;
+        transaction.commit()?;
+        Ok(selected)
+    }
+
     pub fn save_draft(&self, mod_id: i64, draft: &str) -> Result<()> {
         self.0.execute(
             "UPDATE code_mods SET draft = ?1 WHERE id = ?2",
@@ -906,5 +945,105 @@ mod tests {
         assert_eq!(state.mods[0].queue[0].body, "existing instruction");
         assert_eq!(state.mods[0].draft, "unfinished draft");
         assert!(store.worker(code_mod.id).unwrap().thread_id.is_none());
+    }
+    #[test]
+    fn deleting_a_mod_removes_its_state_and_preserves_other_projects() {
+        let data = TestData::new();
+        let mut store = data.store();
+        let first = store.load_project(Path::new("/delete-first")).unwrap();
+        let second = store.load_project(Path::new("/delete-second")).unwrap();
+        let a = store.create_mod(first.id, "a").unwrap();
+        let b = store.create_mod(first.id, "b").unwrap();
+        let c = store.create_mod(second.id, "c").unwrap();
+        for id in [a.id, b.id, c.id] {
+            history(&store, id, "saved history");
+            let queued = store.enqueue(id, "steering instruction").unwrap();
+            store.request_steering(id, &[queued.id]).unwrap();
+            store.enqueue(id, "queued instruction").unwrap();
+            store.save_draft(id, "saved draft").unwrap();
+            let worker = store.worker(id).unwrap();
+            store.save_thread(worker.id, "saved conversation").unwrap();
+        }
+        store
+            .0
+            .execute("INSERT INTO workers(mod_id) VALUES (?1)", [a.id])
+            .unwrap();
+        store.select_mod(first.id, a.id).unwrap();
+        assert!(store.delete_mod(second.id, a.id).is_err());
+        assert_eq!(store.delete_mod(first.id, a.id).unwrap(), Some(b.id));
+        for table in [
+            "workers",
+            "messages",
+            "queued_messages",
+            "steering_requests",
+        ] {
+            assert_eq!(
+                store
+                    .0
+                    .query_row(
+                        &format!("SELECT COUNT(*) FROM {table} WHERE mod_id=?1"),
+                        [a.id],
+                        |row| row.get::<_, i64>(0)
+                    )
+                    .unwrap(),
+                0
+            );
+        }
+        assert_eq!(
+            store
+                .0
+                .query_row("SELECT COUNT(*) FROM steering_messages", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+        let state = store.load_project(Path::new("/delete-first")).unwrap();
+        assert_eq!(state.active_mod_id, Some(b.id));
+        assert_eq!(state.mods.len(), 1);
+        assert_eq!(state.mods[0].draft, "saved draft");
+        assert_eq!(store.delete_mod(first.id, b.id).unwrap(), None);
+        drop(store);
+        let store = data.store();
+        let state = store.load_project(Path::new("/delete-first")).unwrap();
+        assert!(state.mods.is_empty());
+        assert!(state.active_mod_id.is_none());
+        let state = store.load_project(Path::new("/delete-second")).unwrap();
+        assert_eq!(state.active_mod_id, Some(c.id));
+        assert_eq!(state.mods[0].messages[0].body, "saved history");
+        assert_eq!(state.mods[0].queue[0].body, "queued instruction");
+        assert_eq!(state.mods[0].steering, ["steering instruction"]);
+        assert_eq!(state.mods[0].draft, "saved draft");
+    }
+
+    #[test]
+    fn a_failed_delete_rolls_back_history_queue_steering_workers_and_selection() {
+        let data = TestData::new();
+        let mut store = data.store();
+        let project = Path::new("/failed-delete");
+        let state = store.load_project(project).unwrap();
+        let code_mod = store.create_mod(state.id, "keep this mod").unwrap();
+        history(&store, code_mod.id, "keep history");
+        let queued = store.enqueue(code_mod.id, "keep steering").unwrap();
+        store.request_steering(code_mod.id, &[queued.id]).unwrap();
+        let queued = store.enqueue(code_mod.id, "keep queue").unwrap();
+        store.save_draft(code_mod.id, "keep draft").unwrap();
+        let worker = store.worker(code_mod.id).unwrap();
+        store.save_thread(worker.id, "keep conversation").unwrap();
+        let source = source_id(queued.id, false);
+        store.pending(worker.id, Some(&source)).unwrap();
+        store.0.execute_batch("CREATE TRIGGER reject_delete BEFORE DELETE ON code_mods BEGIN SELECT RAISE(ABORT, 'simulated failure'); END;").unwrap();
+        assert!(store.delete_mod(state.id, code_mod.id).is_err());
+        drop(store);
+        let store = data.store();
+        let state = store.load_project(project).unwrap();
+        assert_eq!(state.active_mod_id, Some(code_mod.id));
+        assert_eq!(state.mods[0].messages[0].body, "keep history");
+        assert_eq!(state.mods[0].queue[0].body, "keep queue");
+        assert_eq!(state.mods[0].steering, ["keep steering"]);
+        assert_eq!(state.mods[0].draft, "keep draft");
+        let restored = store.worker(code_mod.id).unwrap();
+        assert_eq!(restored.id, worker.id);
+        assert_eq!(restored.thread_id.as_deref(), Some("keep conversation"));
+        assert_eq!(restored.pending.as_deref(), Some(source.as_str()));
     }
 }

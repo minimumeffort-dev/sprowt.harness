@@ -24,6 +24,11 @@ use the arrow keys to choose an existing mod or **new code mod**, then press Ent
 The checkmark marks the active mod. Long titles shorten with an ellipsis, and keyboard
 hints appear inside the picker. User messages begin with a bright `>` marker.
 
+In the picker, press **d** to delete the selected mod, then **Enter** to confirm or **Esc** to cancel.
+Deletion stops its worker and removes the mod's saved history, queue, steering requests and draft.
+Deleting an inactive mod keeps the current one selected. If no mods remain, the new-mod screen opens.
+Codex's own conversation records remain in its local storage.
+
 Enter adds an instruction to the queue. Its count and up to three previews appear above
 the composer; Ctrl+Q opens the queue manager. Use arrows to select an instruction,
 Enter to edit, `k`/`j` to move it up/down, or `d` to remove it. While editing,
@@ -95,7 +100,7 @@ The harness stores conversation references, not copied login credentials.
 | Space | Mark or unmark an instruction in the queue manager |
 | s | Request steering for marked instructions, or the focused instruction |
 | k / j | Move the selected instruction up / down |
-| d | Remove the selected instruction from the queue |
+| d | Delete the selected mod in the picker (with confirmation), or remove an instruction in the queue |
 | Up / Down, then Enter | Choose a mod or create one while the picker is open |
 | Arrow keys, Home, End | Move within the input |
 | Backspace, Delete | Edit the input |

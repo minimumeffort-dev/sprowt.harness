@@ -24,6 +24,7 @@ use crate::{
 pub enum View {
     Chat,
     Mods(usize),
+    DeleteMod(usize),
     NewMod,
     Queue(usize),
     EditQueue(usize),
@@ -149,7 +150,7 @@ impl App {
                 View::NewMod => {
                     self.input.insert_str(text.replace(['\r', '\n'], " "));
                 }
-                View::Mods(_) | View::Queue(_) => {}
+                View::Mods(_) | View::DeleteMod(_) | View::Queue(_) => {}
             },
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -160,6 +161,15 @@ impl App {
                 match self.view {
                     View::Chat => self.chat_key(key)?,
                     View::Mods(index) => self.picker_key(key, index)?,
+                    View::DeleteMod(index) => match key.code {
+                        KeyCode::Esc => self.view = View::Mods(index),
+                        KeyCode::Enter
+                            if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
+                        {
+                            self.delete_mod(index)?;
+                        }
+                        _ => {}
+                    },
                     View::Queue(index) => self.queue_key(key, index)?,
                     View::EditQueue(index) => self.edit_key(key, index)?,
                     View::NewMod => match key.code {
@@ -224,6 +234,9 @@ impl App {
             KeyCode::Esc => self.view = View::Chat,
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.view = View::Chat
+            }
+            KeyCode::Char('d') if key.modifiers.is_empty() && index < self.mods.len() => {
+                self.view = View::DeleteMod(index);
             }
             KeyCode::Enter if index == self.mods.len() => {
                 self.view = View::NewMod;
@@ -400,6 +413,34 @@ impl App {
         Ok(())
     }
 
+    fn delete_mod(&mut self, index: usize) -> Result<()> {
+        let mod_id = self.mods[index].id;
+        let previous = self.current_mod().map(|code_mod| code_mod.id);
+        self.workers.retain(|_, worker| worker.mod_id != mod_id);
+        let selected = self.store.delete_mod(self.project_id, mod_id)?;
+        self.mods.remove(index);
+        self.active = self
+            .mods
+            .iter()
+            .position(|code_mod| Some(code_mod.id) == selected);
+        if previous != selected {
+            self.history_offset = 0;
+            self.notice = None;
+        }
+        self.queue_selection.clear();
+        self.view = if self.active.is_some() {
+            View::Chat
+        } else {
+            View::NewMod
+        };
+        self.restore_input();
+        Ok(())
+    }
+
+    pub fn has_worker(&self, mod_id: i64) -> bool {
+        self.workers.values().any(|worker| worker.mod_id == mod_id)
+    }
+
     pub fn current_worker(&self) -> Option<&Worker> {
         let mod_id = self.current_mod()?.id;
         self.workers.values().find(|worker| worker.mod_id == mod_id)
@@ -447,13 +488,21 @@ impl App {
         let editing_mod = matches!(self.view, View::EditQueue(_))
             .then(|| self.current_mod().map(|code_mod| code_mod.id))
             .flatten();
+        let deleting_mod = match self.view {
+            View::DeleteMod(index) => Some(self.mods[index].id),
+            _ => None,
+        };
         for worker in self.workers.values_mut() {
             let code_mod = self
                 .mods
                 .iter_mut()
                 .find(|code_mod| code_mod.id == worker.mod_id)
                 .unwrap();
-            worker.poll(&mut self.store, code_mod, editing_mod != Some(code_mod.id))?;
+            worker.poll(
+                &mut self.store,
+                code_mod,
+                editing_mod != Some(code_mod.id) && deleting_mod != Some(code_mod.id),
+            )?;
         }
         if let Some(code_mod) = self.current_mod() {
             let ids = code_mod
@@ -702,5 +751,89 @@ mod tests {
             ["first", "second"]
         );
         assert!(reopened.current_mod().unwrap().messages.is_empty());
+    }
+    #[test]
+    fn cancelling_mod_deletion_preserves_drafts_and_ignores_repeat_or_paste() {
+        let data = TestData::new();
+        let mut app = App::load(PathBuf::from("/cancel-delete"), false, data.store()).unwrap();
+        paste(&mut app, "keep mod");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        paste(&mut app, "keep queue");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        paste(&mut app, "keep draft");
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::DeleteMod(0)));
+        paste(&mut app, "ignored paste");
+        app.handle(Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        )))
+        .unwrap();
+        assert!(matches!(app.view, View::DeleteMod(0)));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Mods(0)));
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Mods(1)));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.input.lines(), ["keep draft"]);
+        assert_eq!(queued(&app), ["keep queue"]);
+        assert_eq!(app.mods.len(), 1);
+    }
+
+    #[test]
+    fn deleting_active_inactive_and_last_mod_restores_the_right_composer() {
+        let data = TestData::new();
+        let project = PathBuf::from("/delete-mods");
+        let mut app = App::load(project.clone(), false, data.store()).unwrap();
+        paste(&mut app, "a");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        paste(&mut app, "queue a");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        paste(&mut app, "draft a");
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        paste(&mut app, "b");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        paste(&mut app, "draft b");
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Chat));
+        assert_eq!(app.current_mod().unwrap().name, "a");
+        assert_eq!(app.input.lines(), ["draft a"]);
+        drop(app);
+        let mut app = App::load(project.clone(), false, data.store()).unwrap();
+        assert_eq!(queued(&app), ["queue a"]);
+        assert_eq!(app.input.lines(), ["draft a"]);
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        paste(&mut app, "c");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        paste(&mut app, "draft c");
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.current_mod().unwrap().name, "c");
+        assert_eq!(app.input.lines(), ["draft c"]);
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::NewMod));
+        assert!(app.mods.is_empty());
+        assert!(app.input.lines()[0].is_empty());
+        let mut reopened = App::load(project, false, data.store()).unwrap();
+        assert!(matches!(reopened.view, View::NewMod));
+        paste(&mut reopened, "fresh mod");
+        key(&mut reopened, KeyCode::Enter, KeyModifiers::NONE);
+        let code_mod = reopened.current_mod().unwrap();
+        assert!(code_mod.queue.is_empty());
+        assert!(code_mod.messages.is_empty());
+        assert!(code_mod.steering.is_empty());
     }
 }

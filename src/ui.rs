@@ -107,7 +107,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
         app.current_mod()
             .map_or("", |code_mod| code_mod.name.as_str()),
         mod_row,
-        matches!(app.view, View::Mods(_)),
+        matches!(app.view, View::Mods(_) | View::DeleteMod(_)),
     );
     if matches!(app.view, View::Chat | View::EditQueue(_)) {
         let count = app.current_mod().map_or(0, |code_mod| code_mod.queue.len());
@@ -149,6 +149,8 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
     };
     if let View::Mods(index) = app.view {
         draw_mod_picker(frame, app, index, dialog_area);
+    } else if let View::DeleteMod(index) = app.view {
+        draw_delete_mod(frame, app, index, dialog_area);
     } else if let View::Queue(index) = app.view {
         draw_queue_editor(frame, app, index, dialog_area);
     } else {
@@ -317,13 +319,18 @@ fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, open: bool) {
 }
 
 fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
+    let mut hints = vec![("↑↓", "select"), ("↵", "open")];
+    if index < app.mods.len() {
+        hints.push(("d", "delete"));
+    }
+    hints.push(("esc", "back"));
     let (list_area, new_mod) = draw_dialog(
         frame,
         area,
         &format!("code mods ({})", app.mods.len()),
         app.mods.len(),
         true,
-        &[("↑↓", "select"), ("↵", "open"), ("esc", "back")],
+        &hints,
     );
     let items = app.mods.iter().map(|code_mod| {
         let active = app
@@ -355,6 +362,33 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         },
         new_mod,
     );
+}
+
+fn draw_delete_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
+    let code_mod = &app.mods[index];
+    let removal = if app.has_worker(code_mod.id) {
+        "Stops worker; removes history, queue and draft."
+    } else {
+        "Removes saved history, queue and draft."
+    };
+    let lines = vec![
+        Line::from(vec![
+            format!("{MOD_GLYPH} ").fg(ACCENT),
+            fit_name(&code_mod.name, area.width.saturating_sub(6)).bold(),
+        ]),
+        Line::from(removal).fg(KEY_HINT),
+    ];
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let rows = body.line_count(area.width.saturating_sub(4));
+    let (content, _) = draw_dialog(
+        frame,
+        area,
+        "delete code mod?",
+        rows,
+        false,
+        &[("↵", "delete"), ("esc", "cancel")],
+    );
+    frame.render_widget(body, content);
 }
 
 fn dialog_selection() -> Style {
