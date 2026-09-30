@@ -10,6 +10,7 @@ use tachyonfx::{Effect, Interpolation, fx};
 
 use crate::{
     app::{App, View},
+    execution::Execution,
     plan::{Plan, Planning},
     sprout,
     store::CodeMod,
@@ -180,6 +181,29 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
         draw_delete_mod(frame, app, index, dialog_area);
     } else if let View::Queue(index) = app.view {
         draw_queue_editor(frame, app, index, dialog_area);
+    } else if let View::Review(scroll) = app.view {
+        draw_review(
+            frame,
+            app,
+            scroll,
+            Rect {
+                width: area.width,
+                ..dialog_area
+            },
+        );
+    } else if matches!(app.view, View::Apply) {
+        let count = app.review.as_ref().map_or(0, |review| review.count());
+        let text = Paragraph::new(format!("Apply changes to {count} files in this project?\nFiles changed since the snapshot will block applying.")).wrap(Wrap {trim:false});
+        let rows = text.line_count(dialog_area.width.saturating_sub(4));
+        let (body, _) = draw_dialog(
+            frame,
+            dialog_area,
+            "apply changes?",
+            rows,
+            false,
+            &[("↵", "apply"), ("esc", "cancel")],
+        );
+        frame.render_widget(text, body);
     } else {
         frame.render_widget(&app.input, input);
         let shortcuts = match app.view {
@@ -388,7 +412,9 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
 
 fn draw_delete_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     let code_mod = &app.mods[index];
-    let removal = if app.has_worker(code_mod.id) {
+    let removal = if code_mod.execution.is_some() {
+        "Stops workers; removes history and the mod's working folder."
+    } else if app.has_worker(code_mod.id) {
         "Stops worker; removes history, queue and draft."
     } else {
         "Removes saved history, queue and draft."
@@ -411,6 +437,63 @@ fn draw_delete_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         &[("↵", "delete"), ("esc", "cancel")],
     );
     frame.render_widget(body, content);
+}
+
+fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
+    let Some(review) = &app.review else {
+        return;
+    };
+    let [panel, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(MUTED))
+        .padding(Padding::horizontal(1))
+        .title(
+            Line::from(format!(" changes · {} files ", review.count()))
+                .fg(KEY_HINT)
+                .bold(),
+        );
+    let inner = block.inner(panel);
+    app.page_size = inner.height.max(1);
+    let mut lines = Text::from(review.summary.as_str()).lines;
+    lines.push(Line::default());
+    if review.patch.is_empty() {
+        lines.push(Line::from("No file changes."));
+    } else {
+        lines.extend(review.patch.lines().map(|line| {
+            let style = if line.starts_with("diff --git") {
+                Style::new().fg(KEY_HINT).bold()
+            } else if line.starts_with('+') {
+                Style::new().fg(ACCENT)
+            } else if line.starts_with('-') {
+                Style::new().fg(Color::Red)
+            } else if line.starts_with("@@") {
+                Style::new().fg(Color::Cyan)
+            } else {
+                Style::new()
+            };
+            Line::from(line).style(style)
+        }));
+    }
+    let body = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .block(block);
+    let max_scroll = body
+        .line_count(inner.width)
+        .saturating_sub(inner.height as usize)
+        .min(u16::MAX as usize) as u16;
+    let scroll = scroll.min(max_scroll);
+    app.view = View::Review(scroll);
+    frame.render_widget(body.scroll((scroll, 0)), panel);
+    frame.render_widget(
+        Line::from(if app.can_apply() {
+            "↑↓ scroll  fn+↑/↓ page  a apply  esc back"
+        } else {
+            "↑↓ scroll  fn+↑/↓ page  esc back"
+        })
+        .fg(KEY_HINT),
+        footer,
+    );
 }
 
 fn dialog_selection() -> Style {
@@ -503,7 +586,15 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
         .is_some_and(|p| p.status != "ready")
     {
         Some("retry")
-    } else if queued || worker.is_some_and(|w| w.status != Status::Complete) {
+    } else if queued
+        || worker.is_some_and(|w| w.status != Status::Complete)
+        || app.current_mod().is_some_and(|m| {
+            m.planning.as_ref().is_some_and(|p| p.status == "ready")
+                && m.execution.as_ref().is_none_or(|execution| {
+                    !["review", "applied"].contains(&execution.status.as_str())
+                })
+        })
+    {
         Some("run")
     } else {
         None
@@ -515,6 +606,9 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     }
     if queued {
         options.push(format!("{ctrl}q manage"));
+    }
+    if app.current_mod().is_some_and(|m| m.execution.is_some()) && !app.execution_busy() {
+        options.push(format!("{ctrl}d changes"));
     }
     options.push(format!("{ctrl}j newline"));
     if can_scroll {
@@ -534,25 +628,60 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     format!("{hints}  esc quit")
 }
 
-fn plan_lines(plan: &Plan, planning: &Planning, details: bool) -> Vec<Line<'static>> {
+fn plan_lines(
+    plan: &Plan,
+    planning: &Planning,
+    execution: Option<&Execution>,
+    details: bool,
+) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from("▤ codex · planner").fg(ACCENT).bold(),
-        Line::from(format!(
-            "plan ready · {} {}",
-            plan.tasks.len(),
-            if plan.tasks.len() == 1 {
-                "task"
-            } else {
-                "tasks"
-            }
-        ))
+        Line::from(if let Some(execution) = execution {
+            format!(
+                "{} · {}/{} tasks done",
+                match execution.status.as_str() {
+                    "review" => "changes ready",
+                    "applied" => "changes applied",
+                    "blocked" => "execution paused",
+                    "verifying" => "final checks",
+                    _ => "execution",
+                },
+                execution
+                    .tasks
+                    .iter()
+                    .filter(|run| run.status == "done")
+                    .count(),
+                execution.tasks.len()
+            )
+        } else {
+            format!(
+                "plan ready · {} {}",
+                plan.tasks.len(),
+                if plan.tasks.len() == 1 {
+                    "task"
+                } else {
+                    "tasks"
+                }
+            )
+        })
         .fg(ACCENT)
         .bold(),
     ];
     for (index, task) in plan.tasks.iter().enumerate() {
+        let run = execution
+            .and_then(|execution| execution.tasks.iter().find(|run| run.task_id == task.id));
+        let marker = run.map_or("", |run| match run.status.as_str() {
+            "done" => "✓ ",
+            "running" | "sending" => "● ",
+            "checking" => "◌ ",
+            "blocked" | "paused" => "! ",
+            _ => "○ ",
+        });
         lines.push(Line::default());
         lines.push(Line::from(vec![
-            format!("{}. ", index + 1).fg(ACCENT).bold(),
+            format!("{marker}{}. ", index + 1)
+                .fg(if marker == "! " { Color::Red } else { ACCENT })
+                .bold(),
             task.title.clone().bold(),
         ]));
         lines.push(Line::from(format!("   {}", task.outcome)));
@@ -582,15 +711,73 @@ fn plan_lines(plan: &Plan, planning: &Planning, details: bool) -> Vec<Line<'stat
                     .push(Line::from(format!("   files · {}", task.files.join(", "))).fg(KEY_HINT));
             }
             lines.push(Line::from("   checks").fg(KEY_HINT));
-            lines.extend(
-                task.checks
-                    .iter()
-                    .map(|check| Line::from(format!("   · {check}"))),
-            );
+            for check in &task.checks {
+                let result =
+                    run.and_then(|run| run.checks.iter().find(|result| &result.check == check));
+                lines.push(Line::from(format!(
+                    "   {} {check}",
+                    result.map_or("·", |result| if result.exit_code == Some(0) {
+                        "✓"
+                    } else {
+                        "!"
+                    })
+                )));
+                if let Some(result) = result {
+                    lines
+                        .push(Line::from(format!("     $ {}", result.command.join(" "))).fg(MUTED));
+                    if result.exit_code != Some(0) {
+                        lines.extend(
+                            result
+                                .output
+                                .lines()
+                                .take(6)
+                                .map(|line| Line::from(format!("     {line}")).fg(Color::Red)),
+                        );
+                    }
+                }
+            }
+            if let Some(run) = run
+                && !run.summary.is_empty()
+            {
+                lines.push(Line::from(format!("   {}", run.summary)).fg(KEY_HINT));
+            }
         }
     }
     lines.push(Line::default());
     if details {
+        if let Some(execution) = execution
+            && !execution.checks.is_empty()
+        {
+            lines.push(
+                Line::from(format!(
+                    "final checks · {} / {} passed",
+                    execution
+                        .checks
+                        .iter()
+                        .filter(|check| check.exit_code == Some(0))
+                        .count(),
+                    plan.tasks
+                        .iter()
+                        .map(|task| task.checks.len())
+                        .sum::<usize>()
+                ))
+                .fg(KEY_HINT),
+            );
+            for check in execution
+                .checks
+                .iter()
+                .filter(|check| check.exit_code != Some(0))
+            {
+                lines.push(Line::from(format!("! {}", check.check)).fg(Color::Red));
+                lines.extend(
+                    check
+                        .output
+                        .lines()
+                        .take(6)
+                        .map(|line| Line::from(line.to_owned()).fg(Color::Red)),
+                );
+            }
+        }
         if let Some(model) = &planning.model {
             lines.push(
                 Line::from(format!(
@@ -615,7 +802,16 @@ fn plan_lines(plan: &Plan, planning: &Planning, details: bool) -> Vec<Line<'stat
         "  ctrl+o".fg(ACCENT),
     ]));
     lines.push(Line::default());
-    lines.push(Line::from("read-only · code changes come next").fg(KEY_HINT));
+    lines.push(
+        Line::from(
+            if execution.is_some_and(|execution| execution.status == "applied") {
+                "changes applied to the project"
+            } else {
+                "execution writes only to the mod's working folder"
+            },
+        )
+        .fg(KEY_HINT),
+    );
     lines
 }
 
@@ -641,7 +837,7 @@ fn conversation_blocks(code_mod: &CodeMod, details: bool) -> Vec<ConversationBlo
                 && is_plan
             {
                 return Some(ConversationBlock {
-                    text: plan_lines(plan, planning, details).into(),
+                    text: plan_lines(plan, planning, code_mod.execution.as_ref(), details).into(),
                     user: false,
                     plan: true,
                 });

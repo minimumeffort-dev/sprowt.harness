@@ -184,14 +184,18 @@ pub fn schema() -> Value {
         "required":["summary","tasks"]})
 }
 
-pub fn instructions(role: Role, description: &str, plan: Option<&Plan>) -> String {
-    let boundary = "You are a read-only worker. Do not change files, request broader permissions, access credentials, or use external tools.";
+pub fn instructions(role: Role, description: &str, plan: Option<&Plan>, writable: bool) -> String {
+    let boundary = if writable {
+        "Work only in this code mod's isolated working folder. Follow project rules. Do not request broader permissions, access host credentials, use external tools, install dependencies, commit, push, or apply changes to the original project. Tool networking is disabled."
+    } else {
+        "You are a read-only worker. Do not change files, request broader permissions, access credentials, or use external tools."
+    };
     match role {
         Role::Planner => format!(
             "{boundary} Your role is planner. Inspect relevant source, docs and project rules before planning. The code mod description is the user's request. Produce a concise task plan matching the output schema. Give tasks short outcomes, exact project-relative file or directory paths (no globs), dependencies and 1–3 brief completion checks. Only Codex is connected; assign every task to codex. Independent tasks may run in parallel later. Tasks sharing files must depend on each other. Include only requested work. Keep the plan small. Do not implement it. Code mod: {description}"
         ),
         Role::Executor => format!(
-            "{boundary} Your role is executor. Answer concisely and use the code mod goal and plan as context for the user's instructions. Code mod: {description}\nPlan: {}",
+            "{boundary} Your role is executor. Execute the task the harness assigns, or answer a queued instruction. Keep commentary short. Use the code mod goal and saved plan as context. Code mod: {description}\nPlan: {}",
             plan.map_or_else(
                 || "none".into(),
                 |plan| serde_json::to_string(plan).unwrap()

@@ -1,11 +1,13 @@
 mod app;
 mod codex;
+mod execution;
 mod plan;
 mod router;
 mod sprout;
 mod store;
 mod ui;
 mod worker;
+mod workspace;
 
 use std::io::{self, IsTerminal};
 

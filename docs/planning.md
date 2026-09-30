@@ -17,9 +17,9 @@ flowchart TB
 | Role | Job today |
 | --- | --- |
 | Planner | Inspect the project and produce a task plan |
-| Executor | Answer queued instructions using the goal and saved plan |
+| Executor | Implement plan tasks and answer queued instructions |
 
-They have separate Codex conversations. Both are read-only. Plan tasks are saved for future execution; the harness does not dispatch them automatically yet.
+They have separate Codex conversations. The planner is read-only. **Ctrl+R** starts the executor in a separate working folder; Rust dispatches tasks in dependency order. See [Plan execution](execution.md).
 
 ## Local model routing
 
@@ -58,10 +58,10 @@ The conversation shows a numbered outline: task titles, outcomes and dependencie
 
 Press **Ctrl+O** for file scopes, individual completion checks and model details. Press it again to collapse them. The full plan remains saved; changing its display does not change the plan or start a worker.
 
-**Plan ready** means planning finished. The read-only boundary appears below the outline; code changes come in a later batch.
+**Plan ready** means planning finished. The folder boundary appears below the outline. **Ctrl+R** executes the saved plan; **Ctrl+D** reviews the resulting diff.
 
 ## Stop and retry
 
-Ctrl+R stops unfinished planning or retries it after interruption or failure. A valid plan is saved and displayed in the conversation. Once it is ready, Ctrl+R starts the executor with that plan as context.
+Ctrl+R stops unfinished planning or retries it after interruption or failure. A valid plan is saved and displayed in the conversation. Once it is ready, Ctrl+R executes the plan without needing another message.
 
 Reopening restores the saved plan without starting workers. Mods created before planning was added retain their original queue workflow.

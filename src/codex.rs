@@ -5,7 +5,8 @@ use std::{
     path::Path,
     process::{Child, ChildStdin, Command, Stdio},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread::{self, JoinHandle},
@@ -15,6 +16,7 @@ use std::{
 use serde_json::{Value, json};
 
 use crate::{
+    execution::{Check, CheckResult},
     plan::{self, Plan, Role},
     router::Selection,
 };
@@ -23,6 +25,10 @@ pub enum Action {
     Run {
         source: String,
         text: String,
+    },
+    Verify {
+        source: String,
+        checks: Vec<Check>,
     },
     Steer {
         source: String,
@@ -38,16 +44,33 @@ pub enum Action {
 pub enum Event {
     Configured(Selection),
     Ready(Value),
-    Accepted { source: String, turn: String },
+    Accepted {
+        source: String,
+        turn: String,
+    },
     Notification(Value),
-    Rejected { source: String, message: String },
+    Rejected {
+        source: String,
+        message: String,
+    },
     Failed(String),
+    Checked {
+        source: String,
+        checks: Vec<CheckResult>,
+    },
+}
+
+pub struct Resume {
+    pub id: String,
+    pub restart_if_missing: bool,
 }
 
 struct Setup {
     role: Role,
     instructions: String,
     selection: Option<Selection>,
+    permissions: &'static str,
+    cancelled: Arc<AtomicBool>,
 }
 
 pub struct Client {
@@ -56,25 +79,33 @@ pub struct Client {
     child: Child,
     task: Option<JoinHandle<()>>,
     closed: bool,
+    cancelled: Arc<AtomicBool>,
 }
 
 impl Client {
     pub fn start(
         project: &Path,
-        thread_id: Option<String>,
+        resume: Option<Resume>,
         role: Role,
         description: &str,
         plan: Option<&Plan>,
         selection: Option<Selection>,
+        workspace: Option<&Path>,
     ) -> io::Result<Self> {
         #[cfg(not(unix))]
         return Err(io::Error::other(
             "The first Codex worker currently supports macOS and Linux.",
         ));
+        let cwd = workspace.unwrap_or(project);
+        let permissions = if workspace.is_some() {
+            "sprowt_work"
+        } else {
+            "sprowt_readonly"
+        };
         let mut command = Command::new("codex");
         command.args(["app-server", "--listen", "stdio://"]);
         command
-            .current_dir(project)
+            .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
@@ -92,7 +123,7 @@ impl Client {
                 .iter()
                 .filter_map(|name| env::var_os(name).map(|value| (*name, value))),
         );
-        for option in configuration(project)? {
+        for option in configuration(project, workspace)? {
             command.args(["-c", &option]);
         }
         #[cfg(unix)]
@@ -115,12 +146,15 @@ impl Client {
         });
         let (actions, inbox) = mpsc::channel();
         let (outgoing, events) = mpsc::channel();
-        let project = project.to_owned();
-        let instructions = plan::instructions(role, description, plan);
+        let project = cwd.to_owned();
+        let instructions = plan::instructions(role, description, plan, workspace.is_some());
+        let cancelled = Arc::new(AtomicBool::new(false));
         let setup = Setup {
             role,
             instructions,
             selection,
+            permissions,
+            cancelled: cancelled.clone(),
         };
         let task = thread::spawn(move || {
             let mut rpc = Rpc {
@@ -129,7 +163,7 @@ impl Client {
                 next_id: 0,
                 buffered: Vec::new(),
             };
-            if let Err(error) = serve(&mut rpc, &project, thread_id, setup, inbox, &outgoing) {
+            if let Err(error) = serve(&mut rpc, &project, resume, setup, inbox, &outgoing) {
                 let _ = outgoing.send(Event::Failed(error.to_string()));
             }
         });
@@ -139,11 +173,19 @@ impl Client {
             child,
             task: Some(task),
             closed: false,
+            cancelled,
         })
     }
 
     pub fn send(&self, action: Action) -> io::Result<()> {
+        if matches!(action, Action::Verify { .. }) {
+            self.cancelled.store(false, Ordering::Relaxed);
+        }
         self.actions.send(action).map_err(io::Error::other)
+    }
+
+    pub fn cancel_checks(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
     }
 
     pub fn poll(&self) -> impl Iterator<Item = Event> + '_ {
@@ -179,7 +221,7 @@ impl Drop for Client {
     }
 }
 
-fn configuration(project: &Path) -> io::Result<Vec<String>> {
+fn configuration(project: &Path, workspace: Option<&Path>) -> io::Result<Vec<String>> {
     let home =
         env::var_os("HOME").ok_or_else(|| io::Error::other("Cannot locate the host login."))?;
     let codex_home = env::var_os("CODEX_HOME")
@@ -197,6 +239,10 @@ fn configuration(project: &Path) -> io::Result<Vec<String>> {
             "deny",
         ),
     ]);
+    if let Some(workspace) = workspace {
+        filesystem.insert(project.to_string_lossy().into_owned(), "deny");
+        filesystem.insert(workspace.to_string_lossy().into_owned(), "write");
+    }
     let binary = env::split_paths(&env::var_os("PATH").unwrap_or_default())
         .map(|dir| dir.join("codex"))
         .find(|path| path.is_file())
@@ -219,9 +265,14 @@ fn configuration(project: &Path) -> io::Result<Vec<String>> {
         .map(|(path, access)| format!("{}={}", json!(path), json!(access)))
         .collect::<Vec<_>>()
         .join(",");
+    let permissions = if workspace.is_some() {
+        "sprowt_work"
+    } else {
+        "sprowt_readonly"
+    };
     let mut config = vec![
-        format!("permissions.sprowt_readonly={{filesystem={{{rules}}},network={{enabled=false}}}}"),
-        "default_permissions=\"sprowt_readonly\"".into(),
+        format!("permissions.{permissions}={{filesystem={{{rules}}},network={{enabled=false}}}}"),
+        format!("default_permissions={}", json!(permissions)),
         "approval_policy=\"never\"".into(),
         "forced_login_method=\"chatgpt\"".into(),
         "shell_environment_policy.inherit=\"none\"".into(),
@@ -284,7 +335,7 @@ impl Rpc {
 
     fn receive(&mut self, message: Value) -> io::Result<()> {
         if message.get("method").is_some() && message.get("id").is_some() {
-            self.write(json!({"id":message["id"],"error":{"code":-32601,"message":"This read-only worker cannot grant permissions or run client tools."}}))?;
+            self.write(json!({"id":message["id"],"error":{"code":-32601,"message":"This worker cannot grant broader permissions or run client tools."}}))?;
         } else if message.get("method").is_some() {
             self.buffered.push(message);
         }
@@ -301,7 +352,7 @@ impl Rpc {
 fn serve(
     rpc: &mut Rpc,
     project: &Path,
-    thread_id: Option<String>,
+    resume: Option<Resume>,
     setup: Setup,
     actions: Receiver<Action>,
     outgoing: &Sender<Event>,
@@ -310,6 +361,8 @@ fn serve(
         role,
         instructions,
         selection,
+        permissions,
+        cancelled,
     } = setup;
     rpc.call("initialize", json!({"clientInfo":{"name":"sprowt_harness","title":"Sprowt Harness","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
     rpc.write(json!({"method":"initialized"}))?;
@@ -319,7 +372,7 @@ fn serve(
             "Sign in with ChatGPT using `codex login`, then run again.",
         ));
     }
-    check_boundary(rpc, project)?;
+    check_boundary(rpc, project, permissions)?;
     let config = rpc.call("config/read", json!({"cwd":project,"includeLayers":false}))?;
     let mut overrides = serde_json::Map::new();
     if let Some(servers) = config["config"]["mcp_servers"].as_object() {
@@ -339,17 +392,28 @@ fn serve(
         overrides.insert("model_reasoning_effort".into(), json!(selection.effort));
         let _ = outgoing.send(Event::Configured(selection.clone()));
     }
-    let mut params = json!({"cwd":project,"permissions":"sprowt_readonly","approvalPolicy":"never","config":overrides,"developerInstructions":instructions});
+    let mut params = json!({"cwd":project,"permissions":permissions,"approvalPolicy":"never","config":overrides,"developerInstructions":instructions});
     if let Some(selection) = &selection {
         params["model"] = json!(selection.model);
     }
-    let method = if let Some(id) = thread_id {
-        params["threadId"] = json!(id);
-        "thread/resume"
+    let result = if let Some(resume) = resume {
+        let mut resume_params = params.clone();
+        resume_params["threadId"] = json!(resume.id);
+        match rpc.call("thread/resume", resume_params) {
+            Err(error)
+                if resume.restart_if_missing
+                    && error.kind() == io::ErrorKind::InvalidInput
+                    && error
+                        .to_string()
+                        .starts_with("no rollout found for thread id") =>
+            {
+                rpc.call("thread/start", params)?
+            }
+            result => result?,
+        }
     } else {
-        "thread/start"
+        rpc.call("thread/start", params)?
     };
-    let result = rpc.call(method, params)?;
     let thread = result["thread"]["id"]
         .as_str()
         .ok_or_else(|| io::Error::other("Codex returned no conversation ID."))?
@@ -364,7 +428,7 @@ fn serve(
         })
     }) {
         return Err(io::Error::other(
-            "External MCP tools are enabled; this read-only worker cannot start.",
+            "External MCP tools are enabled; this worker cannot start.",
         ));
     }
     outgoing
@@ -374,15 +438,53 @@ fn serve(
     let mut last_turn = None;
     loop {
         while let Ok(action) = actions.try_recv() {
+            if let Action::Verify { source, checks } = &action {
+                let mut results = Vec::new();
+                for check in checks {
+                    if cancelled.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let result = rpc.call("command/exec", json!({"command":check.command,"cwd":project,"permissionProfile":permissions,"timeoutMs":30000,"outputBytesCap":8192}));
+                    let (exit_code, output) = match result {
+                        Ok(value) => (
+                            value["exitCode"].as_i64(),
+                            format!(
+                                "{}{}",
+                                value["stdout"].as_str().unwrap_or(""),
+                                value["stderr"].as_str().unwrap_or("")
+                            ),
+                        ),
+                        Err(error) => (None, error.to_string()),
+                    };
+                    results.push(CheckResult {
+                        check: check.check.clone(),
+                        command: check.command.clone(),
+                        exit_code,
+                        output,
+                    });
+                    if exit_code != Some(0) {
+                        break;
+                    }
+                }
+                let _ = outgoing.send(Event::Checked {
+                    source: source.clone(),
+                    checks: results,
+                });
+                rpc.flush(outgoing);
+                continue;
+            }
             let (method, source, params) = match action {
                 Action::Run { source, text } => {
-                    let mut params = json!({"threadId":thread,"clientUserMessageId":source,"input":[{"type":"text","text":text}],"permissions":"sprowt_readonly","approvalPolicy":"never"});
+                    let mut params = json!({"threadId":thread,"clientUserMessageId":source,"input":[{"type":"text","text":text}],"permissions":permissions,"approvalPolicy":"never"});
                     if role == Role::Planner {
                         params["outputSchema"] = plan::schema();
                         if let Some(selection) = &selection {
                             params["model"] = json!(selection.model);
                             params["effort"] = json!(selection.effort);
                         }
+                    }
+                    if source.starts_with("00000004-") {
+                        params["outputSchema"] = crate::execution::schema();
                     }
                     ("turn/start", source, params)
                 }
@@ -422,6 +524,7 @@ fn serve(
                     let _ = finished.send(());
                     return Ok(());
                 }
+                Action::Verify { .. } => unreachable!(),
             };
             match rpc.call(method, params) {
                 Ok(result) if method != "turn/interrupt" => {
@@ -513,7 +616,7 @@ fn select_model(rpc: &mut Rpc, mut selection: Selection) -> io::Result<Selection
     Ok(selection)
 }
 
-fn check_boundary(rpc: &mut Rpc, project: &Path) -> io::Result<()> {
+fn check_boundary(rpc: &mut Rpc, project: &Path, permissions: &str) -> io::Result<()> {
     static NEXT_CHECK: AtomicU64 = AtomicU64::new(0);
     let canary = env::temp_dir().join(format!(
         "sprowt-credential-check-{}-{}",
@@ -526,11 +629,11 @@ fn check_boundary(rpc: &mut Rpc, project: &Path) -> io::Result<()> {
         .open(&canary)?;
     drop(file);
     let script = if cfg!(target_os = "macos") {
-        "test -r \"$1\" && ! test -r \"$2\" && ! /usr/bin/security list-keychains >/dev/null 2>&1"
+        "test -r \"$1\" && ! test -r \"$2\" && ! (printf x >\"$2\") && ! /usr/bin/security list-keychains >/dev/null 2>&1"
     } else {
-        "test -r \"$1\" && ! test -r \"$2\""
+        "test -r \"$1\" && ! test -r \"$2\" && ! (printf x >\"$2\")"
     };
-    let result = rpc.call("command/exec", json!({"command":["/bin/sh","-c",script,"sprowt-check",project,canary],"cwd":project,"permissionProfile":"sprowt_readonly","timeoutMs":5000}));
+    let result = rpc.call("command/exec", json!({"command":["/bin/sh","-c",script,"sprowt-check",project,canary],"cwd":project,"permissionProfile":permissions,"timeoutMs":5000}));
     let _ = fs::remove_file(&canary);
     if result?["exitCode"] != 0 {
         return Err(io::Error::other(

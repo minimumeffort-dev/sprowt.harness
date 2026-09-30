@@ -8,10 +8,12 @@ use std::{
 use serde_json::Value;
 
 use crate::{
-    codex::{Action, Client, Event},
+    codex::{Action, Client, Event, Resume},
+    execution::{Check, Report},
     plan::{Plan, Role},
     router::Selection,
     store::{CodeMod, Message, Store, Submission, WorkerRecord},
+    workspace,
 };
 
 #[derive(Clone, Copy, PartialEq)]
@@ -24,6 +26,7 @@ pub enum Status {
     Stopping,
     Failed,
     Complete,
+    Checking,
 }
 
 pub struct Worker {
@@ -41,6 +44,12 @@ pub struct Worker {
     turn: Option<String>,
     pending: Option<Submission>,
     recovery: Option<String>,
+    task_source: Option<String>,
+    task_report: Option<String>,
+    task_summary: String,
+    writable: bool,
+    verification: Vec<Check>,
+    verify_before: Option<workspace::Snapshot>,
 }
 
 impl Worker {
@@ -51,14 +60,28 @@ impl Worker {
         role: Role,
         routing: Option<Receiver<Selection>>,
     ) -> io::Result<Self> {
+        let workspace = code_mod
+            .execution
+            .as_ref()
+            .filter(|execution| execution.status != "applied")
+            .map(|execution| execution.workspace.join("work"));
         let client = if role == Role::Executor {
             Some(Client::start(
                 project,
-                record.thread_id.clone(),
+                record.thread_id.clone().map(|id| Resume {
+                    id,
+                    restart_if_missing: record.pending.is_none()
+                        && code_mod.execution.as_ref().is_none_or(|execution| {
+                            !execution.tasks.iter().any(|run| {
+                                ["sending", "running", "checking"].contains(&run.status.as_str())
+                            })
+                        }),
+                }),
                 role,
                 &code_mod.description,
                 code_mod.planning.as_ref().and_then(|p| p.plan.as_ref()),
                 None,
+                workspace.as_deref(),
             )?)
         } else {
             None
@@ -82,13 +105,21 @@ impl Worker {
             turn: None,
             pending: None,
             recovery: record.pending,
+            task_source: None,
+            task_report: None,
+            task_summary: String::new(),
+            writable: workspace.is_some(),
+            verification: Vec::new(),
+            verify_before: None,
         })
     }
 
     pub fn label(&self) -> String {
         let state = match self.status {
             Status::Routing => "choosing model",
-            Status::Complete => "plan ready",
+            Status::Complete if self.role == Role::Planner => "plan ready",
+            Status::Complete => "changes ready",
+            Status::Checking => "checking",
             Status::Connecting => "connecting",
             Status::Ready if self.enabled => "ready",
             Status::Ready => "paused",
@@ -102,12 +133,23 @@ impl Worker {
         } else {
             "◆"
         };
-        format!("{glyph} codex · {} · {state} · read-only", self.role.name())
+        format!(
+            "{glyph} codex · {} · {state} · {}",
+            self.role.name(),
+            if self.writable {
+                "mod workspace"
+            } else {
+                "read-only"
+            }
+        )
     }
 
     pub fn toggle(&mut self) {
         if self.enabled {
             self.enabled = false;
+            if self.status == Status::Checking {
+                self.client.as_ref().unwrap().cancel_checks();
+            }
             if let Some(turn) = &self.turn {
                 match self
                     .client
@@ -122,6 +164,9 @@ impl Worker {
         } else {
             self.enabled = true;
             self.error = None;
+            if self.status == Status::Complete {
+                self.status = Status::Ready;
+            }
         }
     }
 
@@ -160,11 +205,19 @@ impl Worker {
             self.routing = None;
             match Client::start(
                 project,
-                self.thread_id.clone(),
+                self.thread_id.clone().map(|id| Resume {
+                    id,
+                    restart_if_missing: self.recovery.is_none()
+                        && code_mod
+                            .planning
+                            .as_ref()
+                            .is_some_and(|plan| plan.status == "pending"),
+                }),
                 self.role,
                 &code_mod.description,
                 None,
                 Some(selection),
+                None,
             ) {
                 Ok(client) => {
                     self.client = Some(client);
@@ -188,12 +241,52 @@ impl Worker {
         if !steering && self.status != Status::Ready {
             return Ok(());
         }
-        let input = if self.role == Role::Planner && !steering {
+        let mut input = if self.role == Role::Planner && !steering {
             store.planner_input(self.mod_id)?
         } else {
             store.next_input(self.mod_id, steering)?
         };
+        if input.is_none()
+            && self.role == Role::Executor
+            && !steering
+            && code_mod.execution.is_some()
+        {
+            let plan = code_mod
+                .planning
+                .as_ref()
+                .and_then(|p| p.plan.as_ref())
+                .unwrap();
+            input = store.task_input(self.mod_id, self.id, plan)?;
+            code_mod.execution = store.execution(self.mod_id)?;
+            if input.is_none() {
+                let execution = code_mod.execution.as_ref().unwrap();
+                let applied = execution.status == "applied";
+                if execution.complete() && execution.status != "applied" {
+                    let checks = execution
+                        .tasks
+                        .iter()
+                        .flat_map(|run| &run.checks)
+                        .map(|result| Check {
+                            check: result.check.clone(),
+                            command: result.command.clone(),
+                        })
+                        .collect();
+                    store.execution_status(self.mod_id, "verifying")?;
+                    code_mod.execution = store.execution(self.mod_id)?;
+                    self.begin_checks(code_mod, format!("final:{}", self.mod_id), checks);
+                } else {
+                    self.enabled = false;
+                }
+                if applied {
+                    self.status = Status::Complete;
+                }
+            }
+        }
         if let Some(input) = input {
+            if self.writable && !steering {
+                store.execution_status(self.mod_id, "running")?;
+                code_mod.execution = store.execution(self.mod_id)?;
+            }
             store.pending(self.id, Some(&input.source))?;
             let action = if steering {
                 Action::Steer {
@@ -207,10 +300,14 @@ impl Worker {
                     text: input.texts.join("\n\n"),
                 }
             };
-            self.pending = Some(input);
             if !steering {
                 self.status = Status::Starting;
+                if input.source.starts_with("00000004-") {
+                    self.task_source = Some(input.source.clone());
+                    self.task_report = None;
+                }
             }
+            self.pending = Some(input);
             if let Err(error) = self.client.as_ref().unwrap().send(action) {
                 self.fail(error.to_string());
             }
@@ -232,8 +329,18 @@ impl Worker {
             }
             Event::Ready(thread) => {
                 store.save_thread(self.id, thread["id"].as_str().unwrap())?;
+                if self.role == Role::Executor {
+                    self.recover_task(store, code_mod, &thread)?;
+                }
                 if let Some(turns) = thread["turns"].as_array() {
                     for turn in turns {
+                        let task_turn = turn["items"].as_array().is_some_and(|items| {
+                            items.iter().any(|item| {
+                                item["clientId"]
+                                    .as_str()
+                                    .is_some_and(|id| id.starts_with("00000004-"))
+                            })
+                        });
                         let current_plan = self.role == Role::Planner
                             && turn["items"].as_array().is_some_and(|items| {
                                 items.iter().any(|item| {
@@ -254,7 +361,13 @@ impl Worker {
                                     let input = store.submission(self.mod_id, &source)?;
                                     self.acknowledge(store, code_mod, &input)?;
                                 }
-                                self.item(store, code_mod, item)?;
+                                if !task_turn
+                                    || item["clientId"]
+                                        .as_str()
+                                        .is_some_and(|id| id.starts_with("00000002-"))
+                                {
+                                    self.item(store, code_mod, item)?;
+                                }
                             }
                         }
                         if current_plan && turn["status"] == "completed" {
@@ -264,7 +377,10 @@ impl Worker {
                 }
                 if self.recovery.is_some() {
                     self.fail("Delivery could not be confirmed. The instruction is retained; automatic retry is paused.".into());
-                } else if self.status != Status::Complete && self.status != Status::Failed {
+                } else if !matches!(
+                    self.status,
+                    Status::Complete | Status::Failed | Status::Checking | Status::Stopping
+                ) {
                     self.status = Status::Ready;
                     if self.role == Role::Planner
                         && code_mod
@@ -288,6 +404,11 @@ impl Worker {
                 }
                 if self.role == Role::Planner && source.starts_with("00000003-") {
                     self.final_plan = None;
+                }
+                if source.starts_with("00000004-") {
+                    self.task_source = Some(source.clone());
+                    store.task_status(self.mod_id, &source, "running", Some(&turn))?;
+                    code_mod.execution = store.execution(self.mod_id)?;
                 }
                 self.turn = Some(turn.clone());
                 self.status = Status::Running;
@@ -314,19 +435,128 @@ impl Worker {
                 if self.turn.is_none() {
                     self.status = Status::Ready;
                 }
+                if source.starts_with("00000004-") {
+                    self.block_task(
+                        store,
+                        code_mod,
+                        "paused",
+                        self.error.clone().unwrap_or_default(),
+                    )?;
+                }
             }
             Event::Failed(message) => {
-                self.client.as_mut().unwrap().shutdown();
+                if let Some(client) = &mut self.client {
+                    client.shutdown();
+                }
                 self.fail(message);
                 if self.role == Role::Planner {
                     store.planning_status(self.mod_id, "failed")?;
                     code_mod.planning = store.planning(self.mod_id)?;
                 }
+                if self.task_source.is_none() {
+                    self.task_source = code_mod.execution.as_ref().and_then(|execution| {
+                        execution
+                            .tasks
+                            .iter()
+                            .find(|run| {
+                                ["sending", "running", "checking"].contains(&run.status.as_str())
+                            })
+                            .map(|run| run.source.clone())
+                    });
+                }
+                if self
+                    .task_source
+                    .as_ref()
+                    .is_some_and(|source| source.starts_with("final:"))
+                    || code_mod
+                        .execution
+                        .as_ref()
+                        .is_some_and(|execution| execution.status == "verifying")
+                {
+                    store.execution_status(self.mod_id, "blocked")?;
+                    code_mod.execution = store.execution(self.mod_id)?;
+                    self.task_source = None;
+                } else if self.task_source.is_some() {
+                    self.block_task(
+                        store,
+                        code_mod,
+                        "paused",
+                        self.error.clone().unwrap_or_default(),
+                    )?;
+                }
             }
+            Event::Checked { source, checks } if self.task_source.as_deref() == Some(&source) => {
+                let passed = self.checks_passed(code_mod, &checks);
+                if source.starts_with("final:") {
+                    let fingerprint = if passed {
+                        self.verify_before
+                            .as_ref()
+                            .and_then(|snapshot| workspace::fingerprint(snapshot).ok())
+                    } else {
+                        None
+                    };
+                    let passed = passed && fingerprint.is_some();
+                    store.execution_checks(
+                        self.mod_id,
+                        if passed { "review" } else { "blocked" },
+                        &checks,
+                        fingerprint.as_deref(),
+                    )?;
+                    code_mod.execution = store.execution(self.mod_id)?;
+                    self.task_source = None;
+                    self.enabled = false;
+                    self.status = if passed {
+                        Status::Complete
+                    } else {
+                        Status::Ready
+                    };
+                    if !passed && self.error.is_none() {
+                        self.error = Some("Final checks failed or were stopped. See plan details; Ctrl+R reruns them.".into());
+                    }
+                    return Ok(());
+                }
+                store.finish_task(
+                    self.mod_id,
+                    &source,
+                    if passed { "done" } else { "blocked" },
+                    &self.task_summary,
+                    &checks,
+                )?;
+                let summary = format!(
+                    "{} · {}\n{}",
+                    if passed {
+                        "✓ task complete"
+                    } else {
+                        "! check failed"
+                    },
+                    self.task_name(code_mod),
+                    self.task_summary
+                );
+                save_message(
+                    store,
+                    code_mod,
+                    Message {
+                        item_id: Some(format!("result:{source}")),
+                        role: "codex".into(),
+                        body: summary,
+                    },
+                )?;
+                self.task_source = None;
+                self.task_report = None;
+                self.status = Status::Ready;
+                if !passed {
+                    self.enabled = false;
+                    self.error.get_or_insert_with(|| "Verification failed or was stopped. See plan details; Ctrl+R retries the task.".into());
+                }
+                code_mod.execution = store.execution(self.mod_id)?;
+            }
+            Event::Checked { .. } => {}
             Event::Notification(message) => {
                 let params = &message["params"];
                 match message["method"].as_str().unwrap_or("") {
-                    "item/agentMessage/delta" if self.role == Role::Executor => {
+                    "item/agentMessage/delta"
+                        if self.role == Role::Executor && self.task_source.is_none() =>
+                    {
                         if let (Some(id), Some(delta)) =
                             (params["itemId"].as_str(), params["delta"].as_str())
                         {
@@ -354,6 +584,13 @@ impl Worker {
                             } else {
                                 store.planning_status(self.mod_id, "paused")?;
                                 code_mod.planning = store.planning(self.mod_id)?;
+                            }
+                        }
+                        if self.role == Role::Executor && self.task_source.is_some() {
+                            if params["turn"]["status"] == "completed" {
+                                self.complete_task(store, code_mod)?;
+                            } else {
+                                self.block_task(store,code_mod,"paused","Task interrupted. Ctrl+R retries it from the current working files.".into())?;
                             }
                         }
                         if params["turn"]["status"] != "completed" {
@@ -394,6 +631,10 @@ impl Worker {
             code_mod.planning = store.planning(self.mod_id)?;
             return Ok(());
         }
+        if input.source.starts_with("00000004-") {
+            code_mod.execution = store.execution(self.mod_id)?;
+            return Ok(());
+        }
         code_mod
             .queue
             .retain(|message| crate::store::source_id(message.id, false) != input.source);
@@ -417,6 +658,20 @@ impl Worker {
         code_mod: &mut CodeMod,
         item: &Value,
     ) -> rusqlite::Result<()> {
+        if self.role == Role::Executor
+            && self.task_source.is_some()
+            && item["type"] == "agentMessage"
+            && item["phase"] != "commentary"
+        {
+            self.task_report = item["text"].as_str().map(str::to_owned);
+            return Ok(());
+        }
+        if item["clientId"]
+            .as_str()
+            .is_some_and(|source| source.starts_with("00000004-"))
+        {
+            return Ok(());
+        }
         if self.role == Role::Planner {
             match item["type"].as_str() {
                 Some("userMessage") => return Ok(()),
@@ -492,6 +747,206 @@ impl Worker {
         Ok(())
     }
 
+    fn task_name(&self, code_mod: &CodeMod) -> String {
+        code_mod
+            .execution
+            .as_ref()
+            .and_then(|execution| {
+                execution
+                    .tasks
+                    .iter()
+                    .find(|run| Some(run.source.as_str()) == self.task_source.as_deref())
+            })
+            .and_then(|run| {
+                code_mod
+                    .planning
+                    .as_ref()?
+                    .plan
+                    .as_ref()?
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == run.task_id)
+            })
+            .map_or_else(|| "task".into(), |task| task.title.clone())
+    }
+
+    fn block_task(
+        &mut self,
+        store: &mut Store,
+        code_mod: &mut CodeMod,
+        status: &str,
+        summary: String,
+    ) -> rusqlite::Result<()> {
+        if let Some(source) = self.task_source.take() {
+            store.finish_task(self.mod_id, &source, status, &summary, &[])?;
+            code_mod.execution = store.execution(self.mod_id)?;
+        }
+        self.task_report = None;
+        self.enabled = false;
+        self.error = Some(summary);
+        Ok(())
+    }
+
+    fn complete_task(&mut self, store: &mut Store, code_mod: &mut CodeMod) -> rusqlite::Result<()> {
+        let source = self.task_source.as_ref().unwrap().clone();
+        let run = code_mod
+            .execution
+            .as_ref()
+            .unwrap()
+            .tasks
+            .iter()
+            .find(|run| run.source == source)
+            .unwrap();
+        let task = code_mod
+            .planning
+            .as_ref()
+            .unwrap()
+            .plan
+            .as_ref()
+            .unwrap()
+            .tasks
+            .iter()
+            .find(|task| task.id == run.task_id)
+            .unwrap();
+        let report = self
+            .task_report
+            .as_deref()
+            .ok_or_else(|| "Codex returned no task report.".into())
+            .and_then(|text| Report::parse(text, task));
+        match report {
+            Ok(report) if report.status == "completed" => {
+                self.task_summary = report.summary;
+                store.task_status(self.mod_id, &source, "checking", None)?;
+                code_mod.execution = store.execution(self.mod_id)?;
+                self.begin_checks(code_mod, source, report.checks);
+            }
+            Ok(report) => self.block_task(store, code_mod, "blocked", report.summary)?,
+            Err(error) => self.block_task(store, code_mod, "blocked", error)?,
+        }
+        Ok(())
+    }
+
+    fn recover_task(
+        &mut self,
+        store: &mut Store,
+        code_mod: &mut CodeMod,
+        thread: &Value,
+    ) -> rusqlite::Result<()> {
+        let active = code_mod
+            .execution
+            .as_ref()
+            .and_then(|execution| {
+                execution
+                    .tasks
+                    .iter()
+                    .find(|run| ["sending", "running", "checking"].contains(&run.status.as_str()))
+            })
+            .cloned();
+        let Some(run) = active else {
+            return Ok(());
+        };
+        self.task_source = Some(run.source.clone());
+        let turn = thread["turns"].as_array().and_then(|turns| {
+            turns.iter().find(|turn| {
+                run.turn
+                    .as_deref()
+                    .is_some_and(|id| turn["id"].as_str() == Some(id))
+                    || turn["items"].as_array().is_some_and(|items| {
+                        items
+                            .iter()
+                            .any(|item| item["clientId"].as_str() == Some(&run.source))
+                    })
+            })
+        });
+        let Some(turn) = turn else {
+            self.block_task(store,code_mod,"paused","Task delivery could not be confirmed. The working files are retained; Ctrl+R explicitly retries it.".into())?;
+            self.fail(self.error.clone().unwrap());
+            return Ok(());
+        };
+        if self.recovery.as_deref() == Some(&run.source) {
+            let input = store.submission(self.mod_id, &run.source)?;
+            self.acknowledge(store, code_mod, &input)?;
+            self.recovery = None;
+        }
+        store.task_status(self.mod_id, &run.source, "running", turn["id"].as_str())?;
+        code_mod.execution = store.execution(self.mod_id)?;
+        if let Some(items) = turn["items"].as_array() {
+            for item in items {
+                self.item(store, code_mod, item)?;
+            }
+        }
+        if turn["status"] == "completed" {
+            self.complete_task(store, code_mod)?;
+        } else {
+            if turn["status"] == "inProgress" {
+                let _ = self.client.as_ref().unwrap().send(Action::Stop {
+                    turn: turn["id"].as_str().unwrap().into(),
+                });
+            }
+            self.block_task(
+                store,
+                code_mod,
+                "paused",
+                "Task was interrupted. Ctrl+R retries it from the saved working files.".into(),
+            )?;
+            if turn["status"] == "inProgress" {
+                self.turn = turn["id"].as_str().map(str::to_owned);
+                self.status = Status::Stopping;
+            }
+        }
+        Ok(())
+    }
+
+    fn begin_checks(&mut self, code_mod: &CodeMod, source: String, checks: Vec<Check>) {
+        let root = code_mod.execution.as_ref().unwrap().workspace.join("work");
+        match workspace::source_state(&root) {
+            Ok(snapshot) => self.verify_before = Some(snapshot),
+            Err(error) => {
+                self.fail(error.to_string());
+                return;
+            }
+        }
+        self.verification = checks.clone();
+        self.task_source = Some(source.clone());
+        self.status = Status::Checking;
+        if let Err(error) = self
+            .client
+            .as_ref()
+            .unwrap()
+            .send(Action::Verify { source, checks })
+        {
+            self.fail(error.to_string());
+        }
+    }
+
+    fn checks_passed(
+        &mut self,
+        code_mod: &CodeMod,
+        checks: &[crate::execution::CheckResult],
+    ) -> bool {
+        let unchanged =
+            workspace::source_state(&code_mod.execution.as_ref().unwrap().workspace.join("work"))
+                .ok()
+                .is_some_and(|state| self.verify_before.as_ref() == Some(&state));
+        if !unchanged {
+            self.error = Some(
+                "Verification changed source files. Review the working folder before retrying."
+                    .into(),
+            );
+        }
+        unchanged
+            && !checks.is_empty()
+            && checks.len() == self.verification.len()
+            && checks
+                .iter()
+                .zip(&self.verification)
+                .all(|(result, expected)| {
+                    result.exit_code == Some(0)
+                        && result.check == expected.check
+                        && result.command == expected.command
+                })
+    }
+
     fn fail(&mut self, message: String) {
         self.status = Status::Failed;
         self.enabled = false;
@@ -560,6 +1015,173 @@ mod tests {
                 code_mod,
             )
             .unwrap();
+    }
+
+    fn executor() -> (TestData, Store, CodeMod, Worker) {
+        let (data, mut store, mut code_mod, mut worker) = planner();
+        let plan = Plan::parse(&final_plan().to_string()).unwrap();
+        store
+            .save_plan(
+                code_mod.id,
+                &code_mod.planning.as_ref().unwrap().source,
+                &plan,
+            )
+            .unwrap();
+        code_mod.planning = store.planning(code_mod.id).unwrap();
+        let project = data.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let root = data.0.join("workspace");
+        workspace::create(&project, &root).unwrap();
+        store.create_execution(code_mod.id, &root, &plan).unwrap();
+        code_mod.execution = store.execution(code_mod.id).unwrap();
+        worker.role = Role::Executor;
+        worker.status = Status::Checking;
+        worker.task_source = Some(code_mod.execution.as_ref().unwrap().tasks[0].source.clone());
+        worker.verification = vec![Check {
+            check: "Run greeting flag test".into(),
+            command: vec!["/usr/bin/true".into()],
+        }];
+        worker.verify_before = Some(workspace::source_state(&root.join("work")).unwrap());
+        (data, store, code_mod, worker)
+    }
+
+    #[test]
+    fn completion_requires_actual_complete_checks_and_unchanged_source() {
+        for case in ["success", "failure", "missing", "source changed"] {
+            let (_data, mut store, mut code_mod, mut worker) = executor();
+            if case == "source changed" {
+                std::fs::write(
+                    code_mod
+                        .execution
+                        .as_ref()
+                        .unwrap()
+                        .workspace
+                        .join("work/unverified.txt"),
+                    "changed",
+                )
+                .unwrap();
+            }
+            let checks = if case == "missing" {
+                vec![]
+            } else {
+                vec![crate::execution::CheckResult {
+                    check: worker.verification[0].check.clone(),
+                    command: worker.verification[0].command.clone(),
+                    exit_code: Some(if case == "failure" { 1 } else { 0 }),
+                    output: String::new(),
+                }]
+            };
+            worker
+                .receive(
+                    Event::Checked {
+                        source: worker.task_source.clone().unwrap(),
+                        checks,
+                    },
+                    &mut store,
+                    &mut code_mod,
+                )
+                .unwrap();
+            assert_eq!(
+                code_mod.execution.as_ref().unwrap().tasks[0].status,
+                if case == "success" { "done" } else { "blocked" }
+            );
+            assert_ne!(code_mod.execution.as_ref().unwrap().status, "review");
+        }
+    }
+
+    #[test]
+    fn final_checks_save_the_verified_snapshot_and_unconfirmed_delivery_stays_retryable() {
+        let (_data, mut store, mut code_mod, mut worker) = executor();
+        let source = worker.task_source.clone().unwrap();
+        store
+            .finish_task(code_mod.id, &source, "done", "Done", &[])
+            .unwrap();
+        code_mod.execution = store.execution(code_mod.id).unwrap();
+        worker.task_source = Some(format!("final:{}", code_mod.id));
+        let checks = vec![crate::execution::CheckResult {
+            check: worker.verification[0].check.clone(),
+            command: worker.verification[0].command.clone(),
+            exit_code: Some(0),
+            output: String::new(),
+        }];
+        worker
+            .receive(
+                Event::Checked {
+                    source: worker.task_source.clone().unwrap(),
+                    checks,
+                },
+                &mut store,
+                &mut code_mod,
+            )
+            .unwrap();
+        assert_eq!(code_mod.execution.as_ref().unwrap().status, "review");
+        assert!(code_mod.execution.as_ref().unwrap().fingerprint.is_some());
+        store
+            .task_status(code_mod.id, &source, "sending", None)
+            .unwrap();
+        code_mod.execution = store.execution(code_mod.id).unwrap();
+        worker
+            .recover_task(&mut store, &mut code_mod, &json!({"turns":[]}))
+            .unwrap();
+        assert!(worker.status == Status::Failed && !worker.enabled);
+        assert_eq!(
+            code_mod.execution.as_ref().unwrap().tasks[0].status,
+            "paused"
+        );
+        assert!(
+            store
+                .task_input(
+                    code_mod.id,
+                    worker.id,
+                    code_mod.planning.as_ref().unwrap().plan.as_ref().unwrap()
+                )
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn connection_failure_keeps_unknown_delivery_until_explicit_retry() {
+        let (_data, mut store, mut code_mod, mut worker) = executor();
+        let source = worker.task_source.take().unwrap();
+        store
+            .task_status(code_mod.id, &source, "sending", None)
+            .unwrap();
+        store.pending(worker.id, Some(&source)).unwrap();
+        code_mod.execution = store.execution(code_mod.id).unwrap();
+        worker.recovery = Some(source.clone());
+        worker
+            .receive(
+                Event::Failed("no rollout found for thread id unknown".into()),
+                &mut store,
+                &mut code_mod,
+            )
+            .unwrap();
+        assert_eq!(
+            code_mod.execution.as_ref().unwrap().tasks[0].status,
+            "paused"
+        );
+        assert_eq!(
+            store
+                .worker_for(code_mod.id, Role::Planner)
+                .unwrap()
+                .pending
+                .as_deref(),
+            Some(source.as_str())
+        );
+        assert!(!worker.enabled);
+        store.retry_tasks(code_mod.id).unwrap();
+        assert_ne!(
+            store.execution(code_mod.id).unwrap().unwrap().tasks[0].source,
+            source
+        );
+        assert!(
+            store
+                .worker_for(code_mod.id, Role::Planner)
+                .unwrap()
+                .pending
+                .is_none()
+        );
     }
 
     #[test]

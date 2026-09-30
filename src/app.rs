@@ -20,6 +20,7 @@ use crate::{
     store::{CodeMod, Store, source_id},
     ui,
     worker::{Status, Worker},
+    workspace::{self, Review},
 };
 
 #[derive(Clone, Copy)]
@@ -30,6 +31,8 @@ pub enum View {
     NewMod,
     Queue(usize),
     EditQueue(usize),
+    Review(u16),
+    Apply,
 }
 
 pub struct App {
@@ -41,6 +44,7 @@ pub struct App {
     pub page_size: u16,
     pub plan_details: bool,
     pub focus_plan: bool,
+    pub review: Option<Review>,
     pub queue_selection: BTreeSet<i64>,
     workers: BTreeMap<i64, Worker>,
     auto_plans: BTreeSet<i64>,
@@ -83,6 +87,7 @@ impl App {
             page_size: 1,
             plan_details: false,
             focus_plan: false,
+            review: None,
             queue_selection: BTreeSet::new(),
             workers: BTreeMap::new(),
             auto_plans: BTreeSet::new(),
@@ -161,7 +166,11 @@ impl App {
                     self.input
                         .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                 }
-                View::Mods(_) | View::DeleteMod(_) | View::Queue(_) => {}
+                View::Mods(_)
+                | View::DeleteMod(_)
+                | View::Queue(_)
+                | View::Review(_)
+                | View::Apply => {}
             },
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -183,6 +192,33 @@ impl App {
                     },
                     View::Queue(index) => self.queue_key(key, index)?,
                     View::EditQueue(index) => self.edit_key(key, index)?,
+                    View::Review(scroll) => match key.code {
+                        KeyCode::Esc => {
+                            self.view = View::Chat;
+                            self.review = None;
+                        }
+                        KeyCode::Down => self.view = View::Review(scroll.saturating_add(1)),
+                        KeyCode::Up => self.view = View::Review(scroll.saturating_sub(1)),
+                        KeyCode::PageDown => {
+                            self.view = View::Review(scroll.saturating_add(self.page_size))
+                        }
+                        KeyCode::PageUp => {
+                            self.view = View::Review(scroll.saturating_sub(self.page_size))
+                        }
+                        KeyCode::Char('a') if key.modifiers.is_empty() && self.can_apply() => {
+                            self.view = View::Apply
+                        }
+                        _ => {}
+                    },
+                    View::Apply => match key.code {
+                        KeyCode::Esc => self.view = View::Review(0),
+                        KeyCode::Enter
+                            if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
+                        {
+                            self.apply_changes()?
+                        }
+                        _ => {}
+                    },
                     View::NewMod => match key.code {
                         KeyCode::Esc => {
                             if self.active.is_some() {
@@ -223,6 +259,7 @@ impl App {
             }
             KeyCode::Char('q') if ctrl => {}
             KeyCode::Char('r') if ctrl => self.toggle_worker()?,
+            KeyCode::Char('d') if ctrl => self.open_review()?,
             KeyCode::Char('o') if ctrl => {
                 if self
                     .current_mod()
@@ -442,10 +479,15 @@ impl App {
     fn delete_mod(&mut self, index: usize) -> Result<()> {
         let mod_id = self.mods[index].id;
         let previous = self.current_mod().map(|code_mod| code_mod.id);
+        let workspace = self.mods[index]
+            .execution
+            .as_ref()
+            .map(|execution| execution.workspace.clone());
         self.auto_plans.remove(&mod_id);
         self.workers.retain(|_, worker| worker.mod_id != mod_id);
         let selected = self.store.delete_mod(self.project_id, mod_id)?;
         self.mods.remove(index);
+        let cleanup_error = workspace.and_then(|path| std::fs::remove_dir_all(path).err());
         self.active = self
             .mods
             .iter()
@@ -455,6 +497,11 @@ impl App {
             self.plan_details = false;
             self.focus_plan = false;
             self.notice = None;
+        }
+        if let Some(error) = cleanup_error {
+            self.notice = Some(format!(
+                "Mod deleted; working folder cleanup failed: {error}"
+            ));
         }
         self.queue_selection.clear();
         self.view = if self.active.is_some() {
@@ -503,6 +550,31 @@ impl App {
             Role::Executor
         };
         let mod_id = self.mods[active].id;
+        if role == Role::Executor
+            && self.mods[active]
+                .planning
+                .as_ref()
+                .is_some_and(|p| p.plan.is_some())
+        {
+            if self.current_worker().is_some_and(|worker| {
+                worker.status == Status::Stopping
+                    || (!worker.enabled && worker.status == Status::Checking)
+            }) {
+                self.notice =
+                    Some("The current command is stopping; retry when it finishes.".into());
+                return Ok(());
+            }
+            if self.mods[active].execution.is_none()
+                && let Err(error) = self.prepare_execution(active)
+            {
+                self.notice = Some(error.to_string());
+                return Ok(());
+            }
+            if self.current_worker().is_none_or(|worker| !worker.enabled) {
+                self.store.retry_tasks(mod_id)?;
+                self.mods[active].execution = self.store.execution(mod_id)?;
+            }
+        }
         if let Some(worker) = self
             .workers
             .values_mut()
@@ -559,6 +631,116 @@ impl App {
         Ok(())
     }
 
+    fn prepare_execution(&mut self, index: usize) -> io::Result<()> {
+        let code_mod = &self.mods[index];
+        let root = self.store.workspace_path(code_mod.id)?;
+        workspace::create(&self.project, &root)?;
+        let plan = code_mod.planning.as_ref().unwrap().plan.as_ref().unwrap();
+        if let Err(error) = self.store.create_execution(code_mod.id, &root, plan) {
+            let _ = std::fs::remove_dir_all(&root);
+            return Err(io::Error::other(error));
+        }
+        self.workers
+            .retain(|_, worker| worker.mod_id != code_mod.id || worker.role != Role::Executor);
+        self.mods[index].execution = self
+            .store
+            .execution(code_mod.id)
+            .map_err(io::Error::other)?;
+        Ok(())
+    }
+
+    pub fn execution_busy(&self) -> bool {
+        self.current_worker().is_some_and(|worker| {
+            worker.role == Role::Executor
+                && (worker.enabled
+                    || matches!(
+                        worker.status,
+                        Status::Connecting
+                            | Status::Starting
+                            | Status::Running
+                            | Status::Stopping
+                            | Status::Checking
+                    ))
+        })
+    }
+
+    pub fn can_apply(&self) -> bool {
+        !self.execution_busy()
+            && self
+                .review
+                .as_ref()
+                .is_some_and(|review| review.count() > 0)
+            && self
+                .current_mod()
+                .and_then(|m| m.execution.as_ref())
+                .is_some_and(|execution| {
+                    execution.complete()
+                        && execution.status == "review"
+                        && self.review.as_ref().is_some_and(|review| {
+                            execution.fingerprint.as_deref() == Some(&review.fingerprint)
+                        })
+                })
+    }
+
+    fn open_review(&mut self) -> Result<()> {
+        let Some(execution) = self.current_mod().and_then(|m| m.execution.as_ref()) else {
+            return Ok(());
+        };
+        if self.execution_busy() {
+            self.notice = Some("Pause the executor before reviewing its changes.".into());
+            return Ok(());
+        }
+        match workspace::review(&execution.workspace) {
+            Ok(review) => {
+                if execution.status == "review"
+                    && execution.fingerprint.as_deref() != Some(&review.fingerprint)
+                {
+                    self.notice = Some(
+                        "Working files changed since verification. Esc, then Ctrl+R to recheck."
+                            .into(),
+                    );
+                    let index = self.active.unwrap();
+                    self.store
+                        .execution_status(self.mods[index].id, "blocked")?;
+                    self.mods[index].execution.as_mut().unwrap().status = "blocked".into();
+                } else {
+                    self.notice = None;
+                }
+                self.review = Some(review);
+                self.view = View::Review(0);
+            }
+            Err(error) => self.notice = Some(error.to_string()),
+        }
+        Ok(())
+    }
+
+    fn apply_changes(&mut self) -> Result<()> {
+        if !self.can_apply() {
+            self.view = View::Review(0);
+            return Ok(());
+        }
+        let code_mod = self.current_mod().unwrap();
+        let id = code_mod.id;
+        let root = &code_mod.execution.as_ref().unwrap().workspace;
+        match self.review.as_ref().unwrap().apply(&self.project, root) {
+            Ok(()) => {
+                self.store.execution_status(id, "applied")?;
+                let index = self.active.unwrap();
+                self.mods[index].execution = self.store.execution(id)?;
+                self.workers
+                    .retain(|_, worker| worker.mod_id != id || worker.role != Role::Executor);
+                self.review = None;
+                self.view = View::Chat;
+                self.notice = None;
+            }
+            Err(error) => {
+                self.notice = Some(error.to_string());
+                self.view = View::Review(0);
+            }
+        }
+        Ok(())
+    }
+
     fn poll_workers(&mut self) -> Result<()> {
         for mod_id in std::mem::take(&mut self.auto_plans) {
             if let Some(index) = self.mods.iter().position(|m| m.id == mod_id) {
@@ -579,6 +761,9 @@ impl App {
             View::DeleteMod(index) => Some(self.mods[index].id),
             _ => None,
         };
+        let reviewing_mod = matches!(self.view, View::Review(_) | View::Apply)
+            .then(|| self.current_mod().map(|m| m.id))
+            .flatten();
         for worker in self.workers.values_mut() {
             let code_mod = self
                 .mods
@@ -588,7 +773,9 @@ impl App {
             worker.poll(
                 &mut self.store,
                 code_mod,
-                editing_mod != Some(code_mod.id) && deleting_mod != Some(code_mod.id),
+                editing_mod != Some(code_mod.id)
+                    && deleting_mod != Some(code_mod.id)
+                    && reviewing_mod != Some(code_mod.id),
                 &self.project,
             )?;
         }
@@ -717,6 +904,120 @@ mod tests {
             .collect()
     }
 
+    fn execution_app() -> (TestData, App, PathBuf) {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("hello.sh"), "old\n").unwrap();
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let code_mod = store.create_mod(project_id, "Build greeting").unwrap();
+        let plan = crate::plan::Plan::parse(r#"{"summary":"Greeting","tasks":[{"id":"one","title":"Greeting","outcome":"Print hello","files":["hello.sh"],"depends_on":[],"worker":"codex","checks":["prints hello"]}]}"#).unwrap();
+        store
+            .save_plan(
+                code_mod.id,
+                &code_mod.planning.as_ref().unwrap().source,
+                &plan,
+            )
+            .unwrap();
+        store.save_draft(code_mod.id, "keep this draft").unwrap();
+        let root = data.0.join("workspace");
+        workspace::create(&project, &root).unwrap();
+        store.create_execution(code_mod.id, &root, &plan).unwrap();
+        std::fs::write(root.join("work/hello.sh"), "new\n").unwrap();
+        let run = store.execution(code_mod.id).unwrap().unwrap().tasks[0]
+            .source
+            .clone();
+        let checks = vec![crate::execution::CheckResult {
+            check: "prints hello".into(),
+            command: vec!["/usr/bin/true".into()],
+            exit_code: Some(0),
+            output: String::new(),
+        }];
+        store
+            .finish_task(code_mod.id, &run, "done", "Done", &checks)
+            .unwrap();
+        let fingerprint =
+            workspace::fingerprint(&workspace::source_state(&root.join("work")).unwrap()).unwrap();
+        store
+            .execution_checks(code_mod.id, "review", &checks, Some(&fingerprint))
+            .unwrap();
+        (data, App::load(project, false, store).unwrap(), root)
+    }
+
+    #[test]
+    fn review_requires_confirmation_preserves_draft_and_refuses_project_conflicts() {
+        let (_data, mut app, _root) = execution_app();
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert!(app.can_apply());
+        assert!(
+            rows(&screen(&mut app, 100, 30))
+                .join("\n")
+                .contains("changes · 1 files")
+        );
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        paste(&mut app, "\n");
+        let mut repeat = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        repeat.kind = KeyEventKind::Repeat;
+        app.handle(Event::Key(repeat)).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(app.project.join("hello.sh")).unwrap(),
+            "old\n"
+        );
+        let narrow = rows(&screen(&mut app, 48, 24)).join("\n");
+        assert!(narrow.contains("block applying"));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        std::fs::write(app.project.join("hello.sh"), "user\n").unwrap();
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(
+            app.worker_error()
+                .unwrap()
+                .contains("changed in the project")
+        );
+        assert_eq!(
+            std::fs::read_to_string(app.project.join("hello.sh")).unwrap(),
+            "user\n"
+        );
+        std::fs::write(app.project.join("hello.sh"), "old\n").unwrap();
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(
+            std::fs::read_to_string(app.project.join("hello.sh")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            app.current_mod()
+                .unwrap()
+                .execution
+                .as_ref()
+                .unwrap()
+                .status,
+            "applied"
+        );
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(matches!(app.view, View::Chat));
+    }
+
+    #[test]
+    fn changes_after_final_verification_require_rechecking_even_after_reopening() {
+        let (data, app, root) = execution_app();
+        let project = app.project.clone();
+        drop(app);
+        std::fs::write(root.join("work/another.txt"), "not verified").unwrap();
+        let mut app = App::load(project, false, data.store()).unwrap();
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert!(!app.can_apply());
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Review(_)));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(
+            rows(&screen(&mut app, 116, 40))
+                .join("\n")
+                .contains("ctrl+r run")
+        );
+    }
+
     #[test]
     fn plan_review_preserves_data_and_keeps_the_outline_in_view() {
         use crate::{plan::Plan, router::Selection, store::Message};
@@ -757,7 +1058,7 @@ mod tests {
 
         let compact = rows(&screen(&mut app, 100, 42)).join("\n");
         assert!(compact.contains("1. Build the API") && compact.contains("after task 1"));
-        assert!(compact.contains("read-only · code changes come next"));
+        assert!(compact.contains("execution writes only to the mod's working folder"));
         assert!(!compact.contains("app/main.py") && !compact.contains("gpt-6.1-sol"));
         assert!(!compact.contains("I'll inspect"));
         assert!(compact.contains("ctrl+q manage"));

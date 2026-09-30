@@ -4,6 +4,7 @@ use directories::ProjectDirs;
 use rusqlite::{Connection, OptionalExtension, Result, params};
 
 use crate::{
+    execution::{Execution, TaskRun},
     plan::{Plan, Planning, Role},
     router::Selection,
 };
@@ -13,6 +14,7 @@ pub struct CodeMod {
     pub name: String,
     pub description: String,
     pub planning: Option<Planning>,
+    pub execution: Option<Execution>,
     pub draft: String,
     pub messages: Vec<Message>,
     pub queue: Vec<QueuedMessage>,
@@ -181,6 +183,35 @@ impl Store {
         );",
             )
             .map_err(io::Error::other)?;
+        connection.execute_batch("CREATE TABLE IF NOT EXISTS executions (
+            mod_id INTEGER PRIMARY KEY REFERENCES code_mods(id), workspace TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', checks TEXT NOT NULL DEFAULT '[]', fingerprint TEXT
+        );
+        CREATE TABLE IF NOT EXISTS task_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, mod_id INTEGER NOT NULL REFERENCES code_mods(id), task_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending', attempt INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL UNIQUE,
+            turn_id TEXT, summary TEXT NOT NULL DEFAULT '', checks TEXT NOT NULL DEFAULT '[]', UNIQUE(mod_id,task_id)
+        );").map_err(io::Error::other)?;
+        let columns = connection
+            .prepare("PRAGMA table_info(executions)")
+            .map_err(io::Error::other)?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(io::Error::other)?
+            .collect::<Result<Vec<_>>>()
+            .map_err(io::Error::other)?;
+        for (column, sql) in [
+            (
+                "checks",
+                "ALTER TABLE executions ADD COLUMN checks TEXT NOT NULL DEFAULT '[]'",
+            ),
+            (
+                "fingerprint",
+                "ALTER TABLE executions ADD COLUMN fingerprint TEXT",
+            ),
+        ] {
+            if !columns.iter().any(|name| name == column) {
+                connection.execute_batch(sql).map_err(io::Error::other)?;
+            }
+        }
         Ok(Self(connection))
     }
 
@@ -205,6 +236,7 @@ impl Store {
                     name: row.get(1)?,
                     description: row.get(3)?,
                     planning: None,
+                    execution: None,
                     draft: row.get(2)?,
                     messages: Vec::new(),
                     queue: Vec::new(),
@@ -214,6 +246,7 @@ impl Store {
             .collect::<Result<Vec<_>>>()?;
         for code_mod in &mut mods {
             code_mod.planning = self.planning(code_mod.id)?;
+            code_mod.execution = self.execution(code_mod.id)?;
             let mut statement = self.0.prepare(
                 "SELECT item_id, role, body FROM messages WHERE mod_id = ?1 ORDER BY id",
             )?;
@@ -306,6 +339,7 @@ impl Store {
             name: title,
             description: name.to_owned(),
             planning: self.planning(id)?,
+            execution: None,
             draft: String::new(),
             messages: if planned { vec![message] } else { Vec::new() },
             queue: Vec::new(),
@@ -348,6 +382,8 @@ impl Store {
             [mod_id],
         )?;
         for table in [
+            "task_runs",
+            "executions",
             "steering_requests",
             "queued_messages",
             "messages",
@@ -533,6 +569,25 @@ impl Store {
                 .collect::<Result<Vec<_>>>()?
         } else if source.starts_with("00000003-") {
             vec![self.0.query_row("SELECT description FROM code_mods c JOIN plans p ON p.mod_id=c.id WHERE c.id=?1 AND p.source=?2", params![mod_id,source], |row| row.get(0))?]
+        } else if source.starts_with("00000004-") {
+            let execution = self
+                .execution(mod_id)?
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let run = execution
+                .tasks
+                .iter()
+                .find(|run| run.source == source)
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let plan = self
+                .planning(mod_id)?
+                .and_then(|p| p.plan)
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            let task = plan
+                .tasks
+                .iter()
+                .find(|task| task.id == run.task_id)
+                .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+            vec![crate::execution::task_prompt(&plan, task)]
         } else {
             return Err(rusqlite::Error::InvalidQuery);
         };
@@ -571,6 +626,14 @@ impl Store {
                 "UPDATE plans SET status='running' WHERE mod_id=?1 AND source=?2",
                 params![mod_id, input.source],
             )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            transaction.execute("UPDATE workers SET pending=NULL WHERE id=?1", [worker])?;
+            return transaction.commit();
+        }
+        if input.source.starts_with("00000004-") {
+            let changed = transaction.execute("UPDATE task_runs SET status='running' WHERE mod_id=?1 AND source=?2 AND status IN ('sending','running')", params![mod_id,input.source])?;
             if changed != 1 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
@@ -705,6 +768,233 @@ impl Store {
         self.0.execute("INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,?3,?4) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body", params![mod_id,message.item_id,message.role,message.body])?;
         Ok(())
     }
+
+    pub fn workspace_path(&self, mod_id: i64) -> io::Result<std::path::PathBuf> {
+        let parent = Path::new(
+            self.0
+                .path()
+                .ok_or_else(|| io::Error::other("Missing state path."))?,
+        )
+        .parent()
+        .unwrap()
+        .join("workspaces");
+        fs::create_dir_all(&parent)?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos();
+        Ok(parent.join(format!("{mod_id}-{stamp}")))
+    }
+
+    pub fn create_execution(&mut self, mod_id: i64, workspace: &Path, plan: &Plan) -> Result<()> {
+        let transaction = self.0.transaction()?;
+        transaction.execute(
+            "INSERT INTO executions(mod_id,workspace) VALUES (?1,?2)",
+            params![mod_id, workspace.to_string_lossy()],
+        )?;
+        for task in &plan.tasks {
+            transaction.execute(
+                "INSERT INTO task_runs(mod_id,task_id,source) VALUES (?1,?2,?3)",
+                params![mod_id, task.id, format!("pending:{mod_id}:{}", task.id)],
+            )?;
+            let id = transaction.last_insert_rowid();
+            transaction.execute(
+                "UPDATE task_runs SET source=?2 WHERE id=?1",
+                params![id, task_source(id, 1)],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE workers SET thread_id=NULL,pending=NULL WHERE mod_id=?1 AND role='executor'",
+            [mod_id],
+        )?;
+        transaction.commit()
+    }
+
+    pub fn execution(&self, mod_id: i64) -> Result<Option<Execution>> {
+        let result = self
+            .0
+            .query_row(
+                "SELECT workspace,status,checks,fingerprint FROM executions WHERE mod_id=?1",
+                [mod_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, Option<String>>(3)?,
+                    ))
+                },
+            )
+            .optional()?;
+        let Some((workspace, status, checks, fingerprint)) = result else {
+            return Ok(None);
+        };
+        let mut statement = self.0.prepare("SELECT id,task_id,status,source,turn_id,summary,checks FROM task_runs WHERE mod_id=?1 ORDER BY id")?;
+        let tasks = statement
+            .query_map([mod_id], |row| {
+                let checks: String = row.get(6)?;
+                Ok(TaskRun {
+                    id: row.get(0)?,
+                    task_id: row.get(1)?,
+                    status: row.get(2)?,
+                    source: row.get(3)?,
+                    turn: row.get(4)?,
+                    summary: row.get(5)?,
+                    checks: serde_json::from_str(&checks).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            6,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?,
+                })
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Some(Execution {
+            workspace: workspace.into(),
+            status,
+            tasks,
+            checks: serde_json::from_str(&checks).map_err(|_| rusqlite::Error::InvalidQuery)?,
+            fingerprint,
+        }))
+    }
+
+    pub fn task_input(
+        &mut self,
+        mod_id: i64,
+        worker: i64,
+        plan: &Plan,
+    ) -> Result<Option<Submission>> {
+        let execution = self
+            .execution(mod_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        if execution.status == "applied"
+            || execution
+                .tasks
+                .iter()
+                .any(|run| !["pending", "done"].contains(&run.status.as_str()))
+        {
+            return Ok(None);
+        }
+        let Some(task) = execution.next_task(plan) else {
+            return Ok(None);
+        };
+        let input = self.submission(mod_id, &task.source)?;
+        let transaction = self.0.transaction()?;
+        transaction.execute(
+            "UPDATE task_runs SET status='sending' WHERE id=?1 AND status='pending'",
+            [task.id],
+        )?;
+        transaction.execute(
+            "UPDATE workers SET pending=?2 WHERE id=?1",
+            params![worker, input.source],
+        )?;
+        transaction.execute(
+            "UPDATE executions SET status='running' WHERE mod_id=?1",
+            [mod_id],
+        )?;
+        transaction.commit()?;
+        Ok(Some(input))
+    }
+
+    pub fn task_status(
+        &self,
+        mod_id: i64,
+        source: &str,
+        status: &str,
+        turn: Option<&str>,
+    ) -> Result<()> {
+        let changed = self.0.execute("UPDATE task_runs SET status=?3,turn_id=COALESCE(?4,turn_id) WHERE mod_id=?1 AND source=?2", params![mod_id,source,status,turn])?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
+    }
+
+    pub fn finish_task(
+        &mut self,
+        mod_id: i64,
+        source: &str,
+        status: &str,
+        summary: &str,
+        checks: &[crate::execution::CheckResult],
+    ) -> Result<()> {
+        let transaction = self.0.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE task_runs SET status=?3,summary=?4,checks=?5 WHERE mod_id=?1 AND source=?2",
+            params![
+                mod_id,
+                source,
+                status,
+                summary,
+                serde_json::to_string(checks).unwrap()
+            ],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        transaction.execute("UPDATE executions SET status=CASE WHEN ?2!='done' THEN 'blocked' ELSE 'running' END WHERE mod_id=?1", params![mod_id,status])?;
+        transaction.commit()
+    }
+
+    pub fn retry_tasks(&mut self, mod_id: i64) -> Result<()> {
+        let execution = self
+            .execution(mod_id)?
+            .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        let transaction = self.0.transaction()?;
+        for task in execution
+            .tasks
+            .iter()
+            .filter(|task| ["blocked", "paused"].contains(&task.status.as_str()))
+        {
+            let attempt: i64 = transaction.query_row(
+                "SELECT attempt FROM task_runs WHERE id=?1",
+                [task.id],
+                |row| row.get(0),
+            )?;
+            transaction.execute("UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,summary='',checks='[]' WHERE id=?1", params![task.id,attempt+1,task_source(task.id,attempt+1)])?;
+            transaction.execute(
+                "UPDATE workers SET pending=NULL WHERE mod_id=?1 AND pending=?2",
+                params![mod_id, task.source],
+            )?;
+        }
+        transaction.commit()
+    }
+
+    pub fn execution_status(&self, mod_id: i64, status: &str) -> Result<()> {
+        self.0.execute(
+            "UPDATE executions SET status=?2 WHERE mod_id=?1",
+            params![mod_id, status],
+        )?;
+        Ok(())
+    }
+
+    pub fn execution_checks(
+        &self,
+        mod_id: i64,
+        status: &str,
+        checks: &[crate::execution::CheckResult],
+        fingerprint: Option<&str>,
+    ) -> Result<()> {
+        self.0.execute(
+            "UPDATE executions SET status=?2,checks=?3,fingerprint=?4 WHERE mod_id=?1",
+            params![
+                mod_id,
+                status,
+                serde_json::to_string(checks).unwrap(),
+                fingerprint
+            ],
+        )?;
+        Ok(())
+    }
+}
+
+fn task_source(id: i64, attempt: i64) -> String {
+    format!(
+        "00000004-{:04x}-4{:03x}-8000-{id:012x}",
+        attempt & 0xffff,
+        (attempt >> 16) & 0xfff
+    )
 }
 
 pub fn source_id(id: i64, steering: bool) -> String {
@@ -763,6 +1053,113 @@ pub(crate) mod test_support {
 mod tests {
     use super::{test_support::TestData, *};
     use serde_json::json;
+
+    #[test]
+    fn execution_orders_dependencies_and_retries_only_unfinished_tasks_after_reopening() {
+        let data = TestData::new();
+        let mut store = data.store();
+        let project = store.load_project(Path::new("/execution-test")).unwrap();
+        let code_mod = store.create_mod(project.id, "Build greeting").unwrap();
+        let source = code_mod.planning.as_ref().unwrap().source.clone();
+        let plan = Plan::parse(r#"{"summary":"Greeting","tasks":[{"id":"first","title":"Greeting","outcome":"Print hello","files":["hello.py"],"depends_on":[],"worker":"codex","checks":["prints hello"]},{"id":"second","title":"Verify","outcome":"Check greeting","files":["test.py"],"depends_on":["first"],"worker":"codex","checks":["tests pass"]}]}"#).unwrap();
+        store.save_plan(code_mod.id, &source, &plan).unwrap();
+        let worker = store.worker(code_mod.id).unwrap();
+        store.save_thread(worker.id, "old-readonly-thread").unwrap();
+        store
+            .create_execution(code_mod.id, Path::new("/private/mod-one"), &plan)
+            .unwrap();
+        assert!(store.worker(code_mod.id).unwrap().thread_id.is_none());
+        let first = store
+            .task_input(code_mod.id, worker.id, &plan)
+            .unwrap()
+            .unwrap();
+        assert!(
+            store
+                .task_input(code_mod.id, worker.id, &plan)
+                .unwrap()
+                .is_none()
+        );
+        store.acknowledge(worker.id, &first).unwrap();
+        store
+            .task_status(code_mod.id, &first.source, "running", Some("turn-one"))
+            .unwrap();
+        store
+            .finish_task(code_mod.id, &first.source, "done", "Done", &[])
+            .unwrap();
+        let second = store
+            .task_input(code_mod.id, worker.id, &plan)
+            .unwrap()
+            .unwrap();
+        assert_ne!(first.source, second.source);
+        store
+            .finish_task(code_mod.id, &second.source, "paused", "Interrupted", &[])
+            .unwrap();
+        drop(store);
+        let mut store = data.store();
+        store.retry_tasks(code_mod.id).unwrap();
+        let execution = store.execution(code_mod.id).unwrap().unwrap();
+        assert_eq!(execution.tasks[0].status, "done");
+        assert_eq!(execution.tasks[0].turn.as_deref(), Some("turn-one"));
+        assert_ne!(execution.tasks[1].source, second.source);
+        assert_eq!(execution.tasks[1].status, "pending");
+        assert!(store.worker(code_mod.id).unwrap().pending.is_none());
+        let next = store
+            .task_input(code_mod.id, worker.id, &plan)
+            .unwrap()
+            .unwrap();
+        store.acknowledge(worker.id, &next).unwrap();
+        store
+            .finish_task(code_mod.id, &next.source, "done", "Done", &[])
+            .unwrap();
+        assert_eq!(
+            store.execution(code_mod.id).unwrap().unwrap().status,
+            "running"
+        );
+        store
+            .execution_checks(
+                code_mod.id,
+                "review",
+                &[crate::execution::CheckResult {
+                    check: "tests pass".into(),
+                    command: vec!["/usr/bin/true".into()],
+                    exit_code: Some(0),
+                    output: String::new(),
+                }],
+                Some("verified-snapshot"),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .load_project(Path::new("/execution-test"))
+                .unwrap()
+                .mods[0]
+                .execution
+                .as_ref()
+                .unwrap()
+                .checks
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .load_project(Path::new("/execution-test"))
+                .unwrap()
+                .mods[0]
+                .messages
+                .len(),
+            2
+        );
+        store.delete_mod(project.id, code_mod.id).unwrap();
+        assert!(store.execution(code_mod.id).unwrap().is_none());
+        assert_eq!(
+            store
+                .0
+                .query_row("SELECT COUNT(*) FROM task_runs", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
 
     #[test]
     fn planning_persists_roles_and_rolls_back_an_incomplete_save() {

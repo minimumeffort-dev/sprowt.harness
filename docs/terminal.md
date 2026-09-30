@@ -26,7 +26,7 @@ User messages have a `>` prefix and a subtle background. Agent messages show the
 
 Plans show task titles, outcomes and dependencies first. Ctrl+O expands file scopes, completion checks and model details inline. Each check has its own row. Expanding keeps the plan heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
 
-Completed planner chatter stays saved but is hidden from the transcript. The plan says **read-only · code changes come next**. See [Planning](planning.md) for the current execution limits.
+Completed planner chatter stays saved but is hidden from the transcript. During execution, the plan shows task status and a count of completed tasks. Check results appear in details. **Ctrl+D** opens a full-width diff when execution is idle; **a**, then **Enter** confirms applying verified changes. See [Plan execution](execution.md).
 
 Code mod and queue dialogs share selection, spacing and keyboard hints. Hints adapt to the current view and terminal width. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
 
@@ -50,6 +50,7 @@ Code mod and queue dialogs share selection, spacing and keyboard hints. Hints ad
 | Ctrl+Q | Manage queued instructions |
 | Ctrl+R | Start, stop or retry the current worker |
 | Ctrl+O | Show or hide saved plan details |
+| Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
 | Page Up / Page Down | Scroll on keyboards with those keys |
 | Esc | Back from a dialog; quit from the conversation |
