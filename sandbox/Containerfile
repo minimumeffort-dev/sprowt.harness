@@ -1,0 +1,22 @@
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash bubblewrap build-essential ca-certificates curl git pkg-config procps unzip xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -fsSL https://github.com/openai/codex/releases/download/rust-v0.159.2/codex-aarch64-unknown-linux-musl.tar.gz -o /tmp/codex.tar.gz \
+    && echo '472ee4d49464a4f8792bbf0162bd9ac18d7036dbc00900a03e95f715887e930f  /tmp/codex.tar.gz' | sha256sum -c - \
+    && tar -xzf /tmp/codex.tar.gz -C /usr/local/bin \
+    && mv /usr/local/bin/codex-aarch64-unknown-linux-musl /usr/local/bin/codex \
+    && rm /tmp/codex.tar.gz
+
+RUN curl -fsSL https://github.com/jdx/mise/releases/download/v2026.9.18/mise-v2026.9.18-linux-arm64.tar.xz -o /tmp/mise.tar.xz \
+    && echo '41125ed333325c0235c1bfb2349e709e95f45678735ba55281a47aee1ec79f5a  /tmp/mise.tar.xz' | sha256sum -c - \
+    && tar -xJf /tmp/mise.tar.xz -C /tmp \
+    && mv /tmp/mise/bin/mise /usr/local/bin/mise \
+    && rm -rf /tmp/mise /tmp/mise.tar.xz
+
+RUN mkdir -p /opt/codex-home /home/sprowt /workspace
+
+WORKDIR /workspace
+CMD ["sleep", "infinity"]

@@ -1,13 +1,14 @@
 # Plan execution
 
-A plan becomes code when you press **Ctrl+R**. One Codex executor runs tasks in dependency order in a separate working folder.
+A plan becomes code when you press **Ctrl+R**. One Codex executor runs tasks in dependency order in the mod’s Linux VM.
 
 ```mermaid
 flowchart TB
     plan["Saved plan"] --> start["Ctrl+R · snapshot the project"]
-    start --> choose["Rust · choose a task whose dependencies are done"]
-    choose --> worker["Codex · edit and test in the mod folder"]
-    worker --> checks["Rust · rerun the reported check commands"]
+    start --> vm["Create or reconnect the mod’s Linux VM"]
+    vm --> choose["Rust · choose a task whose dependencies are done"]
+    choose --> worker["Codex · prepare runtime, edit and test in Linux"]
+    worker --> checks["Rust · rerun checks in the same VM"]
     checks -->|"pass · tasks remain"| choose
     checks -->|"failure or interruption"| paused["Keep files and progress · explicit retry"]
     checks -->|"all tasks done"| final["Rerun all task checks together"]
@@ -22,7 +23,9 @@ The first run snapshots your current files, including uncommitted and untracked 
 
 Common credential files, including `.env` and `.npmrc`, are excluded. `.env.example` and `.env.sample` are included. Installed dependencies and build caches are excluded too. Other secrets in source files are still source files; keep them out of the project.
 
-The executor can write only within its working folder. It cannot read or write the original project, harness state, Codex credentials or Keychain. The planner remains read-only. See [Workers](workers.md) for the boundary.
+The source snapshot is copied into `/workspace` inside a persistent VM. The host’s `work/` folder holds exported source for diff review; it is not mounted into the guest. Runtime installs and dependencies remain in the VM. See [Local Linux sandbox](sandbox.md) for setup, download policy and lifecycle.
+
+The executor cannot access the original project, harness state, host Codex credentials or Keychain. The planner remains read-only. See [Workers](workers.md) for the boundary.
 
 ## Tasks and checks
 
@@ -34,7 +37,7 @@ The plan shows task status. **Ctrl+O** expands scopes, check commands, failures 
 
 ## Pause and recover
 
-**Ctrl+R** pauses execution. During verification, the current command finishes within its timeout and subsequent checks stop. Interrupted tasks keep their working files. Press Ctrl+R again to explicitly retry the unfinished task; completed tasks stay done.
+**Ctrl+R** pauses execution. During verification, the current guest command is terminated and subsequent checks stop. Interrupted tasks keep their working files and runtime. Press Ctrl+R again to explicitly retry the unfinished task; completed tasks stay done.
 
 Reopening restores progress without starting workers. On reconnect, confirmed completed turns are verified without asking Codex to repeat the edits. Unconfirmed delivery pauses for explicit retry. Failed final checks can be rerun without regenerating completed tasks.
 
@@ -48,10 +51,10 @@ The working files must match the snapshot that passed verification and the diff 
 
 Applying adds, edits and deletes files without committing in your target project. Files are replaced individually; a handled error rolls back earlier replacements. A crash midway can leave a partial apply; the starting copies remain in the mod folder's `before/` directory.
 
-After applying, queued follow-up questions use read-only tools against the project. Start a new mod for further code changes. Deleting a mod removes its working folder too, including unapplied work.
+After applying, queued follow-up questions use read-only tools against the project. Start a new mod for further code changes. Deleting a mod removes its VM and working folder, including unapplied work.
 
 ## Current limits
 
-One executor per mod. No tool networking, package installation or VM yet. Symlinks, submodules and special files are unsupported. Projects without Git work too; Git is required locally for snapshots and diffs.
+One executor per mod. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Projects without Git work too; Git is required locally for snapshots and diffs.
 
 Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).

@@ -50,6 +50,7 @@ pub struct Worker {
     writable: bool,
     verification: Vec<Check>,
     verify_before: Option<workspace::Snapshot>,
+    preparing: Option<String>,
 }
 
 impl Worker {
@@ -111,6 +112,7 @@ impl Worker {
             writable: workspace.is_some(),
             verification: Vec::new(),
             verify_before: None,
+            preparing: None,
         })
     }
 
@@ -120,7 +122,7 @@ impl Worker {
             Status::Complete if self.role == Role::Planner => "plan ready",
             Status::Complete => "changes ready",
             Status::Checking => "checking",
-            Status::Connecting => "connecting",
+            Status::Connecting => self.preparing.as_deref().unwrap_or("connecting"),
             Status::Ready if self.enabled => "ready",
             Status::Ready => "paused",
             Status::Starting => "starting",
@@ -137,7 +139,7 @@ impl Worker {
             "{glyph} codex · {} · {state} · {}",
             self.role.name(),
             if self.writable {
-                "mod workspace"
+                "Linux VM"
             } else {
                 "read-only"
             }
@@ -147,7 +149,9 @@ impl Worker {
     pub fn toggle(&mut self) {
         if self.enabled {
             self.enabled = false;
-            if self.status == Status::Checking {
+            if self.status == Status::Checking
+                || (self.writable && self.status == Status::Connecting)
+            {
                 self.client.as_ref().unwrap().cancel_checks();
             }
             if let Some(turn) = &self.turn {
@@ -273,7 +277,7 @@ impl Worker {
                         .collect();
                     store.execution_status(self.mod_id, "verifying")?;
                     code_mod.execution = store.execution(self.mod_id)?;
-                    self.begin_checks(code_mod, format!("final:{}", self.mod_id), checks);
+                    self.begin_checks(format!("final:{}", self.mod_id), checks);
                 } else {
                     self.enabled = false;
                 }
@@ -322,12 +326,14 @@ impl Worker {
         code_mod: &mut CodeMod,
     ) -> rusqlite::Result<()> {
         match event {
+            Event::Preparing(label) => self.preparing = Some(label),
             Event::Configured(selection) => {
                 store.planning_model(self.mod_id, &selection)?;
                 code_mod.planning = store.planning(self.mod_id)?;
                 self.selection = Some(selection);
             }
             Event::Ready(thread) => {
+                self.preparing = None;
                 store.save_thread(self.id, thread["id"].as_str().unwrap())?;
                 if self.role == Role::Executor {
                     self.recover_task(store, code_mod, &thread)?;
@@ -485,7 +491,12 @@ impl Worker {
                     )?;
                 }
             }
-            Event::Checked { source, checks } if self.task_source.as_deref() == Some(&source) => {
+            Event::Checked {
+                source,
+                checks,
+                before,
+            } if self.task_source.as_deref() == Some(&source) => {
+                self.verify_before = Some(before);
                 let passed = self.checks_passed(code_mod, &checks);
                 if source.starts_with("final:") {
                     let fingerprint = if passed {
@@ -818,7 +829,7 @@ impl Worker {
                 self.task_summary = report.summary;
                 store.task_status(self.mod_id, &source, "checking", None)?;
                 code_mod.execution = store.execution(self.mod_id)?;
-                self.begin_checks(code_mod, source, report.checks);
+                self.begin_checks(source, report.checks);
             }
             Ok(report) => self.block_task(store, code_mod, "blocked", report.summary)?,
             Err(error) => self.block_task(store, code_mod, "blocked", error)?,
@@ -897,15 +908,8 @@ impl Worker {
         Ok(())
     }
 
-    fn begin_checks(&mut self, code_mod: &CodeMod, source: String, checks: Vec<Check>) {
-        let root = code_mod.execution.as_ref().unwrap().workspace.join("work");
-        match workspace::source_state(&root) {
-            Ok(snapshot) => self.verify_before = Some(snapshot),
-            Err(error) => {
-                self.fail(error.to_string());
-                return;
-            }
-        }
+    fn begin_checks(&mut self, source: String, checks: Vec<Check>) {
+        self.verify_before = None;
         self.verification = checks.clone();
         self.task_source = Some(source.clone());
         self.status = Status::Checking;
@@ -1076,6 +1080,7 @@ mod tests {
                     Event::Checked {
                         source: worker.task_source.clone().unwrap(),
                         checks,
+                        before: worker.verify_before.clone().unwrap(),
                     },
                     &mut store,
                     &mut code_mod,
@@ -1109,6 +1114,7 @@ mod tests {
                 Event::Checked {
                     source: worker.task_source.clone().unwrap(),
                     checks,
+                    before: worker.verify_before.clone().unwrap(),
                 },
                 &mut store,
                 &mut code_mod,

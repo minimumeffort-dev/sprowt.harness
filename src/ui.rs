@@ -413,7 +413,7 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
 fn draw_delete_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     let code_mod = &app.mods[index];
     let removal = if code_mod.execution.is_some() {
-        "Stops workers; removes history and the mod's working folder."
+        "Stops workers; deletes history, the VM and working folder."
     } else if app.has_worker(code_mod.id) {
         "Stops worker; removes history, queue and draft."
     } else {
@@ -807,7 +807,7 @@ fn plan_lines(
             if execution.is_some_and(|execution| execution.status == "applied") {
                 "changes applied to the project"
             } else {
-                "execution writes only to the mod's working folder"
+                "execution stays in the mod's Linux VM"
             },
         )
         .fg(KEY_HINT),

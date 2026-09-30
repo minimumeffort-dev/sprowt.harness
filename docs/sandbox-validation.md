@@ -2,7 +2,7 @@
 
 We want the model to prepare its own development environment. Runtime installs, edits and tests belong in a local VM. Your Codex login stays on the Mac.
 
-This is a standalone probe. The main harness still uses its existing OS sandbox.
+This records our earlier standalone probe. Code mod execution now uses [persistent Linux VMs](sandbox.md) with enforced networking and guest-side verification.
 
 ## The connection
 
@@ -40,11 +40,11 @@ The live run passed: Codex selected Python **3.12.14**, installed the dependenci
 
 Temporary files and the probe container are removed on normal success or failure. The built image and Apple Container service remain for reuse. The probe uses your Codex subscription.
 
-## Next layer
+## Integration
 
-Connect this route to code mods: persistent VM per mod, model-driven setup, checks inside the same VM and source-only diff review.
+The harness now uses this route for code mods: a persistent VM per mod, model-driven setup, guest checks and source-only diff review.
 
-Before that becomes the default, add network policy and lifecycle recovery. This development probe allows guest internet access and runs as guest root. It verifies the connection and selected isolation properties; it is not a full security audit.
+This older development probe allows guest internet access and runs as guest root. The integrated backend adds a domain proxy, Linux sandbox enforcement and lifecycle recovery. These checks are not a full security audit.
 
 Standalone app-server `command/exec` has no environment selector in this version. The harness’s independent verification must use the guest executor directly. Otherwise checks would still run on the Mac.
 

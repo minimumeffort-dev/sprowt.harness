@@ -7,6 +7,7 @@ use crate::plan::{Plan, Task};
 
 pub struct Execution {
     pub workspace: PathBuf,
+    pub backend: String,
     pub status: String,
     pub tasks: Vec<TaskRun>,
     pub checks: Vec<CheckResult>,
@@ -102,7 +103,7 @@ impl Report {
 
 pub fn task_prompt(plan: &Plan, task: &Task) -> String {
     format!(
-        "Execute only this task from the saved plan. Respect project rules and the declared file scope. Run the completion checks. Dependency installation and tool networking are unavailable; report blocked checks honestly. Return the required JSON report. For each check, provide its exact text and a repeatable command as an argument array, using an absolute executable path. The harness reruns these commands independently in the same sandbox; each has a 30-second limit. Commands must test the result and exit nonzero on failure, without changing source files. Keep the summary short.\nPlan: {}\nCurrent task: {}",
+        "Execute only this task from the saved plan in the Linux VM at /workspace. Respect project rules and the declared file scope. Inspect project manifests, choose compatible runtimes and install needed dependencies using mise or the project's package manager. Run the completion checks; report blocked checks honestly. Return the required JSON report. For each check, provide its exact text and a repeatable command as an argument array, using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each has a 30-second limit. Commands must test the result and exit nonzero on failure, without changing source files. Keep the summary short.\nPlan: {}\nCurrent task: {}",
         serde_json::to_string(plan).unwrap(),
         serde_json::to_string(task).unwrap()
     )

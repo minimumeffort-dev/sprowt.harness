@@ -1,0 +1,10 @@
+[
+  "github.com", "api.github.com", "*.githubusercontent.com",
+  "mise.jdx.dev", "mise-versions.jdx.dev", "nodejs.org", "registry.npmjs.org",
+  "pypi.org", "files.pythonhosted.org", "*.python.org",
+  "astral.sh", "releases.astral.sh",
+  "static.rust-lang.org", "crates.io", "index.crates.io", "static.crates.io",
+  "go.dev", "dl.google.com", "proxy.golang.org", "sum.golang.org",
+  "rubygems.org", "*.rubygems.org", "repo.maven.apache.org", "services.gradle.org",
+  "localhost", "127.0.0.1", "::1"
+]

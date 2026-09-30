@@ -1,16 +1,15 @@
 use std::{
     collections::BTreeMap,
-    env, fs,
-    io::{self, BufRead, BufReader, Write},
+    env, fs, io,
     path::Path,
-    process::{Child, ChildStdin, Command, Stdio},
+    process::{Child, Command},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use serde_json::{Value, json};
@@ -19,6 +18,9 @@ use crate::{
     execution::{Check, CheckResult},
     plan::{self, Plan, Role},
     router::Selection,
+    rpc::{self, Rpc},
+    sandbox::Sandbox,
+    workspace::Snapshot,
 };
 
 pub enum Action {
@@ -42,6 +44,7 @@ pub enum Action {
 }
 
 pub enum Event {
+    Preparing(String),
     Configured(Selection),
     Ready(Value),
     Accepted {
@@ -57,6 +60,7 @@ pub enum Event {
     Checked {
         source: String,
         checks: Vec<CheckResult>,
+        before: Snapshot,
     },
 }
 
@@ -71,12 +75,13 @@ struct Setup {
     selection: Option<Selection>,
     permissions: &'static str,
     cancelled: Arc<AtomicBool>,
+    vm: Option<Sandbox>,
 }
 
 pub struct Client {
     actions: Sender<Action>,
     events: Receiver<Event>,
-    child: Child,
+    child: Arc<Mutex<Option<Child>>>,
     task: Option<JoinHandle<()>>,
     closed: bool,
     cancelled: Arc<AtomicBool>,
@@ -96,74 +101,77 @@ impl Client {
         return Err(io::Error::other(
             "The first Codex worker currently supports macOS and Linux.",
         ));
-        let cwd = workspace.unwrap_or(project);
-        let permissions = if workspace.is_some() {
-            "sprowt_work"
-        } else {
-            "sprowt_readonly"
-        };
-        let mut command = Command::new("codex");
-        command.args(["app-server", "--listen", "stdio://"]);
-        command
-            .current_dir(cwd)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let inherited = [
-            "PATH",
-            "HOME",
-            "USER",
-            "LOGNAME",
-            "LANG",
-            "TMPDIR",
-            "CODEX_HOME",
-        ];
-        command.env_clear().envs(
-            inherited
-                .iter()
-                .filter_map(|name| env::var_os(name).map(|value| (*name, value))),
-        );
-        for option in configuration(project, workspace)? {
-            command.args(["-c", &option]);
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        let mut child = command.spawn()?;
-        let stdin = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-        let (incoming, receiver) = mpsc::channel();
-        thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let message =
-                    line.and_then(|line| serde_json::from_str(&line).map_err(io::Error::other));
-                if incoming.send(message).is_err() {
-                    break;
-                }
-            }
-        });
+        let cwd = workspace.unwrap_or(project).to_owned();
+        let project = project.to_owned();
+        let workspace = workspace.map(Path::to_owned);
         let (actions, inbox) = mpsc::channel();
         let (outgoing, events) = mpsc::channel();
-        let project = cwd.to_owned();
         let instructions = plan::instructions(role, description, plan, workspace.is_some());
         let cancelled = Arc::new(AtomicBool::new(false));
-        let setup = Setup {
-            role,
-            instructions,
-            selection,
-            permissions,
-            cancelled: cancelled.clone(),
-        };
+        let child = Arc::new(Mutex::new(None));
+        let process = child.clone();
+        let stopped = cancelled.clone();
         let task = thread::spawn(move || {
-            let mut rpc = Rpc {
-                stdin,
-                receiver,
-                next_id: 0,
-                buffered: Vec::new(),
-            };
-            if let Err(error) = serve(&mut rpc, &project, resume, setup, inbox, &outgoing) {
+            let result = (|| {
+                let vm = workspace
+                    .as_ref()
+                    .map(|path| {
+                        Sandbox::prepare(path.parent().unwrap(), &stopped, |label| {
+                            let _ = outgoing.send(Event::Preparing(label.into()));
+                        })
+                    })
+                    .transpose()?;
+                if stopped.load(Ordering::Relaxed) {
+                    return Ok(());
+                }
+                let permissions = if vm.is_some() {
+                    "sprowt_vm"
+                } else {
+                    "sprowt_readonly"
+                };
+                let mut command = Command::new("codex");
+                command
+                    .args(["app-server", "--listen", "stdio://"])
+                    .current_dir(
+                        vm.as_ref()
+                            .map_or(cwd.as_path(), |vm| vm.home.parent().unwrap()),
+                    );
+                command.env_clear().envs(
+                    [
+                        "PATH",
+                        "HOME",
+                        "USER",
+                        "LOGNAME",
+                        "LANG",
+                        "TMPDIR",
+                        "CODEX_HOME",
+                    ]
+                    .iter()
+                    .filter_map(|name| env::var_os(name).map(|value| (*name, value))),
+                );
+                for option in configuration(&project)? {
+                    command.args(["-c", &option]);
+                }
+                if let Some(vm) = &vm {
+                    command.env("CODEX_HOME", &vm.home);
+                    for option in vm.configuration() {
+                        command.args(["-c", &option]);
+                    }
+                    command.args(["-c", "cli_auth_credentials_store=\"file\""]);
+                }
+                let (server, mut rpc) = Rpc::start(&mut command)?;
+                *process.lock().unwrap() = Some(server);
+                let setup = Setup {
+                    role,
+                    instructions,
+                    selection,
+                    permissions,
+                    cancelled: stopped,
+                    vm,
+                };
+                serve(&mut rpc, &cwd, resume, setup, inbox, &outgoing)
+            })();
+            if let Err(error) = result {
                 let _ = outgoing.send(Event::Failed(error.to_string()));
             }
         });
@@ -199,16 +207,14 @@ impl Client {
             return;
         }
         self.closed = true;
+        self.cancelled.store(true, Ordering::Relaxed);
         let (finished, receiver) = mpsc::channel();
         if self.actions.send(Action::Shutdown(finished)).is_ok() {
             let _ = receiver.recv_timeout(Duration::from_secs(2));
         }
-        #[cfg(unix)]
-        unsafe {
-            libc::kill(-(self.child.id() as i32), libc::SIGKILL);
+        if let Some(child) = self.child.lock().unwrap().as_mut() {
+            rpc::terminate(child);
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
         if let Some(task) = self.task.take() {
             let _ = task.join();
         }
@@ -221,7 +227,7 @@ impl Drop for Client {
     }
 }
 
-fn configuration(project: &Path, workspace: Option<&Path>) -> io::Result<Vec<String>> {
+fn configuration(project: &Path) -> io::Result<Vec<String>> {
     let home =
         env::var_os("HOME").ok_or_else(|| io::Error::other("Cannot locate the host login."))?;
     let codex_home = env::var_os("CODEX_HOME")
@@ -239,10 +245,6 @@ fn configuration(project: &Path, workspace: Option<&Path>) -> io::Result<Vec<Str
             "deny",
         ),
     ]);
-    if let Some(workspace) = workspace {
-        filesystem.insert(project.to_string_lossy().into_owned(), "deny");
-        filesystem.insert(workspace.to_string_lossy().into_owned(), "write");
-    }
     let binary = env::split_paths(&env::var_os("PATH").unwrap_or_default())
         .map(|dir| dir.join("codex"))
         .find(|path| path.is_file())
@@ -265,11 +267,7 @@ fn configuration(project: &Path, workspace: Option<&Path>) -> io::Result<Vec<Str
         .map(|(path, access)| format!("{}={}", json!(path), json!(access)))
         .collect::<Vec<_>>()
         .join(",");
-    let permissions = if workspace.is_some() {
-        "sprowt_work"
-    } else {
-        "sprowt_readonly"
-    };
+    let permissions = "sprowt_readonly";
     let mut config = vec![
         format!("permissions.{permissions}={{filesystem={{{rules}}},network={{enabled=false}}}}"),
         format!("default_permissions={}", json!(permissions)),
@@ -294,59 +292,16 @@ fn configuration(project: &Path, workspace: Option<&Path>) -> io::Result<Vec<Str
     Ok(config)
 }
 
-struct Rpc {
-    stdin: ChildStdin,
-    receiver: Receiver<io::Result<Value>>,
-    next_id: u64,
-    buffered: Vec<Value>,
-}
-
-impl Rpc {
-    fn write(&mut self, value: Value) -> io::Result<()> {
-        serde_json::to_writer(&mut self.stdin, &value)?;
-        self.stdin.write_all(b"\n")?;
-        self.stdin.flush()
-    }
-
-    fn call(&mut self, method: &str, params: Value) -> io::Result<Value> {
-        self.next_id += 1;
-        let id = self.next_id;
-        self.write(json!({"id":id,"method":method,"params":params}))?;
-        let deadline = Instant::now() + Duration::from_secs(45);
-        loop {
-            let message = self
-                .receiver
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .map_err(io::Error::other)??;
-            if message.get("id") == Some(&json!(id)) && message.get("method").is_none() {
-                if let Some(error) = message.get("error") {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        error["message"]
-                            .as_str()
-                            .unwrap_or("Codex rejected the request."),
-                    ));
-                }
-                return Ok(message["result"].clone());
-            }
-            self.receive(message)?;
+fn flush(rpc: &mut Rpc, outgoing: &Sender<Event>, vm: &mut Option<Sandbox>) -> io::Result<()> {
+    for message in rpc.buffered.drain(..) {
+        if message["method"] == "turn/completed"
+            && let Some(vm) = vm
+        {
+            vm.export(&AtomicBool::new(false))?;
         }
+        let _ = outgoing.send(Event::Notification(message));
     }
-
-    fn receive(&mut self, message: Value) -> io::Result<()> {
-        if message.get("method").is_some() && message.get("id").is_some() {
-            self.write(json!({"id":message["id"],"error":{"code":-32601,"message":"This worker cannot grant broader permissions or run client tools."}}))?;
-        } else if message.get("method").is_some() {
-            self.buffered.push(message);
-        }
-        Ok(())
-    }
-
-    fn flush(&mut self, outgoing: &Sender<Event>) {
-        for message in self.buffered.drain(..) {
-            let _ = outgoing.send(Event::Notification(message));
-        }
-    }
+    Ok(())
 }
 
 fn serve(
@@ -363,6 +318,7 @@ fn serve(
         selection,
         permissions,
         cancelled,
+        mut vm,
     } = setup;
     rpc.call("initialize", json!({"clientInfo":{"name":"sprowt_harness","title":"Sprowt Harness","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
     rpc.write(json!({"method":"initialized"}))?;
@@ -372,7 +328,22 @@ fn serve(
             "Sign in with ChatGPT using `codex login`, then run again.",
         ));
     }
-    check_boundary(rpc, project, permissions)?;
+    if vm.is_some() {
+        if rpc
+            .call("environment/info", json!({"environmentId":"local"}))
+            .is_ok()
+        {
+            return Err(io::Error::other(
+                "Host execution must be unavailable to the VM worker.",
+            ));
+        }
+        let info = rpc.call("environment/info", json!({"environmentId":"vm"}))?;
+        if info["cwd"] != "file:///workspace" {
+            return Err(io::Error::other("Codex did not connect to the mod VM."));
+        }
+    } else {
+        check_boundary(rpc, project, permissions)?;
+    }
     let config = rpc.call("config/read", json!({"cwd":project,"includeLayers":false}))?;
     let mut overrides = serde_json::Map::new();
     if let Some(servers) = config["config"]["mcp_servers"].as_object() {
@@ -385,6 +356,16 @@ fn serve(
             overrides.insert(format!("shell_environment_policy.set.{name}"), json!(""));
         }
     }
+    if vm.is_some() {
+        overrides.insert(
+            "shell_environment_policy.set.PATH".into(),
+            json!("/usr/local/bin:/usr/bin:/bin"),
+        );
+        overrides.insert(
+            "shell_environment_policy.set.HOME".into(),
+            json!("/home/sprowt"),
+        );
+    }
     let selection = selection
         .map(|selection| select_model(rpc, selection))
         .transpose()?;
@@ -393,6 +374,9 @@ fn serve(
         let _ = outgoing.send(Event::Configured(selection.clone()));
     }
     let mut params = json!({"cwd":project,"permissions":permissions,"approvalPolicy":"never","config":overrides,"developerInstructions":instructions});
+    if vm.is_some() {
+        params["environments"] = json!([{"environmentId":"vm","cwd":"/workspace"}]);
+    }
     if let Some(selection) = &selection {
         params["model"] = json!(selection.model);
     }
@@ -434,43 +418,21 @@ fn serve(
     outgoing
         .send(Event::Ready(result["thread"].clone()))
         .map_err(io::Error::other)?;
-    rpc.flush(outgoing);
+    flush(rpc, outgoing, &mut vm)?;
     let mut last_turn = None;
     loop {
         while let Ok(action) = actions.try_recv() {
             if let Action::Verify { source, checks } = &action {
-                let mut results = Vec::new();
-                for check in checks {
-                    if cancelled.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let result = rpc.call("command/exec", json!({"command":check.command,"cwd":project,"permissionProfile":permissions,"timeoutMs":30000,"outputBytesCap":8192}));
-                    let (exit_code, output) = match result {
-                        Ok(value) => (
-                            value["exitCode"].as_i64(),
-                            format!(
-                                "{}{}",
-                                value["stdout"].as_str().unwrap_or(""),
-                                value["stderr"].as_str().unwrap_or("")
-                            ),
-                        ),
-                        Err(error) => (None, error.to_string()),
-                    };
-                    results.push(CheckResult {
-                        check: check.check.clone(),
-                        command: check.command.clone(),
-                        exit_code,
-                        output,
-                    });
-                    if exit_code != Some(0) {
-                        break;
-                    }
-                }
+                let (before, results) = vm
+                    .as_mut()
+                    .ok_or_else(|| io::Error::other("Verification requires the mod VM."))?
+                    .verify(checks, &cancelled)?;
                 let _ = outgoing.send(Event::Checked {
                     source: source.clone(),
                     checks: results,
+                    before,
                 });
-                rpc.flush(outgoing);
+                flush(rpc, outgoing, &mut vm)?;
                 continue;
             }
             let (method, source, params) = match action {
@@ -547,12 +509,12 @@ fn serve(
                 Err(error) => return Err(error),
                 _ => {}
             }
-            rpc.flush(outgoing);
+            flush(rpc, outgoing, &mut vm)?;
         }
         match rpc.receiver.recv_timeout(Duration::from_millis(25)) {
             Ok(message) => {
                 rpc.receive(message?)?;
-                rpc.flush(outgoing);
+                flush(rpc, outgoing, &mut vm)?;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => return Err(io::Error::other(error)),

@@ -19,7 +19,7 @@ flowchart TB
 | Planner | Inspect the project and produce a task plan |
 | Executor | Implement plan tasks and answer queued instructions |
 
-They have separate Codex conversations. The planner is read-only. **Ctrl+R** starts the executor in a separate working folder; Rust dispatches tasks in dependency order. See [Plan execution](execution.md).
+They have separate Codex conversations. The planner is read-only. **Ctrl+R** starts the executor in the mod’s Linux VM; Rust dispatches tasks in dependency order. See [Plan execution](execution.md).
 
 ## Local model routing
 
@@ -58,7 +58,7 @@ The conversation shows a numbered outline: task titles, outcomes and dependencie
 
 Press **Ctrl+O** for file scopes, individual completion checks and model details. Press it again to collapse them. The full plan remains saved; changing its display does not change the plan or start a worker.
 
-**Plan ready** means planning finished. The folder boundary appears below the outline. **Ctrl+R** executes the saved plan; **Ctrl+D** reviews the resulting diff.
+**Plan ready** means planning finished. The Linux VM boundary appears below the outline. **Ctrl+R** executes the saved plan; **Ctrl+D** reviews the resulting diff.
 
 ## Stop and retry
 

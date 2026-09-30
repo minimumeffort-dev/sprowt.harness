@@ -7,31 +7,34 @@ flowchart TB
     harness["Rust harness"] <-->|"local JSON-RPC"| codex["Codex app-server"]
     login["Existing ChatGPT login"] -->|"authentication"| codex
     codex <-->|"model requests / responses"| models["OpenAI models · internet"]
-    codex -->|"tool commands"| sandbox["OS sandbox · role-specific permissions"]
-    sandbox -->|"planner reads"| project["Project source and docs"]
-    sandbox <-->|"executor edits / tests"| work["Mod working folder"]
+    codex -->|"planner reads · OS sandbox"| project["Project source and docs"]
+    codex <-->|"executor tools · stdio"| guest["Codex exec-server · Linux VM"]
+    harness -->|"independent checks"| guest
+    guest <-->|"runtime setup / edits / tests"| work["/workspace · isolated project copy"]
 ```
 
 ## Login
 
-Install Codex CLI and run `codex login`. Use your ChatGPT subscription. The harness checks that login type at startup; API-key login is not supported by this worker setup.
+Install Codex CLI and run `codex -c 'cli_auth_credentials_store="file"' login`. Use your ChatGPT subscription. The harness checks that login type at startup; API-key login is not supported by this worker setup.
 
-Codex handles authentication. The harness database stores conversation IDs and delivery state, without copying login credentials.
+Codex handles authentication. The harness database stores conversation IDs and delivery state. Each VM worker has a private host Codex directory with a link to the existing login file; that directory is never copied into the guest. This route currently needs a file-backed ChatGPT login.
 
 ## Permissions today
 
-Planner tools can read the project and required runtime files. Executor tools can read and write the mod’s working folder, with access to required runtimes. The original project is denied to executor tools. Neither role can access the tool network. The Codex credential directory and macOS Keychain directory are denied to these commands; their environment is restricted.
+Planner tools can read the project and required runtime files, with no tool networking. The host Codex credential directory and macOS Keychain directory are denied to these commands.
+
+Executor tools use only the mod’s Linux VM. Commands can write `/workspace`, `/home/sprowt` and guest temporary files. System tools remain read-only. Project runtimes and dependencies can be installed through an enforced domain proxy. No host executor is registered for that agent. See [Local Linux sandbox](sandbox.md).
 
 Host MCP servers, apps, plugins, hooks, browser tools and Codex delegation are disabled for these workers. Startup checks the permission boundary and that MCP tools are disabled before a worker can run. A failed check stops startup.
 
-Codex’s trusted app-server uses the login and network for inference. Its tool commands run inside the restricted OS sandbox. This is the current isolation boundary; VM isolation comes later.
+Codex’s trusted app-server uses the host login and network for inference. Executor commands and independent verification use the guest’s native sandbox and proxy. The connection uses standard input/output; no listening tool-server port is exposed.
 
 ## Run, pause, resume
 
 - A new mod starts its planner automatically.
 - After planning, **Ctrl+R** starts or pauses plan execution. Rust selects tasks; queued instructions run between tasks. See [Plan execution](execution.md) for verification and applying changes.
 - Reopening restores saved state. **Ctrl+R** reconnects a worker to its saved Codex conversation.
-- Deleting a mod or quitting asks Codex to interrupt turns and terminate background commands, then stops the server and remaining child processes.
+- Quitting interrupts turns, stops agent processes and stops each active VM. Its disk persists. Deleting a mod also deletes its VM and workspace.
 
 ## Delivery and recovery
 

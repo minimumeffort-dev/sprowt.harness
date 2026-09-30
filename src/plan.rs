@@ -186,7 +186,7 @@ pub fn schema() -> Value {
 
 pub fn instructions(role: Role, description: &str, plan: Option<&Plan>, writable: bool) -> String {
     let boundary = if writable {
-        "Work only in this code mod's isolated working folder. Follow project rules. Do not request broader permissions, access host credentials, use external tools, install dependencies, commit, push, or apply changes to the original project. Tool networking is disabled."
+        "All tools execute in this code mod's Linux VM at /workspace. Follow project rules. Prepare compatible runtimes and install project dependencies inside the VM; mise is available for user-installed runtimes. Keep runtime installs in /home/sprowt and project dependencies in /workspace. System tools are read-only. Downloads use the harness domain allowlist; report blocked sources clearly. Do not request broader permissions, access credentials, use host or external tools, commit, push, or apply changes to the original project."
     } else {
         "You are a read-only worker. Do not change files, request broader permissions, access credentials, or use external tools."
     };

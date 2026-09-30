@@ -20,17 +20,23 @@ flowchart TB
 ├── state.db          harness state
 ├── state.db-wal      SQLite write-ahead log, when present
 ├── state.db-shm      SQLite shared memory, when present
+├── network.json      guest download allowlist
 ├── laya-runtime/     Python runtime installed by setup
 ├── laya-models/      downloaded model cache
 └── workspaces/       private working folders per mod
     └── <mod>-<stamp>/
         ├── before/   starting files
-        ├── work/     executor edits
+        ├── work/     source exported from the VM
         ├── base.git/ private diff metadata
+        ├── vm.json   VM identity and image digest
+        ├── host-codex/ private host agent state; never shared with the guest
+        ├── sandbox.log setup diagnostics
         └── review.patch
 ```
 
-State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Plans also save their chosen model, reasoning level and routing reason. Execution saves task attempts, delivery and turn IDs, verification results and the fingerprint of verified source files. Working files stay on disk across restarts.
+State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Plans save model selection and routing. Execution saves the backend, task attempts, delivery and turn IDs, verification results and the fingerprint of verified source files.
+
+Apple Container manages each VM’s disk separately. Code, installed runtimes and dependencies persist there across restarts. The host workspace holds starting files and source exports for review. Quitting stops active VMs; it keeps their disks. Setup may briefly create an image build context and source archive inside the private workspace.
 
 The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
 
@@ -38,6 +44,6 @@ The database file uses owner-only permissions; its directory is private to your 
 
 Run the harness from the same project root to restore mods, the selected mod, drafts, queues and conversations. Workers start when requested. A renamed or moved folder has a different project identity.
 
-Deleting a mod removes its plan, conversation, queue, draft, steering, execution records and working folder, including unapplied work. Codex keeps its own conversation records outside this database. Credentials stay with Codex.
+Deleting a mod removes its VM, plan, conversation, queue, draft, steering, execution records and working folder, including unapplied work. VM deletion must succeed before harness records are removed. Codex may keep earlier conversation records in its original directory. Credentials stay on the host.
 
 Run one harness instance per project. Shared memory across projects, repository indexing and memory updates after merges are future layers.

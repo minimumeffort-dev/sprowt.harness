@@ -485,6 +485,16 @@ impl App {
             .map(|execution| execution.workspace.clone());
         self.auto_plans.remove(&mod_id);
         self.workers.retain(|_, worker| worker.mod_id != mod_id);
+        if let Some(workspace) = &workspace
+            && let Err(error) = crate::sandbox::delete(workspace)
+        {
+            self.notice = Some(format!(
+                "Could not delete the VM: {error}. The mod is retained."
+            ));
+            self.view = View::Chat;
+            self.restore_input();
+            return Ok(());
+        }
         let selected = self.store.delete_mod(self.project_id, mod_id)?;
         self.mods.remove(index);
         let cleanup_error = workspace.and_then(|path| std::fs::remove_dir_all(path).err());
@@ -569,6 +579,18 @@ impl App {
             {
                 self.notice = Some(error.to_string());
                 return Ok(());
+            }
+            if self.mods[active]
+                .execution
+                .as_ref()
+                .is_some_and(|execution| {
+                    execution.backend == "local" && execution.status != "applied"
+                })
+            {
+                self.workers
+                    .retain(|_, worker| worker.mod_id != mod_id || worker.role != Role::Executor);
+                self.store.move_to_vm(mod_id)?;
+                self.mods[active].execution = self.store.execution(mod_id)?;
             }
             if self.current_worker().is_none_or(|worker| !worker.enabled) {
                 self.store.retry_tasks(mod_id)?;
@@ -1058,7 +1080,7 @@ mod tests {
 
         let compact = rows(&screen(&mut app, 100, 42)).join("\n");
         assert!(compact.contains("1. Build the API") && compact.contains("after task 1"));
-        assert!(compact.contains("execution writes only to the mod's working folder"));
+        assert!(compact.contains("execution stays in the mod's Linux VM"));
         assert!(!compact.contains("app/main.py") && !compact.contains("gpt-6.1-sol"));
         assert!(!compact.contains("I'll inspect"));
         assert!(compact.contains("ctrl+q manage"));

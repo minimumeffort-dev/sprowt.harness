@@ -226,7 +226,7 @@ pub fn review(root: &Path) -> io::Result<Review> {
     })
 }
 
-fn excluded(path: &Path) -> bool {
+pub(crate) fn excluded(path: &Path) -> bool {
     path.components().any(|part| {
         let name = part.as_os_str().to_string_lossy();
         matches!(
@@ -246,6 +246,39 @@ fn excluded(path: &Path) -> bool {
             || (name.starts_with(".env")
                 && !matches!(name.as_ref(), ".env.example" | ".env.sample"))
     })
+}
+
+pub fn replace_source(root: &Path, snapshot: &Snapshot) -> io::Result<()> {
+    let work = root.join("work");
+    let staging = root.join("work-next");
+    let previous = root.join("work-previous");
+    if previous.exists() {
+        if !work.exists() {
+            fs::rename(&previous, &work)?;
+        } else {
+            fs::remove_dir_all(&previous)?;
+        }
+    }
+    if staging.exists() {
+        fs::remove_dir_all(&staging)?;
+    }
+    fs::create_dir(&staging)?;
+    for (path, bytes, mode) in snapshot {
+        write_file(
+            &staging,
+            path,
+            Some(&File {
+                bytes: bytes.clone(),
+                mode: *mode,
+            }),
+        )?;
+    }
+    fs::rename(&work, &previous)?;
+    if let Err(error) = fs::rename(&staging, &work) {
+        fs::rename(&previous, &work)?;
+        return Err(error);
+    }
+    fs::remove_dir_all(previous)
 }
 
 fn paths(bytes: &[u8]) -> io::Result<BTreeSet<PathBuf>> {
@@ -428,6 +461,22 @@ mod tests {
         fs::create_dir_all(&project).unwrap();
         fs::write(project.join("a.txt"), "original").unwrap();
         project
+    }
+
+    #[test]
+    fn replacing_exported_source_removes_deleted_files_and_keeps_baseline() {
+        let data = TestData::new();
+        let project = project(&data);
+        let root = data.0.join("workspace");
+        create(&project, &root).unwrap();
+        let snapshot = vec![(PathBuf::from("new.txt"), b"exported".to_vec(), 0o755)];
+        replace_source(&root, &snapshot).unwrap();
+        assert_eq!(source_state(&root.join("work")).unwrap(), snapshot);
+        assert_eq!(
+            fs::read_to_string(root.join("before/a.txt")).unwrap(),
+            "original"
+        );
+        assert_eq!(review(&root).unwrap().count(), 2);
     }
 
     #[test]

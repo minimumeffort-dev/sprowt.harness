@@ -3,6 +3,8 @@ mod codex;
 mod execution;
 mod plan;
 mod router;
+mod rpc;
+mod sandbox;
 mod sprout;
 mod store;
 mod ui;

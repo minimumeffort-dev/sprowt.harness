@@ -12,14 +12,15 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 
 - [Code mods and messages](docs/code-mods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
-- [Plan execution](docs/execution.md): one executor follows task dependencies in its own working folder. Verify, review the diff, then apply.
+- [Plan execution](docs/execution.md): one executor follows task dependencies. Verify, review the diff, then apply.
+- [Local Linux sandbox](docs/sandbox.md): a persistent Apple Container VM per mod. Codex prepares the runtime; edits and checks stay inside it.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
 - [Terminal and companion](docs/terminal.md): clear message ownership, inline plan review and the animated Sprowt pet.
 
 ### Current limits
 
-The planner is read-only. The executor edits a separate snapshot and runs checks there; applying changes needs your confirmation. Tool networking and dependency installation are disabled. This uses Codex’s local OS sandbox; a local VM comes later.
+The planner uses a read-only host sandbox. Execution uses a Linux VM; applying changes needs your confirmation. Downloads use a host-controlled domain allowlist. iOS and macOS builds need a later macOS VM backend.
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
@@ -34,18 +35,30 @@ flowchart TB
     harness <-->|"model recommendation"| laya["Local Laya"]
     harness --> planner["Codex planner · read-only"]
     planner -->|"inspect"| project["Your project"]
-    harness --> executor["Codex executor · OS sandbox"]
-    project -->|"snapshot including uncommitted code"| work["Separate folder per mod"]
-    executor <-->|"edit / test"| work
-    work --> review["Diff and check results"]
+    harness --> executor["Codex agent · login stays on Mac"]
+    project -->|"source snapshot"| vm["Apple Container · Linux VM per mod"]
+    executor <-->|"native command and file tools"| vm
+    harness -->|"independent checks in Linux"| vm
+    vm -->|"export source"| review["Diff and check results"]
     review -->|"you confirm apply"| project
 ```
 
-Laya recommends the planner configuration. Codex inference uses your subscription and the internet. Tasks run sequentially within a mod. Different mods can run in parallel. Muse and a local VM sandbox are future layers.
+Laya recommends the planner configuration. Codex inference uses your subscription and the internet. Codex installs the project runtime and dependencies inside the VM. Tasks run sequentially within a mod; different mods can run in parallel. Muse follows later.
 
 ## Get started
 
-You need [Rust](https://rustup.rs) and [Codex CLI](https://github.com/openai/codex). Sign in to Codex with your ChatGPT subscription using `codex login`.
+You need [Rust](https://rustup.rs), [Codex CLI](https://github.com/openai/codex) **0.159.2**, Apple silicon and macOS 26+. This connection needs a file-backed ChatGPT login on the Mac:
+
+```sh
+codex -c 'cli_auth_credentials_store="file"' login
+```
+
+Install and start [Apple Container](https://github.com/apple/container):
+
+```sh
+brew install container
+container system start --enable-kernel-install
+```
 
 Install from this repository:
 
@@ -61,10 +74,10 @@ sprowt-harness
 
 1. Describe your code mod and press **Enter**. Planning starts automatically.
 2. Review the numbered tasks. **Ctrl+O** shows files, checks and model details. Write follow-up instructions and press **Enter** to queue them.
-3. Press **Ctrl+R** to execute the plan. No extra message needed. Press it again to pause.
+3. Press **Ctrl+R** to execute in the mod’s VM. The first run builds the sandbox image. Press it again to pause.
 4. When changes are ready, **Ctrl+D** opens the diff. Press **a**, then **Enter** to apply.
 
-**Ctrl+R** also stops or retries unfinished planning. Reopening a project restores its state without starting workers. Existing mods keep their original workflow. Use `--no-motion` to turn off animations.
+**Ctrl+R** also stops or retries unfinished planning. Reopening restores state without starting workers. Unfinished host executions move to Linux on their next run. Use `--no-motion` to turn off animations.
 
 ### Local model routing
 
@@ -105,9 +118,7 @@ Reopen from the same project root to restore them. Credentials stay with Codex. 
 
 ## What’s next
 
-[Local VM validation](docs/sandbox-validation.md) connects a host Codex agent to an execution server inside Apple Container. The standalone probe checks model-driven runtime setup, edits and tests while the login stays on the Mac. It does not change code mod execution yet.
-
-Next: connect code mods to persistent local VMs, then add multiple Codex/Muse executors per mod. Shared context, memory, MCPs and skills follow in small batches.
+Multiple Codex/Muse executors per mod. Shared context, memory, MCPs and skills follow in small batches. The earlier [VM validation probe](docs/sandbox-validation.md) records how we tested the connection before integrating it.
 
 ## Development
 

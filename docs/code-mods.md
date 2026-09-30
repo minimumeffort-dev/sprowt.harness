@@ -1,6 +1,6 @@
 # Code mods and messages
 
-A code mod is one goal in one project. It owns its description, conversation, plan, queue, draft and working folder.
+A code mod is one goal in one project. It owns its description, conversation, plan, queue, draft and execution workspace.
 
 ```mermaid
 flowchart TB
@@ -9,15 +9,16 @@ flowchart TB
     first --> context["Own description, plan and messages"]
     first --> planner["Codex planner conversation"]
     first --> executor["Codex executor conversation"]
+    executor --> vm["Own Linux VM · project copy and runtime"]
 ```
 
-The current harness supports one planner and one executor per mod. Workers in different mods can run at the same time. Planners read the project. Each executor works in its mod’s separate snapshot. Multiple executors per mod come later. See [Plan execution](execution.md).
+The current harness supports one planner and one executor per mod. Workers in different mods can run at the same time. Planners read the project. Each executor works on a project copy in its own Linux VM. Multiple executors per mod come later. See [Plan execution](execution.md).
 
 ## Create, switch, delete
 
 - **Create:** open **Ctrl+P**, select **New code mod**, describe the change and press Enter. Planning starts immediately. The first line becomes the title; the full description is saved.
 - **Switch:** open **Ctrl+P**, select a mod and press Enter. Its conversation and draft return. Other mods’ workers keep running.
-- **Delete:** select a mod, press `d`, then Enter to confirm. Its workers stop and its harness data and working folder are removed, including unapplied changes. Project files and Codex’s own conversation records remain.
+- **Delete:** select a mod, press `d`, then Enter to confirm. Its workers stop and its VM, harness data and working folder are removed, including unapplied changes. Project files remain.
 
 The first launch in an empty project opens creation directly. Ctrl+J adds a newline. Esc cancels creation, or quits when no mod exists.
 

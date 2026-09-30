@@ -200,6 +200,10 @@ impl Store {
             .map_err(io::Error::other)?;
         for (column, sql) in [
             (
+                "backend",
+                "ALTER TABLE executions ADD COLUMN backend TEXT NOT NULL DEFAULT 'local'",
+            ),
+            (
                 "checks",
                 "ALTER TABLE executions ADD COLUMN checks TEXT NOT NULL DEFAULT '[]'",
             ),
@@ -789,7 +793,7 @@ impl Store {
     pub fn create_execution(&mut self, mod_id: i64, workspace: &Path, plan: &Plan) -> Result<()> {
         let transaction = self.0.transaction()?;
         transaction.execute(
-            "INSERT INTO executions(mod_id,workspace) VALUES (?1,?2)",
+            "INSERT INTO executions(mod_id,workspace,backend) VALUES (?1,?2,'apple-container')",
             params![mod_id, workspace.to_string_lossy()],
         )?;
         for task in &plan.tasks {
@@ -814,7 +818,7 @@ impl Store {
         let result = self
             .0
             .query_row(
-                "SELECT workspace,status,checks,fingerprint FROM executions WHERE mod_id=?1",
+                "SELECT workspace,status,checks,fingerprint,backend FROM executions WHERE mod_id=?1",
                 [mod_id],
                 |row| {
                     Ok((
@@ -822,11 +826,12 @@ impl Store {
                         row.get::<_, String>(1)?,
                         row.get::<_, String>(2)?,
                         row.get::<_, Option<String>>(3)?,
+                        row.get::<_, String>(4)?,
                     ))
                 },
             )
             .optional()?;
-        let Some((workspace, status, checks, fingerprint)) = result else {
+        let Some((workspace, status, checks, fingerprint, backend)) = result else {
             return Ok(None);
         };
         let mut statement = self.0.prepare("SELECT id,task_id,status,source,turn_id,summary,checks FROM task_runs WHERE mod_id=?1 ORDER BY id")?;
@@ -852,6 +857,7 @@ impl Store {
             .collect::<Result<Vec<_>>>()?;
         Ok(Some(Execution {
             workspace: workspace.into(),
+            backend,
             status,
             tasks,
             checks: serde_json::from_str(&checks).map_err(|_| rusqlite::Error::InvalidQuery)?,
@@ -961,6 +967,30 @@ impl Store {
         transaction.commit()
     }
 
+    pub fn move_to_vm(&mut self, mod_id: i64) -> Result<()> {
+        let transaction = self.0.transaction()?;
+        let changed = transaction.execute("UPDATE executions SET backend='apple-container',status='ready',checks='[]',fingerprint=NULL WHERE mod_id=?1 AND backend='local' AND status!='applied'", [mod_id])?;
+        if changed == 0 {
+            return transaction.commit();
+        }
+        let mut statement =
+            transaction.prepare("SELECT id,attempt FROM task_runs WHERE mod_id=?1")?;
+        let tasks = statement
+            .query_map([mod_id], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?))
+            })?
+            .collect::<Result<Vec<_>>>()?;
+        drop(statement);
+        for (id, attempt) in tasks {
+            transaction.execute("UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,summary='',checks='[]' WHERE id=?1", params![id,attempt+1,task_source(id,attempt+1)])?;
+        }
+        transaction.execute(
+            "UPDATE workers SET thread_id=NULL,pending=NULL WHERE mod_id=?1 AND role='executor'",
+            [mod_id],
+        )?;
+        transaction.commit()
+    }
+
     pub fn execution_status(&self, mod_id: i64, status: &str) -> Result<()> {
         self.0.execute(
             "UPDATE executions SET status=?2 WHERE mod_id=?1",
@@ -1053,6 +1083,56 @@ pub(crate) mod test_support {
 mod tests {
     use super::{test_support::TestData, *};
     use serde_json::json;
+
+    #[test]
+    fn moving_legacy_execution_to_linux_keeps_work_and_replaces_old_verification() {
+        let data = TestData::new();
+        let mut store = data.store();
+        let project = store.load_project(Path::new("/migration-test")).unwrap();
+        let code_mod = store.create_mod(project.id, "Add greeting").unwrap();
+        let plan = Plan::parse(r#"{"summary":"Greeting","tasks":[{"id":"one","title":"Greeting","outcome":"Print hello","files":["hello.py"],"depends_on":[],"worker":"codex","checks":["prints hello"]}]}"#).unwrap();
+        let root = data.0.join("workspace");
+        fs::create_dir_all(root.join("work")).unwrap();
+        fs::write(root.join("work/hello.py"), "preserved").unwrap();
+        store.create_execution(code_mod.id, &root, &plan).unwrap();
+        let run = store.execution(code_mod.id).unwrap().unwrap().tasks[0].clone();
+        let worker = store.worker(code_mod.id).unwrap();
+        store.save_thread(worker.id, "host-thread").unwrap();
+        store
+            .finish_task(code_mod.id, &run.source, "done", "Done", &[])
+            .unwrap();
+        store
+            .execution_checks(code_mod.id, "review", &[], Some("old-host-verification"))
+            .unwrap();
+        store
+            .0
+            .execute(
+                "UPDATE executions SET backend='local' WHERE mod_id=?1",
+                [code_mod.id],
+            )
+            .unwrap();
+        store.enqueue(code_mod.id, "follow up").unwrap();
+        store.save_draft(code_mod.id, "draft").unwrap();
+        store.move_to_vm(code_mod.id).unwrap();
+        let execution = data.store().execution(code_mod.id).unwrap().unwrap();
+        assert_eq!(execution.backend, "apple-container");
+        assert_eq!(execution.tasks[0].status, "pending");
+        assert_ne!(execution.tasks[0].source, run.source);
+        assert!(execution.fingerprint.is_none());
+        assert!(store.worker(code_mod.id).unwrap().thread_id.is_none());
+        assert_eq!(
+            fs::read_to_string(root.join("work/hello.py")).unwrap(),
+            "preserved"
+        );
+        let state = store.load_project(Path::new("/migration-test")).unwrap();
+        assert_eq!(state.mods[0].draft, "draft");
+        assert_eq!(state.mods[0].queue[0].body, "follow up");
+        store.move_to_vm(code_mod.id).unwrap();
+        assert_eq!(
+            store.execution(code_mod.id).unwrap().unwrap().tasks[0].source,
+            execution.tasks[0].source
+        );
+    }
 
     #[test]
     fn execution_orders_dependencies_and_retries_only_unfinished_tasks_after_reopening() {
