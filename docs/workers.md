@@ -36,6 +36,8 @@ Codex’s trusted app-server uses the host login and network for inference. Exec
 - Reopening restores saved state. **Ctrl+R** reconnects a worker to its saved Codex conversation.
 - Quitting interrupts turns, stops agent processes and stops each active VM. Its disk persists. Deleting a mod also deletes its VM and workspace.
 
+The live status shows the model reported by Codex and spins while work is in progress. Replies keep that model label when reopened. Laya still routes only the planner; the executor uses Codex’s resolved conversation model.
+
 ## Delivery and recovery
 
 Each queued or steering instruction has a stable delivery ID. Before sending, the harness saves it as pending. Once Codex accepts it, a transaction moves the instruction into history and clears pending state.

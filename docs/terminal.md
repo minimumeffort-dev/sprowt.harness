@@ -3,17 +3,17 @@
 The interface keeps the project and worker status at the top, the conversation left aligned and the composer at the bottom.
 
 ```text
-[sprowt companion]  project + worker status
+[sprowt companion]  project + worker model + activity
 
 <code mod/>  ◇ selected mod
 
 > your message
 
 ▤ codex · planner
+ctrl+o ▸ show plan details
 plan ready · numbered tasks
-▸ files, checks & model  ctrl+o
 
-◆ codex · executor
+◆ codex · executor · model
 reply
 
 queue / waiting steering, when present
@@ -22,9 +22,11 @@ queue / waiting steering, when present
 keyboard hints
 ```
 
-User messages have a `>` prefix and a subtle background. Agent messages show their provider and role. One blank row separates messages.
+User messages have a `>` prefix and a subtle background. Agent messages show their provider, role and actual model when known. One blank row separates messages.
 
-Plans show task titles, outcomes and dependencies first. Ctrl+O expands file scopes, completion checks and model details inline. Each check has its own row. Expanding keeps the plan heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
+The live worker status spins during connection, execution and verification. Completed replies stay still. `--no-motion` uses a static activity glyph. New replies save the model reported by Codex; older replies without that metadata keep their original labels.
+
+Plans show task titles, outcomes and dependencies first. **Ctrl+O · show/hide plan details** sits beside the heading. It expands file scopes, completion checks and planner model details. Check commands appear in indented blocks; multiline code keeps its source indentation, and wrapped lines stay inside the block. Expanding keeps the heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
 
 Completed planner chatter stays saved but is hidden from the transcript. During execution, the plan shows task status and a count of completed tasks. Check results appear in details. **Ctrl+D** opens a full-width diff when execution is idle; **a**, then **Enter** confirms applying verified changes. See [Plan execution](execution.md).
 

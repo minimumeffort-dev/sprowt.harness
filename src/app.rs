@@ -117,6 +117,7 @@ impl App {
             let now = Instant::now();
             let elapsed = now.duration_since(last_frame);
             last_frame = now;
+            let animation_time = self.motion.then_some(now.duration_since(started));
             let (pose, next_pose) = sprout::animation(
                 now.duration_since(started),
                 self.happy_since.map(|since| now.duration_since(since)),
@@ -131,6 +132,7 @@ impl App {
                     } else {
                         sprout::Pose::Idle
                     },
+                    animation_time,
                 );
                 self.welcome
                     .process(elapsed.into(), frame.buffer_mut(), header);
@@ -908,11 +910,20 @@ mod tests {
     }
 
     fn screen(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        screen_at(app, width, height, None)
+    }
+
+    fn screen_at(
+        app: &mut App,
+        width: u16,
+        height: u16,
+        elapsed: Option<Duration>,
+    ) -> ratatui::buffer::Buffer {
         let mut terminal =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
-                ui::draw(frame, app, sprout::Pose::Idle);
+                ui::draw(frame, app, sprout::Pose::Idle, elapsed);
             })
             .unwrap();
         terminal.backend().buffer().clone()
@@ -1041,6 +1052,91 @@ mod tests {
     }
 
     #[test]
+    fn active_worker_animates_while_completed_replies_keep_their_model() {
+        let (_data, mut app, _root) = execution_app();
+        let code_mod = app.current_mod().unwrap();
+        let record = app.store.worker(code_mod.id).unwrap();
+        let mut worker =
+            Worker::start(&app.project, code_mod, record, Role::Planner, None).unwrap();
+        worker.role = Role::Executor;
+        worker.status = Status::Running;
+        worker.model = Some("current-model".into());
+        app.workers.insert(worker.id, worker);
+        app.mods[0].messages.push(crate::store::Message {
+            item_id: Some("previous-reply".into()),
+            role: "codex".into(),
+            body: "Previous reply.".into(),
+            model: Some("previous-model".into()),
+        });
+        for (elapsed, glyph) in [(0, "◐"), (120, "◓")] {
+            let screen = rows(&screen_at(
+                &mut app,
+                116,
+                40,
+                Some(Duration::from_millis(elapsed)),
+            ))
+            .join("\n");
+            assert!(screen.contains(&format!(
+                "{glyph} codex · executor · current-model · running"
+            )));
+            assert!(screen.contains("◆ codex · executor · previous-model"));
+        }
+        let still = rows(&screen(&mut app, 116, 40)).join("\n");
+        assert!(still.contains("◌ codex · executor · current-model"));
+        app.workers.values_mut().next().unwrap().status = Status::Ready;
+        let idle = rows(&screen_at(
+            &mut app,
+            116,
+            40,
+            Some(Duration::from_millis(120)),
+        ))
+        .join("\n");
+        assert!(idle.contains("◆ codex · executor · current-model · ready"));
+        assert!(!idle.contains('◓'));
+    }
+
+    #[test]
+    fn expanded_checks_keep_code_indentation_and_the_toggle_in_view() {
+        let (_data, mut app, _root) = execution_app();
+        let result = &mut app.mods[0].execution.as_mut().unwrap().tasks[0].checks[0];
+        result.command = vec!["/workspace/.venv/bin/python".into(), "-c".into(), "with app.test_client() as client:\n    response = client.get('/health')\n    assert response.status_code == 200, 'the server must return a successful response'".into()];
+        for width in [48, 116] {
+            app.plan_details = true;
+            app.focus_plan = true;
+            let expanded = rows(&screen(&mut app, width, 42));
+            assert!(
+                expanded
+                    .iter()
+                    .any(|row| row.contains("ctrl+o ▾ hide plan details"))
+            );
+            assert!(expanded.iter().any(|row| row.contains("│     response")));
+            let start = expanded
+                .iter()
+                .position(|row| row.contains("   checks"))
+                .unwrap();
+            let end = expanded
+                .iter()
+                .position(|row| row.contains("   Done"))
+                .unwrap();
+            let code: Vec<_> = expanded[start..end]
+                .iter()
+                .filter(|row| row.contains('│'))
+                .collect();
+            assert!(code.len() >= 4);
+            assert!(code.iter().all(|row| row.find('│') == Some(7)), "{code:#?}");
+            assert!(
+                code.iter()
+                    .all(|row| row.trim_end().chars().count() <= width as usize - 2)
+            );
+            key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+            let collapsed = rows(&screen(&mut app, width, 42)).join("\n");
+            assert!(collapsed.contains("ctrl+o ▸ show plan details"));
+            assert!(!collapsed.contains("/workspace/.venv"));
+            assert_eq!(app.input.lines(), ["keep this draft"]);
+        }
+    }
+
+    #[test]
     fn plan_review_preserves_data_and_keeps_the_outline_in_view() {
         use crate::{plan::Plan, router::Selection, store::Message};
 
@@ -1059,6 +1155,7 @@ mod tests {
                     item_id: Some("preface".into()),
                     role: "planner".into(),
                     body: "I'll inspect the source.".into(),
+                    model: None,
                 },
             )
             .unwrap();
@@ -1130,6 +1227,7 @@ mod tests {
                         item_id: None,
                         role: role.into(),
                         body: body.into(),
+                        model: None,
                     },
                 )
                 .unwrap();

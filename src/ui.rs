@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Margin, Rect},
@@ -64,7 +66,12 @@ pub fn welcome_effect(motion: bool) -> Effect {
     )
 }
 
-pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
+pub fn draw(
+    frame: &mut Frame,
+    app: &mut App,
+    pose: sprout::Pose,
+    elapsed: Option<Duration>,
+) -> Rect {
     let area = frame.area().inner(Margin::new(2, 1));
     let mod_height = u16::from(!matches!(app.view, View::NewMod));
     if area.width < 32 || area.height < 11 + mod_height {
@@ -111,7 +118,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
             if worker.status == Status::Complete {
                 String::new()
             } else {
-                worker.label()
+                worker.label(worker.busy().then(|| activity_glyph(elapsed)))
             }
         },
     );
@@ -628,14 +635,99 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     format!("{hints}  esc quit")
 }
 
+fn activity_glyph(elapsed: Option<Duration>) -> &'static str {
+    const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
+    elapsed.map_or("◌", |elapsed| {
+        FRAMES[(elapsed.as_millis() / 120 % FRAMES.len() as u128) as usize]
+    })
+}
+
+fn command_lines(argv: &[String], width: u16) -> Vec<Line<'static>> {
+    let mut blocks = Vec::new();
+    let multiline = argv.iter().filter(|arg| arg.contains('\n')).count();
+    let quote = |arg: &String| {
+        if !arg.is_empty()
+            && arg
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || "_./:=+-@".contains(c))
+        {
+            arg.clone()
+        } else {
+            format!("'{}'", arg.replace('\'', "'\\''"))
+        }
+    };
+    let arguments = argv
+        .iter()
+        .map(|arg| {
+            if arg.contains('\n') {
+                blocks.push(arg);
+                if multiline == 1 {
+                    "‹code›".into()
+                } else {
+                    format!("‹code {}›", blocks.len())
+                }
+            } else {
+                quote(arg)
+            }
+        })
+        .collect::<Vec<_>>();
+    let command = format!("$ {}", arguments.join(" "));
+    let content =
+        std::iter::once(command.as_str()).chain(blocks.iter().flat_map(|block| block.lines()));
+    let capacity = width.saturating_sub(7).max(1) as usize;
+    let mut lines = Vec::new();
+    for line in content {
+        let line = line.replace('\t', "    ");
+        let indent = line
+            .chars()
+            .take_while(|c| *c == ' ')
+            .count()
+            .min(capacity / 2);
+        let mut row = String::new();
+        let mut used = 0;
+        for glyph in Span::raw(&line).styled_graphemes(Style::new()) {
+            let size = Span::raw(glyph.symbol).width();
+            if used + size > capacity && !row.is_empty() {
+                if let Some(split) = row.rfind(' ').filter(|index| *index > indent) {
+                    let remainder = row[split + 1..].to_owned();
+                    lines.push(row[..split].to_owned());
+                    row = " ".repeat(indent) + &remainder;
+                    used = Span::raw(&row).width();
+                } else {
+                    lines.push(row);
+                    row = " ".repeat(indent);
+                    used = indent;
+                }
+            }
+            row.push_str(glyph.symbol);
+            used += size;
+        }
+        lines.push(row);
+    }
+    lines
+        .into_iter()
+        .map(|line| Line::from(vec!["     │ ".fg(MUTED), line.fg(KEY_HINT)]))
+        .collect()
+}
+
 fn plan_lines(
     plan: &Plan,
     planning: &Planning,
     execution: Option<&Execution>,
     details: bool,
+    width: u16,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from("▤ codex · planner").fg(ACCENT).bold(),
+        Line::from(vec![
+            "  ctrl+o ".fg(ACCENT),
+            if details {
+                "▾ hide plan details"
+            } else {
+                "▸ show plan details"
+            }
+            .fg(KEY_HINT),
+        ]),
         Line::from(if let Some(execution) = execution {
             format!(
                 "{} · {}/{} tasks done",
@@ -723,8 +815,7 @@ fn plan_lines(
                     })
                 )));
                 if let Some(result) = result {
-                    lines
-                        .push(Line::from(format!("     $ {}", result.command.join(" "))).fg(MUTED));
+                    lines.extend(command_lines(&result.command, width));
                     if result.exit_code != Some(0) {
                         lines.extend(
                             result
@@ -792,16 +883,6 @@ fn plan_lines(
         }
         lines.push(Line::default());
     }
-    lines.push(Line::from(vec![
-        if details {
-            "▾ hide details"
-        } else {
-            "▸ files, checks & model"
-        }
-        .fg(KEY_HINT),
-        "  ctrl+o".fg(ACCENT),
-    ]));
-    lines.push(Line::default());
     lines.push(
         Line::from(
             if execution.is_some_and(|execution| execution.status == "applied") {
@@ -821,7 +902,11 @@ struct ConversationBlock<'a> {
     plan: bool,
 }
 
-fn conversation_blocks(code_mod: &CodeMod, details: bool) -> Vec<ConversationBlock<'_>> {
+fn conversation_blocks(
+    code_mod: &CodeMod,
+    details: bool,
+    width: u16,
+) -> Vec<ConversationBlock<'_>> {
     let saved = code_mod
         .planning
         .as_ref()
@@ -837,7 +922,8 @@ fn conversation_blocks(code_mod: &CodeMod, details: bool) -> Vec<ConversationBlo
                 && is_plan
             {
                 return Some(ConversationBlock {
-                    text: plan_lines(plan, planning, code_mod.execution.as_ref(), details).into(),
+                    text: plan_lines(plan, planning, code_mod.execution.as_ref(), details, width)
+                        .into(),
                     user: false,
                     plan: true,
                 });
@@ -850,11 +936,18 @@ fn conversation_blocks(code_mod: &CodeMod, details: bool) -> Vec<ConversationBlo
             if !user {
                 text.lines.insert(
                     0,
-                    Line::from(if message.role == "planner" {
-                        "▤ codex · planner"
-                    } else {
-                        "◆ codex · executor"
-                    })
+                    Line::from(format!(
+                        "{}{}",
+                        if message.role == "planner" {
+                            "▤ codex · planner"
+                        } else {
+                            "◆ codex · executor"
+                        },
+                        message
+                            .model
+                            .as_ref()
+                            .map_or(String::new(), |model| format!(" · {model}"))
+                    ))
                     .fg(ACCENT)
                     .bold(),
                 );
@@ -873,9 +966,9 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) -> bool {
     if area.is_empty() {
         return false;
     }
-    let blocks = app
-        .current_mod()
-        .map_or_else(Vec::new, |m| conversation_blocks(m, app.plan_details));
+    let blocks = app.current_mod().map_or_else(Vec::new, |m| {
+        conversation_blocks(m, app.plan_details, area.width)
+    });
     let mut rows = Vec::new();
     let mut total = 0;
     let mut plan_top = 0;

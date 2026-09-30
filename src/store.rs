@@ -26,6 +26,7 @@ pub struct Message {
     pub item_id: Option<String>,
     pub role: String,
     pub body: String,
+    pub model: Option<String>,
 }
 
 pub struct WorkerRecord {
@@ -132,6 +133,7 @@ impl Store {
                 "ALTER TABLE messages ADD COLUMN role TEXT NOT NULL DEFAULT 'user'",
             ),
             ("item_id", "ALTER TABLE messages ADD COLUMN item_id TEXT"),
+            ("model", "ALTER TABLE messages ADD COLUMN model TEXT"),
         ] {
             if !columns.iter().any(|column| column == name) {
                 connection.execute_batch(sql).map_err(io::Error::other)?;
@@ -252,7 +254,7 @@ impl Store {
             code_mod.planning = self.planning(code_mod.id)?;
             code_mod.execution = self.execution(code_mod.id)?;
             let mut statement = self.0.prepare(
-                "SELECT item_id, role, body FROM messages WHERE mod_id = ?1 ORDER BY id",
+                "SELECT item_id, role, body, model FROM messages WHERE mod_id = ?1 ORDER BY id",
             )?;
             code_mod.messages = statement
                 .query_map([code_mod.id], |row| {
@@ -260,6 +262,7 @@ impl Store {
                         item_id: row.get(0)?,
                         role: row.get(1)?,
                         body: row.get(2)?,
+                        model: row.get(3)?,
                     })
                 })?
                 .collect::<Result<Vec<_>>>()?;
@@ -326,6 +329,7 @@ impl Store {
             item_id: Some(format!("description:{id}")),
             role: "user".into(),
             body: name.to_owned(),
+            model: None,
         };
         if planned {
             transaction.execute(
@@ -762,6 +766,7 @@ impl Store {
             item_id: Some(format!("plan:{source}")),
             role: "planner".into(),
             body: plan.display(),
+            model: None,
         };
         transaction.execute("INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,?3,?4) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body", params![mod_id,message.item_id,message.role,message.body])?;
         transaction.commit()?;
@@ -769,7 +774,7 @@ impl Store {
     }
 
     pub fn save_message(&self, mod_id: i64, message: &Message) -> Result<()> {
-        self.0.execute("INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,?3,?4) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body", params![mod_id,message.item_id,message.role,message.body])?;
+        self.0.execute("INSERT INTO messages(mod_id,item_id,role,body,model) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body,model=COALESCE(excluded.model,messages.model)", params![mod_id,message.item_id,message.role,message.body,message.model])?;
         Ok(())
     }
 
@@ -1674,6 +1679,7 @@ mod tests {
                         item_id: Some("agent-1".into()),
                         role: "codex".into(),
                         body: body.into(),
+                        model: Some("executor-model".into()),
                     },
                 )
                 .unwrap();
@@ -1682,6 +1688,10 @@ mod tests {
         assert_eq!(state.mods[0].messages.len(), 2);
         assert_eq!(state.mods[0].messages[1].body, "complete reply");
         assert_eq!(state.mods[0].messages[1].role, "codex");
+        assert_eq!(
+            state.mods[0].messages[1].model.as_deref(),
+            Some("executor-model")
+        );
         assert!(state.mods[1].messages.is_empty());
     }
     #[test]

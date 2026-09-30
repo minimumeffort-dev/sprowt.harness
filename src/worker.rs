@@ -34,6 +34,7 @@ pub struct Worker {
     pub mod_id: i64,
     pub role: Role,
     pub selection: Option<Selection>,
+    pub model: Option<String>,
     pub status: Status,
     pub error: Option<String>,
     pub enabled: bool,
@@ -92,6 +93,7 @@ impl Worker {
             mod_id: code_mod.id,
             role,
             selection: None,
+            model: None,
             status: if role == Role::Planner {
                 Status::Routing
             } else {
@@ -116,7 +118,19 @@ impl Worker {
         })
     }
 
-    pub fn label(&self) -> String {
+    pub fn busy(&self) -> bool {
+        match self.status {
+            Status::Routing => self.enabled,
+            Status::Connecting
+            | Status::Starting
+            | Status::Running
+            | Status::Stopping
+            | Status::Checking => true,
+            _ => false,
+        }
+    }
+
+    pub fn label(&self, activity: Option<&str>) -> String {
         let state = match self.status {
             Status::Routing => "choosing model",
             Status::Complete if self.role == Role::Planner => "plan ready",
@@ -130,14 +144,17 @@ impl Worker {
             Status::Stopping => "stopping",
             Status::Failed => "stopped",
         };
-        let glyph = if self.role == Role::Planner {
+        let glyph = activity.unwrap_or(if self.role == Role::Planner {
             "▤"
         } else {
             "◆"
-        };
+        });
         format!(
-            "{glyph} codex · {} · {state} · {}",
+            "{glyph} codex · {}{} · {state} · {}",
             self.role.name(),
+            self.model
+                .as_ref()
+                .map_or(String::new(), |model| format!(" · {model}")),
             if self.writable {
                 "Linux VM"
             } else {
@@ -332,7 +349,8 @@ impl Worker {
                 code_mod.planning = store.planning(self.mod_id)?;
                 self.selection = Some(selection);
             }
-            Event::Ready(thread) => {
+            Event::Ready { thread, model } => {
+                self.model = model;
                 self.preparing = None;
                 store.save_thread(self.id, thread["id"].as_str().unwrap())?;
                 if self.role == Role::Executor {
@@ -372,7 +390,7 @@ impl Worker {
                                         .as_str()
                                         .is_some_and(|id| id.starts_with("00000002-"))
                                 {
-                                    self.item(store, code_mod, item)?;
+                                    self.item(store, code_mod, item, true)?;
                                 }
                             }
                         }
@@ -550,6 +568,7 @@ impl Worker {
                         item_id: Some(format!("result:{source}")),
                         role: "codex".into(),
                         body: summary,
+                        model: self.model.clone(),
                     },
                 )?;
                 self.task_source = None;
@@ -580,12 +599,13 @@ impl Worker {
                                     item_id: Some(id.into()),
                                     role: "codex".into(),
                                     body: String::new(),
+                                    model: self.model.clone(),
                                 });
                             message.body.push_str(delta);
                             save_message(store, code_mod, message)?;
                         }
                     }
-                    "item/completed" => self.item(store, code_mod, &params["item"])?,
+                    "item/completed" => self.item(store, code_mod, &params["item"], false)?,
                     "turn/completed" if self.turn.as_deref() == params["turn"]["id"].as_str() => {
                         self.turn = None;
                         self.status = Status::Ready;
@@ -659,6 +679,7 @@ impl Worker {
                 item_id: Some(input.source.clone()),
                 role: "user".into(),
                 body: input.texts.join("\n\n"),
+                model: None,
             },
         )
     }
@@ -668,6 +689,7 @@ impl Worker {
         store: &Store,
         code_mod: &mut CodeMod,
         item: &Value,
+        historical: bool,
     ) -> rusqlite::Result<()> {
         if self.role == Role::Executor
             && self.task_source.is_some()
@@ -730,6 +752,11 @@ impl Worker {
                 item_id: Some(id.into()),
                 role: role.into(),
                 body,
+                model: if historical || role == "user" {
+                    None
+                } else {
+                    self.model.clone()
+                },
             },
         )
     }
@@ -883,7 +910,7 @@ impl Worker {
         code_mod.execution = store.execution(self.mod_id)?;
         if let Some(items) = turn["items"].as_array() {
             for item in items {
-                self.item(store, code_mod, item)?;
+                self.item(store, code_mod, item, true)?;
             }
         }
         if turn["status"] == "completed" {
@@ -964,12 +991,15 @@ fn save_message(store: &Store, code_mod: &mut CodeMod, message: Message) -> rusq
     Ok(())
 }
 
-fn remember_message(code_mod: &mut CodeMod, message: Message) {
+fn remember_message(code_mod: &mut CodeMod, mut message: Message) {
     if let Some(existing) = code_mod
         .messages
         .iter_mut()
         .find(|existing| existing.item_id == message.item_id)
     {
+        if message.model.is_none() {
+            message.model.clone_from(&existing.model);
+        }
         *existing = message;
     } else {
         code_mod.messages.push(message);
@@ -1243,11 +1273,11 @@ mod tests {
         let input = store.planner_input(code_mod.id).unwrap().unwrap();
         store.pending(worker.id, Some(&input.source)).unwrap();
         worker.recovery = Some(input.source.clone());
-        worker.receive(Event::Ready(json!({"id":"saved-thread", "turns":[{
+        worker.receive(Event::Ready { model:Some("planner-model".into()), thread:json!({"id":"saved-thread", "turns":[{
             "id":"turn-1","status":"completed","items":[
                 {"type":"userMessage","clientId":input.source,"content":[{"type":"text","text":"description"}]},
                 {"id":"plan-item","type":"agentMessage","phase":"final_answer","text":final_plan().to_string()}
-            ]}]})),&mut store,&mut code_mod).unwrap();
+            ]}]}) },&mut store,&mut code_mod).unwrap();
         assert!(worker.recovery.is_none());
         assert!(worker.status == Status::Complete);
         assert_eq!(code_mod.messages.len(), 2);
@@ -1258,5 +1288,57 @@ mod tests {
                 .pending
                 .is_none()
         );
+    }
+
+    #[test]
+    fn live_replies_save_the_reported_model_without_relabeling_history() {
+        let (data, mut store, mut code_mod, mut worker) = planner();
+        worker.role = Role::Executor;
+        for (model, id) in [("first-model", "reply-1"), ("second-model", "reply-2")] {
+            worker.receive(Event::Ready { model:Some(model.into()), thread:json!({"id":"thread-1","turns":[{"items":[
+                {"type":"agentMessage","id":"reply-1","text":"Earlier reply."},
+                {"type":"agentMessage","id":"legacy-reply","text":"Unknown earlier model."}
+            ]}]}) }, &mut store, &mut code_mod).unwrap();
+            worker
+                .receive(
+                    Event::Notification(json!({"method":"item/completed","params":{"item":{
+                        "type":"agentMessage","id":id,"text":"Live reply."
+                    }}})),
+                    &mut store,
+                    &mut code_mod,
+                )
+                .unwrap();
+            assert_eq!(worker.model.as_deref(), Some(model));
+        }
+        let saved = data
+            .store()
+            .load_project(Path::new("/planner-project"))
+            .unwrap();
+        for (id, model) in [
+            ("reply-1", Some("first-model")),
+            ("reply-2", Some("second-model")),
+            ("legacy-reply", None),
+        ] {
+            assert_eq!(
+                saved.mods[0]
+                    .messages
+                    .iter()
+                    .find(|message| message.item_id.as_deref() == Some(id))
+                    .unwrap()
+                    .model
+                    .as_deref(),
+                model
+            );
+            assert_eq!(
+                code_mod
+                    .messages
+                    .iter()
+                    .find(|message| message.item_id.as_deref() == Some(id))
+                    .unwrap()
+                    .model
+                    .as_deref(),
+                model
+            );
+        }
     }
 }

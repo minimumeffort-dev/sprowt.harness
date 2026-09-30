@@ -46,7 +46,10 @@ pub enum Action {
 pub enum Event {
     Preparing(String),
     Configured(Selection),
-    Ready(Value),
+    Ready {
+        thread: Value,
+        model: Option<String>,
+    },
     Accepted {
         source: String,
         turn: String,
@@ -416,7 +419,10 @@ fn serve(
         ));
     }
     outgoing
-        .send(Event::Ready(result["thread"].clone()))
+        .send(Event::Ready {
+            thread: result["thread"].clone(),
+            model: result["model"].as_str().map(str::to_owned),
+        })
         .map_err(io::Error::other)?;
     flush(rpc, outgoing, &mut vm)?;
     let mut last_turn = None;

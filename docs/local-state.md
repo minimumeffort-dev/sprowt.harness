@@ -34,7 +34,7 @@ flowchart TB
         └── review.patch
 ```
 
-State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Plans save model selection and routing. Execution saves the backend, task attempts, delivery and turn IDs, verification results and the fingerprint of verified source files.
+State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. New agent replies also save their actual model. Plans save model selection and routing. Execution saves the backend, task attempts, delivery and turn IDs, verification results and the fingerprint of verified source files.
 
 Apple Container manages each VM’s disk separately. Code, installed runtimes and dependencies persist there across restarts. The host workspace holds starting files and source exports for review. Quitting stops active VMs; it keeps their disks. Setup may briefly create an image build context and source archive inside the private workspace.
 
