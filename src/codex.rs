@@ -419,11 +419,20 @@ fn serve(
             "External MCP tools are enabled; this worker cannot start.",
         ));
     }
+    let effort = if let Some(effort) = result["reasoningEffort"].as_str() {
+        Some(effort.to_owned())
+    } else {
+        model_catalog(rpc)?
+            .iter()
+            .find(|model| model["model"] == result["model"])
+            .and_then(|model| model["defaultReasoningEffort"].as_str())
+            .map(str::to_owned)
+    };
     outgoing
         .send(Event::Ready {
             thread: result["thread"].clone(),
             model: result["model"].as_str().map(str::to_owned),
-            effort: result["reasoningEffort"].as_str().map(str::to_owned),
+            effort: effort.clone(),
         })
         .map_err(io::Error::other)?;
     flush(rpc, outgoing, &mut vm)?;
@@ -446,6 +455,9 @@ fn serve(
             let (method, source, params) = match action {
                 Action::Run { source, text } => {
                     let mut params = json!({"threadId":thread,"clientUserMessageId":source,"input":[{"type":"text","text":text}],"permissions":permissions,"approvalPolicy":"never"});
+                    if let Some(effort) = &effort {
+                        params["effort"] = json!(effort);
+                    }
                     if role == Role::Planner {
                         params["outputSchema"] = plan::schema();
                         if let Some(selection) = &selection {
@@ -530,7 +542,7 @@ fn serve(
     }
 }
 
-fn select_model(rpc: &mut Rpc, mut selection: Selection) -> io::Result<Selection> {
+fn model_catalog(rpc: &mut Rpc) -> io::Result<Vec<Value>> {
     let mut models = Vec::new();
     let mut cursor = Value::Null;
     loop {
@@ -550,6 +562,11 @@ fn select_model(rpc: &mut Rpc, mut selection: Selection) -> io::Result<Selection
             break;
         }
     }
+    Ok(models)
+}
+
+fn select_model(rpc: &mut Rpc, mut selection: Selection) -> io::Result<Selection> {
+    let models = model_catalog(rpc)?;
     let available = |model: &Value| model["model"] == selection.model;
     let model = if let Some(model) = models.iter().find(|model| available(model)) {
         model

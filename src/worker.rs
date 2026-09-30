@@ -158,7 +158,8 @@ impl Worker {
                 .as_ref()
                 .map_or(String::new(), |model| format!(" · {model}")),
             self.effort
-                .as_ref()
+                .as_deref()
+                .or_else(|| self.model.as_ref().map(|_| "effort unknown"))
                 .map_or(String::new(), |effort| format!(" · {effort}")),
             if self.writable {
                 "Linux VM"

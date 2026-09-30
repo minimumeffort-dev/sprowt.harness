@@ -24,7 +24,9 @@ keyboard hints
 
 User messages have a `>` prefix and a subtle background. Agent messages show their provider, role, model and configured reasoning effort when reported by Codex. One blank row separates messages.
 
-The live worker status spins during connection, execution and verification. Completed replies stay still. `--no-motion` uses a static activity glyph. New replies save the reported model and effort; reopening keeps both labels. Missing metadata stays omitted, including effort on older replies.
+The worker status uses a small dot spinner during connection, execution and verification. The running task uses the same spinner in the plan, including while its checks run. Completed tasks and replies stay still. `--no-motion` uses a static activity glyph.
+
+Codex’s configured effort is used when available. When unset, the harness reads the model’s default from Codex’s catalog and sends it explicitly with new turns. Replies save that effort for reopening. Older replies without recorded effort show **effort unknown**.
 
 Plans show task titles, outcomes and dependencies first. **Ctrl+O · show/hide plan details** sits beside the heading. It expands file scopes, completion checks and planner model details. Check commands appear in indented blocks; multiline code keeps its source indentation, and wrapped lines stay inside the block. Expanding keeps the heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
 

@@ -16,7 +16,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex prepares the runtime; applying changes deletes the VM and keeps the mod’s history.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
-- [Terminal and companion](docs/terminal.md): clear message ownership, model and effort labels, live activity, readable plan details and the animated Sprowt pet.
+- [Terminal and companion](docs/terminal.md): model and effort labels, dot spinners for active workers and tasks, readable plans and the animated Sprowt pet.
 
 ### Current limits
 

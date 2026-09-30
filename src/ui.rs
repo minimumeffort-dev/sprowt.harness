@@ -13,7 +13,7 @@ use tachyonfx::{Effect, Interpolation, fx};
 use crate::{
     app::{App, View},
     execution::Execution,
-    plan::{Plan, Planning},
+    plan::{Plan, Planning, Role},
     sprout,
     store::CodeMod,
     worker::Status,
@@ -172,7 +172,7 @@ pub fn draw(
             Constraint::Length(steering_height),
         ])
         .areas(content);
-        can_scroll = draw_conversation(frame, app, conversation);
+        can_scroll = draw_conversation(frame, app, conversation, elapsed);
         draw_queue_preview(frame, app, queue);
         draw_steering_preview(frame, app, steering);
     }
@@ -642,9 +642,9 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
 }
 
 fn activity_glyph(elapsed: Option<Duration>) -> &'static str {
-    const FRAMES: [&str; 4] = ["◐", "◓", "◑", "◒"];
-    elapsed.map_or("◌", |elapsed| {
-        FRAMES[(elapsed.as_millis() / 120 % FRAMES.len() as u128) as usize]
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    elapsed.map_or("⠿", |elapsed| {
+        FRAMES[(elapsed.as_millis() / 80 % FRAMES.len() as u128) as usize]
     })
 }
 
@@ -722,6 +722,7 @@ fn plan_lines(
     execution: Option<&Execution>,
     details: bool,
     width: u16,
+    activity: Option<&'static str>,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from("▤ codex · planner").fg(ACCENT).bold(),
@@ -769,16 +770,22 @@ fn plan_lines(
         let run = execution
             .and_then(|execution| execution.tasks.iter().find(|run| run.task_id == task.id));
         let marker = run.map_or("", |run| match run.status.as_str() {
-            "done" => "✓ ",
-            "running" | "sending" => "● ",
-            "checking" => "◌ ",
-            "blocked" | "paused" => "! ",
-            _ => "○ ",
+            "done" => "✓",
+            "running" | "sending" | "checking" if activity.is_some() => activity.unwrap(),
+            "running" | "sending" => "●",
+            "checking" => "◌",
+            "blocked" | "paused" => "!",
+            _ => "○",
         });
+        let prefix = if marker.is_empty() {
+            format!("{}. ", index + 1)
+        } else {
+            format!("{marker} {}. ", index + 1)
+        };
         lines.push(Line::default());
         lines.push(Line::from(vec![
-            format!("{marker}{}. ", index + 1)
-                .fg(if marker == "! " { Color::Red } else { ACCENT })
+            prefix
+                .fg(if marker == "!" { Color::Red } else { ACCENT })
                 .bold(),
             task.title.clone().bold(),
         ]));
@@ -916,11 +923,12 @@ struct ConversationBlock<'a> {
     plan: bool,
 }
 
-fn conversation_blocks(
-    code_mod: &CodeMod,
+fn conversation_blocks<'a>(
+    code_mod: &'a CodeMod,
     details: bool,
     width: u16,
-) -> Vec<ConversationBlock<'_>> {
+    activity: Option<&'static str>,
+) -> Vec<ConversationBlock<'a>> {
     let saved = code_mod
         .planning
         .as_ref()
@@ -936,8 +944,15 @@ fn conversation_blocks(
                 && is_plan
             {
                 return Some(ConversationBlock {
-                    text: plan_lines(plan, planning, code_mod.execution.as_ref(), details, width)
-                        .into(),
+                    text: plan_lines(
+                        plan,
+                        planning,
+                        code_mod.execution.as_ref(),
+                        details,
+                        width,
+                        activity,
+                    )
+                    .into(),
                     user: false,
                     plan: true,
                 });
@@ -963,7 +978,8 @@ fn conversation_blocks(
                             .map_or(String::new(), |model| format!(" · {model}")),
                         message
                             .effort
-                            .as_ref()
+                            .as_deref()
+                            .or_else(|| message.model.as_ref().map(|_| "effort unknown"))
                             .map_or(String::new(), |effort| format!(" · {effort}"))
                     ))
                     .fg(ACCENT)
@@ -979,13 +995,28 @@ fn conversation_blocks(
         .collect()
 }
 
-fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) -> bool {
+fn draw_conversation(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    elapsed: Option<Duration>,
+) -> bool {
     app.page_size = area.height.max(1);
     if area.is_empty() {
         return false;
     }
+    let activity = app
+        .current_worker()
+        .filter(|worker| {
+            worker.role == Role::Executor
+                && matches!(
+                    worker.status,
+                    Status::Starting | Status::Running | Status::Checking | Status::Stopping
+                )
+        })
+        .map(|_| activity_glyph(elapsed));
     let blocks = app.current_mod().map_or_else(Vec::new, |m| {
-        conversation_blocks(m, app.plan_details, area.width)
+        conversation_blocks(m, app.plan_details, area.width, activity)
     });
     let mut rows = Vec::new();
     let mut total = 0;

@@ -31,6 +31,8 @@ Codex’s trusted app-server uses the host login and network for inference. Exec
 
 ## Run, pause, resume
 
+Worker labels show model and reasoning effort. An unset effort uses Codex’s model catalog default, sent explicitly with each new turn. Saved replies keep their own labels; missing historical effort is shown as unknown.
+
 - A new mod starts its planner automatically.
 - After planning, **Ctrl+R** starts or pauses plan execution. Rust selects tasks; queued instructions run between tasks. See [Plan execution](execution.md) for verification and applying changes.
 - Reopening restores saved state. **Ctrl+R** reconnects a worker to its saved Codex conversation.

@@ -34,7 +34,7 @@ Rust dispatches one task at a time. Dependencies must be complete first. Queued 
 
 Codex returns a short task summary and runnable commands for each declared completion check. Rust reruns them in the same sandbox, with a 30-second limit per command. Missing checks, nonzero exits, timeouts or checks that change source files block completion. After all tasks finish, every saved check runs again against the combined result.
 
-The plan shows task status. **Ctrl+O** expands scopes, check commands, failures and final check results. Passing commands is evidence, not a guarantee that the plan or tests are good; review the code too. Declared file scopes guide Codex, while the sandbox enforces the folder boundary.
+The plan shows task status. A dot spinner marks the running task and stays active through its checks; completed and waiting tasks stay still. **Ctrl+O** expands scopes, check commands, failures and final check results. Passing commands is evidence, not a guarantee that the plan or tests are good; review the code too. Declared file scopes guide Codex, while the sandbox enforces the folder boundary.
 
 ## Pause and recover
 

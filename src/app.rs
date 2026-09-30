@@ -1289,6 +1289,9 @@ mod tests {
         worker.model = Some("current-model".into());
         worker.effort = Some("high".into());
         app.workers.insert(worker.id, worker);
+        let execution = app.mods[0].execution.as_mut().unwrap();
+        execution.status = "running".into();
+        execution.tasks[0].status = "running".into();
         app.mods[0].messages.push(crate::store::Message {
             item_id: Some("previous-reply".into()),
             role: "codex".into(),
@@ -1296,7 +1299,7 @@ mod tests {
             model: Some("previous-model".into()),
             effort: Some("low".into()),
         });
-        for (elapsed, glyph) in [(0, "◐"), (120, "◓")] {
+        for (elapsed, glyph) in [(0, "⠋"), (80, "⠙"), (160, "⠹")] {
             let screen = rows(&screen_at(
                 &mut app,
                 116,
@@ -1308,22 +1311,48 @@ mod tests {
                 "{glyph} codex · executor · current-model · high · running"
             )));
             assert!(screen.contains("◆ codex · executor · previous-model · low"));
+            assert!(screen.contains(&format!("{glyph} 1. Greeting")));
         }
         let still = rows(&screen(&mut app, 116, 40)).join("\n");
-        assert!(still.contains("◌ codex · executor · current-model · high"));
+        assert!(still.contains("⠿ codex · executor · current-model · high"));
+        assert!(still.contains("⠿ 1. Greeting"));
+        app.workers.values_mut().next().unwrap().status = Status::Checking;
+        app.mods[0].execution.as_mut().unwrap().tasks[0].status = "checking".into();
+        let checking = rows(&screen_at(
+            &mut app,
+            116,
+            40,
+            Some(Duration::from_millis(80)),
+        ))
+        .join("\n");
+        assert!(checking.contains("⠙ 1. Greeting"));
         app.workers.values_mut().next().unwrap().status = Status::Ready;
         let idle = rows(&screen_at(
             &mut app,
             116,
             40,
-            Some(Duration::from_millis(120)),
+            Some(Duration::from_millis(80)),
         ))
         .join("\n");
         assert!(idle.contains("◆ codex · executor · current-model · high · ready"));
-        assert!(!idle.contains('◓'));
+        assert!(!idle.contains('⠙'));
         app.workers.values_mut().next().unwrap().role = Role::Planner;
         let planner = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(planner.contains("▤ codex · planner · current-model · high · ready"));
+    }
+
+    #[test]
+    fn missing_recorded_effort_is_visible_without_guessing_a_level() {
+        let (_data, mut app, _root) = execution_app();
+        app.mods[0].messages.push(crate::store::Message {
+            item_id: Some("old-reply".into()),
+            role: "codex".into(),
+            body: "Earlier reply.".into(),
+            model: Some("gpt-6.1-sol".into()),
+            effort: None,
+        });
+        let screen = rows(&screen(&mut app, 116, 40)).join("\n");
+        assert!(screen.contains("◆ codex · executor · gpt-6.1-sol · effort unknown"));
     }
 
     #[test]
