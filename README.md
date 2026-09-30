@@ -10,18 +10,33 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 
 ## What works today
 
-- **Code mods:** separate tasks, each with its own conversation, queue and draft.
-- **Queues:** edit, reorder or remove instructions before they run.
-- **Steering:** send instructions into the worker’s active turn.
-- **Planning:** a new mod’s description starts a Codex planner. Its saved plan lists tasks, file scopes, dependencies and completion checks.
-- **Workers:** separate Codex planner and executor conversations. Different mods can run in parallel.
-- **Saved state:** reopen a project and pick up where you left off.
+- [Code mods and messages](docs/code-mods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
+- [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
+- [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
+- [Local state](docs/local-state.md): reopen a project and pick up where you left off.
+- [Terminal and companion](docs/terminal.md): keyboard controls, shared dialog design and the animated Sprowt pet.
 
 ### Current limits
 
 Workers are **read-only**: they inspect the project, plan and answer questions. Executing the plan as code changes comes next. Tool commands cannot write files or access the network. This uses Codex’s local OS sandbox; separate VM isolation comes later.
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
+
+## Architecture today
+
+Rust owns the interface, worker lifecycle, plan validation and saved state. A small Python helper runs Laya locally. Codex handles model requests and read-only project tools.
+
+```mermaid
+flowchart TB
+    terminal["You · terminal CLI"] --> harness["Rust harness"]
+    harness <-->|"save / restore"| state[("SQLite · project state")]
+    harness <-->|"request / model recommendation"| laya["Local Laya · Python helper"]
+    harness <-->|"instructions / replies"| codex["Codex CLI · planner and executor"]
+    codex -->|"tool commands"| sandbox["Read-only OS sandbox"]
+    sandbox -->|"read"| project["Project source and docs"]
+```
+
+Laya recommends the planner configuration. Codex inference uses your subscription and the internet. Parallel task execution, Muse and a local VM sandbox are future layers.
 
 ## Get started
 
@@ -53,9 +68,7 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run:
 sprowt-harness setup
 ```
 
-This downloads [Laya](https://huggingface.co/convaiinnovations/laya) into the harness’s local data directory. It runs locally to recommend the planner model and reasoning level: Sol medium for simple work, Sol high for complex work, Astra high for demanding work.
-
-Routing is experimental: the stock checkpoint was uncertain or wrong in our small test. Uncertain results, missing Laya or a timeout use Sol high. Available models are checked against Codex’s catalog; access still depends on your account. Codex planning uses your subscription and an internet connection.
+This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to recommend a planner model and reasoning level. Routing is experimental; uncertain results or missing Laya use Sol high. See [Planning and Laya](docs/planning.md) for model choices and limitations.
 
 ## Controls
 
@@ -70,13 +83,7 @@ Routing is experimental: the stock checkpoint was uncertain or wrong in our smal
 | Esc | Back, or quit from the conversation |
 | Ctrl+C | Quit |
 
-### In dialogs
-
-- **Code mods:** arrows select, Enter opens, `d` deletes with confirmation.
-- **Queue:** arrows select, Enter edits, `k` / `j` move, `d` removes.
-- **Steering:** Space marks queued instructions; `s` sends the marked ones, or the selected one. If the worker is idle, they wait for its next turn.
-
-Deleting a mod stops its workers and removes its saved harness data. Codex’s own conversation records remain.
+Dialog actions and steering are covered in [Code mods and messages](docs/code-mods.md).
 
 ## Local data
 
@@ -86,7 +93,7 @@ Mods, plans, model selections, conversations, queues and drafts save automatical
 ~/Library/Application Support/sprowt-harness/state.db
 ```
 
-Reopen from the same project root to restore them. Codex uses your existing login; the harness does not copy credentials into its database. Tool commands are blocked from reading Codex credentials or the macOS Keychain.
+Reopen from the same project root to restore them. Credentials stay with Codex. See [Local state](docs/local-state.md) for storage and [Workers](docs/workers.md) for credential isolation.
 
 ## What’s next
 

@@ -24,6 +24,12 @@
 - Keep explanations concise too.
 - Structure explanations and documentation with clear headings, short paragraphs and lists where useful.
 
+## Keep docs current
+
+- Update the README whenever the architecture changes. Keep it short and in our voice.
+- Document every feature in our voice, with concise explanations and clear diagrams.
+- Keep code, the README and feature docs in sync with every commit.
+
 ## Finish each batch
 
 - After implementing and verifying an approved batch, commit its changes and push to `main`. Include documentation changes.
