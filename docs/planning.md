@@ -36,7 +36,7 @@ Laya runs locally in a separate Python process. It receives the description, a t
 
 The score threshold is 0.70; routing times out after 30 seconds. This is an experimental heuristic. The stock checkpoint was uncertain or wrong in our small test. Laya recommends configuration; Codex generates the plan.
 
-Rust checks the selected model and reasoning level against Codex’s catalog. Missing models fall back to Sol or the catalog default. Account access is checked only when inference runs. The header shows the chosen configuration and routing reason.
+Rust checks the selected model and reasoning level against Codex’s catalog. Missing models fall back to Sol or the catalog default. Account access is checked only when inference runs. The expanded plan details show the chosen configuration and routing reason.
 
 ## What a plan contains
 
@@ -51,6 +51,14 @@ Rust checks that:
 - Every task uses the connected provider: Codex.
 
 These checks validate structure and declared scopes. They do not prove the plan will solve the request.
+
+## Review the plan
+
+The conversation shows a numbered outline: task titles, outcomes and dependencies such as **after task 1**. The numbering matches the displayed order, even when the saved task IDs are words.
+
+Press **Ctrl+O** for file scopes, individual completion checks and model details. Press it again to collapse them. The full plan remains saved; changing its display does not change the plan or start a worker.
+
+**Plan ready** means planning finished. The read-only boundary appears below the outline; code changes come in a later batch.
 
 ## Stop and retry
 

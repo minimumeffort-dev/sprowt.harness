@@ -10,13 +10,17 @@ use tachyonfx::{Effect, Interpolation, fx};
 
 use crate::{
     app::{App, View},
+    plan::{Plan, Planning},
     sprout,
+    store::CodeMod,
+    worker::Status,
 };
 
 const ACCENT: Color = Color::Green;
 const MUTED: Color = Color::DarkGray;
 const CONTROL: Color = Color::Rgb(51, 59, 50);
 const SELECTED: Color = Color::Rgb(62, 73, 55);
+const USER_BACKGROUND: Color = Color::Rgb(43, 49, 43);
 const KEY_HINT: Color = Color::Rgb(161, 170, 160);
 const MOD_GLYPH: &str = "◇";
 const DIALOG_WIDTH: u16 = 80;
@@ -87,42 +91,39 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
     let [companion, heading] =
         Layout::horizontal([Constraint::Length(10), Constraint::Min(1)]).areas(header);
     sprout::draw(frame, companion, pose);
+    let project = directories::BaseDirs::new()
+        .and_then(|dirs| {
+            app.project
+                .strip_prefix(dirs.home_dir())
+                .ok()
+                .map(|path| format!("~/{}", path.display()))
+        })
+        .unwrap_or_else(|| app.project.display().to_string());
+    let status = app.current_worker().map_or_else(
+        || {
+            app.current_mod()
+                .and_then(|code_mod| code_mod.planning.as_ref())
+                .filter(|planning| planning.status != "ready")
+                .map_or(String::new(), |_| "▤ planning paused".into())
+        },
+        |worker| {
+            if worker.status == Status::Complete {
+                String::new()
+            } else {
+                worker.label()
+            }
+        },
+    );
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec!["sprowt".fg(ACCENT).bold(), " harness".bold()]),
-            Line::from(app.project.to_string_lossy().into_owned()).fg(MUTED),
-            Line::from(app.current_worker().map_or_else(
-                || {
-                    app.current_mod()
-                        .and_then(|m| m.planning.as_ref())
-                        .map_or(String::new(), |p| {
-                            format!(
-                                "▤ planner · {}{}",
-                                p.status,
-                                p.model.as_ref().map_or(String::new(), |model| format!(
-                                    " · {model} · {}",
-                                    p.effort.as_deref().unwrap_or("medium")
-                                ))
-                            )
-                        })
-                },
-                |worker| worker.label(),
-            ))
-            .fg(KEY_HINT),
-            Line::from(app.worker_error().map_or_else(
-                || {
-                    app.current_mod()
-                        .and_then(|m| m.planning.as_ref())
-                        .and_then(|p| p.routing.as_ref())
-                        .map_or(String::new(), |route| fit_name(route, heading.width))
-                },
-                |error| fit_name(error, heading.width),
-            ))
-            .fg(if app.worker_error().is_some() {
-                Color::Red
-            } else {
-                MUTED
-            }),
+            Line::from(fit_name(&project, heading.width)).fg(MUTED),
+            Line::from(fit_name(&status, heading.width)).fg(KEY_HINT),
+            Line::from(
+                app.worker_error()
+                    .map_or(String::new(), |error| fit_name(error, heading.width)),
+            )
+            .fg(Color::Red),
         ]),
         heading,
     );
@@ -134,6 +135,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
         mod_row,
         matches!(app.view, View::Mods(_) | View::DeleteMod(_)),
     );
+    let mut can_scroll = false;
     if matches!(app.view, View::Chat | View::EditQueue(_)) {
         let count = app.current_mod().map_or(0, |code_mod| code_mod.queue.len());
         let steering = app
@@ -162,7 +164,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
             Constraint::Length(steering_height),
         ])
         .areas(content);
-        draw_conversation(frame, app, conversation);
+        can_scroll = draw_conversation(frame, app, conversation);
         draw_queue_preview(frame, app, queue);
         draw_steering_preview(frame, app, steering);
     }
@@ -180,11 +182,6 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
         draw_queue_editor(frame, app, index, dialog_area);
     } else {
         frame.render_widget(&app.input, input);
-        let run = if app.current_worker().is_some_and(|worker| worker.enabled) {
-            "stop"
-        } else {
-            "run"
-        };
         let shortcuts = match app.view {
             View::NewMod => format!(
                 "↵ create + plan{}   esc {}",
@@ -203,18 +200,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
                 "enter save   ctrl+j newline   esc cancel".into()
             }
             View::EditQueue(_) => "↵ save  esc cancel".into(),
-            _ => match footer.width {
-                80.. if cfg!(target_os = "macos") => {
-                    format!(
-                        "↵ queue  ctrl+r {run}  ctrl+q queue  ctrl+j newline  fn+↑/↓ scroll  esc quit"
-                    )
-                }
-                80.. => format!(
-                    "↵ queue  ctrl+r {run}  ctrl+q queue  ctrl+j newline  pgup/pgdn scroll  esc quit"
-                ),
-                40.. => format!("↵ queue  ctrl+r {run}  ctrl+q queue  esc quit"),
-                _ => format!("↵ queue  ^r {run}  ^q queue"),
-            },
+            _ => chat_hints(app, footer.width, can_scroll),
         };
         frame.render_widget(Line::from(shortcuts).fg(MUTED), footer);
     }
@@ -506,40 +492,247 @@ fn fit_name(name: &str, width: u16) -> String {
     title
 }
 
-fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
-    app.page_size = area.height.max(1);
-    let [sender, body] =
-        Layout::horizontal([Constraint::Length(2), Constraint::Min(1)]).areas(area);
-    let mut lines = Vec::new();
-    let mut labels = Vec::new();
-    for message in app
+fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
+    let queued = app.current_mod().is_some_and(|m| !m.queue.is_empty());
+    let worker = app.current_worker();
+    let run = if worker.is_some_and(|w| w.enabled) {
+        Some("stop")
+    } else if app
         .current_mod()
-        .map_or(&[][..], |code_mod| code_mod.messages.as_slice())
+        .and_then(|m| m.planning.as_ref())
+        .is_some_and(|p| p.status != "ready")
     {
-        let text = Text::from(message.body.as_str());
-        let height = Paragraph::new(text.clone())
-            .wrap(Wrap { trim: false })
-            .line_count(body.width);
-        lines.extend(text.lines);
-        labels.push(
-            Line::from(match message.role.as_str() {
-                "codex" => "◆",
-                "planner" => "▤",
-                _ => ">",
-            })
-            .fg(ACCENT)
-            .bold(),
-        );
-        labels.resize(labels.len() + height.saturating_sub(1), Line::default());
+        Some("retry")
+    } else if queued || worker.is_some_and(|w| w.status != Status::Complete) {
+        Some("run")
+    } else {
+        None
+    };
+    let ctrl = if width < 60 { "^" } else { "ctrl+" };
+    let mut options = Vec::new();
+    if let Some(action) = run {
+        options.push(format!("{ctrl}r {action}"));
     }
-    let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let max_scroll = paragraph
-        .line_count(body.width)
-        .saturating_sub(area.height as usize);
-    let max_scroll = max_scroll.min(u16::MAX as usize) as u16;
-    let history_offset = app.history_offset.min(max_scroll);
-    let scroll = (max_scroll - history_offset, 0);
-    frame.render_widget(paragraph.scroll(scroll), body);
-    frame.render_widget(Paragraph::new(labels).scroll(scroll), sender);
+    if queued {
+        options.push(format!("{ctrl}q manage"));
+    }
+    options.push(format!("{ctrl}j newline"));
+    if can_scroll {
+        options.push(if cfg!(target_os = "macos") {
+            "fn+↑/↓ scroll".into()
+        } else {
+            "pgup/pgdn scroll".into()
+        });
+    }
+    let mut hints = "↵ queue".to_owned();
+    for option in options {
+        let candidate = format!("{hints}  {option}");
+        if Span::raw(&candidate).width() + "  esc quit".len() <= width as usize {
+            hints = candidate;
+        }
+    }
+    format!("{hints}  esc quit")
+}
+
+fn plan_lines(plan: &Plan, planning: &Planning, details: bool) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from("▤ codex · planner").fg(ACCENT).bold(),
+        Line::from(format!(
+            "plan ready · {} {}",
+            plan.tasks.len(),
+            if plan.tasks.len() == 1 {
+                "task"
+            } else {
+                "tasks"
+            }
+        ))
+        .fg(ACCENT)
+        .bold(),
+    ];
+    for (index, task) in plan.tasks.iter().enumerate() {
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            format!("{}. ", index + 1).fg(ACCENT).bold(),
+            task.title.clone().bold(),
+        ]));
+        lines.push(Line::from(format!("   {}", task.outcome)));
+        let dependencies: Vec<_> = task
+            .depends_on
+            .iter()
+            .filter_map(|id| plan.tasks.iter().position(|task| &task.id == id))
+            .map(|index| (index + 1).to_string())
+            .collect();
+        if !dependencies.is_empty() {
+            lines.push(
+                Line::from(format!(
+                    "   after {} {}",
+                    if dependencies.len() == 1 {
+                        "task"
+                    } else {
+                        "tasks"
+                    },
+                    dependencies.join(", ")
+                ))
+                .fg(KEY_HINT),
+            );
+        }
+        if details {
+            if !task.files.is_empty() {
+                lines
+                    .push(Line::from(format!("   files · {}", task.files.join(", "))).fg(KEY_HINT));
+            }
+            lines.push(Line::from("   checks").fg(KEY_HINT));
+            lines.extend(
+                task.checks
+                    .iter()
+                    .map(|check| Line::from(format!("   · {check}"))),
+            );
+        }
+    }
+    lines.push(Line::default());
+    if details {
+        if let Some(model) = &planning.model {
+            lines.push(
+                Line::from(format!(
+                    "model · {model} · {}",
+                    planning.effort.as_deref().unwrap_or("medium")
+                ))
+                .fg(KEY_HINT),
+            );
+        }
+        if let Some(routing) = &planning.routing {
+            lines.push(Line::from(routing.clone()).fg(MUTED));
+        }
+        lines.push(Line::default());
+    }
+    lines.push(Line::from(vec![
+        if details {
+            "▾ hide details"
+        } else {
+            "▸ files, checks & model"
+        }
+        .fg(KEY_HINT),
+        "  ctrl+o".fg(ACCENT),
+    ]));
+    lines.push(Line::default());
+    lines.push(Line::from("read-only · code changes come next").fg(KEY_HINT));
+    lines
+}
+
+struct ConversationBlock<'a> {
+    text: Text<'a>,
+    user: bool,
+    plan: bool,
+}
+
+fn conversation_blocks(code_mod: &CodeMod, details: bool) -> Vec<ConversationBlock<'_>> {
+    let saved = code_mod
+        .planning
+        .as_ref()
+        .filter(|p| p.status == "ready")
+        .and_then(|p| p.plan.as_ref().map(|plan| (p, plan)));
+    let plan_id = saved.map(|(p, _)| format!("plan:{}", p.source));
+    code_mod
+        .messages
+        .iter()
+        .filter_map(|message| {
+            let is_plan = plan_id.is_some() && message.item_id == plan_id;
+            if let Some((planning, plan)) = saved
+                && is_plan
+            {
+                return Some(ConversationBlock {
+                    text: plan_lines(plan, planning, details).into(),
+                    user: false,
+                    plan: true,
+                });
+            }
+            if saved.is_some() && message.role == "planner" {
+                return None;
+            }
+            let user = message.role == "user";
+            let mut text = Text::from(message.body.as_str());
+            if !user {
+                text.lines.insert(
+                    0,
+                    Line::from(if message.role == "planner" {
+                        "▤ codex · planner"
+                    } else {
+                        "◆ codex · executor"
+                    })
+                    .fg(ACCENT)
+                    .bold(),
+                );
+            }
+            Some(ConversationBlock {
+                text,
+                user,
+                plan: false,
+            })
+        })
+        .collect()
+}
+
+fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) -> bool {
+    app.page_size = area.height.max(1);
+    if area.is_empty() {
+        return false;
+    }
+    let blocks = app
+        .current_mod()
+        .map_or_else(Vec::new, |m| conversation_blocks(m, app.plan_details));
+    let mut rows = Vec::new();
+    let mut total = 0;
+    let mut plan_top = 0;
+    for block in blocks {
+        let width = area.width.saturating_sub(if block.user { 2 } else { 0 });
+        let paragraph = Paragraph::new(block.text).wrap(Wrap { trim: false });
+        let height = paragraph.line_count(width);
+        if block.plan {
+            plan_top = total;
+        }
+        rows.push((total, height, block.user, paragraph));
+        total += height + 1;
+    }
+    let max_scroll = total.saturating_sub(1).saturating_sub(area.height as usize);
+    let history_offset = if app.focus_plan {
+        max_scroll.saturating_sub(plan_top).min(u16::MAX as usize) as u16
+    } else {
+        app.history_offset
+            .min(max_scroll.min(u16::MAX as usize) as u16)
+    };
+    let scroll = max_scroll - history_offset as usize;
+    for (top, height, user, paragraph) in rows {
+        let visible_start = top.max(scroll);
+        let visible_end = (top + height).min(scroll + area.height as usize);
+        if visible_start >= visible_end {
+            continue;
+        }
+        let visible = Rect {
+            y: area.y + (visible_start - scroll) as u16,
+            height: (visible_end - visible_start) as u16,
+            ..area
+        };
+        if user {
+            frame.render_widget(Block::new().bg(USER_BACKGROUND).fg(Color::White), visible);
+            if visible_start == top {
+                frame.render_widget(
+                    Line::from(">").fg(ACCENT).bold(),
+                    Rect {
+                        width: 1,
+                        height: 1,
+                        ..visible
+                    },
+                );
+            }
+        }
+        let body = Rect {
+            x: visible.x + if user { 2 } else { 0 },
+            width: visible.width.saturating_sub(if user { 2 } else { 0 }),
+            ..visible
+        };
+        frame.render_widget(paragraph.scroll(((visible_start - top) as u16, 0)), body);
+    }
     app.history_offset = history_offset;
+    app.focus_plan = false;
+    max_scroll > 0
 }

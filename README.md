@@ -14,7 +14,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
-- [Terminal and companion](docs/terminal.md): keyboard controls, shared dialog design and the animated Sprowt pet.
+- [Terminal and companion](docs/terminal.md): clear message ownership, inline plan review and the animated Sprowt pet.
 
 ### Current limits
 
@@ -55,7 +55,7 @@ sprowt-harness
 ```
 
 1. Describe your code mod and press **Enter**. Planning starts automatically.
-2. Read the plan. Write follow-up instructions and press **Enter** to queue them.
+2. Review the numbered tasks. **Ctrl+O** shows files, checks and model details. Write follow-up instructions and press **Enter** to queue them.
 3. Press **Ctrl+R** to start the executor. Press it again to pause.
 
 **Ctrl+R** also stops or retries unfinished planning. Reopening a project restores its state without starting workers. Existing mods keep their original workflow. Use `--no-motion` to turn off animations.
@@ -79,6 +79,7 @@ This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to 
 | Ctrl+P | Open code mods; switch or create one |
 | Ctrl+Q | Open the queue |
 | Ctrl+R | Run, stop or retry the current worker |
+| Ctrl+O | Show or hide plan details |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
 | Esc | Back, or quit from the conversation |
 | Ctrl+C | Quit |

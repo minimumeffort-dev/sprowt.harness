@@ -97,11 +97,12 @@ impl Worker {
             Status::Stopping => "stopping",
             Status::Failed => "stopped",
         };
-        let model = self
-            .selection
-            .as_ref()
-            .map_or(String::new(), |s| format!(" · {} · {}", s.model, s.effort));
-        format!("◆ codex {} · {state}{model} · read-only", self.role.name())
+        let glyph = if self.role == Role::Planner {
+            "▤"
+        } else {
+            "◆"
+        };
+        format!("{glyph} codex · {} · {state} · read-only", self.role.name())
     }
 
     pub fn toggle(&mut self) {

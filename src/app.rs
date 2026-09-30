@@ -39,6 +39,8 @@ pub struct App {
     pub view: View,
     pub history_offset: u16,
     pub page_size: u16,
+    pub plan_details: bool,
+    pub focus_plan: bool,
     pub queue_selection: BTreeSet<i64>,
     workers: BTreeMap<i64, Worker>,
     auto_plans: BTreeSet<i64>,
@@ -79,6 +81,8 @@ impl App {
             },
             history_offset: 0,
             page_size: 1,
+            plan_details: false,
+            focus_plan: false,
             queue_selection: BTreeSet::new(),
             workers: BTreeMap::new(),
             auto_plans: BTreeSet::new(),
@@ -219,6 +223,16 @@ impl App {
             }
             KeyCode::Char('q') if ctrl => {}
             KeyCode::Char('r') if ctrl => self.toggle_worker()?,
+            KeyCode::Char('o') if ctrl => {
+                if self
+                    .current_mod()
+                    .and_then(|code_mod| code_mod.planning.as_ref())
+                    .is_some_and(|planning| planning.status == "ready" && planning.plan.is_some())
+                {
+                    self.plan_details = !self.plan_details;
+                    self.focus_plan = true;
+                }
+            }
             KeyCode::Char('j') if ctrl => self.input.insert_newline(),
             KeyCode::Enter if key.modifiers.is_empty() => self.submit()?,
             KeyCode::PageUp => {
@@ -255,6 +269,8 @@ impl App {
                 self.active = Some(index);
                 self.notice = None;
                 self.history_offset = 0;
+                self.plan_details = false;
+                self.focus_plan = false;
                 self.view = View::Chat;
                 self.restore_input();
             }
@@ -415,6 +431,8 @@ impl App {
         self.active = Some(self.mods.len() - 1);
         self.notice = None;
         self.history_offset = 0;
+        self.plan_details = false;
+        self.focus_plan = false;
         self.view = View::Chat;
         self.restore_input();
         self.celebrate();
@@ -434,6 +452,8 @@ impl App {
             .position(|code_mod| Some(code_mod.id) == selected);
         if previous != selected {
             self.history_offset = 0;
+            self.plan_details = false;
+            self.focus_plan = false;
             self.notice = None;
         }
         self.queue_selection.clear();
@@ -676,6 +696,156 @@ mod tests {
             .iter()
             .map(|message| message.body.as_str())
             .collect()
+    }
+
+    fn screen(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| {
+                ui::draw(frame, app, sprout::Pose::Idle);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn rows(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+        buffer
+            .content
+            .chunks(buffer.area.width as usize)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn plan_review_preserves_data_and_keeps_the_outline_in_view() {
+        use crate::{plan::Plan, router::Selection, store::Message};
+
+        let data = TestData::new();
+        let project = PathBuf::from("/review");
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let code_mod = store
+            .create_mod(project_id, "build a local to-do app")
+            .unwrap();
+        let source = code_mod.planning.as_ref().unwrap().source.clone();
+        store
+            .save_message(
+                code_mod.id,
+                &Message {
+                    item_id: Some("preface".into()),
+                    role: "planner".into(),
+                    body: "I'll inspect the source.".into(),
+                },
+            )
+            .unwrap();
+        let plan = Plan::parse(r#"{"summary":"Build a local to-do app.","tasks":[
+            {"id":"backend","title":"Build the API","outcome":"Persist tasks locally.","files":["app/main.py"],"depends_on":[],"worker":"codex","checks":["Adding and deleting works."]},
+            {"id":"interface","title":"Build the page","outcome":"Add and remove tasks in the browser.","files":["app/static/index.html"],"depends_on":["backend"],"worker":"codex","checks":["Reload keeps saved tasks."]}
+        ]}"#).unwrap();
+        store
+            .planning_model(
+                code_mod.id,
+                &Selection::fallback("Laya uncertain · Sol high fallback"),
+            )
+            .unwrap();
+        store.save_plan(code_mod.id, &source, &plan).unwrap();
+        let mut app = App::load(project.clone(), false, store).unwrap();
+        paste(&mut app, "queued question");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        paste(&mut app, "keep this draft\nsecond line");
+
+        let compact = rows(&screen(&mut app, 100, 42)).join("\n");
+        assert!(compact.contains("1. Build the API") && compact.contains("after task 1"));
+        assert!(compact.contains("read-only · code changes come next"));
+        assert!(!compact.contains("app/main.py") && !compact.contains("gpt-6.1-sol"));
+        assert!(!compact.contains("I'll inspect"));
+        assert!(compact.contains("ctrl+q manage"));
+
+        key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        let expanded = rows(&screen(&mut app, 100, 48)).join("\n");
+        assert!(
+            expanded.contains("app/main.py") && expanded.contains("Adding and deleting works.")
+        );
+        assert!(expanded.contains("gpt-6.1-sol · high") && expanded.contains("Laya uncertain"));
+        assert_eq!(app.input.lines(), ["keep this draft", "second line"]);
+        assert_eq!(queued(&app), ["queued question"]);
+        assert_eq!(app.current_mod().unwrap().messages.len(), 3);
+
+        key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        let narrow = rows(&screen(&mut app, 48, 24)).join("\n");
+        assert!(narrow.contains("▤ codex · planner") && narrow.contains("1. Build the API"));
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        screen(&mut app, 48, 24);
+        key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        let collapsed = rows(&screen(&mut app, 48, 24)).join("\n");
+        assert!(collapsed.contains("1. Build the API") && !collapsed.contains("app/main.py"));
+        let reopened = App::load(project, false, data.store()).unwrap();
+        assert!(!reopened.plan_details);
+        assert_eq!(
+            reopened.current_mod().unwrap().messages[1].body,
+            "I'll inspect the source."
+        );
+        assert_eq!(reopened.input.lines(), ["keep this draft", "second line"]);
+    }
+
+    #[test]
+    fn wrapped_messages_keep_their_owner_spacing_and_highlight() {
+        use crate::store::Message;
+
+        let data = TestData::new();
+        let project = PathBuf::from("/wrapped-review");
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let code_mod = store.create_mod(project_id, "café 界 with enough words to wrap across multiple terminal rows and keep the sender aligned").unwrap();
+        for (role, body) in [("user", "another message"), ("codex", "an executor reply")] {
+            store
+                .save_message(
+                    code_mod.id,
+                    &Message {
+                        item_id: None,
+                        role: role.into(),
+                        body: body.into(),
+                    },
+                )
+                .unwrap();
+        }
+        let mut app = App::load(project, false, store).unwrap();
+        paste(&mut app, "draft stays");
+        key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert!(!app.plan_details);
+        assert_eq!(app.input.lines(), ["draft stays"]);
+        for width in [36, 60, 100] {
+            app.history_offset = u16::MAX;
+            let buffer = screen(&mut app, width, 40);
+            let rows = rows(&buffer);
+            let first = rows.iter().position(|row| row.contains("> café")).unwrap() as u16;
+            let next = rows
+                .iter()
+                .position(|row| row.contains("> another message"))
+                .unwrap() as u16;
+            let agent = rows
+                .iter()
+                .position(|row| row.contains("◆ codex · executor"))
+                .unwrap() as u16;
+            let background = buffer[(2, first)].bg;
+            assert_ne!(background, ratatui::style::Color::Reset);
+            assert_eq!(buffer[(4, first)].fg, ratatui::style::Color::White);
+            assert!(
+                !buffer[(4, first)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::BOLD)
+            );
+            for y in first..next - 1 {
+                assert_eq!(buffer[(2, y)].symbol(), if y == first { ">" } else { " " });
+                assert_eq!(buffer[(width - 3, y)].bg, background);
+            }
+            assert!(rows[(next - 1) as usize].trim().is_empty());
+            assert!(rows[(agent - 1) as usize].trim().is_empty());
+            assert_ne!(buffer[(2, agent)].bg, background);
+            assert!(rows[(agent + 1) as usize].contains("an executor reply"));
+        }
     }
 
     #[test]

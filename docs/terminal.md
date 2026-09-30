@@ -8,8 +8,13 @@ The interface keeps the project and worker status at the top, the conversation l
 <code mod/>  ◇ selected mod
 
 > your message
-▤ planner message or saved plan
-◆ executor reply
+
+▤ codex · planner
+plan ready · numbered tasks
+▸ files, checks & model  ctrl+o
+
+◆ codex · executor
+reply
 
 queue / waiting steering, when present
 
@@ -17,7 +22,13 @@ queue / waiting steering, when present
 keyboard hints
 ```
 
-Code mod and queue dialogs share selection, spacing and keyboard hints. Hints adapt to the current view and terminal width.
+User messages have a `>` prefix and a subtle background. Agent messages show their provider and role. One blank row separates messages.
+
+Plans show task titles, outcomes and dependencies first. Ctrl+O expands file scopes, completion checks and model details inline. Each check has its own row. Expanding keeps the plan heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
+
+Completed planner chatter stays saved but is hidden from the transcript. The plan says **read-only · code changes come next**. See [Planning](planning.md) for the current execution limits.
+
+Code mod and queue dialogs share selection, spacing and keyboard hints. Hints adapt to the current view and terminal width. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
 
 ## Commands
 
@@ -38,6 +49,7 @@ Code mod and queue dialogs share selection, spacing and keyboard hints. Hints ad
 | Ctrl+P | Switch, create or delete a code mod |
 | Ctrl+Q | Manage queued instructions |
 | Ctrl+R | Start, stop or retry the current worker |
+| Ctrl+O | Show or hide saved plan details |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
 | Page Up / Page Down | Scroll on keyboards with those keys |
 | Esc | Back from a dialog; quit from the conversation |
