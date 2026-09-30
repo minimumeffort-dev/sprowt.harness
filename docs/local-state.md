@@ -31,6 +31,8 @@ flowchart TB
         ├── vm.json   VM identity and image digest; removed after VM deletion
         ├── host-codex/ private host agent state; never shared with the guest
         ├── sandbox.log setup diagnostics
+        ├── packages.jsonl OS package requests and results
+        ├── setup/    trusted guest package setup files
         └── review.patch
 ```
 

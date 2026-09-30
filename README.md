@@ -13,7 +13,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 - [Code mods and messages](docs/code-mods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
 - [Plan execution](docs/execution.md): one executor follows task dependencies. Verify, review the diff, then apply.
-- [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex prepares the runtime; applying changes deletes the VM and keeps the mod’s history.
+- [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex chooses runtimes and dependencies; the harness installs requested OS packages. Applying changes deletes the VM and keeps the mod’s history.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
 - [Terminal and companion](docs/terminal.md): model and effort labels, dot spinners for active workers and tasks, readable plans and the animated Sprowt pet.
@@ -38,12 +38,12 @@ flowchart TB
     harness --> executor["Codex agent · login stays on Mac"]
     project -->|"source snapshot"| vm["Apple Container · Linux VM per mod"]
     executor <-->|"native command and file tools"| vm
-    harness -->|"independent checks in Linux"| vm
+    harness -->|"OS package setup and independent checks"| vm
     vm -->|"export source"| review["Diff and check results"]
     review -->|"you confirm apply"| project
 ```
 
-Laya recommends the planner configuration. Codex inference uses your subscription and the internet. Codex installs the project runtime and dependencies inside the VM. Tasks run sequentially within a mod; different mods can run in parallel. Applying changes deletes that mod’s VM; history and source exports stay on the Mac. Muse follows later.
+Laya recommends the planner configuration. Codex inference uses your subscription and the internet. Codex installs project runtimes and dependencies inside the VM. For OS packages, it sends names and a reason to a harness-owned setup tool; Rust installs from signed Debian repositories. Normal commands keep their sandbox restrictions. Tasks run sequentially within a mod; different mods can run in parallel. Applying changes deletes that mod’s VM; history and source exports stay on the Mac. Muse follows later.
 
 ## Get started
 

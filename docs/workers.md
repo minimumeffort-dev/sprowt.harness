@@ -23,7 +23,7 @@ Codex handles authentication. The harness database stores conversation IDs and d
 
 Planner tools can read the project and required runtime files, with no tool networking. The host Codex credential directory and macOS Keychain directory are denied to these commands.
 
-Executor tools use only the mod’s Linux VM. Commands can write `/workspace`, `/home/sprowt` and guest temporary files. System tools remain read-only. Project runtimes and dependencies can be installed through an enforced domain proxy. No host executor is registered for that agent. See [Local Linux sandbox](sandbox.md).
+Executor tools use only the mod’s Linux VM. Normal commands can write `/workspace`, `/home/sprowt` and guest temporary files; system files remain read-only. Project runtimes and dependencies use an enforced domain proxy. A harness-owned `install_system_packages` tool accepts Debian package names and a reason. It downloads from signed official repositories through the proxy, then installs in a writable VM setup command with networking blocked. No host executor is registered for that agent. See [Local Linux sandbox](sandbox.md).
 
 Host MCP servers, apps, plugins, hooks, browser tools and Codex delegation are disabled for these workers. Startup checks the permission boundary and that MCP tools are disabled before a worker can run. A failed check stops startup.
 

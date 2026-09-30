@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     env, fs,
-    io::{self, Read},
+    io::{self, Read, Write},
     path::{Component, Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -17,6 +17,7 @@ use serde_json::{Value, json};
 
 use crate::{
     execution::{Check, CheckResult},
+    packages::Request,
     rpc::{self, Rpc},
     workspace::{self, Snapshot},
 };
@@ -132,6 +133,49 @@ impl Sandbox {
         vm.started = true;
         vm.control(
             &["exec", &vm.name, "/bin/mkdir", "-p", "/opt/sprowt-transfer"],
+            cancelled,
+        )?;
+        vm.control(
+            &[
+                "exec",
+                &vm.name,
+                "/bin/mkdir",
+                "-p",
+                "/opt/sprowt-apt/conf.d",
+            ],
+            cancelled,
+        )?;
+        let setup = root.join("setup");
+        fs::create_dir_all(&setup)?;
+        for (name, contents) in [
+            ("apt.conf", include_str!("../sandbox/apt.conf")),
+            ("debian.sources", include_str!("../sandbox/debian.sources")),
+            ("offline.c", include_str!("../sandbox/offline.c")),
+        ] {
+            let path = setup.join(name);
+            fs::write(&path, contents)?;
+            vm.control(
+                &[
+                    "copy",
+                    path.to_str().unwrap(),
+                    &format!("{}:/opt/sprowt-apt/{name}", vm.name),
+                ],
+                cancelled,
+            )?;
+        }
+        vm.control(
+            &[
+                "exec",
+                &vm.name,
+                "/usr/bin/cc",
+                "-O2",
+                "-Wall",
+                "-Wextra",
+                "-Werror",
+                "/opt/sprowt-apt/offline.c",
+                "-o",
+                "/opt/sprowt-apt/offline",
+            ],
             cancelled,
         )?;
         let (child, mut rpc) = Rpc::start(&mut vm.executor())?;
@@ -367,8 +411,17 @@ impl Sandbox {
     }
 
     fn permissions(&self) -> Value {
+        self.process_permissions(false)
+    }
+
+    fn process_permissions(&self, installing: bool) -> Value {
         let entries = [("/","read"),("/workspace","write"),("/home/sprowt","write"),("/tmp","write")].map(|(path,access)| json!({"path":{"type":"path","path":format!("file://{path}")},"access":access}));
-        json!({"permissions":{"type":"managed","file_system":{"type":"restricted","entries":entries},"network":"enabled"},
+        let filesystem = if installing {
+            json!({"type":"unrestricted"})
+        } else {
+            json!({"type":"restricted","entries":entries})
+        };
+        json!({"permissions":{"type":"managed","file_system":filesystem,"network":"enabled"},
             "cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"disabled","useLegacyLandlock":false})
     }
 
@@ -379,11 +432,35 @@ impl Sandbox {
         timeout: u64,
         cap: usize,
     ) -> io::Result<(Option<i64>, Vec<u8>, Vec<u8>)> {
-        let sandbox = self.permissions();
+        self.run_process(argv, cancelled, timeout, cap, false)
+    }
+
+    fn run_process(
+        &mut self,
+        argv: &[String],
+        cancelled: &AtomicBool,
+        timeout: u64,
+        cap: usize,
+        installing: bool,
+    ) -> io::Result<(Option<i64>, Vec<u8>, Vec<u8>)> {
+        let sandbox = self.process_permissions(installing);
         let proxy = json!({"proxy":{"enabled":true,"enableSocks5":false,"enableSocks5Udp":false,"allowUpstreamProxy":false,"dangerouslyAllowAllUnixSockets":false,"mode":"full","domains":self.domains,"unixSockets":{},"allowLocalBinding":true},"auditMetadata":{}});
         let rpc = self.rpc.as_mut().unwrap();
         let process = format!("sprowt-{}", PROCESS.fetch_add(1, Ordering::Relaxed));
-        let start = rpc.call("process/start", json!({"processId":process,"argv":argv,"cwd":"file:///workspace","env":{"HOME":"/home/sprowt","PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1"},"envPolicy":{"inherit":"none","ignoreDefaultExcludes":true,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"arg0":null,"sandbox":sandbox,"enforceManagedNetwork":true,"networkProxy":proxy}))?;
+        let mut environment = json!({"HOME":"/home/sprowt","PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1"});
+        if installing {
+            environment["PATH"] = json!("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
+            environment["DEBIAN_FRONTEND"] = json!("noninteractive");
+            environment["TMPDIR"] = json!("/opt/sprowt-apt/tmp");
+            environment["APT_CONFIG"] = json!("/opt/sprowt-apt/apt.conf");
+            environment["HOME"] = json!("/opt/sprowt-apt/home");
+        }
+        let cwd = if installing {
+            "file:///opt/sprowt-apt"
+        } else {
+            "file:///workspace"
+        };
+        let start = rpc.call("process/start", json!({"processId":process,"argv":argv,"cwd":cwd,"env":environment,"envPolicy":{"inherit":"none","ignoreDefaultExcludes":true,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"arg0":null,"sandbox":sandbox,"enforceManagedNetwork":true,"networkProxy":proxy}))?;
         if start["sandboxType"] != "linuxSeccomp" {
             return Err(io::Error::other(
                 "Guest sandbox enforcement is unavailable.",
@@ -416,8 +493,14 @@ impl Sandbox {
                 } else {
                     &mut stderr
                 };
-                output
-                    .extend_from_slice(&bytes[..bytes.len().min(cap.saturating_sub(output.len()))]);
+                if installing {
+                    output.extend_from_slice(&bytes);
+                    output.drain(..output.len().saturating_sub(cap));
+                } else {
+                    output.extend_from_slice(
+                        &bytes[..bytes.len().min(cap.saturating_sub(output.len()))],
+                    );
+                }
             }
             cursor = read["nextSeq"]
                 .as_u64()
@@ -431,6 +514,116 @@ impl Sandbox {
                 return Ok((read["exitCode"].as_i64(), stdout, stderr));
             }
         }
+    }
+
+    pub fn install_packages(
+        &mut self,
+        request: &Request,
+        cancelled: &AtomicBool,
+    ) -> io::Result<String> {
+        let mut log = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.root.join("packages.jsonl"))?;
+        private(&self.root.join("packages.jsonl"), 0o600)?;
+        writeln!(
+            log,
+            "{}",
+            json!({"packages":request.packages,"reason":request.reason,"status":"requested"})
+        )?;
+        let result = (|| {
+            let inspect = self
+                .inspect()?
+                .ok_or_else(|| io::Error::other("The mod VM is missing."))?;
+            let saved = serde_json::from_slice::<Value>(&fs::read(self.root.join("vm.json"))?)?;
+            self.validate(&inspect, Some(&saved))?;
+            if !self.domains.contains_key("deb.debian.org") {
+                return Err(io::Error::other(
+                    "Allow deb.debian.org in the Mac's network.json, then reopen the harness and retry.",
+                ));
+            }
+            self.control(
+                &[
+                    "exec",
+                    &self.name,
+                    "/bin/mkdir",
+                    "-p",
+                    "/opt/sprowt-apt/tmp",
+                    "/opt/sprowt-apt/cache/archives/partial",
+                    "/opt/sprowt-apt/lists/partial",
+                    "/opt/sprowt-apt/conf.d",
+                    "/opt/sprowt-apt/home",
+                ],
+                cancelled,
+            )?;
+            self.offline_install(&["/usr/bin/dpkg", "--configure", "--pending"], cancelled)?;
+            for action in ["update", "install"] {
+                let mut argv = vec!["/usr/bin/apt-get".into(), action.into()];
+                if action == "install" {
+                    argv.extend([
+                        "--download-only".into(),
+                        "--yes".into(),
+                        "--no-install-recommends".into(),
+                        "--no-remove".into(),
+                    ]);
+                    argv.extend(request.packages.clone());
+                }
+                let (exit, stdout, stderr) = self.run_process(&argv, cancelled, 900, 8192, true)?;
+                if exit != Some(0) {
+                    return Err(io::Error::other(format!(
+                        "System package {action} failed: {}{}",
+                        String::from_utf8_lossy(&stdout),
+                        String::from_utf8_lossy(&stderr)
+                    )));
+                }
+            }
+            let mut install = vec![
+                "/usr/bin/apt-get",
+                "install",
+                "--yes",
+                "--no-download",
+                "--no-install-recommends",
+                "--no-remove",
+            ];
+            install.extend(request.packages.iter().map(String::as_str));
+            self.offline_install(&install, cancelled)?;
+            Ok(format!(
+                "Installed system packages in the mod VM: {}. Continue the task and rerun its checks.",
+                request.packages.join(", ")
+            ))
+        })();
+        writeln!(
+            log,
+            "{}",
+            json!({"packages":request.packages,"status":if result.is_ok(){"installed"}else{"failed"},"result":result.as_ref().map_or_else(|error|error.to_string(),Clone::clone)})
+        )?;
+        result
+    }
+
+    fn offline_install(&self, command: &[&str], cancelled: &AtomicBool) -> io::Result<()> {
+        let mut argv = vec![
+            "exec",
+            "--workdir",
+            "/opt/sprowt-apt",
+            &self.name,
+            "/usr/bin/env",
+            "-i",
+            "PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            "HOME=/opt/sprowt-apt/home",
+            "LANG=C.UTF-8",
+            "DEBIAN_FRONTEND=noninteractive",
+            "TMPDIR=/opt/sprowt-apt/tmp",
+            "APT_CONFIG=/opt/sprowt-apt/apt.conf",
+            "/opt/sprowt-apt/offline",
+        ];
+        argv.extend_from_slice(command);
+        self.control(&argv, cancelled).map_err(|error| {
+            let log = fs::read(self.root.join("sandbox.log")).unwrap_or_default();
+            io::Error::other(format!(
+                "{error} {}",
+                String::from_utf8_lossy(&log[log.len().saturating_sub(8192)..])
+            ))
+        })
     }
 
     fn boundary(&mut self, cancelled: &AtomicBool) -> io::Result<()> {
@@ -760,6 +953,80 @@ mod tests {
         header.set_cksum();
         archive.append_data(&mut header, "source", &[][..]).unwrap();
         assert!(decode_source(&archive.into_inner().unwrap()).is_err());
+    }
+
+    #[test]
+    #[ignore = "installs real Debian packages in a temporary Apple Container VM"]
+    fn system_packages_persist_without_widening_worker_permissions() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("keep.txt"), "source stays").unwrap();
+        let parent = data.0.join("workspaces");
+        fs::create_dir(&parent).unwrap();
+        let root = parent.join(format!("packages-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let request =
+            Request::parse(json!({"packages":["jq","fonts-liberation","libfontconfig1","libglib2.0-0","libnss3"],"reason":"Read fixture JSON and prepare browser libraries"})).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &cancelled, |label| eprintln!("{label}"))?;
+                vm.domains.remove("deb.debian.org");
+                assert!(
+                    vm.install_packages(&request, &cancelled)
+                        .unwrap_err()
+                        .to_string()
+                        .contains("network.json")
+                );
+                vm.domains.insert("deb.debian.org".into(), "allow".into());
+                let probe = root.join("network-test.c");
+                fs::write(
+                    &probe,
+                    "#include <errno.h>\n#include <sys/socket.h>\nint main(void) { return socket(AF_INET, SOCK_STREAM, 0) == -1 && errno == EPERM ? 0 : 1; }\n",
+                )?;
+                vm.control(
+                    &[
+                        "copy",
+                        probe.to_str().unwrap(),
+                        &format!("{}:/opt/sprowt-apt/network-test.c", vm.name),
+                    ],
+                    &cancelled,
+                )?;
+                vm.control(
+                    &[
+                        "exec",
+                        &vm.name,
+                        "/usr/bin/cc",
+                        "/opt/sprowt-apt/network-test.c",
+                        "-o",
+                        "/opt/sprowt-apt/network-test",
+                    ],
+                    &cancelled,
+                )?;
+                vm.offline_install(&["/opt/sprowt-apt/network-test"], &cancelled)?;
+                vm.install_packages(&request, &cancelled)?;
+                vm.boundary(&cancelled)?;
+                let checks = vec![Check { check:"Package installed and source retained".into(),command:vec!["/bin/sh".into(),"-c".into(),"/usr/bin/jq --version && test \"$(cat keep.txt)\" = 'source stays' && ! touch /opt/sprowt-apt/worker-write".into()]}];
+                assert_eq!(vm.verify(&checks, &cancelled)?.1[0].exit_code, Some(0));
+                drop(vm);
+                let mut vm = Sandbox::prepare(&root, &cancelled, |_| {})?;
+                assert_eq!(vm.verify(&checks, &cancelled)?.1[0].exit_code, Some(0));
+                drop(vm);
+                let log = fs::read_to_string(root.join("packages.jsonl"))?;
+                assert!(
+                    log.contains("\"status\":\"failed\"")
+                        && log.contains("\"status\":\"installed\"")
+                );
+                assert_eq!(
+                    fs::read_to_string(project.join("keep.txt"))?,
+                    "source stays"
+                );
+                Ok(())
+            },
+        ));
+        delete(&root).unwrap();
+        result.unwrap().unwrap();
     }
 
     #[test]

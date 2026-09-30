@@ -13,6 +13,7 @@ pub struct Rpc {
     pub receiver: Receiver<io::Result<Value>>,
     next_id: u64,
     pub buffered: Vec<Value>,
+    pub client_tools: bool,
 }
 
 impl Rpc {
@@ -46,6 +47,7 @@ impl Rpc {
                 receiver,
                 next_id: 0,
                 buffered: Vec::new(),
+                client_tools: false,
             },
         ))
     }
@@ -83,7 +85,9 @@ impl Rpc {
 
     pub fn receive(&mut self, message: Value) -> io::Result<()> {
         if message.get("method").is_some() && message.get("id").is_some() {
-            if message["method"] == "network/policyRequest" {
+            if self.client_tools && message["method"] == "item/tool/call" {
+                self.buffered.push(message);
+            } else if message["method"] == "network/policyRequest" {
                 self.write(json!({"id":message["id"],"result":{"decision":{"type":"deny","reason":"Domain is not in the harness allowlist."}}}))?;
             } else {
                 self.write(json!({"id":message["id"],"error":{"code":-32601,"message":"This worker cannot grant broader permissions or run client tools."}}))?;
@@ -102,4 +106,41 @@ pub fn terminate(child: &mut Child) {
     }
     let _ = child.kill();
     let _ = child.wait();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_enabled_client_tools_are_deferred_and_permissions_stay_denied() {
+        let (mut child, mut rpc) = Rpc::start(&mut Command::new("/bin/cat")).unwrap();
+        let request =
+            json!({"id":100,"method":"item/tool/call","params":{"tool":"install_system_packages"}});
+        rpc.receive(request.clone()).unwrap();
+        let response = rpc
+            .receiver
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .unwrap();
+        assert_eq!(response["error"]["code"], -32601);
+        rpc.client_tools = true;
+        rpc.receive(request.clone()).unwrap();
+        assert_eq!(rpc.buffered, [request]);
+        for method in ["network/policyRequest", "item/permissions/requestApproval"] {
+            rpc.receive(json!({"id":101,"method":method,"params":{}}))
+                .unwrap();
+            let response = rpc
+                .receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            if method == "network/policyRequest" {
+                assert_eq!(response["result"]["decision"]["type"], "deny");
+            } else {
+                assert_eq!(response["error"]["code"], -32601);
+            }
+        }
+        terminate(&mut child);
+    }
 }

@@ -32,6 +32,8 @@ The executor cannot access the original project, harness state, host Codex crede
 
 Rust dispatches one task at a time. Dependencies must be complete first. Queued follow-ups run between tasks; steering reaches the current turn.
 
+The executor prepares the runtime and project dependencies. Missing OS packages go through the harness’s [VM setup tool](sandbox.md#system-packages); successful setup returns to the same task. Failed setup blocks completion with its cause.
+
 Codex returns a short task summary and runnable commands for each declared completion check. Rust reruns them in the same sandbox, with a 30-second limit per command. Missing checks, nonzero exits, timeouts or checks that change source files block completion. After all tasks finish, every saved check runs again against the combined result.
 
 The plan shows task status. A dot spinner marks the running task and stays active through its checks; completed and waiting tasks stay still. **Ctrl+O** expands scopes, check commands, failures and final check results. Passing commands is evidence, not a guarantee that the plan or tests are good; review the code too. Declared file scopes guide Codex, while the sandbox enforces the folder boundary.
@@ -40,7 +42,7 @@ The plan shows task status. A dot spinner marks the running task and stays activ
 
 **Ctrl+R** pauses execution. During verification, the current guest command is terminated and subsequent checks stop. Interrupted tasks keep their working files and runtime. Press Ctrl+R again to explicitly retry the unfinished task; completed tasks stay done.
 
-Reopening restores progress without starting workers. On reconnect, confirmed completed turns are verified without asking Codex to repeat the edits. Unconfirmed delivery pauses for explicit retry. Failed final checks can be rerun without regenerating completed tasks.
+Reopening restores progress without starting workers. On reconnect, confirmed completed turns are verified without asking Codex to repeat the edits. Unconfirmed delivery pauses for explicit retry. Failed final checks can be rerun without regenerating completed tasks. Older executor conversations restart once to gain the system-package tool, keeping their VM, saved transcript and task progress.
 
 ## Review and apply
 

@@ -73,6 +73,12 @@ impl Worker {
                 project,
                 record.thread_id.clone().map(|id| Resume {
                     id,
+                    accepted_instructions: code_mod
+                        .messages
+                        .iter()
+                        .filter(|message| message.role == "user")
+                        .map(|message| message.body.clone())
+                        .collect(),
                     restart_if_missing: record.pending.is_none()
                         && code_mod.execution.as_ref().is_none_or(|execution| {
                             !execution.tasks.iter().any(|run| {
@@ -142,7 +148,7 @@ impl Worker {
             Status::Ready if self.enabled => "ready",
             Status::Ready => "paused",
             Status::Starting => "starting",
-            Status::Running => "running",
+            Status::Running => self.preparing.as_deref().unwrap_or("running"),
             Status::Stopping => "stopping",
             Status::Failed => "stopped",
         };
@@ -234,6 +240,12 @@ impl Worker {
                 project,
                 self.thread_id.clone().map(|id| Resume {
                     id,
+                    accepted_instructions: code_mod
+                        .messages
+                        .iter()
+                        .filter(|message| message.role == "user")
+                        .map(|message| message.body.clone())
+                        .collect(),
                     restart_if_missing: self.recovery.is_none()
                         && code_mod
                             .planning
@@ -349,7 +361,7 @@ impl Worker {
         code_mod: &mut CodeMod,
     ) -> rusqlite::Result<()> {
         match event {
-            Event::Preparing(label) => self.preparing = Some(label),
+            Event::Preparing(label) => self.preparing = (!label.is_empty()).then_some(label),
             Event::Configured(selection) => {
                 store.planning_model(self.mod_id, &selection)?;
                 code_mod.planning = store.planning(self.mod_id)?;

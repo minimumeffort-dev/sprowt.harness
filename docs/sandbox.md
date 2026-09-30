@@ -52,13 +52,34 @@ codex -c 'cli_auth_credentials_store="file"' login
 
 Create a mod, review its plan and press **Ctrl+R**. The first execution builds the shared development image; later runs reuse it. The terminal shows setup progress. **Ctrl+D** keeps the same diff and apply workflow.
 
-The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Codex reads your manifests, installs a compatible runtime under `/home/sprowt`, then installs project dependencies under `/workspace`. System files stay read-only; extra OS packages require changing the image.
+The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Codex reads your manifests, installs a compatible runtime under `/home/sprowt`, then installs project dependencies under `/workspace`.
+
+## System packages
+
+The executor chooses packages from project requirements and missing-library errors. For Playwright, it can inspect the installed browser dependency list. It calls `install_system_packages` with Debian package names and a short reason.
+
+```mermaid
+flowchart TB
+    worker["1. Codex · identify missing OS dependencies"]
+    setup["2. Harness · validate names and install in the mod VM"]
+    task["3. Codex · continue the task and browser checks"]
+    worker -->|"Package names + reason"| setup
+    setup -->|"Installed, or a specific error"| task
+```
+
+The harness accepts names only: no shell commands, URLs, repository changes or removal requests. It downloads signed packages from official Debian 12 repositories through the existing proxy and allowlist. It then runs the installer inside the VM with networking blocked by a small Linux syscall filter. Only setup can write system files; normal worker commands stay restricted. Trusted Debian install scripts run in the VM, with no host mounts or credentials. Packages that require network access during installation report a setup error.
+
+Setup progress appears beside the active worker. Requests and results are saved in the mod’s `packages.jsonl`; Codex also saves the tool result in its conversation. **Ctrl+R** stops setup; a retry completes pending package configuration before continuing. A failed installation keeps the working files and reports its error.
+
+Uses Codex’s experimental [dynamic tool interface](https://learn.chatgpt.com/docs/app-server#dynamic-tool-calls-experimental).
+
+Existing mods keep their VM, runtime, source and transcript. Their first run after this upgrade opens a new executor conversation with the setup tool. The goal, saved plan, unfinished task and accepted user instructions supply its context; completed tasks stay complete.
 
 ## The boundary
 
 - Commands, edits and independent checks use the same VM. A disconnected guest stops work; it never falls back to host execution.
 - No host folders, login files, SSH agent, service sockets or ports are mounted or forwarded.
-- Codex’s guest sandbox keeps system tools read-only and forces network traffic through its domain proxy. Direct connections and private network destinations are blocked. Guest loopback is available for local app checks.
+- Codex’s guest sandbox keeps system files read-only for normal worker commands and forces network traffic through its domain proxy. The harness’s package installer uses a separate writable setup command in the VM. Direct connections and private network destinations are blocked. Guest loopback is available for local app checks.
 - Source exports preserve regular files, modes and deletions. Dependency folders and common credential files are excluded. Links and special files are rejected. Exports are limited to 512 MiB, with 64 MiB per source file.
 
 The planner still inspects the project through a read-only host OS sandbox. Host MCPs, apps, plugins and hooks stay disabled. VM execution currently needs a file-backed ChatGPT login; Keychain-only login is not supported by this connection.
@@ -76,7 +97,7 @@ flowchart TB
 
 Other domains, direct connections and private network destinations are blocked.
 
-The default allowlist covers common Python, Node, Rust, Go and other package sources, plus Playwright browser downloads. It allows `cdn.playwright.dev`, its Microsoft mirror and redirects to `storage.googleapis.com`. Browser system libraries still need to be available in the image.
+The default allowlist covers common Python, Node, Rust, Go and other package sources, plus Playwright browser downloads. It allows `cdn.playwright.dev`, its Microsoft mirror and redirects to `storage.googleapis.com`. System package setup uses `deb.debian.org` for Debian packages and security updates. The worker requests missing browser libraries through the setup tool.
 
 Edit the host-only file to add required domains:
 

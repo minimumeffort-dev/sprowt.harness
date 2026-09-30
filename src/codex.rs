@@ -16,6 +16,7 @@ use serde_json::{Value, json};
 
 use crate::{
     execution::{Check, CheckResult},
+    packages,
     plan::{self, Plan, Role},
     router::Selection,
     rpc::{self, Rpc},
@@ -71,6 +72,7 @@ pub enum Event {
 pub struct Resume {
     pub id: String,
     pub restart_if_missing: bool,
+    pub accepted_instructions: Vec<String>,
 }
 
 struct Setup {
@@ -190,8 +192,12 @@ impl Client {
     }
 
     pub fn send(&self, action: Action) -> io::Result<()> {
-        if matches!(action, Action::Verify { .. }) {
-            self.cancelled.store(false, Ordering::Relaxed);
+        if matches!(
+            action,
+            Action::Run { .. } | Action::Verify { .. } | Action::Stop { .. }
+        ) {
+            self.cancelled
+                .store(matches!(action, Action::Stop { .. }), Ordering::Relaxed);
         }
         self.actions.send(action).map_err(io::Error::other)
     }
@@ -296,8 +302,37 @@ fn configuration(project: &Path) -> io::Result<Vec<String>> {
     Ok(config)
 }
 
-fn flush(rpc: &mut Rpc, outgoing: &Sender<Event>, vm: &mut Option<Sandbox>) -> io::Result<()> {
-    for message in rpc.buffered.drain(..) {
+fn flush(
+    rpc: &mut Rpc,
+    outgoing: &Sender<Event>,
+    vm: &mut Option<Sandbox>,
+    thread: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    for message in std::mem::take(&mut rpc.buffered) {
+        if message["method"] == "item/tool/call" && message.get("id").is_some() {
+            let params = &message["params"];
+            let result = (|| {
+                if params["threadId"] != thread
+                    || params["tool"] != packages::TOOL
+                    || !params["namespace"].is_null()
+                {
+                    return Err(io::Error::other("This client tool is not available."));
+                }
+                let request = packages::Request::parse(params["arguments"].clone())?;
+                let vm = vm
+                    .as_mut()
+                    .ok_or_else(|| io::Error::other("System packages require the mod VM."))?;
+                let _ = outgoing.send(Event::Preparing(format!(
+                    "installing {} system packages",
+                    request.packages.len()
+                )));
+                vm.install_packages(&request, cancelled)
+            })();
+            let _ = outgoing.send(Event::Preparing(String::new()));
+            rpc.write(json!({"id":message["id"],"result":{"success":result.is_ok(),"contentItems":[{"type":"inputText","text":result.unwrap_or_else(|error|error.to_string())}]}}))?;
+            continue;
+        }
         if message["method"] == "turn/completed"
             && let Some(vm) = vm
         {
@@ -380,13 +415,37 @@ fn serve(
     let mut params = json!({"cwd":project,"permissions":permissions,"approvalPolicy":"never","config":overrides,"developerInstructions":instructions});
     if vm.is_some() {
         params["environments"] = json!([{"environmentId":"vm","cwd":"/workspace"}]);
+        params["dynamicTools"] = json!([packages::tool()]);
+        rpc.client_tools = true;
     }
     if let Some(selection) = &selection {
         params["model"] = json!(selection.model);
     }
+    let mut fresh = params.clone();
+    if let Some(resume) = &resume
+        && !resume.accepted_instructions.is_empty()
+    {
+        fresh["developerInstructions"] = json!(format!(
+            "{instructions}\nPreviously accepted user instructions, in order (later corrections take precedence): {}",
+            json!(resume.accepted_instructions)
+        ));
+    }
+    // Old executor threads have no setup tool; keep their saved transcript and VM.
+    let resume = resume.filter(|resume| {
+        vm.as_ref().is_none_or(|vm| {
+            fs::read_to_string(vm.home.join("system-packages-thread"))
+                .ok()
+                .as_deref()
+                == Some(resume.id.as_str())
+        })
+    });
     let result = if let Some(resume) = resume {
         let mut resume_params = params.clone();
         resume_params["threadId"] = json!(resume.id);
+        resume_params
+            .as_object_mut()
+            .unwrap()
+            .remove("dynamicTools");
         match rpc.call("thread/resume", resume_params) {
             Err(error)
                 if resume.restart_if_missing
@@ -395,17 +454,20 @@ fn serve(
                         .to_string()
                         .starts_with("no rollout found for thread id") =>
             {
-                rpc.call("thread/start", params)?
+                rpc.call("thread/start", fresh)?
             }
             result => result?,
         }
     } else {
-        rpc.call("thread/start", params)?
+        rpc.call("thread/start", fresh)?
     };
     let thread = result["thread"]["id"]
         .as_str()
         .ok_or_else(|| io::Error::other("Codex returned no conversation ID."))?
         .to_owned();
+    if let Some(vm) = &vm {
+        fs::write(vm.home.join("system-packages-thread"), &thread)?;
+    }
     let inventory = rpc.call("mcpServerStatus/list", json!({"threadId":thread}))?;
     if inventory["data"].as_array().is_none_or(|servers| {
         servers.iter().any(|server| {
@@ -435,7 +497,7 @@ fn serve(
             effort: effort.clone(),
         })
         .map_err(io::Error::other)?;
-    flush(rpc, outgoing, &mut vm)?;
+    flush(rpc, outgoing, &mut vm, &thread, &cancelled)?;
     let mut last_turn = None;
     loop {
         while let Ok(action) = actions.try_recv() {
@@ -449,7 +511,7 @@ fn serve(
                     checks: results,
                     before,
                 });
-                flush(rpc, outgoing, &mut vm)?;
+                flush(rpc, outgoing, &mut vm, &thread, &cancelled)?;
                 continue;
             }
             let (method, source, params) = match action {
@@ -529,12 +591,12 @@ fn serve(
                 Err(error) => return Err(error),
                 _ => {}
             }
-            flush(rpc, outgoing, &mut vm)?;
+            flush(rpc, outgoing, &mut vm, &thread, &cancelled)?;
         }
         match rpc.receiver.recv_timeout(Duration::from_millis(25)) {
             Ok(message) => {
                 rpc.receive(message?)?;
-                flush(rpc, outgoing, &mut vm)?;
+                flush(rpc, outgoing, &mut vm, &thread, &cancelled)?;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => return Err(io::Error::other(error)),

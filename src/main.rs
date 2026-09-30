@@ -1,6 +1,7 @@
 mod app;
 mod codex;
 mod execution;
+mod packages;
 mod plan;
 mod router;
 mod rpc;
