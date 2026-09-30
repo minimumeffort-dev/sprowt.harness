@@ -49,6 +49,7 @@ pub enum Event {
     Ready {
         thread: Value,
         model: Option<String>,
+        effort: Option<String>,
     },
     Accepted {
         source: String,
@@ -422,6 +423,7 @@ fn serve(
         .send(Event::Ready {
             thread: result["thread"].clone(),
             model: result["model"].as_str().map(str::to_owned),
+            effort: result["reasoningEffort"].as_str().map(str::to_owned),
         })
         .map_err(io::Error::other)?;
     flush(rpc, outgoing, &mut vm)?;

@@ -1052,7 +1052,7 @@ mod tests {
     }
 
     #[test]
-    fn active_worker_animates_while_completed_replies_keep_their_model() {
+    fn active_worker_animates_while_replies_keep_their_model_and_effort() {
         let (_data, mut app, _root) = execution_app();
         let code_mod = app.current_mod().unwrap();
         let record = app.store.worker(code_mod.id).unwrap();
@@ -1061,12 +1061,14 @@ mod tests {
         worker.role = Role::Executor;
         worker.status = Status::Running;
         worker.model = Some("current-model".into());
+        worker.effort = Some("high".into());
         app.workers.insert(worker.id, worker);
         app.mods[0].messages.push(crate::store::Message {
             item_id: Some("previous-reply".into()),
             role: "codex".into(),
             body: "Previous reply.".into(),
             model: Some("previous-model".into()),
+            effort: Some("low".into()),
         });
         for (elapsed, glyph) in [(0, "◐"), (120, "◓")] {
             let screen = rows(&screen_at(
@@ -1077,12 +1079,12 @@ mod tests {
             ))
             .join("\n");
             assert!(screen.contains(&format!(
-                "{glyph} codex · executor · current-model · running"
+                "{glyph} codex · executor · current-model · high · running"
             )));
-            assert!(screen.contains("◆ codex · executor · previous-model"));
+            assert!(screen.contains("◆ codex · executor · previous-model · low"));
         }
         let still = rows(&screen(&mut app, 116, 40)).join("\n");
-        assert!(still.contains("◌ codex · executor · current-model"));
+        assert!(still.contains("◌ codex · executor · current-model · high"));
         app.workers.values_mut().next().unwrap().status = Status::Ready;
         let idle = rows(&screen_at(
             &mut app,
@@ -1091,8 +1093,11 @@ mod tests {
             Some(Duration::from_millis(120)),
         ))
         .join("\n");
-        assert!(idle.contains("◆ codex · executor · current-model · ready"));
+        assert!(idle.contains("◆ codex · executor · current-model · high · ready"));
         assert!(!idle.contains('◓'));
+        app.workers.values_mut().next().unwrap().role = Role::Planner;
+        let planner = rows(&screen(&mut app, 116, 40)).join("\n");
+        assert!(planner.contains("▤ codex · planner · current-model · high · ready"));
     }
 
     #[test]
@@ -1156,6 +1161,7 @@ mod tests {
                     role: "planner".into(),
                     body: "I'll inspect the source.".into(),
                     model: None,
+                    effort: None,
                 },
             )
             .unwrap();
@@ -1228,6 +1234,7 @@ mod tests {
                         role: role.into(),
                         body: body.into(),
                         model: None,
+                        effort: None,
                     },
                 )
                 .unwrap();

@@ -35,6 +35,7 @@ pub struct Worker {
     pub role: Role,
     pub selection: Option<Selection>,
     pub model: Option<String>,
+    pub effort: Option<String>,
     pub status: Status,
     pub error: Option<String>,
     pub enabled: bool,
@@ -94,6 +95,7 @@ impl Worker {
             role,
             selection: None,
             model: None,
+            effort: None,
             status: if role == Role::Planner {
                 Status::Routing
             } else {
@@ -150,11 +152,14 @@ impl Worker {
             "◆"
         });
         format!(
-            "{glyph} codex · {}{} · {state} · {}",
+            "{glyph} codex · {}{}{} · {state} · {}",
             self.role.name(),
             self.model
                 .as_ref()
                 .map_or(String::new(), |model| format!(" · {model}")),
+            self.effort
+                .as_ref()
+                .map_or(String::new(), |effort| format!(" · {effort}")),
             if self.writable {
                 "Linux VM"
             } else {
@@ -349,8 +354,13 @@ impl Worker {
                 code_mod.planning = store.planning(self.mod_id)?;
                 self.selection = Some(selection);
             }
-            Event::Ready { thread, model } => {
+            Event::Ready {
+                thread,
+                model,
+                effort,
+            } => {
                 self.model = model;
+                self.effort = effort;
                 self.preparing = None;
                 store.save_thread(self.id, thread["id"].as_str().unwrap())?;
                 if self.role == Role::Executor {
@@ -569,6 +579,7 @@ impl Worker {
                         role: "codex".into(),
                         body: summary,
                         model: self.model.clone(),
+                        effort: self.effort.clone(),
                     },
                 )?;
                 self.task_source = None;
@@ -600,6 +611,7 @@ impl Worker {
                                     role: "codex".into(),
                                     body: String::new(),
                                     model: self.model.clone(),
+                                    effort: self.effort.clone(),
                                 });
                             message.body.push_str(delta);
                             save_message(store, code_mod, message)?;
@@ -680,6 +692,7 @@ impl Worker {
                 role: "user".into(),
                 body: input.texts.join("\n\n"),
                 model: None,
+                effort: None,
             },
         )
     }
@@ -756,6 +769,11 @@ impl Worker {
                     None
                 } else {
                     self.model.clone()
+                },
+                effort: if historical || role == "user" {
+                    None
+                } else {
+                    self.effort.clone()
                 },
             },
         )
@@ -999,6 +1017,9 @@ fn remember_message(code_mod: &mut CodeMod, mut message: Message) {
     {
         if message.model.is_none() {
             message.model.clone_from(&existing.model);
+        }
+        if message.effort.is_none() {
+            message.effort.clone_from(&existing.effort);
         }
         *existing = message;
     } else {
@@ -1273,7 +1294,7 @@ mod tests {
         let input = store.planner_input(code_mod.id).unwrap().unwrap();
         store.pending(worker.id, Some(&input.source)).unwrap();
         worker.recovery = Some(input.source.clone());
-        worker.receive(Event::Ready { model:Some("planner-model".into()), thread:json!({"id":"saved-thread", "turns":[{
+        worker.receive(Event::Ready { model:Some("planner-model".into()), effort:Some("high".into()), thread:json!({"id":"saved-thread", "turns":[{
             "id":"turn-1","status":"completed","items":[
                 {"type":"userMessage","clientId":input.source,"content":[{"type":"text","text":"description"}]},
                 {"id":"plan-item","type":"agentMessage","phase":"final_answer","text":final_plan().to_string()}
@@ -1291,12 +1312,29 @@ mod tests {
     }
 
     #[test]
-    fn live_replies_save_the_reported_model_without_relabeling_history() {
+    fn live_replies_save_model_and_effort_without_relabeling_history() {
         let (data, mut store, mut code_mod, mut worker) = planner();
         worker.role = Role::Executor;
-        for (model, id) in [("first-model", "reply-1"), ("second-model", "reply-2")] {
-            worker.receive(Event::Ready { model:Some(model.into()), thread:json!({"id":"thread-1","turns":[{"items":[
+        save_message(
+            &store,
+            &mut code_mod,
+            Message {
+                item_id: Some("model-only".into()),
+                role: "codex".into(),
+                body: "Reply saved before effort labels.".into(),
+                model: Some("older-model".into()),
+                effort: None,
+            },
+        )
+        .unwrap();
+        for (model, effort, id) in [
+            ("first-model", "high", "reply-1"),
+            ("second-model", "low", "reply-2"),
+            ("second-model", "medium", "reply-3"),
+        ] {
+            worker.receive(Event::Ready { model:Some(model.into()), effort:Some(effort.into()), thread:json!({"id":"thread-1","turns":[{"items":[
                 {"type":"agentMessage","id":"reply-1","text":"Earlier reply."},
+                {"type":"agentMessage","id":"model-only","text":"Reply saved before effort labels."},
                 {"type":"agentMessage","id":"legacy-reply","text":"Unknown earlier model."}
             ]}]}) }, &mut store, &mut code_mod).unwrap();
             worker
@@ -1309,36 +1347,27 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(worker.model.as_deref(), Some(model));
+            assert_eq!(worker.effort.as_deref(), Some(effort));
         }
         let saved = data
             .store()
             .load_project(Path::new("/planner-project"))
             .unwrap();
-        for (id, model) in [
-            ("reply-1", Some("first-model")),
-            ("reply-2", Some("second-model")),
-            ("legacy-reply", None),
+        for (id, model, effort) in [
+            ("reply-1", Some("first-model"), Some("high")),
+            ("reply-2", Some("second-model"), Some("low")),
+            ("reply-3", Some("second-model"), Some("medium")),
+            ("model-only", Some("older-model"), None),
+            ("legacy-reply", None, None),
         ] {
-            assert_eq!(
-                saved.mods[0]
-                    .messages
+            for messages in [&saved.mods[0].messages, &code_mod.messages] {
+                let message = messages
                     .iter()
                     .find(|message| message.item_id.as_deref() == Some(id))
-                    .unwrap()
-                    .model
-                    .as_deref(),
-                model
-            );
-            assert_eq!(
-                code_mod
-                    .messages
-                    .iter()
-                    .find(|message| message.item_id.as_deref() == Some(id))
-                    .unwrap()
-                    .model
-                    .as_deref(),
-                model
-            );
+                    .unwrap();
+                assert_eq!(message.model.as_deref(), model);
+                assert_eq!(message.effort.as_deref(), effort);
+            }
         }
     }
 }

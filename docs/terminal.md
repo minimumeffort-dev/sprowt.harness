@@ -3,7 +3,7 @@
 The interface keeps the project and worker status at the top, the conversation left aligned and the composer at the bottom.
 
 ```text
-[sprowt companion]  project + worker model + activity
+[sprowt companion]  project + worker model + effort + activity
 
 <code mod/>  ◇ selected mod
 
@@ -13,7 +13,7 @@ The interface keeps the project and worker status at the top, the conversation l
 ctrl+o ▸ show plan details
 plan ready · numbered tasks
 
-◆ codex · executor · model
+◆ codex · executor · model · effort
 reply
 
 queue / waiting steering, when present
@@ -22,9 +22,9 @@ queue / waiting steering, when present
 keyboard hints
 ```
 
-User messages have a `>` prefix and a subtle background. Agent messages show their provider, role and actual model when known. One blank row separates messages.
+User messages have a `>` prefix and a subtle background. Agent messages show their provider, role, model and configured reasoning effort when reported by Codex. One blank row separates messages.
 
-The live worker status spins during connection, execution and verification. Completed replies stay still. `--no-motion` uses a static activity glyph. New replies save the model reported by Codex; older replies without that metadata keep their original labels.
+The live worker status spins during connection, execution and verification. Completed replies stay still. `--no-motion` uses a static activity glyph. New replies save the reported model and effort; reopening keeps both labels. Missing metadata stays omitted, including effort on older replies.
 
 Plans show task titles, outcomes and dependencies first. **Ctrl+O · show/hide plan details** sits beside the heading. It expands file scopes, completion checks and planner model details. Check commands appear in indented blocks; multiline code keeps its source indentation, and wrapped lines stay inside the block. Expanding keeps the heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
 

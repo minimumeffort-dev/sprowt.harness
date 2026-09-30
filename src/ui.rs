@@ -937,7 +937,7 @@ fn conversation_blocks(
                 text.lines.insert(
                     0,
                     Line::from(format!(
-                        "{}{}",
+                        "{}{}{}",
                         if message.role == "planner" {
                             "▤ codex · planner"
                         } else {
@@ -946,7 +946,11 @@ fn conversation_blocks(
                         message
                             .model
                             .as_ref()
-                            .map_or(String::new(), |model| format!(" · {model}"))
+                            .map_or(String::new(), |model| format!(" · {model}")),
+                        message
+                            .effort
+                            .as_ref()
+                            .map_or(String::new(), |effort| format!(" · {effort}"))
                     ))
                     .fg(ACCENT)
                     .bold(),
