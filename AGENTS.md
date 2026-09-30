@@ -22,6 +22,12 @@
 - Build only features the user requested or explicitly approved in a batch; avoid speculative abstractions and dependencies.
 - Keep comments sparse and concise. Explain non-obvious decisions, not obvious code.
 - Keep explanations concise too.
+- Structure explanations and documentation with clear headings, short paragraphs and lists where useful.
+
+## Finish each batch
+
+- After implementing and verifying an approved batch, commit its changes and push to `main`. Include documentation changes.
+- Committing and pushing are part of finishing the batch; no separate approval is needed.
 
 ## Keep the UX focused
 
