@@ -1,6 +1,7 @@
 [
   "github.com", "api.github.com", "*.githubusercontent.com",
   "mise.jdx.dev", "mise-versions.jdx.dev", "nodejs.org", "registry.npmjs.org",
+  "cdn.playwright.dev", "playwright.download.prss.microsoft.com", "storage.googleapis.com",
   "pypi.org", "files.pythonhosted.org", "*.python.org",
   "astral.sh", "releases.astral.sh",
   "static.rust-lang.org", "crates.io", "index.crates.io", "static.crates.io",

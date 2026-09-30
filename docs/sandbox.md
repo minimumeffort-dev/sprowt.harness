@@ -76,13 +76,15 @@ flowchart TB
 
 Other domains, direct connections and private network destinations are blocked.
 
-The default allowlist covers common Python, Node, Rust, Go and other package sources. Edit the host-only file to add required domains:
+The default allowlist covers common Python, Node, Rust, Go and other package sources, plus Playwright browser downloads. It allows `cdn.playwright.dev`, its Microsoft mirror and redirects to `storage.googleapis.com`. Browser system libraries still need to be available in the image.
+
+Edit the host-only file to add required domains:
 
 ```text
 ~/Library/Application Support/sprowt-harness/network.json
 ```
 
-It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomains. Reconnect the worker after changing it. A model cannot edit this host policy. Allowed services can receive data; domain filtering is not a guarantee against data leaving the VM.
+It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomains. Existing local policies are kept when upgrading; new default domains must also be added to that file. Quit and reopen the harness, then press **Ctrl+R** to reconnect with the updated policy. A model cannot edit this host policy. Allowed services can receive data; domain filtering is not a guarantee against data leaving the VM.
 
 ## Pause, reopen, delete
 
