@@ -14,6 +14,8 @@ flowchart TB
 
 The current harness supports one planner and one executor per mod. Workers in different mods can run at the same time. Planners read the project. Each executor works on a project copy in its own Linux VM. Multiple executors per mod come later. See [Plan execution](execution.md).
 
+Applying changes removes that mod’s VM. Its plan, messages, queue, draft and exported source remain available.
+
 ## Create, switch, delete
 
 - **Create:** open **Ctrl+P**, select **New code mod**, describe the change and press Enter. Planning starts immediately. The first line becomes the title; the full description is saved.

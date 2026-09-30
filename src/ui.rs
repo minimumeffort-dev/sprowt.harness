@@ -585,7 +585,13 @@ fn fit_name(name: &str, width: u16) -> String {
 fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     let queued = app.current_mod().is_some_and(|m| !m.queue.is_empty());
     let worker = app.current_worker();
-    let run = if worker.is_some_and(|w| w.enabled) {
+    let run = if app
+        .current_mod()
+        .and_then(|m| m.execution.as_ref())
+        .is_some_and(|execution| execution.vm_cleanup_pending())
+    {
+        Some("cleanup VM")
+    } else if worker.is_some_and(|w| w.enabled) {
         Some("stop")
     } else if app
         .current_mod()
@@ -885,13 +891,21 @@ fn plan_lines(
     }
     lines.push(
         Line::from(
-            if execution.is_some_and(|execution| execution.status == "applied") {
+            if execution.is_some_and(|execution| execution.vm_cleanup_pending()) {
+                "changes applied · VM cleanup pending"
+            } else if execution.is_some_and(|execution| execution.status == "applied") {
                 "changes applied to the project"
             } else {
                 "execution stays in the mod's Linux VM"
             },
         )
-        .fg(KEY_HINT),
+        .fg(
+            if execution.is_some_and(|execution| execution.vm_cleanup_pending()) {
+                ACCENT
+            } else {
+                KEY_HINT
+            },
+        ),
     );
     lines
 }

@@ -50,7 +50,7 @@ Code mod and queue dialogs share selection, spacing and keyboard hints. Hints ad
 | Ctrl+J | Add a newline |
 | Ctrl+P | Switch, create or delete a code mod |
 | Ctrl+Q | Manage queued instructions |
-| Ctrl+R | Start, stop or retry the current worker |
+| Ctrl+R | Start, stop or retry; retry pending VM cleanup after apply |
 | Ctrl+O | Show or hide saved plan details |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |

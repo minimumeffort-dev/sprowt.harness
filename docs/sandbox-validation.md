@@ -42,7 +42,7 @@ Temporary files and the probe container are removed on normal success or failure
 
 ## Integration
 
-The harness now uses this route for code mods: a persistent VM per mod, model-driven setup, guest checks and source-only diff review.
+The harness now uses this route for code mods: one VM per executing mod, model-driven setup, guest checks and source-only diff review. Applying deletes the VM and keeps the mod’s history.
 
 This older development probe allows guest internet access and runs as guest root. The integrated backend adds a domain proxy, Linux sandbox enforcement and lifecycle recovery. These checks are not a full security audit.
 

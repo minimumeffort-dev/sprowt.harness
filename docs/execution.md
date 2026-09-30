@@ -15,6 +15,7 @@ flowchart TB
     final -->|"pass"| review["Ctrl+D · review the diff"]
     review --> confirm["a, then Enter · confirm apply"]
     confirm --> project["Apply reviewed files to your project"]
+    project --> cleanup["Delete the mod’s VM · keep history and source exports"]
 ```
 
 ## Working folder
@@ -23,7 +24,7 @@ The first run snapshots your current files, including uncommitted and untracked 
 
 Common credential files, including `.env` and `.npmrc`, are excluded. `.env.example` and `.env.sample` are included. Installed dependencies and build caches are excluded too. Other secrets in source files are still source files; keep them out of the project.
 
-The source snapshot is copied into `/workspace` inside a persistent VM. The host’s `work/` folder holds exported source for diff review; it is not mounted into the guest. Runtime installs and dependencies remain in the VM. See [Local Linux sandbox](sandbox.md) for setup, download policy and lifecycle.
+The source snapshot is copied into `/workspace` inside the mod’s VM. The host’s `work/` folder holds exported source for diff review; it is not mounted into the guest. Runtime installs and dependencies persist until apply or mod deletion removes the VM. See [Local Linux sandbox](sandbox.md) for setup, download policy and lifecycle.
 
 The executor cannot access the original project, harness state, host Codex credentials or Keychain. The planner remains read-only. See [Workers](workers.md) for the boundary.
 
@@ -51,7 +52,11 @@ The working files must match the snapshot that passed verification and the diff 
 
 Applying adds, edits and deletes files without committing in your target project. Files are replaced individually; a handled error rolls back earlier replacements. A crash midway can leave a partial apply; the starting copies remain in the mod folder's `before/` directory.
 
-After applying, queued follow-up questions use read-only tools against the project. Start a new mod for further code changes. Deleting a mod removes its VM and working folder, including unapplied work.
+After applying, the harness stops the executor and deletes the mod’s VM, including its runtime and dependencies. The plan, messages, checks, draft, queue and source exports stay on the Mac. Shared images remain for reuse. A failed or cancelled apply keeps the VM.
+
+If VM cleanup fails, changes stay applied. **Ctrl+R** retries cleanup; the pending state survives reopening. Older applied mods with retained VMs offer the same cleanup action. Cleanup finishes before Ctrl+R can start read-only follow-up questions against the project.
+
+Start a new mod for further code changes. Deleting a mod removes its history and working folder, including unapplied work.
 
 ## Current limits
 

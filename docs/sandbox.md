@@ -86,9 +86,18 @@ Edit the host-only file to add required domains:
 
 It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomains. Existing local policies are kept when upgrading; new default domains must also be added to that file. Quit and reopen the harness, then press **Ctrl+R** to reconnect with the updated policy. A model cannot edit this host policy. Allowed services can receive data; domain filtering is not a guarantee against data leaving the VM.
 
-## Pause, reopen, delete
+## VM lifecycle
 
-Pausing keeps the VM and its installed runtime. Quitting stops the VM; reopening and **Ctrl+R** start it again. Reconnecting also clears guest processes left by a crash. Source and dependencies persist. Deleting the mod deletes its VM and host workspace. Images and the container service remain for reuse.
+| Mod state | VM |
+| --- | --- |
+| Running | Running; reused across tasks |
+| Paused or awaiting review | Retained with its runtime and dependencies |
+| Successfully applied | Deleted; history and source exports stay on the Mac |
+| Mod deleted | Deleted along with its host workspace and history |
+
+Quitting stops VMs and retains unfinished mods’ disks. Reopening and **Ctrl+R** reconnect without losing dependencies. Reconnecting clears guest processes left by a crash. Shared images and the container service remain for reuse.
+
+VM deletion happens after files are applied and the applied state is saved. If cleanup fails, the project keeps the changes. The VM marker stays until deletion succeeds; **Ctrl+R** retries cleanup, including after reopening. A failed or cancelled apply keeps the VM.
 
 Unfinished mods created before VM support keep their working files. Their first explicit run starts a fresh executor conversation and reruns tasks in Linux; old host check results are cleared. Applied mods remain applied. A missing or altered VM blocks reconnection and preserves the last exported source for review.
 

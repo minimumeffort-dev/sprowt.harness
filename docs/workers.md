@@ -34,7 +34,7 @@ Codex’s trusted app-server uses the host login and network for inference. Exec
 - A new mod starts its planner automatically.
 - After planning, **Ctrl+R** starts or pauses plan execution. Rust selects tasks; queued instructions run between tasks. See [Plan execution](execution.md) for verification and applying changes.
 - Reopening restores saved state. **Ctrl+R** reconnects a worker to its saved Codex conversation.
-- Quitting interrupts turns, stops agent processes and stops each active VM. Its disk persists. Deleting a mod also deletes its VM and workspace.
+- Quitting interrupts turns and stops agent processes and active VMs. Applying deletes the mod’s VM and keeps its history; deleting the mod removes its workspace and history too. Failed VM cleanup stays retryable with Ctrl+R.
 
 The live status shows the model and configured reasoning effort reported by Codex and spins while work is in progress. Replies keep both labels when reopened. Laya still routes only the planner; the executor uses Codex’s resolved conversation settings. Unreported values stay omitted.
 

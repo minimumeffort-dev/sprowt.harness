@@ -552,6 +552,14 @@ impl App {
         let Some(active) = self.active else {
             return Ok(());
         };
+        if self.mods[active]
+            .execution
+            .as_ref()
+            .is_some_and(|execution| execution.vm_cleanup_pending())
+        {
+            self.cleanup_vm(active);
+            return Ok(());
+        }
         let role = if self.mods[active]
             .planning
             .as_ref()
@@ -756,6 +764,7 @@ impl App {
                 self.review = None;
                 self.view = View::Chat;
                 self.notice = None;
+                self.cleanup_vm(index);
             }
             Err(error) => {
                 self.notice = Some(error.to_string());
@@ -763,6 +772,20 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    fn cleanup_vm(&mut self, index: usize) {
+        if let Some(execution) = self.mods[index]
+            .execution
+            .as_ref()
+            .filter(|execution| execution.vm_cleanup_pending())
+        {
+            self.notice = crate::sandbox::delete(&execution.workspace)
+                .err()
+                .map(|error| {
+                    format!("Changes applied; VM cleanup failed: {error}. Ctrl+R retries cleanup.")
+                });
+        }
     }
 
     fn poll_workers(&mut self) -> Result<()> {
@@ -954,7 +977,7 @@ mod tests {
             )
             .unwrap();
         store.save_draft(code_mod.id, "keep this draft").unwrap();
-        let root = data.0.join("workspace");
+        let root = data.0.join(data.0.file_name().unwrap());
         workspace::create(&project, &root).unwrap();
         store.create_execution(code_mod.id, &root, &plan).unwrap();
         std::fs::write(root.join("work/hello.sh"), "new\n").unwrap();
@@ -1048,6 +1071,209 @@ mod tests {
             rows(&screen(&mut app, 116, 40))
                 .join("\n")
                 .contains("ctrl+r run")
+        );
+    }
+
+    #[test]
+    fn failed_vm_cleanup_keeps_applied_work_and_can_be_retried_after_reopening() {
+        let (data, mut app, root) = execution_app();
+        let moved = data.0.join("invalid workspace name");
+        std::fs::rename(root, &moved).unwrap();
+        let id = app.current_mod().unwrap().id;
+        rusqlite::Connection::open(data.0.join("state.db"))
+            .unwrap()
+            .execute(
+                "UPDATE executions SET workspace=?1 WHERE mod_id=?2",
+                rusqlite::params![moved.to_string_lossy(), id],
+            )
+            .unwrap();
+        app.mods[0].execution = app.store.execution(id).unwrap();
+        std::fs::write(moved.join("vm.json"), "{}").unwrap();
+        let queued_message = app.store.enqueue(id, "keep this follow-up").unwrap();
+        app.mods[0].queue.push(queued_message);
+        app.store.save_draft(id, "keep this draft").unwrap();
+
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        std::fs::write(app.project.join("hello.sh"), "user edit\n").unwrap();
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "review");
+        assert!(moved.join("vm.json").exists());
+
+        std::fs::write(app.project.join("hello.sh"), "old\n").unwrap();
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "applied");
+        assert!(app.worker_error().unwrap().contains("VM cleanup failed"));
+        assert_eq!(
+            std::fs::read_to_string(app.project.join("hello.sh")).unwrap(),
+            "new\n"
+        );
+
+        let project = app.project.clone();
+        drop(app);
+        let mut app = App::load(project, false, data.store()).unwrap();
+        assert!(app.mods[0].execution.as_ref().unwrap().vm_cleanup_pending());
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert_eq!(queued(&app), ["keep this follow-up"]);
+        let display = rows(&screen(&mut app, 116, 40)).join("\n");
+        assert!(display.contains("VM cleanup pending"));
+        assert!(display.contains("ctrl+r cleanup VM"));
+        assert!(
+            rows(&screen(&mut app, 48, 24))
+                .join("\n")
+                .contains("^r cleanup VM")
+        );
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(app.worker_error().unwrap().contains("VM cleanup failed"));
+        assert!(app.workers.is_empty());
+        assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "applied");
+        assert_eq!(
+            std::fs::read_to_string(moved.join("work/hello.sh")).unwrap(),
+            "new\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(moved.join("before/hello.sh")).unwrap(),
+            "old\n"
+        );
+    }
+
+    #[test]
+    #[ignore = "creates temporary Apple Container VMs to verify apply and cleanup retry"]
+    fn applying_deletes_its_vm_and_keeps_the_mod_history() {
+        use std::process::Command;
+
+        let containers = || -> Vec<serde_json::Value> {
+            let output = Command::new("container")
+                .args(["list", "--all", "--format", "json"])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice(&output.stdout).unwrap()
+        };
+        let original = containers();
+        for fail_first in [false, true] {
+            let (data, mut app, root) = execution_app();
+            let name = format!("sprowt-{}", root.file_name().unwrap().to_str().unwrap());
+            let image = format!("sprowt-sandbox:{}-v1", crate::sandbox::VERSION);
+            std::fs::create_dir(root.join("host-codex")).unwrap();
+            let created = Command::new("container")
+                .args([
+                    "create",
+                    "--name",
+                    &name,
+                    "--cpus",
+                    "1",
+                    "--memory",
+                    "1G",
+                    "--label",
+                    &format!("dev.minimumeffort.sprowt.workspace={name}"),
+                    &image,
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                created.status.success(),
+                "{}",
+                String::from_utf8_lossy(&created.stderr)
+            );
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let vm = containers()
+                    .into_iter()
+                    .find(|vm| vm["id"] == name)
+                    .unwrap();
+                let marker = serde_json::json!({"ready": true, "digest": vm["configuration"]["image"]["descriptor"]["digest"]});
+                let mut saved = marker.clone();
+                if fail_first {
+                    saved["digest"] = serde_json::json!("wrong-digest");
+                }
+                std::fs::write(root.join("vm.json"), saved.to_string()).unwrap();
+                let started = Command::new("container")
+                    .args(["start", &name])
+                    .output()
+                    .unwrap();
+                assert!(
+                    started.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&started.stderr)
+                );
+                let queued_message = app
+                    .store
+                    .enqueue(app.mods[0].id, "follow-up question")
+                    .unwrap();
+                app.mods[0].queue.push(queued_message);
+                app.store
+                    .save_draft(app.mods[0].id, "keep this draft")
+                    .unwrap();
+                let history: Vec<_> = app.mods[0]
+                    .messages
+                    .iter()
+                    .map(|m| m.body.clone())
+                    .collect();
+                key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
+                key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+                key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+                assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "applied");
+                if fail_first {
+                    assert!(app.mods[0].execution.as_ref().unwrap().vm_cleanup_pending());
+                    assert!(containers().iter().any(|vm| vm["id"] == name));
+                    let project = app.project.clone();
+                    drop(app);
+                    app = App::load(project, false, data.store()).unwrap();
+                    std::fs::write(root.join("vm.json"), marker.to_string()).unwrap();
+                    key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+                }
+                assert!(!root.join("vm.json").exists());
+                assert!(!containers().iter().any(|vm| vm["id"] == name));
+                assert!(app.workers.is_empty());
+                assert!(app.worker_error().is_none());
+                let reopened = App::load(app.project.clone(), false, data.store()).unwrap();
+                let execution = reopened.mods[0].execution.as_ref().unwrap();
+                assert_eq!(execution.status, "applied");
+                assert!(!execution.vm_cleanup_pending());
+                assert!(execution.complete());
+                assert_eq!(execution.checks[0].exit_code, Some(0));
+                assert_eq!(
+                    reopened.mods[0]
+                        .messages
+                        .iter()
+                        .map(|m| m.body.clone())
+                        .collect::<Vec<_>>(),
+                    history
+                );
+                assert_eq!(queued(&reopened), ["follow-up question"]);
+                assert_eq!(reopened.input.lines(), ["keep this draft"]);
+                assert_eq!(
+                    std::fs::read_to_string(reopened.project.join("hello.sh")).unwrap(),
+                    "new\n"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(root.join("before/hello.sh")).unwrap(),
+                    "old\n"
+                );
+                assert_eq!(
+                    std::fs::read_to_string(root.join("work/hello.sh")).unwrap(),
+                    "new\n"
+                );
+                assert!(root.join("base.git").is_dir());
+                assert!(root.join("review.patch").is_file());
+            }));
+            // Recover our fixture even if an assertion fails before the marker is saved.
+            let _ = std::fs::remove_file(root.join("vm.json"));
+            crate::sandbox::delete(&root).unwrap();
+            if let Err(error) = result {
+                std::panic::resume_unwind(error);
+            }
+        }
+        let remaining = containers();
+        assert!(
+            original
+                .iter()
+                .all(|vm| remaining.iter().any(|other| other["id"] == vm["id"]))
         );
     }
 

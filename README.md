@@ -13,7 +13,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 - [Code mods and messages](docs/code-mods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
 - [Plan execution](docs/execution.md): one executor follows task dependencies. Verify, review the diff, then apply.
-- [Local Linux sandbox](docs/sandbox.md): a persistent Apple Container VM per mod. Codex prepares the runtime; edits and checks stay inside it.
+- [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex prepares the runtime; applying changes deletes the VM and keeps the mod’s history.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
 - [Terminal and companion](docs/terminal.md): clear message ownership, model and effort labels, live activity, readable plan details and the animated Sprowt pet.
@@ -43,7 +43,7 @@ flowchart TB
     review -->|"you confirm apply"| project
 ```
 
-Laya recommends the planner configuration. Codex inference uses your subscription and the internet. Codex installs the project runtime and dependencies inside the VM. Tasks run sequentially within a mod; different mods can run in parallel. Muse follows later.
+Laya recommends the planner configuration. Codex inference uses your subscription and the internet. Codex installs the project runtime and dependencies inside the VM. Tasks run sequentially within a mod; different mods can run in parallel. Applying changes deletes that mod’s VM; history and source exports stay on the Mac. Muse follows later.
 
 ## Get started
 
@@ -97,7 +97,7 @@ This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to 
 | Ctrl+J | Newline |
 | Ctrl+P | Open code mods; switch or create one |
 | Ctrl+Q | Open the queue |
-| Ctrl+R | Run, stop or retry the current worker |
+| Ctrl+R | Run, stop or retry; retry pending VM cleanup after apply |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
