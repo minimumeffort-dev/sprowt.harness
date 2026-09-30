@@ -2,23 +2,42 @@
 
 Each executing code mod gets its own Apple Container VM. Codex chooses and installs the project’s runtime there. Your login stays on the Mac.
 
+## Commands and checks
+
+Read from top to bottom. Solid arrows send work; dashed arrows return results.
+
+```mermaid
+sequenceDiagram
+    box Your Mac · login stays here
+        participant Harness as Sprowt harness
+        participant Agent as Codex agent<br/>(app-server)
+    end
+    box Linux VM · one per mod
+        participant Tools as VM tool runner<br/>(Codex exec-server)
+    end
+    Harness->>Agent: Send the next task
+    Agent->>Tools: Prepare runtime, edit and test
+    Tools-->>Agent: Tool results
+    Agent-->>Harness: Task summary and check commands
+    Harness->>Tools: Rerun the checks independently
+    Tools-->>Harness: Check results
+```
+
+Both VM connections use standard input/output. The harness reruns checks in the same VM that Codex used.
+
+## Source files
+
+Files move in one direction: copy, work, review, apply. The VM gets a copy of your source; the original project stays on the Mac.
+
 ```mermaid
 flowchart TB
-    subgraph Mac
-        harness["Rust harness"] <--> agent["Codex app-server · subscription login"]
-        project["Your project"] -->|"source snapshot"| import["Copy into VM"]
-        review["Source diff + check results"] -->|"you confirm apply"| project
-    end
-    subgraph VM["Apple Container · persistent Linux VM per mod"]
-        executor["Codex exec-server"] <--> work["/workspace · code + dependencies"]
-        executor --> runtime["mise · project runtimes"]
-        executor --> proxy["Enforced network proxy"]
-    end
-    agent <-->|"native tools · stdio"| executor
-    harness -->|"independent verification · stdio"| executor
-    import --> work
-    work -->|"export source files"| review
-    proxy -->|"allowed domains only"| downloads["Public runtimes and packages"]
+    source["1. Your project<br/>Mac · original source"]
+    workspace["2. /workspace<br/>Linux VM · code and dependencies"]
+    review["3. Diff and check results<br/>Mac · review with Ctrl+D"]
+    applied["4. Your project<br/>Mac · reviewed changes applied"]
+    source -->|"Copy source into the VM"| workspace
+    workspace -->|"Export source only"| review
+    review -->|"Checks pass and you confirm apply"| applied
 ```
 
 ## Use it
@@ -45,6 +64,17 @@ The image contains general build tools, Bubblewrap, Codex and mise. No project l
 The planner still inspects the project through a read-only host OS sandbox. Host MCPs, apps, plugins and hooks stay disabled. VM execution currently needs a file-backed ChatGPT login; Keychain-only login is not supported by this connection.
 
 ## Downloads
+
+```mermaid
+flowchart TB
+    command["Command in the Linux VM"]
+    proxy["Codex network proxy<br/>Uses the Mac's domain allowlist"]
+    packages["Public runtime and package sources"]
+    command -->|"Request a download"| proxy
+    proxy -->|"Allowed domain"| packages
+```
+
+Other domains, direct connections and private network destinations are blocked.
 
 The default allowlist covers common Python, Node, Rust, Go and other package sources. Edit the host-only file to add required domains:
 
