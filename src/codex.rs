@@ -14,6 +14,11 @@ use std::{
 
 use serde_json::{Value, json};
 
+use crate::{
+    plan::{self, Plan, Role},
+    router::Selection,
+};
+
 pub enum Action {
     Run {
         source: String,
@@ -31,11 +36,18 @@ pub enum Action {
 }
 
 pub enum Event {
+    Configured(Selection),
     Ready(Value),
     Accepted { source: String, turn: String },
     Notification(Value),
     Rejected { source: String, message: String },
     Failed(String),
+}
+
+struct Setup {
+    role: Role,
+    instructions: String,
+    selection: Option<Selection>,
 }
 
 pub struct Client {
@@ -47,7 +59,14 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn start(project: &Path, thread_id: Option<String>) -> io::Result<Self> {
+    pub fn start(
+        project: &Path,
+        thread_id: Option<String>,
+        role: Role,
+        description: &str,
+        plan: Option<&Plan>,
+        selection: Option<Selection>,
+    ) -> io::Result<Self> {
         #[cfg(not(unix))]
         return Err(io::Error::other(
             "The first Codex worker currently supports macOS and Linux.",
@@ -97,6 +116,12 @@ impl Client {
         let (actions, inbox) = mpsc::channel();
         let (outgoing, events) = mpsc::channel();
         let project = project.to_owned();
+        let instructions = plan::instructions(role, description, plan);
+        let setup = Setup {
+            role,
+            instructions,
+            selection,
+        };
         let task = thread::spawn(move || {
             let mut rpc = Rpc {
                 stdin,
@@ -104,7 +129,7 @@ impl Client {
                 next_id: 0,
                 buffered: Vec::new(),
             };
-            if let Err(error) = serve(&mut rpc, &project, thread_id, inbox, &outgoing) {
+            if let Err(error) = serve(&mut rpc, &project, thread_id, setup, inbox, &outgoing) {
                 let _ = outgoing.send(Event::Failed(error.to_string()));
             }
         });
@@ -277,9 +302,15 @@ fn serve(
     rpc: &mut Rpc,
     project: &Path,
     thread_id: Option<String>,
+    setup: Setup,
     actions: Receiver<Action>,
     outgoing: &Sender<Event>,
 ) -> io::Result<()> {
+    let Setup {
+        role,
+        instructions,
+        selection,
+    } = setup;
     rpc.call("initialize", json!({"clientInfo":{"name":"sprowt_harness","title":"Sprowt Harness","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
     rpc.write(json!({"method":"initialized"}))?;
     let account = rpc.call("account/read", json!({"refreshToken":false}))?;
@@ -301,7 +332,17 @@ fn serve(
             overrides.insert(format!("shell_environment_policy.set.{name}"), json!(""));
         }
     }
-    let mut params = json!({"cwd":project,"permissions":"sprowt_readonly","approvalPolicy":"never","config":overrides,"developerInstructions":"This worker is read-only. Inspect the project and answer concisely. Do not change files, request broader permissions, access credentials, or use external tools."});
+    let selection = selection
+        .map(|selection| select_model(rpc, selection))
+        .transpose()?;
+    if let Some(selection) = &selection {
+        overrides.insert("model_reasoning_effort".into(), json!(selection.effort));
+        let _ = outgoing.send(Event::Configured(selection.clone()));
+    }
+    let mut params = json!({"cwd":project,"permissions":"sprowt_readonly","approvalPolicy":"never","config":overrides,"developerInstructions":instructions});
+    if let Some(selection) = &selection {
+        params["model"] = json!(selection.model);
+    }
     let method = if let Some(id) = thread_id {
         params["threadId"] = json!(id);
         "thread/resume"
@@ -334,11 +375,17 @@ fn serve(
     loop {
         while let Ok(action) = actions.try_recv() {
             let (method, source, params) = match action {
-                Action::Run { source, text } => (
-                    "turn/start",
-                    source.clone(),
-                    json!({"threadId":thread,"clientUserMessageId":source,"input":[{"type":"text","text":text}],"permissions":"sprowt_readonly","approvalPolicy":"never"}),
-                ),
+                Action::Run { source, text } => {
+                    let mut params = json!({"threadId":thread,"clientUserMessageId":source,"input":[{"type":"text","text":text}],"permissions":"sprowt_readonly","approvalPolicy":"never"});
+                    if role == Role::Planner {
+                        params["outputSchema"] = plan::schema();
+                        if let Some(selection) = &selection {
+                            params["model"] = json!(selection.model);
+                            params["effort"] = json!(selection.effort);
+                        }
+                    }
+                    ("turn/start", source, params)
+                }
                 Action::Steer {
                     source,
                     texts,
@@ -408,6 +455,62 @@ fn serve(
             Err(error) => return Err(io::Error::other(error)),
         }
     }
+}
+
+fn select_model(rpc: &mut Rpc, mut selection: Selection) -> io::Result<Selection> {
+    let mut models = Vec::new();
+    let mut cursor = Value::Null;
+    loop {
+        let result = rpc.call(
+            "model/list",
+            json!({"limit":100,"includeHidden":false,"cursor":cursor}),
+        )?;
+        models.extend(
+            result["data"]
+                .as_array()
+                .ok_or_else(|| io::Error::other("Codex returned no model catalog."))?
+                .iter()
+                .cloned(),
+        );
+        cursor = result["nextCursor"].clone();
+        if cursor.is_null() {
+            break;
+        }
+    }
+    let available = |model: &Value| model["model"] == selection.model;
+    let model = if let Some(model) = models.iter().find(|model| available(model)) {
+        model
+    } else {
+        let model = models
+            .iter()
+            .find(|model| model["model"] == "gpt-6.1-sol")
+            .or_else(|| models.iter().find(|model| model["isDefault"] == true))
+            .ok_or_else(|| io::Error::other("No supported planning model is listed by Codex."))?;
+        selection
+            .reason
+            .push_str(" · selected model unavailable; catalog fallback");
+        selection.model = model["model"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("Invalid model catalog."))?
+            .into();
+        selection.effort = "high".into();
+        model
+    };
+    if !model["supportedReasoningEfforts"]
+        .as_array()
+        .is_some_and(|levels| {
+            levels
+                .iter()
+                .any(|level| level["reasoningEffort"] == selection.effort)
+        })
+    {
+        selection.effort = model["defaultReasoningEffort"]
+            .as_str()
+            .ok_or_else(|| io::Error::other("No supported planner reasoning level."))?
+            .into();
+        selection.reason.push_str(" · default reasoning fallback");
+    }
+    Ok(selection)
 }
 
 fn check_boundary(rpc: &mut Rpc, project: &Path) -> io::Result<()> {

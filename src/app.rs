@@ -14,6 +14,8 @@ use rusqlite::Result;
 use tachyonfx::Effect;
 
 use crate::{
+    plan::Role,
+    router::Router,
     sprout,
     store::{CodeMod, Store, source_id},
     ui,
@@ -39,6 +41,8 @@ pub struct App {
     pub page_size: u16,
     pub queue_selection: BTreeSet<i64>,
     workers: BTreeMap<i64, Worker>,
+    auto_plans: BTreeSet<i64>,
+    router: Option<Router>,
     notice: Option<String>,
     store: Store,
     project_id: i64,
@@ -77,6 +81,8 @@ impl App {
             page_size: 1,
             queue_selection: BTreeSet::new(),
             workers: BTreeMap::new(),
+            auto_plans: BTreeSet::new(),
+            router: None,
             notice: None,
             store,
             project_id: state.id,
@@ -148,7 +154,8 @@ impl App {
                         .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                 }
                 View::NewMod => {
-                    self.input.insert_str(text.replace(['\r', '\n'], " "));
+                    self.input
+                        .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                 }
                 View::Mods(_) | View::DeleteMod(_) | View::Queue(_) => {}
             },
@@ -182,7 +189,7 @@ impl App {
                             }
                         }
                         KeyCode::Enter => self.create_mod()?,
-                        KeyCode::Char('j') if ctrl => {}
+                        KeyCode::Char('j') if ctrl => self.input.insert_newline(),
                         _ => {
                             self.input.input(key);
                         }
@@ -397,12 +404,13 @@ impl App {
     }
 
     fn create_mod(&mut self) -> Result<()> {
-        let name = self.input.lines().join(" ");
+        let name = self.input.lines().join("\n");
         let name = name.trim();
         if name.is_empty() {
             return Ok(());
         }
         let code_mod = self.store.create_mod(self.project_id, name)?;
+        self.auto_plans.insert(code_mod.id);
         self.mods.push(code_mod);
         self.active = Some(self.mods.len() - 1);
         self.notice = None;
@@ -416,6 +424,7 @@ impl App {
     fn delete_mod(&mut self, index: usize) -> Result<()> {
         let mod_id = self.mods[index].id;
         let previous = self.current_mod().map(|code_mod| code_mod.id);
+        self.auto_plans.remove(&mod_id);
         self.workers.retain(|_, worker| worker.mod_id != mod_id);
         let selected = self.store.delete_mod(self.project_id, mod_id)?;
         self.mods.remove(index);
@@ -443,7 +452,15 @@ impl App {
 
     pub fn current_worker(&self) -> Option<&Worker> {
         let mod_id = self.current_mod()?.id;
-        self.workers.values().find(|worker| worker.mod_id == mod_id)
+        let workers = || {
+            self.workers
+                .values()
+                .filter(|worker| worker.mod_id == mod_id)
+        };
+        workers()
+            .find(|worker| worker.role == Role::Planner && worker.enabled)
+            .or_else(|| workers().find(|worker| worker.role == Role::Executor))
+            .or_else(|| workers().next())
     }
 
     pub fn worker_error(&self) -> Option<&str> {
@@ -453,21 +470,66 @@ impl App {
     }
 
     fn toggle_worker(&mut self) -> Result<()> {
-        let Some(mod_id) = self.current_mod().map(|code_mod| code_mod.id) else {
+        let Some(active) = self.active else {
             return Ok(());
         };
+        let role = if self.mods[active]
+            .planning
+            .as_ref()
+            .is_some_and(|p| p.status != "ready")
+        {
+            Role::Planner
+        } else {
+            Role::Executor
+        };
+        let mod_id = self.mods[active].id;
         if let Some(worker) = self
             .workers
             .values_mut()
-            .find(|worker| worker.mod_id == mod_id)
+            .find(|w| w.mod_id == mod_id && w.role == role)
             && worker.status != Status::Failed
         {
+            if role == Role::Planner && worker.status == Status::Ready && !worker.enabled {
+                self.store.retry_plan(mod_id)?;
+                self.mods[active].planning = self.store.planning(mod_id)?;
+            }
             worker.toggle();
             return Ok(());
         }
-        let record = self.store.worker(mod_id)?;
+        self.start_worker(active, role)
+    }
+
+    fn start_worker(&mut self, index: usize, role: Role) -> Result<()> {
+        let mod_id = self.mods[index].id;
+        let record = if role == Role::Executor {
+            self.store.worker(mod_id)?
+        } else {
+            self.store.worker_for(mod_id, role)?
+        };
         self.workers.remove(&record.id);
-        match Worker::start(&self.project, mod_id, record) {
+        let routing = if role == Role::Planner {
+            if record.pending.is_none()
+                && self.mods[index]
+                    .planning
+                    .as_ref()
+                    .is_some_and(|p| p.status == "failed" || p.status == "paused")
+            {
+                self.store.retry_plan(mod_id)?;
+                self.mods[index].planning = self.store.planning(mod_id)?;
+            }
+            if self.router.is_none() {
+                self.router = Router::start().ok();
+            }
+            self.router.as_ref().map(|router| {
+                router.request(crate::router::context(
+                    &self.project,
+                    &self.mods[index].description,
+                ))
+            })
+        } else {
+            None
+        };
+        match Worker::start(&self.project, &self.mods[index], record, role, routing) {
             Ok(worker) => {
                 self.workers.insert(worker.id, worker);
                 self.notice = None;
@@ -478,6 +540,11 @@ impl App {
     }
 
     fn poll_workers(&mut self) -> Result<()> {
+        for mod_id in std::mem::take(&mut self.auto_plans) {
+            if let Some(index) = self.mods.iter().position(|m| m.id == mod_id) {
+                self.start_worker(index, Role::Planner)?;
+            }
+        }
         let focused = match self.view {
             View::Queue(index) | View::EditQueue(index) => self
                 .current_mod()
@@ -502,6 +569,7 @@ impl App {
                 &mut self.store,
                 code_mod,
                 editing_mod != Some(code_mod.id) && deleting_mod != Some(code_mod.id),
+                &self.project,
             )?;
         }
         if let Some(code_mod) = self.current_mod() {
@@ -611,6 +679,26 @@ mod tests {
     }
 
     #[test]
+    fn descriptions_schedule_planning_but_reopening_does_not_start_workers() {
+        let data = TestData::new();
+        let project = PathBuf::from("/project");
+        let mut app = App::load(project.clone(), false, data.store()).unwrap();
+        paste(&mut app, "Add greeting flag\nKeep the default greeting");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let code_mod = app.current_mod().unwrap();
+        assert_eq!(code_mod.name, "Add greeting flag");
+        assert_eq!(code_mod.messages[0].body, code_mod.description);
+        assert!(code_mod.queue.is_empty());
+        assert_eq!(code_mod.planning.as_ref().unwrap().status, "pending");
+        assert!(app.auto_plans.contains(&code_mod.id));
+        drop(app);
+        let reopened = App::load(project, false, data.store()).unwrap();
+        assert!(reopened.auto_plans.is_empty());
+        assert!(reopened.workers.is_empty());
+        assert_eq!(reopened.current_mod().unwrap().messages.len(), 1);
+    }
+
+    #[test]
     fn switching_and_restarting_restores_separate_queues_and_drafts() {
         let data = TestData::new();
         let project = PathBuf::from("/project");
@@ -636,7 +724,7 @@ mod tests {
         key(&mut app, KeyCode::Up, KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(queued(&app), ["message A"]);
-        assert!(app.current_mod().unwrap().messages.is_empty());
+        assert_eq!(app.current_mod().unwrap().messages.len(), 1);
         assert_eq!(app.input.lines(), ["draft A", "second line"]);
         drop(app);
 
@@ -708,7 +796,7 @@ mod tests {
             ["second", "third", "edited\nsecond line"]
         );
         assert_eq!(reopened.input.lines(), ["keep this draft"]);
-        assert!(reopened.current_mod().unwrap().messages.is_empty());
+        assert_eq!(reopened.current_mod().unwrap().messages.len(), 1);
 
         for _ in 0..3 {
             key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
@@ -750,7 +838,7 @@ mod tests {
             reopened.current_mod().unwrap().steering,
             ["first", "second"]
         );
-        assert!(reopened.current_mod().unwrap().messages.is_empty());
+        assert_eq!(reopened.current_mod().unwrap().messages.len(), 1);
     }
     #[test]
     fn cancelling_mod_deletion_preserves_drafts_and_ignores_repeat_or_paste() {
@@ -833,7 +921,7 @@ mod tests {
         key(&mut reopened, KeyCode::Enter, KeyModifiers::NONE);
         let code_mod = reopened.current_mod().unwrap();
         assert!(code_mod.queue.is_empty());
-        assert!(code_mod.messages.is_empty());
+        assert_eq!(code_mod.messages.len(), 1);
         assert!(code_mod.steering.is_empty());
     }
 }

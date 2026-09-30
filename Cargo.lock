@@ -967,6 +967,7 @@ dependencies = [
  "ratatui",
  "ratatui-textarea",
  "rusqlite",
+ "serde",
  "serde_json",
  "tachyonfx",
 ]

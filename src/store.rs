@@ -3,9 +3,16 @@ use std::{fs, io, path::Path, time::Duration};
 use directories::ProjectDirs;
 use rusqlite::{Connection, OptionalExtension, Result, params};
 
+use crate::{
+    plan::{Plan, Planning, Role},
+    router::Selection,
+};
+
 pub struct CodeMod {
     pub id: i64,
     pub name: String,
+    pub description: String,
+    pub planning: Option<Planning>,
     pub draft: String,
     pub messages: Vec<Message>,
     pub queue: Vec<QueuedMessage>,
@@ -140,6 +147,40 @@ impl Store {
             CREATE INDEX IF NOT EXISTS mod_workers ON workers(mod_id, id);",
             )
             .map_err(io::Error::other)?;
+        for (table, column, sql) in [
+            (
+                "code_mods",
+                "description",
+                "ALTER TABLE code_mods ADD COLUMN description TEXT",
+            ),
+            (
+                "workers",
+                "role",
+                "ALTER TABLE workers ADD COLUMN role TEXT NOT NULL DEFAULT 'executor'",
+            ),
+        ] {
+            let columns = connection
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .map_err(io::Error::other)?
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(io::Error::other)?
+                .collect::<Result<Vec<_>>>()
+                .map_err(io::Error::other)?;
+            if !columns.iter().any(|name| name == column) {
+                connection.execute_batch(sql).map_err(io::Error::other)?;
+            }
+        }
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS plans (
+            mod_id INTEGER PRIMARY KEY REFERENCES code_mods(id),
+            status TEXT NOT NULL DEFAULT 'pending',
+            source TEXT NOT NULL,
+            attempt INTEGER NOT NULL DEFAULT 1,
+            body TEXT, model TEXT, effort TEXT, routing TEXT
+        );",
+            )
+            .map_err(io::Error::other)?;
         Ok(Self(connection))
     }
 
@@ -156,12 +197,14 @@ impl Store {
         )?;
         let mut statement = self
             .0
-            .prepare("SELECT id, name, draft FROM code_mods WHERE project_id = ?1 ORDER BY id")?;
+            .prepare("SELECT id, name, draft, COALESCE(description,name) FROM code_mods WHERE project_id = ?1 ORDER BY id")?;
         let mut mods = statement
             .query_map([id], |row| {
                 Ok(CodeMod {
                     id: row.get(0)?,
                     name: row.get(1)?,
+                    description: row.get(3)?,
+                    planning: None,
                     draft: row.get(2)?,
                     messages: Vec::new(),
                     queue: Vec::new(),
@@ -170,6 +213,7 @@ impl Store {
             })?
             .collect::<Result<Vec<_>>>()?;
         for code_mod in &mut mods {
+            code_mod.planning = self.planning(code_mod.id)?;
             let mut statement = self.0.prepare(
                 "SELECT item_id, role, body FROM messages WHERE mod_id = ?1 ORDER BY id",
             )?;
@@ -210,22 +254,60 @@ impl Store {
     }
 
     pub fn create_mod(&mut self, project_id: i64, name: &str) -> Result<CodeMod> {
+        self.create_mod_with_plan(project_id, name, true)
+    }
+
+    #[cfg(test)]
+    fn legacy_mod(&mut self, project_id: i64, name: &str) -> Result<CodeMod> {
+        self.create_mod_with_plan(project_id, name, false)
+    }
+
+    fn create_mod_with_plan(
+        &mut self,
+        project_id: i64,
+        name: &str,
+        planned: bool,
+    ) -> Result<CodeMod> {
+        let title = name
+            .lines()
+            .next()
+            .unwrap_or(name)
+            .chars()
+            .take(80)
+            .collect::<String>();
         let transaction = self.0.transaction()?;
         transaction.execute(
-            "INSERT INTO code_mods (project_id, name) VALUES (?1, ?2)",
-            params![project_id, name],
+            "INSERT INTO code_mods (project_id, name, description) VALUES (?1, ?2, ?3)",
+            params![project_id, title, name],
         )?;
         let id = transaction.last_insert_rowid();
         transaction.execute(
             "UPDATE projects SET active_mod_id = ?1 WHERE id = ?2",
             params![id, project_id],
         )?;
+        let message = Message {
+            item_id: Some(format!("description:{id}")),
+            role: "user".into(),
+            body: name.to_owned(),
+        };
+        if planned {
+            transaction.execute(
+                "INSERT INTO plans(mod_id,source) VALUES (?1,?2)",
+                params![id, plan_source(id, 1)],
+            )?;
+            transaction.execute(
+                "INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,'user',?3)",
+                params![id, message.item_id, message.body],
+            )?;
+        }
         transaction.commit()?;
         Ok(CodeMod {
             id,
-            name: name.to_owned(),
+            name: title,
+            description: name.to_owned(),
+            planning: self.planning(id)?,
             draft: String::new(),
-            messages: Vec::new(),
+            messages: if planned { vec![message] } else { Vec::new() },
             queue: Vec::new(),
             steering: Vec::new(),
         })
@@ -270,6 +352,7 @@ impl Store {
             "queued_messages",
             "messages",
             "workers",
+            "plans",
         ] {
             transaction.execute(&format!("DELETE FROM {table} WHERE mod_id = ?1"), [mod_id])?;
         }
@@ -389,15 +472,21 @@ impl Store {
         Ok(bodies)
     }
     pub fn worker(&self, mod_id: i64) -> Result<WorkerRecord> {
+        self.worker_for(mod_id, Role::Executor)
+    }
+
+    pub fn worker_for(&self, mod_id: i64, role: Role) -> Result<WorkerRecord> {
         let read = || {
-            self.0.query_row("SELECT id, thread_id, pending FROM workers WHERE mod_id = ?1 ORDER BY id LIMIT 1", [mod_id],
+            self.0.query_row("SELECT id, thread_id, pending FROM workers WHERE mod_id = ?1 AND role = ?2 ORDER BY id LIMIT 1", params![mod_id,role.name()],
             |row| Ok(WorkerRecord { id:row.get(0)?, thread_id:row.get(1)?, pending:row.get(2)? })).optional()
         };
         if let Some(worker) = read()? {
             return Ok(worker);
         }
-        self.0
-            .execute("INSERT INTO workers(mod_id) VALUES (?1)", [mod_id])?;
+        self.0.execute(
+            "INSERT INTO workers(mod_id,role) VALUES (?1,?2)",
+            params![mod_id, role.name()],
+        )?;
         read()?.ok_or(rusqlite::Error::QueryReturnedNoRows)
     }
 
@@ -442,6 +531,8 @@ impl Store {
             statement
                 .query_map(params![mod_id, id], |row| row.get(0))?
                 .collect::<Result<Vec<_>>>()?
+        } else if source.starts_with("00000003-") {
+            vec![self.0.query_row("SELECT description FROM code_mods c JOIN plans p ON p.mod_id=c.id WHERE c.id=?1 AND p.source=?2", params![mod_id,source], |row| row.get(0))?]
         } else {
             return Err(rusqlite::Error::InvalidQuery);
         };
@@ -475,6 +566,17 @@ impl Store {
             params![worker, input.source],
             |row| row.get(0),
         )?;
+        if input.source.starts_with("00000003-") {
+            let changed = transaction.execute(
+                "UPDATE plans SET status='running' WHERE mod_id=?1 AND source=?2",
+                params![mod_id, input.source],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            transaction.execute("UPDATE workers SET pending=NULL WHERE id=?1", [worker])?;
+            return transaction.commit();
+        }
         let id = i64::from_str_radix(input.source.rsplit('-').next().unwrap(), 16)
             .map_err(|_| rusqlite::Error::InvalidQuery)?;
         transaction.execute("INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,'user',?3) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body", params![mod_id,input.source,input.texts.join("\n\n")])?;
@@ -505,6 +607,100 @@ impl Store {
         transaction.commit()
     }
 
+    pub fn planning(&self, mod_id: i64) -> Result<Option<Planning>> {
+        self.0
+            .query_row(
+                "SELECT status,source,model,effort,routing,body FROM plans WHERE mod_id=?1",
+                [mod_id],
+                |row| {
+                    let body: Option<String> = row.get(5)?;
+                    let plan = body
+                        .map(|body| {
+                            serde_json::from_str::<Plan>(&body).map_err(|error| {
+                                rusqlite::Error::FromSqlConversionFailure(
+                                    5,
+                                    rusqlite::types::Type::Text,
+                                    Box::new(error),
+                                )
+                            })
+                        })
+                        .transpose()?;
+                    Ok(Planning {
+                        status: row.get(0)?,
+                        source: row.get(1)?,
+                        model: row.get(2)?,
+                        effort: row.get(3)?,
+                        routing: row.get(4)?,
+                        plan,
+                    })
+                },
+            )
+            .optional()
+    }
+
+    pub fn planner_input(&self, mod_id: i64) -> Result<Option<Submission>> {
+        let source: Option<String> = self
+            .0
+            .query_row(
+                "SELECT source FROM plans WHERE mod_id=?1 AND status='pending'",
+                [mod_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        source
+            .map(|source| self.submission(mod_id, &source))
+            .transpose()
+    }
+
+    pub fn retry_plan(&self, mod_id: i64) -> Result<()> {
+        let attempt: i64 = self.0.query_row(
+            "SELECT attempt FROM plans WHERE mod_id=?1",
+            [mod_id],
+            |row| row.get(0),
+        )?;
+        self.0.execute(
+            "UPDATE plans SET status='pending',attempt=?2,source=?3 WHERE mod_id=?1",
+            params![mod_id, attempt + 1, plan_source(mod_id, attempt + 1)],
+        )?;
+        Ok(())
+    }
+
+    pub fn planning_status(&self, mod_id: i64, status: &str) -> Result<()> {
+        self.0.execute(
+            "UPDATE plans SET status=?2 WHERE mod_id=?1",
+            params![mod_id, status],
+        )?;
+        Ok(())
+    }
+
+    pub fn planning_model(&self, mod_id: i64, selection: &Selection) -> Result<()> {
+        self.0.execute(
+            "UPDATE plans SET model=?2,effort=?3,routing=?4 WHERE mod_id=?1",
+            params![mod_id, selection.model, selection.effort, selection.reason],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_plan(&mut self, mod_id: i64, source: &str, plan: &Plan) -> Result<Message> {
+        plan.validate().map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let transaction = self.0.transaction()?;
+        let changed = transaction.execute(
+            "UPDATE plans SET status='ready',body=?3 WHERE mod_id=?1 AND source=?2",
+            params![mod_id, source, serde_json::to_string(plan).unwrap()],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        let message = Message {
+            item_id: Some(format!("plan:{source}")),
+            role: "planner".into(),
+            body: plan.display(),
+        };
+        transaction.execute("INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,?3,?4) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body", params![mod_id,message.item_id,message.role,message.body])?;
+        transaction.commit()?;
+        Ok(message)
+    }
+
     pub fn save_message(&self, mod_id: i64, message: &Message) -> Result<()> {
         self.0.execute("INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,?3,?4) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body", params![mod_id,message.item_id,message.role,message.body])?;
         Ok(())
@@ -515,6 +711,14 @@ pub fn source_id(id: i64, steering: bool) -> String {
     format!(
         "{:08x}-0000-4000-8000-{id:012x}",
         if steering { 2 } else { 1 }
+    )
+}
+
+fn plan_source(mod_id: i64, attempt: i64) -> String {
+    format!(
+        "00000003-{:04x}-4{:03x}-8000-{mod_id:012x}",
+        attempt & 0xffff,
+        (attempt >> 16) & 0xfff
     )
 }
 
@@ -558,6 +762,84 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::{test_support::TestData, *};
+    use serde_json::json;
+
+    #[test]
+    fn planning_persists_roles_and_rolls_back_an_incomplete_save() {
+        let data = TestData::new();
+        let project_path = Path::new("/planned-project");
+        let mut store = data.store();
+        let project = store.load_project(project_path).unwrap();
+        let code_mod = store
+            .create_mod(project.id, "Add greeting\nKeep output concise")
+            .unwrap();
+        assert_eq!(code_mod.name, "Add greeting");
+        let planner = store.worker_for(code_mod.id, Role::Planner).unwrap();
+        let executor = store.worker(code_mod.id).unwrap();
+        assert_ne!(planner.id, executor.id);
+        store.save_thread(planner.id, "planner-thread").unwrap();
+        store.save_thread(executor.id, "executor-thread").unwrap();
+        let input = store.planner_input(code_mod.id).unwrap().unwrap();
+        store.pending(planner.id, Some(&input.source)).unwrap();
+        store.acknowledge(planner.id, &input).unwrap();
+        store
+            .planning_model(code_mod.id, &Selection::fallback("Laya uncertain"))
+            .unwrap();
+        let plan = Plan::parse(
+            &json!({"summary":"Greeting","tasks":[{
+            "id":"1","title":"Greeting","outcome":"Show greeting","files":["src/main.rs"],
+            "depends_on":[],"worker":"codex","checks":["Run greeting test"]}]})
+            .to_string(),
+        )
+        .unwrap();
+        store.0.execute_batch("CREATE TRIGGER reject_plan BEFORE INSERT ON messages WHEN NEW.role='planner' BEGIN SELECT RAISE(ABORT,'save failure'); END;").unwrap();
+        assert!(store.save_plan(code_mod.id, &input.source, &plan).is_err());
+        let planning = store.planning(code_mod.id).unwrap().unwrap();
+        assert_eq!(planning.status, "running");
+        assert!(planning.plan.is_none());
+        store.0.execute_batch("DROP TRIGGER reject_plan").unwrap();
+        store.save_plan(code_mod.id, &input.source, &plan).unwrap();
+        assert!(
+            store
+                .save_plan(code_mod.id, "wrong request", &plan)
+                .is_err()
+        );
+        drop(store);
+        let mut store = data.store();
+        let state = store.load_project(project_path).unwrap();
+        assert_eq!(
+            state.mods[0].description,
+            "Add greeting\nKeep output concise"
+        );
+        assert_eq!(state.mods[0].messages.len(), 2);
+        assert_eq!(state.mods[0].planning.as_ref().unwrap().status, "ready");
+        assert_eq!(
+            state.mods[0].planning.as_ref().unwrap().model.as_deref(),
+            Some("gpt-6.1-sol")
+        );
+        assert_eq!(
+            store
+                .worker_for(code_mod.id, Role::Planner)
+                .unwrap()
+                .thread_id
+                .as_deref(),
+            Some("planner-thread")
+        );
+        assert_eq!(
+            store.worker(code_mod.id).unwrap().thread_id.as_deref(),
+            Some("executor-thread")
+        );
+        store.delete_mod(project.id, code_mod.id).unwrap();
+        assert!(store.planning(code_mod.id).unwrap().is_none());
+        assert_eq!(
+            store
+                .0
+                .query_row("SELECT COUNT(*) FROM workers", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
 
     fn history(store: &Store, mod_id: i64, body: &str) {
         store
@@ -575,9 +857,9 @@ mod tests {
         let mut store = data.store();
         let first = store.load_project(Path::new("/project-a")).unwrap();
         let second = store.load_project(Path::new("/project-b")).unwrap();
-        let a = store.create_mod(first.id, "feature A").unwrap();
-        let b = store.create_mod(first.id, "feature B").unwrap();
-        let c = store.create_mod(second.id, "feature C").unwrap();
+        let a = store.legacy_mod(first.id, "feature A").unwrap();
+        let b = store.legacy_mod(first.id, "feature B").unwrap();
+        let c = store.legacy_mod(second.id, "feature C").unwrap();
         history(&store, a.id, "first\nmessage");
         history(&store, b.id, "different message");
         history(&store, c.id, "another project");
@@ -628,7 +910,7 @@ mod tests {
         let data = TestData::new();
         let mut store = data.store();
         let project = store.load_project(Path::new("/project")).unwrap();
-        let code_mod = store.create_mod(project.id, "feature").unwrap();
+        let code_mod = store.legacy_mod(project.id, "feature").unwrap();
         store.save_draft(code_mod.id, "valuable draft").unwrap();
         store
             .0
@@ -649,8 +931,8 @@ mod tests {
         let data = TestData::new();
         let mut store = data.store();
         let project = store.load_project(Path::new("/project")).unwrap();
-        let a = store.create_mod(project.id, "feature A").unwrap();
-        let b = store.create_mod(project.id, "feature B").unwrap();
+        let a = store.legacy_mod(project.id, "feature A").unwrap();
+        let b = store.legacy_mod(project.id, "feature B").unwrap();
         history(&store, a.id, "previous conversation");
         let first = store.enqueue(a.id, "first").unwrap();
         let second = store.enqueue(a.id, "second").unwrap();
@@ -707,8 +989,8 @@ mod tests {
         let data = TestData::new();
         let mut store = data.store();
         let project = store.load_project(Path::new("/project")).unwrap();
-        let a = store.create_mod(project.id, "A").unwrap();
-        let b = store.create_mod(project.id, "B").unwrap();
+        let a = store.legacy_mod(project.id, "A").unwrap();
+        let b = store.legacy_mod(project.id, "B").unwrap();
         let first = store.enqueue(a.id, "first").unwrap();
         let second = store.enqueue(a.id, "second").unwrap();
         let third = store.enqueue(a.id, "third\n界").unwrap();
@@ -758,7 +1040,7 @@ mod tests {
         let data = TestData::new();
         let mut store = data.store();
         let project = store.load_project(Path::new("/project")).unwrap();
-        let code_mod = store.create_mod(project.id, "feature").unwrap();
+        let code_mod = store.legacy_mod(project.id, "feature").unwrap();
         let first = store.enqueue(code_mod.id, "first").unwrap();
         let second = store.enqueue(code_mod.id, "second").unwrap();
         store.0.execute_batch("CREATE TRIGGER reject_steering BEFORE INSERT ON steering_messages WHEN NEW.position = 1 BEGIN SELECT RAISE(ABORT, 'simulated write failure'); END;").unwrap();
@@ -791,7 +1073,7 @@ mod tests {
         let data = TestData::new();
         let mut store = data.store();
         let project = store.load_project(Path::new("/project")).unwrap();
-        let code_mod = store.create_mod(project.id, "existing mod").unwrap();
+        let code_mod = store.legacy_mod(project.id, "existing mod").unwrap();
         store.enqueue(code_mod.id, "existing instruction").unwrap();
         store.save_draft(code_mod.id, "existing draft").unwrap();
         history(&store, code_mod.id, "existing history");
@@ -819,7 +1101,7 @@ mod tests {
         let data = TestData::new();
         let mut store = data.store();
         let project = store.load_project(Path::new("/project")).unwrap();
-        let code_mod = store.create_mod(project.id, "existing feature").unwrap();
+        let code_mod = store.legacy_mod(project.id, "existing feature").unwrap();
         history(&store, code_mod.id, "existing message");
         store.save_draft(code_mod.id, "existing draft").unwrap();
         store
@@ -845,7 +1127,7 @@ mod tests {
         let project = Path::new("/worker-project");
         let mut store = data.store();
         let state = store.load_project(project).unwrap();
-        let code_mod = store.create_mod(state.id, "feature").unwrap();
+        let code_mod = store.legacy_mod(state.id, "feature").unwrap();
         let worker = store.worker(code_mod.id).unwrap();
         store
             .0
@@ -895,8 +1177,8 @@ mod tests {
         let mut store = data.store();
         let project = Path::new("/steer-project");
         let state = store.load_project(project).unwrap();
-        let a = store.create_mod(state.id, "a").unwrap();
-        let b = store.create_mod(state.id, "b").unwrap();
+        let a = store.legacy_mod(state.id, "a").unwrap();
+        let b = store.legacy_mod(state.id, "b").unwrap();
         let worker_a = store.worker(a.id).unwrap();
         let worker_b = store.worker(b.id).unwrap();
         let queued = store.enqueue(a.id, "make it short").unwrap();
@@ -931,7 +1213,7 @@ mod tests {
         let project = Path::new("/legacy-worker-project");
         let mut store = data.store();
         let state = store.load_project(project).unwrap();
-        let code_mod = store.create_mod(state.id, "existing feature").unwrap();
+        let code_mod = store.legacy_mod(state.id, "existing feature").unwrap();
         history(&store, code_mod.id, "old conversation");
         store.enqueue(code_mod.id, "existing instruction").unwrap();
         store.save_draft(code_mod.id, "unfinished draft").unwrap();
@@ -952,9 +1234,9 @@ mod tests {
         let mut store = data.store();
         let first = store.load_project(Path::new("/delete-first")).unwrap();
         let second = store.load_project(Path::new("/delete-second")).unwrap();
-        let a = store.create_mod(first.id, "a").unwrap();
-        let b = store.create_mod(first.id, "b").unwrap();
-        let c = store.create_mod(second.id, "c").unwrap();
+        let a = store.legacy_mod(first.id, "a").unwrap();
+        let b = store.legacy_mod(first.id, "b").unwrap();
+        let c = store.legacy_mod(second.id, "c").unwrap();
         for id in [a.id, b.id, c.id] {
             history(&store, id, "saved history");
             let queued = store.enqueue(id, "steering instruction").unwrap();
@@ -1021,7 +1303,7 @@ mod tests {
         let mut store = data.store();
         let project = Path::new("/failed-delete");
         let state = store.load_project(project).unwrap();
-        let code_mod = store.create_mod(state.id, "keep this mod").unwrap();
+        let code_mod = store.legacy_mod(state.id, "keep this mod").unwrap();
         history(&store, code_mod.id, "keep history");
         let queued = store.enqueue(code_mod.id, "keep steering").unwrap();
         store.request_steering(code_mod.id, &[queued.id]).unwrap();

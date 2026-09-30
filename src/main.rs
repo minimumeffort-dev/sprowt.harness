@@ -1,5 +1,7 @@
 mod app;
 mod codex;
+mod plan;
+mod router;
 mod sprout;
 mod store;
 mod ui;
@@ -7,7 +9,7 @@ mod worker;
 
 use std::io::{self, IsTerminal};
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use ratatui::crossterm::{
     event::{DisableBracketedPaste, EnableBracketedPaste},
     execute,
@@ -18,13 +20,24 @@ use app::App;
 #[derive(Parser)]
 #[command(version, about = "Coordinate coding agents in your project")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
     /// Disable animations.
     #[arg(long)]
     no_motion: bool,
 }
 
+#[derive(Subcommand)]
+enum Command {
+    /// Install the local Laya router and download its model.
+    Setup,
+}
+
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
+    if matches!(cli.command, Some(Command::Setup)) {
+        return router::setup();
+    }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::other(
             "Interactive mode needs a terminal. Try --help.",

@@ -1,0 +1,251 @@
+use std::{
+    collections::BTreeSet,
+    path::{Component, Path},
+};
+
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Role {
+    Planner,
+    Executor,
+}
+
+impl Role {
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Planner => "planner",
+            Self::Executor => "executor",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Plan {
+    pub summary: String,
+    pub tasks: Vec<Task>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Task {
+    pub id: String,
+    pub title: String,
+    pub outcome: String,
+    pub files: Vec<String>,
+    pub depends_on: Vec<String>,
+    pub worker: String,
+    pub checks: Vec<String>,
+}
+
+#[derive(Clone)]
+pub struct Planning {
+    pub status: String,
+    pub source: String,
+    pub model: Option<String>,
+    pub effort: Option<String>,
+    pub routing: Option<String>,
+    pub plan: Option<Plan>,
+}
+
+impl Plan {
+    pub fn parse(text: &str) -> Result<Self, String> {
+        let plan: Self = serde_json::from_str(text).map_err(|e| format!("Invalid plan: {e}"))?;
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.summary.trim().is_empty() || self.tasks.is_empty() || self.tasks.len() > 32 {
+            return Err("A plan needs a summary and 1–32 tasks.".into());
+        }
+        let ids = self
+            .tasks
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<BTreeSet<_>>();
+        if ids.len() != self.tasks.len() {
+            return Err("Plan task IDs must be unique.".into());
+        }
+        for task in &self.tasks {
+            if task.id.trim().is_empty()
+                || task.title.trim().is_empty()
+                || task.outcome.trim().is_empty()
+                || task.worker != "codex"
+                || task.checks.is_empty()
+                || task.checks.iter().any(|check| check.trim().is_empty())
+            {
+                return Err(format!(
+                    "Task {} needs an outcome, a connected worker and completion checks.",
+                    task.id
+                ));
+            }
+            if task
+                .depends_on
+                .iter()
+                .any(|id| id == &task.id || !ids.contains(id.as_str()))
+            {
+                return Err(format!("Task {} has an invalid dependency.", task.id));
+            }
+            for file in &task.files {
+                if file.trim().is_empty()
+                    || file.contains('\\')
+                    || file.contains(['*', '?', '[', ']'])
+                    || Path::new(file)
+                        .components()
+                        .any(|part| !matches!(part, Component::Normal(_)))
+                {
+                    return Err(format!(
+                        "Task {} needs exact project-relative file or directory paths.",
+                        task.id
+                    ));
+                }
+            }
+        }
+        let mut finished = BTreeSet::new();
+        loop {
+            let previous = finished.len();
+            for task in &self.tasks {
+                if task
+                    .depends_on
+                    .iter()
+                    .all(|id| finished.contains(id.as_str()))
+                {
+                    finished.insert(task.id.as_str());
+                }
+            }
+            if finished.len() == self.tasks.len() {
+                break;
+            }
+            if previous == finished.len() {
+                return Err("Plan dependencies contain a cycle.".into());
+            }
+        }
+        for (index, first) in self.tasks.iter().enumerate() {
+            for second in &self.tasks[index + 1..] {
+                let overlap = first.files.iter().any(|a| {
+                    second
+                        .files
+                        .iter()
+                        .any(|b| Path::new(a).starts_with(b) || Path::new(b).starts_with(a))
+                });
+                if overlap
+                    && !self.depends_on(first, &second.id)
+                    && !self.depends_on(second, &first.id)
+                {
+                    return Err(format!(
+                        "Tasks {} and {} share files; add a dependency.",
+                        first.id, second.id
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn depends_on(&self, task: &Task, target: &str) -> bool {
+        task.depends_on.iter().any(|id| {
+            id == target
+                || self.depends_on(
+                    self.tasks.iter().find(|task| &task.id == id).unwrap(),
+                    target,
+                )
+        })
+    }
+
+    pub fn display(&self) -> String {
+        let mut lines = vec![format!("plan · {}", self.summary)];
+        for task in &self.tasks {
+            lines.push(format!("{}. {} · {}", task.id, task.title, task.worker));
+            lines.push(format!("   {}", task.outcome));
+            if !task.files.is_empty() {
+                lines.push(format!("   files: {}", task.files.join(", ")));
+            }
+            if !task.depends_on.is_empty() {
+                lines.push(format!("   after: {}", task.depends_on.join(", ")));
+            }
+            lines.push(format!("   check: {}", task.checks.join("; ")));
+        }
+        lines.join("\n")
+    }
+}
+
+pub fn schema() -> Value {
+    let strings = json!({"type":"array", "items":{"type":"string"}});
+    json!({"type":"object", "additionalProperties":false,
+        "properties":{"summary":{"type":"string"}, "tasks":{"type":"array", "items":{
+            "type":"object", "additionalProperties":false,
+            "properties":{"id":{"type":"string"}, "title":{"type":"string"},
+                "outcome":{"type":"string"}, "files":strings, "depends_on":strings,
+                "worker":{"type":"string", "enum":["codex"]}, "checks":strings},
+            "required":["id","title","outcome","files","depends_on","worker","checks"]}}},
+        "required":["summary","tasks"]})
+}
+
+pub fn instructions(role: Role, description: &str, plan: Option<&Plan>) -> String {
+    let boundary = "You are a read-only worker. Do not change files, request broader permissions, access credentials, or use external tools.";
+    match role {
+        Role::Planner => format!(
+            "{boundary} Your role is planner. Inspect relevant source, docs and project rules before planning. The code mod description is the user's request. Produce a concise task plan matching the output schema. Give tasks short outcomes, exact project-relative file or directory paths (no globs), dependencies and 1–3 brief completion checks. Only Codex is connected; assign every task to codex. Independent tasks may run in parallel later. Tasks sharing files must depend on each other. Include only requested work. Keep the plan small. Do not implement it. Code mod: {description}"
+        ),
+        Role::Executor => format!(
+            "{boundary} Your role is executor. Answer concisely and use the code mod goal and plan as context for the user's instructions. Code mod: {description}\nPlan: {}",
+            plan.map_or_else(
+                || "none".into(),
+                |plan| serde_json::to_string(plan).unwrap()
+            )
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plan() -> Plan {
+        Plan {
+            summary: "Add chart".into(),
+            tasks: vec![Task {
+                id: "1".into(),
+                title: "Chart".into(),
+                outcome: "Display performance".into(),
+                files: vec!["src/chart.rs".into()],
+                depends_on: vec![],
+                worker: "codex".into(),
+                checks: vec!["Run chart tests".into()],
+            }],
+        }
+    }
+
+    #[test]
+    fn rejects_bad_dependencies_paths_workers_and_parallel_file_conflicts() {
+        let mut p = plan();
+        assert!(p.validate().is_ok());
+        let mut other = p.tasks[0].clone();
+        other.id = "2".into();
+        p.tasks.push(other);
+        assert!(p.validate().is_err());
+        p.tasks[1].depends_on = vec!["1".into()];
+        assert!(p.validate().is_ok());
+        p.tasks[0].depends_on = vec!["2".into()];
+        assert!(p.validate().is_err());
+        p.tasks[0].depends_on = vec!["missing".into()];
+        assert!(p.validate().is_err());
+        p.tasks[0].depends_on.clear();
+        p.tasks[0].files = vec!["../secrets".into()];
+        assert!(p.validate().is_err());
+        p.tasks[0].files = vec!["/tmp/file".into()];
+        assert!(p.validate().is_err());
+        p.tasks[0].files = vec!["src/**".into()];
+        assert!(p.validate().is_err());
+        p.tasks[0].files = vec!["src".into()];
+        assert!(p.validate().is_ok());
+        p.tasks[1].depends_on.clear();
+        assert!(p.validate().is_err());
+        p.tasks.pop();
+        p.tasks[0].worker = "muse".into();
+        assert!(p.validate().is_err());
+    }
+}

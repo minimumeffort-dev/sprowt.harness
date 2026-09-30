@@ -26,7 +26,10 @@ pub fn input() -> TextArea<'static> {
 }
 
 pub fn name_input() -> TextArea<'static> {
-    field("new code mod", "Feature or fix name...")
+    field(
+        "new code mod",
+        "Describe what you want to build or change...",
+    )
 }
 
 pub fn edit_input() -> TextArea<'static> {
@@ -88,16 +91,38 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
         Paragraph::new(vec![
             Line::from(vec!["sprowt".fg(ACCENT).bold(), " harness".bold()]),
             Line::from(app.project.to_string_lossy().into_owned()).fg(MUTED),
-            Line::from(
-                app.current_worker()
-                    .map_or(String::new(), |worker| worker.label()),
-            )
+            Line::from(app.current_worker().map_or_else(
+                || {
+                    app.current_mod()
+                        .and_then(|m| m.planning.as_ref())
+                        .map_or(String::new(), |p| {
+                            format!(
+                                "▤ planner · {}{}",
+                                p.status,
+                                p.model.as_ref().map_or(String::new(), |model| format!(
+                                    " · {model} · {}",
+                                    p.effort.as_deref().unwrap_or("medium")
+                                ))
+                            )
+                        })
+                },
+                |worker| worker.label(),
+            ))
             .fg(KEY_HINT),
-            Line::from(
-                app.worker_error()
-                    .map_or(String::new(), |error| fit_name(error, heading.width)),
-            )
-            .fg(Color::Red),
+            Line::from(app.worker_error().map_or_else(
+                || {
+                    app.current_mod()
+                        .and_then(|m| m.planning.as_ref())
+                        .and_then(|p| p.routing.as_ref())
+                        .map_or(String::new(), |route| fit_name(route, heading.width))
+                },
+                |error| fit_name(error, heading.width),
+            ))
+            .fg(if app.worker_error().is_some() {
+                Color::Red
+            } else {
+                MUTED
+            }),
         ]),
         heading,
     );
@@ -161,8 +186,19 @@ pub fn draw(frame: &mut Frame, app: &mut App, pose: sprout::Pose) -> Rect {
             "run"
         };
         let shortcuts = match app.view {
-            View::NewMod if app.current_mod().is_some() => "enter create   esc back".into(),
-            View::NewMod => "enter create   esc quit".into(),
+            View::NewMod => format!(
+                "↵ create + plan{}   esc {}",
+                if footer.width >= 48 {
+                    "   ctrl+j newline"
+                } else {
+                    ""
+                },
+                if app.current_mod().is_some() {
+                    "back"
+                } else {
+                    "quit"
+                }
+            ),
             View::EditQueue(_) if footer.width >= 40 => {
                 "enter save   ctrl+j newline   esc cancel".into()
             }
@@ -486,9 +522,13 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect) {
             .line_count(body.width);
         lines.extend(text.lines);
         labels.push(
-            Line::from(if message.role == "codex" { "◆" } else { ">" })
-                .fg(ACCENT)
-                .bold(),
+            Line::from(match message.role.as_str() {
+                "codex" => "◆",
+                "planner" => "▤",
+                _ => ">",
+            })
+            .fg(ACCENT)
+            .bold(),
         );
         labels.resize(labels.len() + height.saturating_sub(1), Line::default());
     }
