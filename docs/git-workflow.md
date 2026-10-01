@@ -11,7 +11,9 @@ flowchart TB
     pr -->|"PR saved"| cleanup["6. Delete VM and worktree · retain branch and history"]
 ```
 
-The planner reads the mod worktree. The executor gets a source copy in `/workspace`; the Mac’s `.git` pointer and credentials never enter the VM. One executor works there today. Task worktrees and parallel executors are the next batch.
+The planner reads the mod worktree. The executor gets a source copy in `/workspace`; the Mac’s `.git` pointer and credentials never enter the VM. One executor works there today. Task worktrees and parallel executors come later.
+
+Worktree creation, publication and resource cleanup use the [tool dispatcher](tools.md). These operations are callable only by the harness; workers cannot invoke them.
 
 ## Publish
 

@@ -16,11 +16,11 @@ use serde_json::{Value, json};
 
 use crate::{
     execution::{Check, CheckResult},
-    packages,
     plan::{self, Plan, Role},
     router::Selection,
     rpc::{self, Rpc},
     sandbox::Sandbox,
+    tools::{self, Context, Dispatcher, Output},
     workspace::Snapshot,
 };
 
@@ -82,6 +82,7 @@ struct Setup {
     permissions: &'static str,
     cancelled: Arc<AtomicBool>,
     vm: Option<Sandbox>,
+    context: Context,
 }
 
 pub struct Client {
@@ -101,15 +102,15 @@ impl Client {
         description: &str,
         plan: Option<&Plan>,
         selection: Option<Selection>,
-        workspace: Option<&Path>,
+        context: Context,
     ) -> io::Result<Self> {
         #[cfg(not(unix))]
         return Err(io::Error::other(
             "The first Codex worker currently supports macOS and Linux.",
         ));
-        let cwd = workspace.unwrap_or(project).to_owned();
+        let workspace = context.workspace().map(|root| root.join("work"));
+        let cwd = workspace.as_deref().unwrap_or(project).to_owned();
         let project = project.to_owned();
-        let workspace = workspace.map(Path::to_owned);
         let (actions, inbox) = mpsc::channel();
         let (outgoing, events) = mpsc::channel();
         let instructions = plan::instructions(role, description, plan, workspace.is_some());
@@ -174,6 +175,7 @@ impl Client {
                     permissions,
                     cancelled: stopped,
                     vm,
+                    context,
                 };
                 serve(&mut rpc, &cwd, resume, setup, inbox, &outgoing)
             })();
@@ -308,28 +310,25 @@ fn flush(
     vm: &mut Option<Sandbox>,
     thread: &str,
     cancelled: &AtomicBool,
+    context: &Context,
 ) -> io::Result<()> {
     for message in std::mem::take(&mut rpc.buffered) {
         if message["method"] == "item/tool/call" && message.get("id").is_some() {
             let params = &message["params"];
             let result = (|| {
-                if params["threadId"] != thread
-                    || params["tool"] != packages::TOOL
-                    || !params["namespace"].is_null()
-                {
+                if params["threadId"] != thread || !params["namespace"].is_null() {
                     return Err(io::Error::other("This client tool is not available."));
                 }
-                let request = packages::Request::parse(params["arguments"].clone())?;
-                let vm = vm
-                    .as_mut()
-                    .ok_or_else(|| io::Error::other("System packages require the mod VM."))?;
-                let _ = outgoing.send(Event::Preparing(format!(
-                    "installing {} system packages",
-                    request.packages.len()
-                )));
-                vm.install_packages(&request, cancelled)
+                Dispatcher::new(context, vm.as_mut(), cancelled)
+                    .worker_call(
+                        params["tool"].as_str().unwrap_or(""),
+                        params["arguments"].clone(),
+                        |label| {
+                            let _ = outgoing.send(Event::Preparing(label.into()));
+                        },
+                    )
+                    .map(Output::message)
             })();
-            let _ = outgoing.send(Event::Preparing(String::new()));
             rpc.write(json!({"id":message["id"],"result":{"success":result.is_ok(),"contentItems":[{"type":"inputText","text":result.unwrap_or_else(|error|error.to_string())}]}}))?;
             continue;
         }
@@ -358,6 +357,7 @@ fn serve(
         permissions,
         cancelled,
         mut vm,
+        context,
     } = setup;
     rpc.call("initialize", json!({"clientInfo":{"name":"sprowt_harness","title":"Sprowt Harness","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
     rpc.write(json!({"method":"initialized"}))?;
@@ -415,7 +415,7 @@ fn serve(
     let mut params = json!({"cwd":project,"permissions":permissions,"approvalPolicy":"never","config":overrides,"developerInstructions":instructions});
     if vm.is_some() {
         params["environments"] = json!([{"environmentId":"vm","cwd":"/workspace"}]);
-        params["dynamicTools"] = json!([packages::tool()]);
+        params["dynamicTools"] = json!(tools::advertised(&context));
         rpc.client_tools = true;
     }
     if let Some(selection) = &selection {
@@ -497,7 +497,7 @@ fn serve(
             effort: effort.clone(),
         })
         .map_err(io::Error::other)?;
-    flush(rpc, outgoing, &mut vm, &thread, &cancelled)?;
+    flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context)?;
     let mut last_turn = None;
     loop {
         while let Ok(action) = actions.try_recv() {
@@ -511,7 +511,7 @@ fn serve(
                     checks: results,
                     before,
                 });
-                flush(rpc, outgoing, &mut vm, &thread, &cancelled)?;
+                flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context)?;
                 continue;
             }
             let (method, source, params) = match action {
@@ -591,12 +591,12 @@ fn serve(
                 Err(error) => return Err(error),
                 _ => {}
             }
-            flush(rpc, outgoing, &mut vm, &thread, &cancelled)?;
+            flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context)?;
         }
         match rpc.receiver.recv_timeout(Duration::from_millis(25)) {
             Ok(message) => {
                 rpc.receive(message?)?;
-                flush(rpc, outgoing, &mut vm, &thread, &cancelled)?;
+                flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context)?;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => return Err(io::Error::other(error)),

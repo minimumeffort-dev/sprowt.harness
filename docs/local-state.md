@@ -36,11 +36,14 @@ flowchart TB
         ├── host-codex/ private host agent state; never shared with the guest
         ├── sandbox.log setup diagnostics
         ├── packages.jsonl OS package requests and results
+        ├── tools.jsonl harness tool activity; metadata only
         ├── setup/    trusted guest package setup files
         └── review.patch
 ```
 
 State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Replies save model and effort; plans save routing. Execution saves attempts, checks and the verified source fingerprint. SQLite stores each Git mod’s folder; `git-mod.json` records its branch, base, exported fingerprint, commit, PR URL and publication or removal intent.
+
+The [tool dispatcher](tools.md) records call IDs, callers, duration and outcomes in `tools.jsonl`. Inputs and outputs are omitted. Tool logs stay on the Mac and are removed with the mod; recovery uses saved execution state and Git checkpoints.
 
 Apple Container manages each VM’s disk separately. Code and dependencies persist until publication, local apply or mod deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
 

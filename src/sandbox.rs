@@ -41,6 +41,10 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     pub fn prepare(
         root: &Path,
         cancelled: &AtomicBool,

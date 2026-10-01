@@ -844,11 +844,11 @@ pub fn remove_files(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::store::test_support::TestData;
 
-    fn fixture() -> (TestData, PathBuf, PathBuf, PathBuf) {
+    pub(crate) fn fixture() -> (TestData, PathBuf, PathBuf, PathBuf) {
         let data = TestData::new();
         fs::create_dir_all(&data.0).unwrap();
         let root = data.0.join("workspaces").join(data.0.file_name().unwrap());

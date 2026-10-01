@@ -1,0 +1,597 @@
+use std::{
+    fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    sync::{
+        Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Instant, SystemTime, UNIX_EPOCH},
+};
+
+use serde_json::{Value, json};
+
+use crate::{git_mod, packages, plan::Role, sandbox::Sandbox, store::CodeMod, workspace};
+
+#[derive(Clone, Copy, PartialEq)]
+enum Tool {
+    CreateWorktree,
+    PublishPr,
+    CleanupMod,
+    InstallPackages,
+}
+
+const REGISTRY: [Tool; 4] = [
+    Tool::CreateWorktree,
+    Tool::PublishPr,
+    Tool::CleanupMod,
+    Tool::InstallPackages,
+];
+static LOG: Mutex<()> = Mutex::new(());
+
+impl Tool {
+    fn name(self) -> &'static str {
+        match self {
+            Self::CreateWorktree => "create_worktree",
+            Self::PublishPr => "publish_pr",
+            Self::CleanupMod => "cleanup_mod",
+            Self::InstallPackages => packages::TOOL,
+        }
+    }
+
+    fn permitted(self, context: &Context) -> bool {
+        match self {
+            Self::InstallPackages => {
+                context
+                    .worker
+                    .is_some_and(|(_, role)| role == Role::Executor)
+                    && context.root.is_some()
+            }
+            _ => context.worker.is_none(),
+        }
+    }
+}
+
+pub struct Context {
+    mod_id: i64,
+    worker: Option<(i64, Role)>,
+    root: Option<PathBuf>,
+    project: Option<PathBuf>,
+    description: String,
+    verified: Option<String>,
+}
+
+impl Context {
+    pub fn harness(project: &Path, code_mod: &CodeMod) -> Self {
+        Self {
+            mod_id: code_mod.id,
+            worker: None,
+            root: code_mod
+                .git_root
+                .clone()
+                .or_else(|| code_mod.execution.as_ref().map(|e| e.workspace.clone())),
+            project: Some(project.to_owned()),
+            description: code_mod.description.clone(),
+            verified: code_mod
+                .execution
+                .as_ref()
+                .filter(|e| e.complete() && matches!(e.status.as_str(), "review" | "applied"))
+                .and_then(|e| e.fingerprint.clone()),
+        }
+    }
+
+    pub fn worker(code_mod: &CodeMod, id: i64, role: Role) -> Self {
+        Self {
+            mod_id: code_mod.id,
+            worker: Some((id, role)),
+            root: if role == Role::Executor {
+                code_mod
+                    .execution
+                    .as_ref()
+                    .filter(|e| e.status != "applied")
+                    .map(|e| e.workspace.clone())
+            } else {
+                code_mod.git_root.clone()
+            },
+            project: None,
+            description: String::new(),
+            verified: None,
+        }
+    }
+
+    pub fn workspace(&self) -> Option<&Path> {
+        self.worker
+            .filter(|(_, role)| *role == Role::Executor)
+            .and(self.root.as_deref())
+    }
+
+    fn root(&self) -> io::Result<&Path> {
+        self.root
+            .as_deref()
+            .ok_or_else(|| io::Error::other("This tool needs the mod's workspace."))
+    }
+}
+
+pub enum Request {
+    CreateWorktree,
+    PublishPr { draft: bool },
+    CleanupMod,
+    InstallPackages(packages::Request),
+}
+
+impl Request {
+    fn tool(&self) -> Tool {
+        match self {
+            Self::CreateWorktree => Tool::CreateWorktree,
+            Self::PublishPr { .. } => Tool::PublishPr,
+            Self::CleanupMod => Tool::CleanupMod,
+            Self::InstallPackages(_) => Tool::InstallPackages,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum Output {
+    Done,
+    PullRequest(String),
+    Text(String),
+}
+
+impl Output {
+    pub fn message(self) -> String {
+        match self {
+            Self::Done => "Done".into(),
+            Self::PullRequest(url) | Self::Text(url) => url,
+        }
+    }
+}
+
+pub fn advertised(context: &Context) -> Vec<Value> {
+    REGISTRY
+        .iter()
+        .filter(|tool| **tool == Tool::InstallPackages && tool.permitted(context))
+        .map(|_| packages::tool())
+        .collect()
+}
+
+pub struct Dispatcher<'a> {
+    context: &'a Context,
+    vm: Option<&'a mut Sandbox>,
+    cancelled: &'a AtomicBool,
+    github_cli: &'a Path,
+}
+
+impl<'a> Dispatcher<'a> {
+    pub fn new(
+        context: &'a Context,
+        vm: Option<&'a mut Sandbox>,
+        cancelled: &'a AtomicBool,
+    ) -> Self {
+        Self {
+            context,
+            vm,
+            cancelled,
+            github_cli: Path::new("gh"),
+        }
+    }
+
+    pub fn execute(&mut self, request: Request, progress: impl FnMut(&str)) -> io::Result<Output> {
+        self.dispatch(Some(request.tool()), || Ok(request), progress)
+    }
+
+    pub fn worker_call(
+        &mut self,
+        name: &str,
+        arguments: Value,
+        progress: impl FnMut(&str),
+    ) -> io::Result<Output> {
+        let tool = REGISTRY.iter().copied().find(|tool| tool.name() == name);
+        self.dispatch(
+            tool,
+            || packages::Request::parse(arguments).map(Request::InstallPackages),
+            progress,
+        )
+    }
+
+    fn dispatch(
+        &mut self,
+        tool: Option<Tool>,
+        request: impl FnOnce() -> io::Result<Request>,
+        mut progress: impl FnMut(&str),
+    ) -> io::Result<Output> {
+        let started = Instant::now();
+        let id = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(io::Error::other)?
+            .as_nanos();
+        if tool == Some(Tool::CreateWorktree) && self.context.worker.is_none() {
+            let root = self.context.root()?;
+            fs::create_dir_all(root)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+            }
+        }
+        self.record(tool, id, "started", 0)?;
+        let result = (|| {
+            let tool = tool.ok_or_else(|| {
+                io::Error::new(io::ErrorKind::PermissionDenied, "Unknown harness tool.")
+            })?;
+            if !tool.permitted(self.context) {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "This caller cannot use that tool.",
+                ));
+            }
+            if self.cancelled.load(Ordering::Relaxed) {
+                return Err(io::Error::new(
+                    io::ErrorKind::Interrupted,
+                    "Tool stopped; retry when ready.",
+                ));
+            }
+            let request = request()?;
+            if request.tool() != tool {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Tool arguments do not match the operation.",
+                ));
+            }
+            let root = self.context.root()?;
+            match request {
+                Request::CreateWorktree => {
+                    progress("creating worktree");
+                    git_mod::prepare(
+                        self.context.project.as_deref().unwrap(),
+                        root,
+                        self.cancelled,
+                    )?;
+                    Ok(Output::Done)
+                }
+                Request::PublishPr { draft } => {
+                    if !draft
+                        && git_mod::load(root)?.pr.is_none()
+                        && self.context.verified.as_deref()
+                            != Some(&workspace::review(root)?.fingerprint)
+                    {
+                        return Err(io::Error::other(
+                            "PR publication needs the verified source. Recheck before publishing.",
+                        ));
+                    }
+                    progress("publishing PR");
+                    git_mod::publish(
+                        root,
+                        &self.context.description,
+                        draft,
+                        self.github_cli,
+                        self.cancelled,
+                    )
+                    .map(Output::PullRequest)
+                }
+                Request::CleanupMod => {
+                    progress("cleaning up mod");
+                    if root.join("git-mod.json").exists() {
+                        git_mod::cleanup(root, self.cancelled)?;
+                    } else {
+                        crate::sandbox::delete(root)?;
+                    }
+                    Ok(Output::Done)
+                }
+                Request::InstallPackages(request) => {
+                    let request = request.validate()?;
+                    let vm = self
+                        .vm
+                        .as_mut()
+                        .ok_or_else(|| io::Error::other("System packages require the mod VM."))?;
+                    if vm.root().canonicalize()? != root.canonicalize()? {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "Tool cannot access another mod's VM.",
+                        ));
+                    }
+                    progress(&format!(
+                        "installing {} system packages",
+                        request.packages.len()
+                    ));
+                    vm.install_packages(&request, self.cancelled)
+                        .map(Output::Text)
+                }
+            }
+        })();
+        progress("");
+        let status = match &result {
+            Ok(_) => "ok",
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => "denied",
+            Err(_) if self.cancelled.load(Ordering::Relaxed) => "cancelled",
+            Err(_) => "error",
+        };
+        // A completed side effect stays successful if recording its result fails.
+        let _ = self.record(tool, id, status, started.elapsed().as_millis());
+        result
+    }
+
+    fn record(&self, tool: Option<Tool>, id: u128, status: &str, duration: u128) -> io::Result<()> {
+        let Some(root) = &self.context.root else {
+            return Ok(());
+        };
+        if !root.exists() {
+            return Ok(());
+        }
+        let _guard = LOG
+            .lock()
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        let path = root.join("tools.jsonl");
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
+        }
+        writeln!(
+            file,
+            "{}",
+            json!({"id":id.to_string(),"tool":tool.map_or("unknown", Tool::name),
+            "mod_id":self.context.mod_id,"worker_id":self.context.worker.map(|(id,_)|id),
+            "caller":self.context.worker.map_or("harness", |(_,role)|role.name()),"status":status,"duration_ms":duration})
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::test_support::TestData;
+
+    fn fixture() -> (TestData, Context, PathBuf) {
+        let (data, repo, root, gh) = git_mod::tests::fixture();
+        let mut store = data.store();
+        let project = store.load_project(&repo).unwrap().id;
+        let mut code_mod = store.create_mod(project, "A small change").unwrap();
+        store.save_git_root(code_mod.id, &root).unwrap();
+        code_mod.git_root = Some(root);
+        (data, Context::harness(&repo, &code_mod), gh)
+    }
+
+    fn worker_context(context: &Context, role: Role) -> Context {
+        Context {
+            mod_id: context.mod_id,
+            worker: Some((9, role)),
+            root: context.root.clone(),
+            project: None,
+            description: String::new(),
+            verified: None,
+        }
+    }
+
+    fn records(root: &Path) -> Vec<Value> {
+        fs::read_to_string(root.join("tools.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn workers_cannot_discover_or_invoke_host_operations() {
+        let (_data, context, _) = fixture();
+        let flag = AtomicBool::new(false);
+        assert!(advertised(&context).is_empty());
+        let worker = worker_context(&context, Role::Executor);
+        assert_eq!(
+            advertised(&worker)
+                .iter()
+                .map(|tool| tool["name"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [packages::TOOL]
+        );
+        let mut tools = Dispatcher::new(&worker, None, &flag);
+        for name in ["create_worktree", "publish_pr", "cleanup_mod", "unknown"] {
+            let error = tools.worker_call(name, json!({}), |_| {}).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        }
+        assert_eq!(
+            tools
+                .execute(Request::CreateWorktree, |_| {})
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(!git_mod::checkout(context.root().unwrap()).exists());
+        let log = records(context.root().unwrap());
+        assert_eq!(
+            log.iter()
+                .filter(|entry| entry["status"] == "denied")
+                .count(),
+            5
+        );
+        assert!(
+            log.iter()
+                .all(|entry| entry["worker_id"] == 9 && entry["mod_id"] == context.mod_id)
+        );
+        let planner = worker_context(&context, Role::Planner);
+        assert!(advertised(&planner).is_empty());
+        assert_eq!(
+            Dispatcher::new(&planner, None, &flag)
+                .worker_call(packages::TOOL, json!({}), |_| {})
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn invalid_inputs_cannot_select_a_workspace_or_bypass_validation() {
+        let (_data, context, _) = fixture();
+        let flag = AtomicBool::new(false);
+        let worker = worker_context(&context, Role::Executor);
+        let mut tools = Dispatcher::new(&worker, None, &flag);
+        for extra in ["mod_id", "workspace", "command"] {
+            let mut arguments = json!({"packages":["jq"],"reason":"fixture-secret"});
+            arguments[extra] = json!("another-mod");
+            assert!(
+                tools
+                    .worker_call(packages::TOOL, arguments, |_| {})
+                    .is_err()
+            );
+        }
+        let request = packages::Request {
+            packages: vec!["-y".into()],
+            reason: "fixture-secret".into(),
+        };
+        assert!(
+            tools
+                .execute(Request::InstallPackages(request), |_| {})
+                .unwrap_err()
+                .to_string()
+                .contains("package names")
+        );
+        assert!(
+            tools
+                .worker_call(
+                    packages::TOOL,
+                    json!({"packages":["jq"],"reason":"fixture-secret"}),
+                    |_| {}
+                )
+                .unwrap_err()
+                .to_string()
+                .contains("mod VM")
+        );
+        let log = fs::read_to_string(context.root().unwrap().join("tools.jsonl")).unwrap();
+        assert!(!log.contains("fixture-secret") && !log.contains("another-mod"));
+        assert!(!context.root().unwrap().join("packages.jsonl").exists());
+    }
+
+    #[test]
+    fn cancellation_is_recorded_without_starting_the_adapter() {
+        let (_data, context, _) = fixture();
+        let flag = AtomicBool::new(true);
+        assert_eq!(
+            Dispatcher::new(&context, None, &flag)
+                .execute(Request::CreateWorktree, |_| {})
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::Interrupted
+        );
+        assert!(!context.root().unwrap().join("git-mod.json").exists());
+        let log = records(context.root().unwrap());
+        assert_eq!(log.len(), 2);
+        assert_eq!(log[0]["id"], log[1]["id"]);
+        assert_eq!(log[1]["status"], "cancelled");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                fs::metadata(context.root().unwrap().join("tools.jsonl"))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600
+            );
+        }
+    }
+
+    #[test]
+    fn publication_requires_verified_source_and_reuses_saved_recovery() {
+        let (data, mut context, gh) = fixture();
+        let flag = AtomicBool::new(false);
+        let root = context.root().unwrap().to_owned();
+        Dispatcher::new(&context, None, &flag)
+            .execute(Request::CreateWorktree, |_| {})
+            .unwrap();
+        workspace::create(&git_mod::checkout(&root), &root).unwrap();
+        fs::write(root.join("work/a.txt"), "edited\n").unwrap();
+        let mut tools = Dispatcher::new(&context, None, &flag);
+        tools.github_cli = &gh;
+        assert!(
+            tools
+                .execute(Request::PublishPr { draft: false }, |_| {})
+                .unwrap_err()
+                .to_string()
+                .contains("verified source")
+        );
+        assert_eq!(git_mod::load(&root).unwrap().phase, "ready");
+        context.verified = Some(workspace::review(&root).unwrap().fingerprint);
+        let mut tools = Dispatcher::new(&context, None, &flag);
+        tools.github_cli = &gh;
+        fs::write(data.0.join("fail-once"), "").unwrap();
+        assert!(
+            tools
+                .execute(Request::PublishPr { draft: false }, |_| {})
+                .is_err()
+        );
+        assert_eq!(git_mod::load(&root).unwrap().phase, "pushed");
+        let output = tools
+            .execute(Request::PublishPr { draft: false }, |_| {})
+            .unwrap();
+        assert_eq!(
+            output.message(),
+            "https://github.com/fixture/project/pull/1"
+        );
+        tools.execute(Request::CleanupMod, |_| {}).unwrap();
+        assert!(!git_mod::checkout(&root).exists());
+        assert_eq!(
+            fs::read_to_string(data.0.join("gh-args"))
+                .unwrap()
+                .lines()
+                .filter(|line| *line == "create")
+                .count(),
+            1
+        );
+        assert!(
+            records(&root)
+                .iter()
+                .any(|entry| entry["tool"] == "cleanup_mod" && entry["status"] == "ok")
+        );
+    }
+
+    #[test]
+    #[ignore = "installs jq through the dispatcher in a temporary Apple Container VM"]
+    fn package_calls_are_bound_to_the_workers_vm() {
+        let (data, context, _) = fixture();
+        let flag = AtomicBool::new(false);
+        let root = context.root().unwrap().to_owned();
+        Dispatcher::new(&context, None, &flag)
+            .execute(Request::CreateWorktree, |_| {})
+            .unwrap();
+        workspace::create(&git_mod::checkout(&root), &root).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &flag, |label| eprintln!("{label}"))?;
+                let mut other = worker_context(&context, Role::Executor);
+                other.mod_id += 1;
+                other.root = Some(data.0.join("other-mod"));
+                fs::create_dir_all(other.root().unwrap())?;
+                let arguments = json!({"packages":["jq"],"reason":"Read fixture JSON"});
+                let error = Dispatcher::new(&other, Some(&mut vm), &flag)
+                    .worker_call(packages::TOOL, arguments.clone(), |_| {})
+                    .unwrap_err();
+                assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+                assert!(!root.join("packages.jsonl").exists());
+                let worker = worker_context(&context, Role::Executor);
+                let output = Dispatcher::new(&worker, Some(&mut vm), &flag).worker_call(
+                    packages::TOOL,
+                    arguments,
+                    |label| eprintln!("{label}"),
+                )?;
+                assert!(output.message().contains("jq"));
+                let check = crate::execution::Check { check: "Package works; normal permissions remain restricted".into(),
+                command: vec!["/bin/sh".into(), "-c".into(), "/usr/bin/jq --version && test \"$(cat a.txt)\" = original && ! touch /usr/local/bin/sprowt-tool-canary".into()] };
+                assert_eq!(vm.verify(&[check], &flag)?.1[0].exit_code, Some(0));
+                drop(vm);
+                Dispatcher::new(&context, None, &flag).execute(Request::CleanupMod, |_| {})?;
+                assert!(!root.join("vm.json").exists());
+                let log = records(&root);
+                assert!(log.iter().any(|entry| entry["tool"] == packages::TOOL
+                    && entry["worker_id"] == 9
+                    && entry["status"] == "ok"));
+                Ok(())
+            },
+        ));
+        crate::sandbox::delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
+}

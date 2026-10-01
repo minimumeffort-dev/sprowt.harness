@@ -9,6 +9,7 @@ mod rpc;
 mod sandbox;
 mod sprout;
 mod store;
+mod tools;
 mod ui;
 mod worker;
 mod workspace;

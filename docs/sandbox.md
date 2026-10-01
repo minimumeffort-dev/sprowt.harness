@@ -60,6 +60,8 @@ The image contains general build tools, Bubblewrap, Codex and mise. No project l
 
 The executor chooses packages from project requirements and missing-library errors. For Playwright, it can inspect the installed browser dependency list. It calls `install_system_packages` with Debian package names and a short reason.
 
+The [tool dispatcher](tools.md) validates the request and verifies that the connected VM belongs to that worker’s mod before installation.
+
 ```mermaid
 flowchart TB
     worker["1. Codex · identify missing OS dependencies"]
@@ -75,7 +77,7 @@ Setup progress appears beside the active worker. Requests and results are saved 
 
 Uses Codex’s experimental [dynamic tool interface](https://learn.chatgpt.com/docs/app-server#dynamic-tool-calls-experimental).
 
-Existing mods keep their VM, runtime, source and transcript. Their first run after this upgrade opens a new executor conversation with the setup tool. The goal, saved plan, unfinished task and accepted user instructions supply its context; completed tasks stay complete.
+If a saved executor conversation lacks the setup tool, reconnecting opens a new conversation. The goal, saved plan, unfinished task and accepted user instructions supply its context. The VM, runtime, source and transcript are retained; completed tasks stay complete.
 
 ## The boundary
 
@@ -126,3 +128,15 @@ Git mods delete their VM and host worktree after saving the PR URL. Their publis
 Unfinished mods created before VM support keep their working files. Their first explicit run starts a fresh executor conversation and reruns tasks in Linux; old host check results are cleared. Applied mods remain applied. A missing or altered VM blocks reconnection and preserves the last exported source for review.
 
 This backend runs Linux. iOS and macOS builds need a later macOS VM backend. One executor per mod; different mods can run in parallel. Uses experimental [Codex executor interfaces](https://github.com/openai/codex/tree/rust-v0.159.2/codex-rs/exec-server) and [Codex managed networking](https://learn.chatgpt.com/docs/permissions).
+
+## Verify the boundary
+
+The regular test suite covers permissions, input validation and publication recovery. Run the VM integration checks with Apple Container running and Codex signed in:
+
+```sh
+cargo test tools::tests::package_calls -- --ignored --nocapture
+cargo test git_mod::tests::vm_source -- --ignored --nocapture
+cargo test sandbox::tests::persistent_vm_checks -- --ignored --nocapture
+```
+
+These use temporary repositories and VMs, checking worker restrictions, tool ownership, source transfer and cleanup. GitHub publication uses a local fixture. Native VM tests require the pinned host and guest Codex versions; shared images remain for reuse.

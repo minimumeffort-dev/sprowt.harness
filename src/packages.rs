@@ -14,7 +14,11 @@ pub struct Request {
 
 impl Request {
     pub fn parse(arguments: Value) -> io::Result<Self> {
-        let mut request: Self = serde_json::from_value(arguments)?;
+        serde_json::from_value::<Self>(arguments)?.validate()
+    }
+
+    pub fn validate(mut self) -> io::Result<Self> {
+        let request = &mut self;
         if request.packages.is_empty()
             || request.packages.len() > 64
             || request.reason.trim().is_empty()
@@ -35,7 +39,7 @@ impl Request {
         }
         request.packages.sort();
         request.packages.dedup();
-        Ok(request)
+        Ok(self)
     }
 }
 

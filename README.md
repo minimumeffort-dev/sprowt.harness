@@ -16,6 +16,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 - [Plan execution](docs/execution.md): one executor follows task dependencies and checks the combined result.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
+- [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
 - [Terminal and companion](docs/terminal.md): model and effort labels, dot spinners for active workers and tasks, readable plans and the animated Sprowt pet.
 
@@ -27,7 +28,7 @@ Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per proje
 
 ## Architecture today
 
-Rust owns the interface, task scheduling, worker lifecycle and saved state. A small Python helper runs Laya locally. Codex plans and edits; Rust reruns verification commands before offering changes for review.
+Rust owns the interface, scheduling, workers and saved state. A shared tool dispatcher validates harness-owned operations and routes them to host or VM adapters. A small Python helper runs Laya locally; Codex plans and edits.
 
 ```mermaid
 flowchart TB
@@ -41,7 +42,7 @@ flowchart TB
     pr --> cleanup["Delete VM and worktree · keep branch and history"]
 ```
 
-Laya recommends the planner configuration. Codex uses your subscription and installs project dependencies in the VM. Rust installs requested OS packages and reruns checks independently. Tasks run sequentially within a mod; different mods can run in parallel. Git and GitHub operations stay on the Mac and run in the background. Muse follows later.
+Laya recommends the planner configuration. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps Git and GitHub on the Mac and package setup in the worker’s own VM. Tasks run sequentially within a mod; different mods can run in parallel. Muse follows later.
 
 ## Get started
 
@@ -118,7 +119,7 @@ Reopen from the same project root to restore them. Credentials stay with Codex. 
 
 ## What’s next
 
-Task worktrees inside each VM, then multiple Codex/Muse executors per mod. Shared context, memory, MCPs and skills follow in small batches. The earlier [VM validation probe](docs/sandbox-validation.md) records the initial connection tests.
+Task worktrees inside each VM, then multiple Codex/Muse executors per mod. Shared context, memory, MCPs and skills follow in small batches.
 
 ## Development
 

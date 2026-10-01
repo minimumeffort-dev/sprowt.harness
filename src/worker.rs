@@ -13,6 +13,7 @@ use crate::{
     plan::{Plan, Role},
     router::Selection,
     store::{CodeMod, Message, Store, Submission, WorkerRecord},
+    tools::Context,
     workspace,
 };
 
@@ -90,7 +91,7 @@ impl Worker {
                 &code_mod.description,
                 code_mod.planning.as_ref().and_then(|p| p.plan.as_ref()),
                 None,
-                workspace.as_deref(),
+                Context::worker(code_mod, record.id, role),
             )?)
         } else {
             None
@@ -256,7 +257,7 @@ impl Worker {
                 &code_mod.description,
                 None,
                 Some(selection),
-                None,
+                Context::worker(code_mod, self.id, self.role),
             ) {
                 Ok(client) => {
                     self.client = Some(client);

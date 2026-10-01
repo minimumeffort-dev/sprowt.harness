@@ -19,6 +19,7 @@ use crate::{
     router::Router,
     sprout,
     store::{CodeMod, Store, source_id},
+    tools::{Context, Dispatcher, Request},
     ui,
     worker::{Status, Worker},
     workspace::{self, Review},
@@ -521,11 +522,12 @@ impl App {
                 .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
             self.store.save_git_root(code_mod.id, &root)?;
             code_mod.git_root = Some(root.clone());
-            let project = self.project.clone();
+            let context = Context::harness(&self.project, &code_mod);
             self.git_jobs.insert(
                 code_mod.id,
                 Job::start("creating worktree", move |cancelled| {
-                    git_mod::prepare(&project, &root, cancelled)?;
+                    Dispatcher::new(&context, None, cancelled)
+                        .execute(Request::CreateWorktree, |_| {})?;
                     Ok(git_mod::Result::Prepared)
                 }),
             );
@@ -550,8 +552,7 @@ impl App {
             if self.git_jobs.contains_key(&id) {
                 return Ok(());
             }
-            let project = self.project.clone();
-            let description = self.mods[index].description.clone();
+            let context = Context::harness(&self.project, &self.mods[index]);
             let keys = self
                 .workers
                 .iter()
@@ -567,6 +568,7 @@ impl App {
                 id,
                 Job::start("saving and removing mod", move |cancelled| {
                     drop(workers);
+                    let mut tools = Dispatcher::new(&context, None, cancelled);
                     if !root.join("git-mod.json").exists() {
                         if ["checkout", "work", "vm.json"]
                             .iter()
@@ -583,7 +585,7 @@ impl App {
                     if git_mod::load(&root)?.phase == "preparing"
                         && git_mod::checkout(&root).exists()
                     {
-                        git_mod::prepare(&project, &root, cancelled)?;
+                        tools.execute(Request::CreateWorktree, |_| {})?;
                     }
                     if root.join("vm.json").exists() {
                         let mut vm = crate::sandbox::Sandbox::prepare(&root, cancelled, |_| {})?;
@@ -593,15 +595,9 @@ impl App {
                         && git_mod::load(&root)?.pr.is_none()
                         && workspace::review(&root)?.count() > 0
                     {
-                        git_mod::publish(
-                            &root,
-                            &description,
-                            true,
-                            std::path::Path::new("gh"),
-                            cancelled,
-                        )?;
+                        tools.execute(Request::PublishPr { draft: true }, |_| {})?;
                     }
-                    git_mod::cleanup(&root, cancelled)?;
+                    tools.execute(Request::CleanupMod, |_| {})?;
                     git_mod::remove_files(&root, cancelled)?;
                     Ok(git_mod::Result::Removed)
                 }),
@@ -619,8 +615,13 @@ impl App {
             .map(|execution| execution.workspace.clone());
         self.auto_plans.remove(&mod_id);
         self.workers.retain(|_, worker| worker.mod_id != mod_id);
-        if let Some(workspace) = &workspace
-            && let Err(error) = crate::sandbox::delete(workspace)
+        if workspace.is_some()
+            && let Err(error) = Dispatcher::new(
+                &Context::harness(&self.project, &self.mods[index]),
+                None,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .execute(Request::CleanupMod, |_| {})
         {
             self.notice = Some(format!(
                 "Could not delete the VM: {error}. The mod is retained."
@@ -721,15 +722,16 @@ impl App {
         if self.git_jobs.contains_key(&id) {
             return Ok(());
         }
-        if let Some(root) = self.mods[active].git_root.clone() {
+        if self.mods[active].git_root.is_some() {
             match self.git_states.get(&id) {
                 Some(state) if state.removing => return self.delete_mod(active),
                 state if state.is_none_or(|state| state.phase == "preparing") => {
-                    let project = self.project.clone();
+                    let context = Context::harness(&self.project, &self.mods[active]);
                     self.git_jobs.insert(
                         id,
                         Job::start("creating worktree", move |cancelled| {
-                            git_mod::prepare(&project, &root, cancelled)?;
+                            Dispatcher::new(&context, None, cancelled)
+                                .execute(Request::CreateWorktree, |_| {})?;
                             Ok(git_mod::Result::Prepared)
                         }),
                     );
@@ -1007,7 +1009,7 @@ impl App {
     fn start_publication(&mut self, index: usize) {
         let code_mod = &self.mods[index];
         let root = code_mod.git_root.clone().unwrap();
-        let description = code_mod.description.clone();
+        let context = Context::harness(&self.project, code_mod);
         let id = code_mod.id;
         if let Err(error) = git_mod::mark_publishing(&root) {
             self.notice = Some(error.to_string());
@@ -1027,14 +1029,9 @@ impl App {
             id,
             Job::start("publishing PR", move |cancelled| {
                 drop(workers);
-                git_mod::publish(
-                    &root,
-                    &description,
-                    false,
-                    std::path::Path::new("gh"),
-                    cancelled,
-                )?;
-                git_mod::cleanup(&root, cancelled)?;
+                let mut tools = Dispatcher::new(&context, None, cancelled);
+                tools.execute(Request::PublishPr { draft: false }, |_| {})?;
+                tools.execute(Request::CleanupMod, |_| {})?;
                 Ok(git_mod::Result::Published)
             }),
         );
@@ -1044,16 +1041,21 @@ impl App {
     }
 
     fn cleanup_vm(&mut self, index: usize) {
-        if let Some(execution) = self.mods[index]
+        if self.mods[index]
             .execution
             .as_ref()
-            .filter(|execution| execution.vm_cleanup_pending())
+            .is_some_and(|execution| execution.vm_cleanup_pending())
         {
-            self.notice = crate::sandbox::delete(&execution.workspace)
-                .err()
-                .map(|error| {
-                    format!("Changes applied; VM cleanup failed: {error}. Ctrl+R retries cleanup.")
-                });
+            self.notice = Dispatcher::new(
+                &Context::harness(&self.project, &self.mods[index]),
+                None,
+                &std::sync::atomic::AtomicBool::new(false),
+            )
+            .execute(Request::CleanupMod, |_| {})
+            .err()
+            .map(|error| {
+                format!("Changes applied; VM cleanup failed: {error}. Ctrl+R retries cleanup.")
+            });
         }
     }
 
