@@ -288,7 +288,15 @@ pub fn draw(
         );
     } else if matches!(app.view, View::Publish) {
         let count = app.review.as_ref().map_or(0, |review| review.count());
-        let text = Paragraph::new(format!("Publish {count} changed files {}?\nThe VM and worktree stay available for further edits.", if app.git_state().is_some_and(|s| s.pr.is_some()) { "to the existing PR" } else { "as a PR" })).wrap(Wrap { trim: false });
+        let text = Paragraph::new(format!(
+            "Publish {count} changed files {}?",
+            if app.git_state().is_some_and(|s| s.pr.is_some()) {
+                "to the existing PR"
+            } else {
+                "as a PR"
+            }
+        ))
+        .wrap(Wrap { trim: false });
         let rows = text.line_count(dialog_area.width.saturating_sub(4));
         let (body, _) = draw_dialog(
             frame,
@@ -464,7 +472,11 @@ fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, open: bool) {
 fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     let indices = app.picker_indices();
     let count = indices.len();
-    let mut hints = vec![("↑↓", "select"), ("↵", "open")];
+    let mut hints = Vec::new();
+    if count > 0 {
+        hints.push(("↑↓", "select"));
+    }
+    hints.push(("↵", if index < count { "open" } else { "new" }));
     if index < count {
         if !app.show_closed {
             hints.push(("c", "close"));
@@ -504,12 +516,23 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     } else {
         Style::new()
     };
-    frame.render_stateful_widget(
-        List::new(items).highlight_style(highlight),
-        list_area,
-        &mut ListState::default()
-            .with_selected((count > 0).then_some(index.min(count.saturating_sub(1)))),
-    );
+    if count == 0 {
+        frame.render_widget(
+            Line::from(if app.show_closed {
+                "No closed codemods"
+            } else {
+                "No active codemods"
+            })
+            .fg(KEY_HINT),
+            list_area,
+        );
+    } else {
+        frame.render_stateful_widget(
+            List::new(items).highlight_style(highlight),
+            list_area,
+            &mut ListState::default().with_selected((index < count).then_some(index)),
+        );
+    }
     let action = Line::from(vec!["+ ".fg(ACCENT), "new codemod".into()]);
     frame.render_widget(
         if index == count {
@@ -1036,7 +1059,6 @@ fn plan_lines(
             }
         }
     }
-    lines.push(Line::default());
     if details {
         if let Some(execution) = execution
             && !execution.checks.is_empty()
@@ -1083,16 +1105,7 @@ fn plan_lines(
         if let Some(routing) = &planning.routing {
             lines.push(Line::from(routing.clone()).fg(MUTED));
         }
-        lines.push(Line::default());
     }
-    lines.push(
-        Line::from(if execution.is_some_and(|e| e.status == "applied") {
-            "saved version"
-        } else {
-            "execution stays in the codemod’s Linux VM"
-        })
-        .fg(KEY_HINT),
-    );
     lines
 }
 

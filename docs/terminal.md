@@ -34,7 +34,9 @@ Completed planner chatter stays saved but is hidden from the transcript. The pla
 
 Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Failed operations show **Ctrl+R · retry Git operation**. A published mod keeps its composer for requesting edits on the same PR.
 
-Codemod, queue and project setup dialogs share spacing and keyboard hints. Git setup shows the starting file list. GitHub setup uses Tab to choose connect existing or create private, then confirms `owner/repository` before contacting GitHub. Hints adapt to the current view and terminal width. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
+Codemod, queue and project setup dialogs share spacing and keyboard hints. Empty codemod lists say **No active codemods** or **No closed codemods**, with a new-codemod action. Hints adapt to the available actions and terminal width. Plans and publish confirmations omit repeated VM guidance; the conversation keeps room for tasks and replies.
+
+Git setup shows the starting file list. GitHub setup uses Tab to choose connect existing or create private, then confirms `owner/repository` before contacting GitHub. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
 
 ## Commands
 
@@ -70,6 +72,16 @@ Pasted text keeps its line breaks. Dialog actions are covered in [Codemods and m
 
 The companion uses terminal cells and glyphs, so it needs no image support. It sits beside the project heading in an 8-column, 4-row area.
 
-It blinks, nods, hops and changes expressions. Creating a mod, queueing a message or saving a queue edit triggers a brief celebration. Worker progress appears in the status text beside it.
+Sprowt follows the selected codemod:
+
+| State | Expression and movement |
+| --- | --- |
+| Idle | Double blink, sideways glances and a curious face |
+| Planning | Thoughtful eyes and an occasional leaf twitch |
+| Working or checking | Focused eyes and rhythmic leaf movement |
+| Changes ready | One short bounce and wink, then a happy face |
+| Blocked or failed | A concerned face, held still |
+
+The body keeps its shape and footprint. Switching codemods resets the animation to that mod’s state. Queueing or editing an instruction can trigger a brief idle celebration; it never overrides active work or an error. Closing or stopping returns Sprowt to idle. Worker progress remains in the status text beside it.
 
 Run `sprowt-harness --no-motion` for a still companion and no entrance animation. On exit, the harness restores normal terminal input, paste handling and the previous screen.

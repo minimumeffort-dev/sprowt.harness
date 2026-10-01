@@ -199,14 +199,22 @@ impl App {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         let started = Instant::now();
         let mut last_frame = started;
+        let mut companion = (None, sprout::Mood::Idle);
+        let mut mood_since = started;
         while !self.quit {
             self.poll_workers().map_err(io::Error::other)?;
             let now = Instant::now();
             let elapsed = now.duration_since(last_frame);
             last_frame = now;
             let animation_time = self.motion.then_some(now.duration_since(started));
+            let next = (self.current_mod().map(|m| m.id), self.companion_mood());
+            if next != companion {
+                companion = next;
+                mood_since = now;
+            }
             let (pose, next_pose) = sprout::animation(
-                now.duration_since(started),
+                now.duration_since(mood_since),
+                companion.1,
                 self.happy_since.map(|since| now.duration_since(since)),
             );
 
@@ -217,7 +225,7 @@ impl App {
                     if self.motion {
                         pose
                     } else {
-                        sprout::Pose::Idle
+                        sprout::Pose::IDLE
                     },
                     animation_time,
                 );
@@ -1182,6 +1190,45 @@ impl App {
         self.current_worker()
             .and_then(|worker| worker.error.as_deref())
             .or(self.notice.as_deref())
+    }
+
+    fn companion_mood(&self) -> sprout::Mood {
+        use sprout::Mood;
+
+        let Some(code_mod) = self.current_mod().filter(|m| !m.closed) else {
+            return Mood::Idle;
+        };
+        if self.git_activity().is_some() {
+            return Mood::Working;
+        }
+        let workers = || self.workers.values().filter(|w| w.mod_id == code_mod.id);
+        if workers().any(|w| w.role == Role::Planner && (w.enabled || w.busy())) {
+            return Mood::Planning;
+        }
+        if workers().any(|w| w.enabled || w.busy()) {
+            return Mood::Working;
+        }
+        if self.worker_error().is_some()
+            || workers().any(|w| w.status == Status::Failed)
+            || code_mod
+                .planning
+                .as_ref()
+                .is_some_and(|p| p.status == "failed")
+            || code_mod
+                .execution
+                .as_ref()
+                .is_some_and(|e| e.status == "blocked")
+        {
+            return Mood::Blocked;
+        }
+        if code_mod
+            .execution
+            .as_ref()
+            .is_some_and(|e| e.complete() && matches!(e.status.as_str(), "review" | "applied"))
+        {
+            return Mood::Finished;
+        }
+        Mood::Idle
     }
 
     fn toggle_worker(&mut self) -> Result<()> {
@@ -2241,7 +2288,7 @@ mod tests {
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| {
-                ui::draw(frame, app, sprout::Pose::Idle, elapsed);
+                ui::draw(frame, app, sprout::Pose::IDLE, elapsed);
             })
             .unwrap();
         terminal.backend().buffer().clone()
@@ -2441,6 +2488,14 @@ mod tests {
             .map(|m| m.body.clone())
             .collect::<Vec<_>>();
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        for width in [48, 100] {
+            let display = rows(&screen(&mut app, width, 30)).join("\n");
+            assert!(display.contains("No closed codemods"));
+            assert!(display.contains("new codemod"));
+            assert!(!display.contains("↑↓ select") && !display.contains("↵ open"));
+        }
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
         assert!(matches!(app.view, View::CloseMod(0)));
         assert!(
@@ -2460,6 +2515,11 @@ mod tests {
         assert!(app.current_mod().is_none());
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
         assert!(app.picker_indices().is_empty());
+        assert!(
+            rows(&screen(&mut app, 100, 30))
+                .join("\n")
+                .contains("No active codemods")
+        );
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.picker_indices(), [0]);
         assert!(
@@ -2841,6 +2901,38 @@ mod tests {
     }
 
     #[test]
+    fn companion_follows_the_selected_mod_and_settles_when_stopped() {
+        let (_data, mut app, _root) = execution_app();
+        assert_eq!(app.companion_mood(), sprout::Mood::Finished);
+        let other = app
+            .store
+            .create_mod(app.project_id, "Another goal")
+            .unwrap();
+        let record = app.store.worker(other.id).unwrap();
+        let worker = Worker::start(&app.project, &other, record, Role::Planner, None).unwrap();
+        app.workers.insert(worker.id, worker);
+        app.mods.push(other);
+        assert_eq!(app.companion_mood(), sprout::Mood::Finished);
+
+        app.active = Some(1);
+        assert_eq!(app.companion_mood(), sprout::Mood::Planning);
+        let worker = app.workers.values_mut().next().unwrap();
+        worker.role = Role::Executor;
+        assert_eq!(app.companion_mood(), sprout::Mood::Working);
+        let worker = app.workers.values_mut().next().unwrap();
+        worker.enabled = false;
+        worker.status = Status::Ready;
+        assert_eq!(app.companion_mood(), sprout::Mood::Idle);
+        app.workers.values_mut().next().unwrap().status = Status::Failed;
+        assert_eq!(app.companion_mood(), sprout::Mood::Blocked);
+        app.mods[1].closed = true;
+        assert_eq!(app.companion_mood(), sprout::Mood::Idle);
+        app.active = Some(0);
+        app.mods[0].execution.as_mut().unwrap().status = "blocked".into();
+        assert_eq!(app.companion_mood(), sprout::Mood::Blocked);
+    }
+
+    #[test]
     fn missing_recorded_effort_is_visible_without_guessing_a_level() {
         let (_data, mut app, _root) = execution_app();
         app.mods[0].messages.push(crate::store::Message {
@@ -2891,6 +2983,7 @@ mod tests {
             let collapsed = rows(&screen(&mut app, width, 42)).join("\n");
             assert!(collapsed.contains("ctrl+o ▸ show plan details"));
             assert!(!collapsed.contains("/workspace/.venv"));
+            assert!(!collapsed.contains("execution stays"));
             assert_eq!(app.input.lines(), ["keep this draft"]);
         }
     }

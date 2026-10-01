@@ -42,6 +42,7 @@
 - Every visible element and interaction must serve a requested or approved feature.
 - Avoid filler text, duplicate instructions, and status labels for features that do not exist yet.
 - Empty space is fine. Do not add copy or controls just to fill it.
+- Label empty codemod lists clearly. Keep repeated runtime and isolation guidance in the docs, not the conversation.
 - Place necessary guidance beside the control it explains; avoid disconnected text floating in the layout.
 - Use purposeful terminal glyphs for controls and keyboard hints, with clear labels and no emoji rendering.
 - Write “codemod” as one word. Use `<codemod/>` as the section label and a glyph beside each mod name. Add agent status and counts when agents exist.

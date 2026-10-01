@@ -18,7 +18,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
-- [Terminal and companion](docs/terminal.md): model and effort labels, dot spinners for active workers and tasks, readable plans and the animated Sprowt pet.
+- [Terminal and companion](docs/terminal.md): readable plans, worker model and effort, task spinners and a Sprowt pet that reacts to planning, work and results.
 
 ### Current limits
 
