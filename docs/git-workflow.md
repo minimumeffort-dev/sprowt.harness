@@ -9,13 +9,14 @@ Each codemod owns a branch, a host worktree and a local Linux VM. Workers prepar
 | Empty, without Git | Confirm an empty initial commit |
 | Existing files, without Git | Review the files and confirm the initial commit |
 | Git, without commits | Review and commit the starting files |
-| Git, with commits | Use committed `HEAD`; local edits stay in your checkout |
+| Git, with commits | Check the remote, safely fast-forward, then use committed `HEAD` |
 
 Setup respects `.gitignore` and excludes common credentials, dependencies and caches. Enter confirms; Esc returns to the description. Changed files block setup. Source bytes and executable permissions are preserved. New repositories use `main`; an existing unborn branch keeps its name.
 
 ```mermaid
 flowchart TB
-    base["Starting commit"] --> tree["Codemod branch + worktree · Mac"]
+    remote["Check remote branch"] --> base["Safely update local branch"]
+    base --> tree["Codemod branch + worktree · Mac"]
     tree --> vm["Copy source to own Linux VM"]
     vm --> ready["Workers build · checks pass"]
     ready --> review["Review diff or send edits"]
@@ -24,6 +25,16 @@ flowchart TB
 ```
 
 Git metadata and credentials stay on the Mac. Workers edit `/workspace` inside the VM. Git and GitHub operations belong to the [harness tool dispatcher](tools.md).
+
+## Keep the starting source current
+
+Before a new codemod, fetch the current branch’s configured upstream, or the same branch on `origin`. Fast-forward local commits only; never rebase, create a merge commit or push the project branch. Already current or locally ahead branches keep their committed source.
+
+Local edits and staging are preserved. Files previously left untracked after publication become tracked against the merged commit; differing local bytes remain unstaged edits. The codemod gets committed source, so local edits are not included in its PR.
+
+Overlapping tracked edits, divergent history, unavailable remotes and active Git operations stop setup with an error. Resolve the named conflict and press **Ctrl+R**. No planner starts with stale source. Detached commits, local-only branches and projects without a remote keep their local starting point; a missing configured upstream is an error.
+
+If planning failed before execution, **Ctrl+R** refreshes an untouched worktree from the updated project and starts a fresh planner conversation. History, queued instructions and the draft stay. Once execution has started, the codemod’s baseline stays fixed.
 
 ## Publish and edit
 
@@ -43,7 +54,7 @@ The PR targets your starting branch, or the GitHub default branch when starting 
 
 Publishing retains the VM, worktree and conversation. Send edits through the composer. A new plan covers the requested change and regression checks; execution reuses the VM. Publish again to update the same PR. The diff covers the codemod's changes from its original baseline.
 
-Merged or closed PRs require a new codemod from the updated project. Outside changes to the PR branch or worktree block publication and preserve local work.
+Merged or closed PRs require a new codemod. Its remote check brings merged changes into the local starting branch. Outside changes to the PR branch or worktree block publication and preserve local work.
 
 ## Close, reopen or delete
 

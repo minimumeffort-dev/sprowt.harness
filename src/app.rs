@@ -740,7 +740,7 @@ impl App {
                     if initialize {
                         "setting up Git"
                     } else {
-                        "creating worktree"
+                        "checking project branch"
                     },
                     move |cancelled| {
                         Dispatcher::new(&context, None, cancelled).execute(
@@ -1262,6 +1262,29 @@ impl App {
         }
         if self.mods[active].closed {
             self.reopen_mod(active);
+            return Ok(());
+        }
+        if self.mods[active].execution.is_none()
+            && self.mods[active].git_root.as_ref().is_some_and(|root| {
+                !root.join("work").exists() && !root.join("snapshot-ready").exists()
+            })
+            && self.mods[active]
+                .planning
+                .as_ref()
+                .is_some_and(|plan| matches!(plan.status.as_str(), "failed" | "paused"))
+            && !self.execution_busy()
+        {
+            self.workers.retain(|_, worker| worker.mod_id != id);
+            let context = Context::harness(&self.project, &self.mods[active]);
+            self.git_jobs.insert(
+                id,
+                Job::start("refreshing starting source", move |cancelled| {
+                    Dispatcher::new(&context, None, cancelled)
+                        .execute(Request::RefreshWorktree, |_| {})?;
+                    Ok(git_mod::Result::Refreshed)
+                }),
+            );
+            self.notice = None;
             return Ok(());
         }
         let role = if self.mods[active]
@@ -1792,6 +1815,12 @@ impl App {
                     }
                     self.notice = None;
                 }
+                Ok(git_mod::Result::Refreshed) => {
+                    self.store.restart_plan(id)?;
+                    self.mods[index].planning = self.store.planning(id)?;
+                    self.auto_plans.insert(id);
+                    self.notice = None;
+                }
                 Ok(git_mod::Result::Snapshot) => {
                     let plan = self.mods[index]
                         .planning
@@ -1986,6 +2015,83 @@ mod tests {
         std::fs::create_dir_all(&path).unwrap();
         commit_project(&path);
         path
+    }
+
+    #[test]
+    fn new_mods_fetch_the_merged_source_before_planning() {
+        let (data, repo, _root, target) = crate::git_sync::tests::remote_change();
+        std::fs::write(repo.join("new.txt"), "local edit\n").unwrap();
+        let repo = repo.canonicalize().unwrap();
+        let mut app = App::load(repo.clone(), false, data.store()).unwrap();
+        paste(&mut app, "Edit existing items");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.worker_error().is_none());
+        let code_mod = &app.mods[0];
+        let root = code_mod.git_root.as_ref().unwrap();
+        assert_eq!(git_mod::load(root).unwrap().base, target);
+        assert_eq!(
+            std::fs::read_to_string(app.source_project(0).join("new.txt")).unwrap(),
+            "incoming\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("new.txt")).unwrap(),
+            "local edit\n"
+        );
+        assert!(app.auto_plans.contains(&code_mod.id));
+    }
+
+    #[test]
+    fn failed_planning_refreshes_an_unstarted_worktree_and_keeps_messages_and_drafts() {
+        let (data, repo, root, target) = crate::git_sync::tests::remote_change();
+        let repo = repo.canonicalize().unwrap();
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        git_mod::prepare(&repo, &root, &flag).unwrap();
+        let mut store = data.store();
+        let project = store.load_project(&repo).unwrap();
+        let code_mod = store.create_mod(project.id, "Edit existing items").unwrap();
+        let first_source = code_mod.planning.as_ref().unwrap().source.clone();
+        store.save_git_root(code_mod.id, &root).unwrap();
+        store.planning_status(code_mod.id, "failed").unwrap();
+        store.enqueue(code_mod.id, "Also check cancel").unwrap();
+        store.save_draft(code_mod.id, "keep the draft").unwrap();
+        let planner = store.worker_for(code_mod.id, Role::Planner).unwrap();
+        store
+            .save_thread(planner.id, "planner-that-saw-empty-source")
+            .unwrap();
+        let mut app = App::load(repo, false, store).unwrap();
+        let history = app.mods[0]
+            .messages
+            .iter()
+            .map(|message| message.body.clone())
+            .collect::<Vec<_>>();
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(app.worker_error().is_none());
+        assert_eq!(git_mod::load(&root).unwrap().base, target);
+        assert_eq!(
+            std::fs::read_to_string(app.source_project(0).join("new.txt")).unwrap(),
+            "incoming\n"
+        );
+        assert_eq!(app.mods[0].planning.as_ref().unwrap().status, "pending");
+        assert_ne!(app.mods[0].planning.as_ref().unwrap().source, first_source);
+        assert!(
+            app.store
+                .worker_for(code_mod.id, Role::Planner)
+                .unwrap()
+                .thread_id
+                .is_none()
+        );
+        assert_eq!(
+            app.mods[0]
+                .messages
+                .iter()
+                .map(|message| message.body.clone())
+                .collect::<Vec<_>>(),
+            history
+        );
+        assert_eq!(app.input.lines(), ["keep the draft"]);
+        assert_eq!(queued(&app), ["Also check cancel"]);
+        assert!(app.auto_plans.contains(&code_mod.id));
+        assert!(app.mods[0].execution.is_none());
     }
 
     #[test]

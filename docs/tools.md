@@ -19,7 +19,8 @@ flowchart TB
 | `initialize_project` | Harness | Create the confirmed initial commit and worktree |
 | `adopt_snapshot` | Harness | Attach saved starting files and verified work to Git |
 | `connect_repository` | Harness | Connect GitHub or create a confirmed private repository |
-| `create_worktree` | Harness | Git on the Mac |
+| `create_worktree` | Harness | Check and safely update the project branch, then create its worktree |
+| `refresh_worktree` | Harness | Refresh an untouched worktree before retrying planning |
 | `publish_pr` | Harness | Git and GitHub CLI on the Mac |
 | `prepare_edits` | Harness | Check the saved PR when present; prepare the next edit round |
 | `close_mod` | Harness | Commit a local checkpoint and remove the VM |

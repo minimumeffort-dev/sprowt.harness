@@ -31,6 +31,10 @@ flowchart TB
         ├── project-setup pending initial Git setup or snapshot adoption
         ├── repository-setup.json confirmed GitHub destination and recovery
         ├── snapshot-ready completed Git mod source transfer
+        ├── sync-project.json pending project fast-forward; removed when complete
+        ├── sync-before-index original staging checkpoint during sync
+        ├── sync-index temporary staging used for the fast-forward
+        ├── refresh-target pending starting-source refresh; removed when complete
         ├── before/   starting files
         ├── work/     source exported from the VM
         ├── base.git/ private diff metadata
@@ -52,6 +56,8 @@ The [tool dispatcher](tools.md) records call IDs, callers, duration and outcomes
 Apple Container manages each VM’s disk separately. Code and dependencies persist across publication and edit rounds. Closing or deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
 
 The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
+
+Project synchronization uses a temporary Git index and locks the real index while fast-forwarding. Its checkpoint completes an interrupted index update on retry. Git hooks and project filters are disabled. Planning starts only after synchronization and worktree setup finish.
 
 ## Reopen, close and delete
 

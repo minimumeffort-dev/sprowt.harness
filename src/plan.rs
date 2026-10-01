@@ -98,7 +98,7 @@ impl Plan {
                         .any(|part| !matches!(part, Component::Normal(_)))
                 {
                     return Err(format!(
-                        "Task {} needs exact project-relative file or directory paths.",
+                        "Task {} has invalid file scope {file:?}; use an exact project-relative file or directory path.",
                         task.id
                     ));
                 }

@@ -19,7 +19,7 @@ Publishing creates or updates a PR and keeps the VM for further edits. Closing s
 
 ## Create, switch, close
 
-- **Create:** open **Ctrl+P**, select **New codemod**, describe the change and press Enter. Review and confirm Git setup when offered. A worktree starts from the initial commit or existing `HEAD`, then planning and execution start automatically. The first line becomes the title; the full description is saved.
+- **Create:** open **Ctrl+P**, select **New codemod**, describe the change and press Enter. Confirm Git setup when offered. The project branch is checked and safely updated before creating a worktree; planning and execution start automatically. The first line becomes the title; the full description is saved.
 - **Switch:** open **Ctrl+P**, select a mod and press Enter. Its conversation and draft return. Other mods’ workers keep running.
 - **Edit:** send a message through the composer. After the current version is verified, a fresh plan and execution round start against its source. Published mods use the same composer and PR.
 - **Publish:** **Ctrl+S** starts publication after verification; Enter confirms the PR. **Ctrl+D** lets you review the diff first.

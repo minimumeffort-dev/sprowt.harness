@@ -19,6 +19,7 @@ enum Tool {
     AdoptSnapshot,
     ConnectRepository,
     CreateWorktree,
+    RefreshWorktree,
     PublishPr,
     PrepareEdits,
     CleanupMod,
@@ -28,11 +29,12 @@ enum Tool {
     InstallPackages,
 }
 
-const REGISTRY: [Tool; 11] = [
+const REGISTRY: [Tool; 12] = [
     Tool::InitializeProject,
     Tool::AdoptSnapshot,
     Tool::ConnectRepository,
     Tool::CreateWorktree,
+    Tool::RefreshWorktree,
     Tool::PublishPr,
     Tool::PrepareEdits,
     Tool::CleanupMod,
@@ -50,6 +52,7 @@ impl Tool {
             Self::AdoptSnapshot => "adopt_snapshot",
             Self::ConnectRepository => "connect_repository",
             Self::CreateWorktree => "create_worktree",
+            Self::RefreshWorktree => "refresh_worktree",
             Self::PublishPr => "publish_pr",
             Self::PrepareEdits => "prepare_edits",
             Self::CleanupMod => "cleanup_mod",
@@ -138,6 +141,7 @@ pub enum Request {
     AdoptSnapshot,
     ConnectRepository(git_mod::RepositoryRequest),
     CreateWorktree,
+    RefreshWorktree,
     PublishPr { draft: bool },
     PrepareEdits,
     CleanupMod,
@@ -154,6 +158,7 @@ impl Request {
             Self::AdoptSnapshot => Tool::AdoptSnapshot,
             Self::ConnectRepository(_) => Tool::ConnectRepository,
             Self::CreateWorktree => Tool::CreateWorktree,
+            Self::RefreshWorktree => Tool::RefreshWorktree,
             Self::PublishPr { .. } => Tool::PublishPr,
             Self::PrepareEdits => Tool::PrepareEdits,
             Self::CleanupMod => Tool::CleanupMod,
@@ -305,8 +310,25 @@ impl<'a> Dispatcher<'a> {
                     Ok(Output::Done)
                 }
                 Request::CreateWorktree => {
+                    if !root.join("git-mod.json").exists() {
+                        progress("checking project branch");
+                        crate::git_sync::project(
+                            self.context.project.as_deref().unwrap(),
+                            root,
+                            self.cancelled,
+                        )?;
+                    }
                     progress("creating worktree");
                     git_mod::prepare(
+                        self.context.project.as_deref().unwrap(),
+                        root,
+                        self.cancelled,
+                    )?;
+                    Ok(Output::Done)
+                }
+                Request::RefreshWorktree => {
+                    progress("checking project branch");
+                    git_mod::refresh(
                         self.context.project.as_deref().unwrap(),
                         root,
                         self.cancelled,

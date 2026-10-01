@@ -873,6 +873,24 @@ impl Store {
         Ok(())
     }
 
+    pub fn restart_plan(&mut self, mod_id: i64) -> Result<()> {
+        let transaction = self.0.transaction()?;
+        let attempt: i64 = transaction.query_row(
+            "SELECT attempt FROM plans WHERE mod_id=?1",
+            [mod_id],
+            |row| row.get(0),
+        )?;
+        transaction.execute(
+            "UPDATE plans SET status='pending',attempt=?2,source=?3,body=NULL WHERE mod_id=?1",
+            params![mod_id, attempt + 1, plan_source(mod_id, attempt + 1)],
+        )?;
+        transaction.execute(
+            "UPDATE workers SET thread_id=NULL,pending=NULL WHERE mod_id=?1 AND role='planner'",
+            [mod_id],
+        )?;
+        transaction.commit()
+    }
+
     pub fn planning_model(&self, mod_id: i64, selection: &Selection) -> Result<()> {
         self.0.execute(
             "UPDATE plans SET model=?2,effort=?3,routing=?4 WHERE mod_id=?1",

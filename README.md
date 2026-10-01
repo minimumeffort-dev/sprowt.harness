@@ -12,7 +12,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 
 - [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
-- [Worktrees and PRs](docs/git-workflow.md): set up Git in any project folder and publish to a PR. Keep editing, or close with a saved checkpoint.
+- [Worktrees and PRs](docs/git-workflow.md): sync merged changes, create a worktree and publish a PR. Keep editing, or close with a saved checkpoint.
 - [Plan execution](docs/execution.md): one executor follows task dependencies and checks the combined result.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
@@ -32,7 +32,8 @@ Rust owns the interface, scheduling, workers and saved state. A shared tool disp
 
 ```mermaid
 flowchart TB
-    goal["Describe a codemod"] --> setup["Git branch + worktree"]
+    goal["Describe a codemod"] --> sync["Check remote · safely update project branch"]
+    sync --> setup["Git branch + worktree"]
     setup --> planner["Laya routes · Codex plans"]
     planner --> build["Codex builds + Rust checks · local Linux VM"]
     build --> ready["Version ready"]
@@ -73,7 +74,7 @@ Then open a terminal in the project you want to work on and run:
 sprowt-harness
 ```
 
-Start in an empty folder, an existing project or a Git repository. If Git has no commits, review and confirm the starting files. The harness creates the initial commit, then a codemod worktree. Existing repositories use committed `HEAD`; local edits stay in your checkout.
+Start in an empty folder, an existing project or a Git repository. If Git has no commits, review and confirm the starting files. Before a new worktree, the harness fetches the current branch’s upstream and safely fast-forwards your project. Local edits and staging stay; conflicts stop creation. The codemod uses the updated committed source.
 
 Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth login` and `gh auth setup-git`.
 

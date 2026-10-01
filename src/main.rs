@@ -2,6 +2,7 @@ mod app;
 mod codex;
 mod execution;
 mod git_mod;
+mod git_sync;
 mod packages;
 mod plan;
 mod router;

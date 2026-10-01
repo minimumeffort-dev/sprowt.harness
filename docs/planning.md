@@ -1,6 +1,6 @@
 # Planning and Laya
 
-Creating a codemod starts planning from its description. Git setup is confirmed first when needed. New codemods create a worktree from committed `HEAD`; Laya and the planner inspect that source. You can describe the whole change immediately.
+Creating a codemod starts planning from its description. Git setup is confirmed first when needed. The [project branch is checked and safely updated](git-workflow.md#keep-the-starting-source-current) before creating its worktree; Laya and the planner inspect that committed source.
 
 ```mermaid
 flowchart TB
@@ -62,6 +62,8 @@ Once a valid plan is saved, execution begins automatically. **Ctrl+R** stops wor
 
 ## Stop and retry
 
-Ctrl+R stops unfinished planning or retries it after interruption or failure. A valid plan is saved and displayed in the conversation. New plans proceed directly to execution. After an interruption, Ctrl+R explicitly resumes work.
+Ctrl+R stops unfinished planning or retries it after interruption or failure. An untouched worktree checks the remote again, refreshes its source and starts a fresh planner conversation. Confirmed starting snapshots and source already used for execution stay fixed. History, draft and queue are retained.
+
+A valid plan is saved and displayed in the conversation. New plans proceed directly to execution. After an interruption, Ctrl+R explicitly resumes work.
 
 Reopening the harness restores saved progress without starting workers. Sending edits to a completed version creates a new plan against the latest source, with checks for the change and regressions. The conversation stays; the current plan is replaced.

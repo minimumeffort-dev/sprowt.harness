@@ -51,6 +51,7 @@ impl GitMod {
 
 pub enum Result {
     Prepared,
+    Refreshed,
     Adopted,
     RepositoryConnected,
     Snapshot,
@@ -274,7 +275,11 @@ fn private(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-fn run(mut command: Command, root: &Path, cancelled: &AtomicBool) -> io::Result<Vec<u8>> {
+pub(crate) fn run(
+    mut command: Command,
+    root: &Path,
+    cancelled: &AtomicBool,
+) -> io::Result<Vec<u8>> {
     if cancelled.load(Ordering::Relaxed) {
         return Err(io::Error::other("Git operation paused; Ctrl+R retries."));
     }
@@ -326,7 +331,12 @@ fn run(mut command: Command, root: &Path, cancelled: &AtomicBool) -> io::Result<
     }
 }
 
-fn git(root: &Path, path: &Path, args: &[&str], cancelled: &AtomicBool) -> io::Result<String> {
+pub(crate) fn git(
+    root: &Path,
+    path: &Path,
+    args: &[&str],
+    cancelled: &AtomicBool,
+) -> io::Result<String> {
     let mut command = safe_git(path)?;
     command.arg("-C").arg(path).args(args);
     String::from_utf8(run(command, root, cancelled)?)
@@ -334,7 +344,7 @@ fn git(root: &Path, path: &Path, args: &[&str], cancelled: &AtomicBool) -> io::R
         .map_err(io::Error::other)
 }
 
-fn safe_git(path: &Path) -> io::Result<Command> {
+pub(crate) fn safe_git(path: &Path) -> io::Result<Command> {
     let filters = workspace::trusted_git()
         .arg("-C")
         .arg(path)
@@ -595,6 +605,101 @@ fn validate(root: &Path, state: &GitMod, cancelled: &AtomicBool) -> io::Result<(
         ));
     }
     Ok(())
+}
+
+pub fn refresh(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
+    let mut state = load(root)?;
+    if state.phase != "ready"
+        || state.head.is_some()
+        || state.pr.is_some()
+        || state.checkpoint.is_some()
+        || root.join("work").exists()
+        || root.join("snapshot-ready").exists()
+        || root.join("vm.json").exists()
+    {
+        return Err(io::Error::other(
+            "Only an unstarted codemod can refresh its starting source.",
+        ));
+    }
+    validate(root, &state, cancelled)?;
+    let marker = root.join("refresh-target");
+    let path = checkout(root);
+    let target = if marker.exists() {
+        fs::read_to_string(&marker)?
+    } else {
+        if git(root, &path, &["rev-parse", "HEAD"], cancelled)? != state.base
+            || !git(
+                root,
+                &path,
+                &[
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--ignored",
+                ],
+                cancelled,
+            )?
+            .is_empty()
+        {
+            return Err(io::Error::other(
+                "The codemod worktree has outside changes. Its source is retained.",
+            ));
+        }
+        let branch = git(
+            root,
+            project,
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+            cancelled,
+        )
+        .ok();
+        if branch != state.base_branch {
+            return Err(io::Error::other(
+                "The project branch changed. Start a new codemod from that branch.",
+            ));
+        }
+        crate::git_sync::project(project, root, cancelled)?;
+        let target = git(root, project, &["rev-parse", "HEAD^{commit}"], cancelled)?;
+        if target == state.base {
+            return Ok(());
+        }
+        if git(
+            root,
+            project,
+            &["merge-base", "--is-ancestor", &state.base, &target],
+            cancelled,
+        )
+        .is_err()
+        {
+            return Err(io::Error::other(
+                "The project's history changed. Start a new codemod; saved work is retained.",
+            ));
+        }
+        fs::write(&marker, &target)?;
+        target
+    };
+    let head = git(root, &path, &["rev-parse", "HEAD"], cancelled)?;
+    if head != state.base && head != target {
+        return Err(io::Error::other(
+            "The codemod branch changed during refresh. Source is retained.",
+        ));
+    }
+    git(
+        root,
+        &path,
+        &["read-tree", "-m", "-u", &state.base, &target],
+        cancelled,
+    )?;
+    if head != target {
+        git(
+            root,
+            &path,
+            &["update-ref", "HEAD", &target, &state.base],
+            cancelled,
+        )?;
+    }
+    state.base = target;
+    save(root, &state)?;
+    fs::remove_file(marker)
 }
 
 fn stage(root: &Path, path: &Path, review: &Review, cancelled: &AtomicBool) -> io::Result<()> {
@@ -1618,6 +1723,60 @@ esac
         fs::write(root.join("work/a.txt"), "changed\n").unwrap();
         fs::write(root.join("work/new.txt"), "new\n").unwrap();
         fs::remove_file(root.join("work/delete.txt")).unwrap();
+    }
+
+    #[test]
+    fn refreshing_recovers_a_partial_checkout_and_refuses_started_or_changed_work() {
+        for case in ["interrupted", "outside edit", "started"] {
+            let (_data, repo, root, target) = crate::git_sync::tests::remote_change();
+            let flag = AtomicBool::new(false);
+            prepare(&repo, &root, &flag).unwrap();
+            let before = load(&root).unwrap().base;
+            assert!(
+                git(&root, &checkout(&root), &["status", "--porcelain"], &flag)
+                    .unwrap()
+                    .is_empty()
+            );
+            match case {
+                "outside edit" => fs::write(checkout(&root).join("a.txt"), "outside\n").unwrap(),
+                "started" => workspace::create(&checkout(&root), &root).unwrap(),
+                _ => {
+                    fs::write(root.join("refresh-target"), &target).unwrap();
+                    git(
+                        &root,
+                        &checkout(&root),
+                        &["read-tree", "-m", "-u", &before, &target],
+                        &flag,
+                    )
+                    .unwrap();
+                }
+            }
+            let result = refresh(&repo, &root, &flag);
+            if case == "interrupted" {
+                result.unwrap();
+                assert_eq!(load(&root).unwrap().base, target);
+                assert_eq!(
+                    git(&root, &checkout(&root), &["rev-parse", "HEAD"], &flag).unwrap(),
+                    target
+                );
+                assert_eq!(
+                    fs::read_to_string(checkout(&root).join("new.txt")).unwrap(),
+                    "incoming\n"
+                );
+                assert!(!root.join("refresh-target").exists());
+            } else {
+                assert!(result.is_err());
+                assert_eq!(load(&root).unwrap().base, before);
+                assert_eq!(
+                    fs::read_to_string(checkout(&root).join("a.txt")).unwrap(),
+                    if case == "outside edit" {
+                        "outside\n"
+                    } else {
+                        "original\n"
+                    }
+                );
+            }
+        }
     }
 
     #[test]
