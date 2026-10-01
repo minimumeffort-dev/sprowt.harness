@@ -34,7 +34,7 @@ pub fn input() -> TextArea<'static> {
 
 pub fn name_input() -> TextArea<'static> {
     field(
-        "new code mod",
+        "new codemod",
         "Describe what you want to build or change...",
     )
 }
@@ -394,12 +394,12 @@ fn draw_queue_editor(frame: &mut Frame, app: &App, index: usize, area: Rect) {
 
 fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, open: bool) {
     let [label, selector, _] = Layout::horizontal([
-        Constraint::Length(12),
-        Constraint::Length(area.width.saturating_sub(12).min(54)),
+        Constraint::Length(11),
+        Constraint::Length(area.width.saturating_sub(11).min(54)),
         Constraint::Min(0),
     ])
     .areas(area);
-    frame.render_widget(Line::from("<code mod/>").fg(KEY_HINT), label);
+    frame.render_widget(Line::from("<codemod/>").fg(KEY_HINT), label);
     frame.render_widget(
         Block::new()
             .fg(Color::White)
@@ -446,7 +446,7 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         frame,
         area,
         &format!(
-            "{} code mods ({count})",
+            "{} codemods ({count})",
             if app.show_closed { "closed" } else { "active" }
         ),
         count,
@@ -476,7 +476,7 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         &mut ListState::default()
             .with_selected((count > 0).then_some(index.min(count.saturating_sub(1)))),
     );
-    let action = Line::from(vec!["+ ".fg(ACCENT), "new code mod".into()]);
+    let action = Line::from(vec!["+ ".fg(ACCENT), "new codemod".into()]);
     frame.render_widget(
         if index == count {
             action.style(selected)
@@ -510,7 +510,7 @@ fn draw_delete_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     let (content, _) = draw_dialog(
         frame,
         area,
-        "delete code mod?",
+        "delete codemod?",
         rows,
         false,
         &[("↵", "delete"), ("esc", "cancel")],
@@ -557,7 +557,7 @@ fn draw_close_mod(frame: &mut Frame, app: &App, index: usize, discard: bool, are
     let (content, _) = draw_dialog(
         frame,
         area,
-        "close code mod?",
+        "close codemod?",
         body.line_count(area.width.saturating_sub(4)),
         false,
         &hints,

@@ -10,7 +10,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 
 ## What works today
 
-- [Code mods and messages](docs/code-mods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
+- [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
 - [Worktrees and PRs](docs/git-workflow.md): publish and continue the same PR. Close a mod to keep history; delete it to remove local data.
 - [Plan execution](docs/execution.md): one executor follows task dependencies and checks the combined result.
@@ -75,7 +75,7 @@ sprowt-harness
 
 For Git projects, make an initial commit and sign in with `gh auth login` and `gh auth setup-git`. New mods start from committed `HEAD`; your local edits stay in the original checkout.
 
-1. Describe your code mod and press **Enter**. Its worktree is created, then planning starts.
+1. Describe your codemod and press **Enter**. Its worktree is created, then planning starts.
 2. Review the numbered tasks. **Ctrl+O** shows files, checks and model details. Write follow-up instructions and press **Enter** to queue them.
 3. Press **Ctrl+R** to execute in the mod’s VM. The first run builds the sandbox image. Press it again to pause.
 4. **Ctrl+D** opens the diff. Press **p**, then **Enter** to publish a PR. Its VM and worktree are removed. Existing mods and non-Git folders use **a** to apply locally.
@@ -99,7 +99,7 @@ This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to 
 | --- | --- |
 | Enter | Queue an instruction |
 | Ctrl+J | Newline |
-| Ctrl+P | Open code mods; switch or create one |
+| Ctrl+P | Open codemods; switch or create one |
 | Ctrl+Q | Open the queue |
 | Ctrl+R | Run, stop, retry or continue a published PR |
 | Ctrl+O | Show or hide plan details |
@@ -108,7 +108,7 @@ This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to 
 | Esc | Back, or quit from the conversation |
 | Ctrl+C | Quit |
 
-Dialog actions and steering are covered in [Code mods and messages](docs/code-mods.md).
+Dialog actions and steering are covered in [Codemods and messages](docs/codemods.md).
 
 ## Local data
 

@@ -1,10 +1,10 @@
 # Planning and Laya
 
-Creating a code mod starts planning from its description. New Git mods first create a worktree from committed `HEAD`; Laya and the planner inspect that source. You can describe the whole change immediately.
+Creating a codemod starts planning from its description. New Git mods first create a worktree from committed `HEAD`; Laya and the planner inspect that source. You can describe the whole change immediately.
 
 ```mermaid
 flowchart TB
-    goal["Code mod description"] --> route["Local Laya · estimate complexity"]
+    goal["Codemod description"] --> route["Local Laya · estimate complexity"]
     route --> config["Rust · choose model and reasoning"]
     config --> planner["Codex planner · inspect source and docs"]
     planner --> validate["Rust · validate the structured plan"]

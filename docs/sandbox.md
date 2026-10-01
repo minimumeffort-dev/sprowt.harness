@@ -1,6 +1,6 @@
 # Local Linux sandbox
 
-Each executing code mod gets its own Apple Container VM. Codex chooses and installs the project’s runtime there. Your login stays on the Mac.
+Each executing codemod gets its own Apple Container VM. Codex chooses and installs the project’s runtime there. Your login stays on the Mac.
 
 ## Commands and checks
 

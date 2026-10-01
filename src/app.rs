@@ -1827,7 +1827,7 @@ mod tests {
         assert!(
             rows(&screen(&mut app, 100, 30))
                 .join("\n")
-                .contains("closed code mods (1)")
+                .contains("closed codemods (1)")
         );
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.current_mod().unwrap().id, id);

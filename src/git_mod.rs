@@ -245,9 +245,7 @@ pub fn prepare(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
             &["rev-parse", "--verify", "HEAD^{commit}"],
             cancelled,
         )
-        .map_err(|_| {
-            io::Error::other("Create an initial Git commit before creating a code mod.")
-        })?;
+        .map_err(|_| io::Error::other("Create an initial Git commit before creating a codemod."))?;
         let base_branch = git(
             root,
             &repo,
@@ -588,7 +586,7 @@ pub fn publish(
             let title = description
                 .lines()
                 .next()
-                .unwrap_or("Code mod")
+                .unwrap_or("Codemod")
                 .chars()
                 .take(120)
                 .collect::<String>();
@@ -761,7 +759,7 @@ pub fn publish(
         let title = description
             .lines()
             .next()
-            .unwrap_or("Code mod")
+            .unwrap_or("Codemod")
             .chars()
             .take(120)
             .collect::<String>();

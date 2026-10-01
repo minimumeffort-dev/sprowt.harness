@@ -5,7 +5,7 @@ The interface keeps the project and worker status at the top, the conversation l
 ```text
 [sprowt companion]  project + worker model + effort + activity
 
-<code mod/>  ◇ selected mod
+<codemod/>  ◇ selected mod
 
 > your message
 
@@ -34,7 +34,7 @@ Completed planner chatter stays saved but is hidden from the transcript. The pla
 
 Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Pending cleanup shows **Ctrl+R · retry Git operation**; a published mod points to creating a new mod.
 
-Code mod and queue dialogs share selection, spacing and keyboard hints. Hints adapt to the current view and terminal width. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
+Codemod and queue dialogs share selection, spacing and keyboard hints. Hints adapt to the current view and terminal width. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
 
 ## Commands
 
@@ -52,7 +52,7 @@ Code mod and queue dialogs share selection, spacing and keyboard hints. Hints ad
 | --- | --- |
 | Enter | Create a described mod, queue a message or save an edit |
 | Ctrl+J | Add a newline |
-| Ctrl+P | Switch, create or delete a code mod |
+| Ctrl+P | Switch, create or delete a codemod |
 | Ctrl+Q | Manage queued instructions |
 | Ctrl+R | Start, stop or retry; recover publication or cleanup |
 | Ctrl+O | Show or hide saved plan details |
@@ -62,7 +62,7 @@ Code mod and queue dialogs share selection, spacing and keyboard hints. Hints ad
 | Esc | Back from a dialog; quit from the conversation |
 | Ctrl+C | Quit |
 
-Pasted text keeps its line breaks. Dialog actions are covered in [Code mods and messages](code-mods.md).
+Pasted text keeps its line breaks. Dialog actions are covered in [Codemods and messages](codemods.md).
 
 ## Sprowt companion
 

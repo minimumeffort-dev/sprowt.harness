@@ -5,7 +5,7 @@ One SQLite database stores harness state for all projects. Git projects use thei
 ```mermaid
 flowchart TB
     database[("SQLite · state.db")] --> project["Project · folder path and selected mod"]
-    project --> mod["Code mod · description and draft"]
+    project --> mod["Codemod · description and draft"]
     mod --> plan["Plan · tasks, status and model selection"]
     mod --> messages["Conversation history"]
     mod --> pending["Queue and waiting steering"]
