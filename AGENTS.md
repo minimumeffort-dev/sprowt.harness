@@ -29,6 +29,8 @@
 - Update the README whenever the architecture changes. Keep it short and in our voice.
 - Document every feature in our voice, with concise explanations and clear diagrams.
 - Keep code, the README and feature docs in sync with every commit.
+- Docs describe the latest implemented state. Replace outdated content; keep history in Git.
+- Keep one canonical page per topic. Update or consolidate existing docs instead of creating versioned pages, batch logs or duplicate explanations.
 
 ## Finish each batch
 
