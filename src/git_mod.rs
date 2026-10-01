@@ -37,6 +37,8 @@ pub struct GitMod {
     pub continuing: bool,
     #[serde(default)]
     pub published_head: Option<String>,
+    #[serde(default)]
+    pub checkpoint: Option<String>,
 }
 
 impl GitMod {
@@ -55,6 +57,8 @@ pub enum Result {
     Reviewed(Review),
     Published,
     Continued,
+    Reopened,
+    Pruned,
     Closed,
     Removed,
 }
@@ -398,6 +402,7 @@ pub fn prepare(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
             discarding: false,
             continuing: false,
             published_head: None,
+            checkpoint: None,
         };
         save(root, &state)?;
         state
@@ -408,13 +413,14 @@ pub fn prepare(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
     if state.phase != "preparing" {
         return validate(root, &state, cancelled);
     }
+    let start = state
+        .checkpoint
+        .as_ref()
+        .or(state.head.as_ref())
+        .unwrap_or(&state.base)
+        .clone();
     let path = checkout(root);
-    let tree_types = git(
-        root,
-        &state.repo,
-        &["ls-tree", "-r", &state.base],
-        cancelled,
-    )?;
+    let tree_types = git(root, &state.repo, &["ls-tree", "-r", &start], cancelled)?;
     if tree_types
         .lines()
         .any(|line| !line.starts_with("100644 blob ") && !line.starts_with("100755 blob "))
@@ -435,7 +441,7 @@ pub fn prepare(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
             cancelled,
         )
         .ok();
-        if existing.as_ref().is_some_and(|head| *head != state.base) {
+        if existing.as_ref().is_some_and(|head| *head != start) {
             return Err(io::Error::other(
                 "Generated branch changed during setup; work is retained.",
             ));
@@ -451,7 +457,7 @@ pub fn prepare(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
         command.arg(&path).arg(if existing.is_some() {
             &state.branch
         } else {
-            &state.base
+            &start
         });
         run(command, root, cancelled)?;
     }
@@ -461,7 +467,7 @@ pub fn prepare(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
     command
         .arg("-C")
         .arg(&path)
-        .args(["ls-tree", "-r", "-z", &state.base]);
+        .args(["ls-tree", "-r", "-z", &start]);
     let tree = run(command, root, cancelled)?;
     let mut files = Vec::new();
     for entry in tree
@@ -492,7 +498,7 @@ pub fn prepare(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
         }
         files.push((relative, metadata[2].to_owned(), metadata[0] == "100755"));
     }
-    git(root, &path, &["read-tree", &state.base], cancelled)?;
+    git(root, &path, &["read-tree", &start], cancelled)?;
     let objects = root.join("git-objects");
     fs::write(
         &objects,
@@ -831,12 +837,17 @@ pub fn publish(
     validate(root, &state, cancelled)?;
     let path = checkout(root);
     let review = workspace::review(root)?;
-    if review.count() == 0 {
+    if review.count() == 0 && state.pr.is_none() {
         return Err(io::Error::other("No source changes to publish."));
     }
     let head = git(root, &path, &["rev-parse", "HEAD"], cancelled)?;
     if state.phase == "ready" {
-        if head != state.base
+        if head
+            != *state
+                .checkpoint
+                .as_ref()
+                .or(state.head.as_ref())
+                .unwrap_or(&state.base)
             || !git(root, &path, &["status", "--porcelain"], cancelled)?.is_empty()
         {
             return Err(io::Error::other(
@@ -854,9 +865,14 @@ pub fn publish(
         ));
     }
     if state.phase == "exporting" {
-        if head == state.base {
-            review.export(&path, root)?;
-            stage(root, &path, &review, cancelled)?;
+        if head
+            == *state
+                .checkpoint
+                .as_ref()
+                .or(state.head.as_ref())
+                .unwrap_or(&state.base)
+        {
+            transfer(root, &state, cancelled)?;
             let title = description
                 .lines()
                 .next()
@@ -864,7 +880,9 @@ pub fn publish(
                 .chars()
                 .take(120)
                 .collect::<String>();
-            git(root, &path, &["commit", "-m", &title], cancelled)?;
+            if !git(root, &path, &["diff", "--cached", "--name-only"], cancelled)?.is_empty() {
+                git(root, &path, &["commit", "-m", &title], cancelled)?;
+            }
         }
         state.head = Some(git(root, &path, &["rev-parse", "HEAD"], cancelled)?);
         state.phase = "committed".into();
@@ -985,7 +1003,8 @@ pub fn publish(
     }
     if existing.is_some()
         && prs[0]["headRefOid"].as_str() != state.head.as_deref()
-        && !(previous_pr.is_some() && prs[0]["headRefOid"].as_str() == Some(&state.base))
+        && !(previous_pr.is_some()
+            && prs[0]["headRefOid"].as_str() == state.published_head.as_deref())
     {
         return Err(io::Error::other(
             "Existing PR has different commits; work is retained.",
@@ -1062,10 +1081,14 @@ pub fn publish(
     }
     state.pr = Some(pr.clone());
     state.published_head = state.head.clone();
+    state.checkpoint = state.head.clone();
     state.draft = draft;
     state.publishing = false;
     state.phase = "published".into();
     save(root, &state)?;
+    if root.join("transfer").exists() {
+        fs::remove_dir_all(root.join("transfer"))?;
+    }
     Ok(pr)
 }
 
@@ -1241,43 +1264,224 @@ fn clear_snapshot(root: &Path) -> io::Result<()> {
     Ok(())
 }
 
-pub fn continue_work(root: &Path, program: &Path, cancelled: &AtomicBool) -> io::Result<()> {
+pub fn reopen(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
     let mut state = load(root)?;
-    open_pr(root, &state, program, cancelled)?;
-    if !state.continuing {
-        if !state.published() {
+    if !checkout(root).exists() {
+        let expected = state
+            .checkpoint
+            .as_ref()
+            .or(state.head.as_ref())
+            .unwrap_or(&state.base);
+        if git(root, &state.repo, &["rev-parse", &state.branch], cancelled)? != *expected {
             return Err(io::Error::other(
-                "Finish the current work before continuing the PR.",
+                "The saved branch changed. Work is retained.",
             ));
         }
-        cleanup(root, cancelled)?;
-        state = load(root)?;
-        let head = state
-            .published_head
-            .clone()
-            .or(state.head.clone())
-            .ok_or_else(|| io::Error::other("The published commit is missing."))?;
-        if git(root, &state.repo, &["rev-parse", &state.branch], cancelled)? != head {
-            return Err(io::Error::other(
-                "The local PR branch changed. Work is retained.",
-            ));
-        }
-        state.published_head = Some(head.clone());
-        state.base = head;
         state.phase = "preparing".into();
-        state.fingerprint = None;
-        state.publishing = false;
-        state.closing = false;
-        state.removing = false;
-        state.discarding = false;
-        state.continuing = true;
         save(root, &state)?;
+        prepare(&state.repo, root, cancelled)?;
+        state = load(root)?;
     }
-    prepare(&state.repo, root, cancelled)?;
-    clear_snapshot(root)?;
-    workspace::create(&checkout(root), root)?;
-    fs::write(root.join("snapshot-ready"), b"ready")?;
+    validate(root, &state, cancelled)?;
+    state.closing = false;
+    state.phase = if state.pr.is_some() && state.checkpoint == state.published_head {
+        "published"
+    } else {
+        "ready"
+    }
+    .into();
+    save(root, &state)
+}
+
+pub fn prepare_edits(root: &Path, program: &Path, cancelled: &AtomicBool) -> io::Result<()> {
+    let mut state = load(root)?;
+    state.continuing = true;
+    save(root, &state)?;
+    if state.pr.is_some() {
+        open_pr(root, &state, program, cancelled)?;
+    }
+    if !checkout(root).exists() {
+        reopen(root, cancelled)?;
+        state = load(root)?;
+    }
+    state.phase = "ready".into();
+    state.fingerprint = None;
+    state.continuing = true;
+    save(root, &state)
+}
+
+// Keep an incremental export until its commit is saved, so interrupted copies can resume.
+fn transfer(root: &Path, state: &GitMod, cancelled: &AtomicBool) -> io::Result<()> {
+    let path = checkout(root);
+    let export = root.join("transfer");
+    let source = workspace::source_state(&root.join("work"))?;
+    if !export.join("base.git").exists() {
+        validate(root, state, cancelled)?;
+        let expected = state
+            .checkpoint
+            .as_ref()
+            .or(state.head.as_ref())
+            .unwrap_or(&state.base);
+        let recovering_export = state.phase == "exporting" && expected == &state.base;
+        if git(root, &path, &["rev-parse", "HEAD"], cancelled)? != *expected
+            || (!recovering_export
+                && !git(root, &path, &["status", "--porcelain"], cancelled)?.is_empty())
+        {
+            return Err(io::Error::other(
+                "The worktree changed outside the harness. Work is retained.",
+            ));
+        }
+        let staging = root.join("transfer-next");
+        if staging.exists() {
+            fs::remove_dir_all(&staging)?;
+        }
+        let baseline_path = if recovering_export {
+            root.join("before")
+        } else {
+            path.clone()
+        };
+        let baseline = workspace::source_state(&baseline_path)?;
+        workspace::create_snapshot(&baseline, &staging)?;
+        workspace::replace_source(&staging, &source)?;
+        fs::rename(staging, &export)?;
+    }
+    let review = workspace::review(&export)?;
+    if review.fingerprint != workspace::fingerprint(&source)? {
+        return Err(io::Error::other(
+            "Source changed during saving. Work is retained.",
+        ));
+    }
+    validate(root, state, cancelled)?;
+    let head = git(root, &path, &["rev-parse", "HEAD"], cancelled)?;
+    let expected = state
+        .checkpoint
+        .as_ref()
+        .or(state.head.as_ref())
+        .unwrap_or(&state.base);
+    if head != *expected
+        && (git(root, &path, &["rev-parse", "HEAD^"], cancelled)? != *expected
+            || workspace::fingerprint(&workspace::source_state(&path)?)? != review.fingerprint)
+    {
+        return Err(io::Error::other(
+            "The worktree changed during saving. Work is retained.",
+        ));
+    }
+    review.export(&path, &export)?;
+    stage(root, &path, &review, cancelled)?;
+    let staged = git(
+        root,
+        &path,
+        &["diff", "--cached", "--name-only", "-z"],
+        cancelled,
+    )?;
+    if staged
+        .split('\0')
+        .filter(|p| !p.is_empty())
+        .any(|p| !review.paths().any(|allowed| allowed == Path::new(p)))
+    {
+        return Err(io::Error::other(
+            "Unrelated staged files found. Work is retained.",
+        ));
+    }
     Ok(())
+}
+
+pub fn checkpoint(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
+    let mut state = load(root)?;
+    if !checkout(root).exists() {
+        reopen(root, cancelled)?;
+        state = load(root)?;
+    }
+    validate(root, &state, cancelled)?;
+    if !root.join("work").exists()
+        && !git(root, &checkout(root), &["status", "--porcelain"], cancelled)?.is_empty()
+    {
+        return Err(io::Error::other(
+            "The worktree has outside edits. Work is retained.",
+        ));
+    }
+    if root.join("work").exists() {
+        transfer(root, &state, cancelled)?;
+        if !git(
+            root,
+            &checkout(root),
+            &["diff", "--cached", "--name-only"],
+            cancelled,
+        )?
+        .is_empty()
+        {
+            git(
+                root,
+                &checkout(root),
+                &["commit", "-m", "Save codemod checkpoint"],
+                cancelled,
+            )?;
+        }
+        if workspace::fingerprint(&workspace::source_state(&checkout(root))?)?
+            != workspace::fingerprint(&workspace::source_state(&root.join("work"))?)?
+        {
+            return Err(io::Error::other(
+                "Checkpoint differs from source. The VM is retained.",
+            ));
+        }
+    }
+    state.checkpoint = Some(git(
+        root,
+        &checkout(root),
+        &["rev-parse", "HEAD"],
+        cancelled,
+    )?);
+    save(root, &state)?;
+    let export = root.join("transfer");
+    if export.exists() {
+        fs::remove_dir_all(export)?;
+    }
+    crate::sandbox::delete(root)?;
+    state.publishing = false;
+    state.continuing = false;
+    state.fingerprint = None;
+    state.phase = "closed".into();
+    save(root, &state)
+}
+
+pub fn prune(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
+    let mut state = load(root)?;
+    if !["closed", "pruned"].contains(&state.phase.as_str()) || root.join("vm.json").exists() {
+        return Err(io::Error::other(
+            "Only closed codemod worktrees can be pruned.",
+        ));
+    }
+    let path = checkout(root);
+    if path.exists() {
+        validate(root, &state, cancelled)?;
+        if state.checkpoint.as_deref()
+            != Some(&git(root, &path, &["rev-parse", "HEAD"], cancelled)?)
+            || !git(
+                root,
+                &path,
+                &[
+                    "status",
+                    "--porcelain",
+                    "--untracked-files=all",
+                    "--ignored",
+                ],
+                cancelled,
+            )?
+            .is_empty()
+        {
+            return Err(io::Error::other(
+                "The closed worktree changed; pruning skipped.",
+            ));
+        }
+        git(
+            root,
+            &state.repo,
+            &["worktree", "remove", path.to_str().unwrap()],
+            cancelled,
+        )?;
+    }
+    state.phase = "pruned".into();
+    save(root, &state)
 }
 
 pub fn finish_continuation(root: &Path) -> io::Result<()> {
@@ -1662,10 +1866,10 @@ esac
         let url = publish(&root, "First change", true, &program, &flag).unwrap();
         let first = load(&root).unwrap().head.unwrap();
         cleanup(&root, &flag).unwrap();
-        continue_work(&root, &program, &flag).unwrap();
-        continue_work(&root, &program, &flag).unwrap();
+        prepare_edits(&root, &program, &flag).unwrap();
+        prepare_edits(&root, &program, &flag).unwrap();
         assert!(load(&root).unwrap().continuing);
-        assert_eq!(workspace::review(&root).unwrap().count(), 0);
+        assert_eq!(workspace::review(&root).unwrap().count(), 3);
         assert_eq!(
             fs::read_to_string(root.join("work/a.txt")).unwrap(),
             "changed\n"
@@ -1694,7 +1898,7 @@ esac
         let reference = format!("refs/heads/{}", load(&root).unwrap().branch);
         git(&root, &remote, &["update-ref", &reference, &first], &flag).unwrap();
         assert!(
-            continue_work(&root, &program, &flag)
+            prepare_edits(&root, &program, &flag)
                 .unwrap_err()
                 .to_string()
                 .contains("outside the harness")
@@ -1703,7 +1907,7 @@ esac
         git(&root, &remote, &["update-ref", &reference, &second], &flag).unwrap();
         fs::write(data.0.join("pr-state"), "MERGED").unwrap();
         assert!(
-            continue_work(&root, &program, &flag)
+            prepare_edits(&root, &program, &flag)
                 .unwrap_err()
                 .to_string()
                 .contains("merged or closed")
@@ -1749,74 +1953,183 @@ esac
     }
 
     #[test]
-    fn continued_work_can_be_saved_as_draft_or_discarded() {
-        let (data, repo, root, program) = fixture();
+    fn a_followup_can_revert_all_changes_on_the_same_pr() {
+        let (_data, repo, root, program) = fixture();
         let flag = AtomicBool::new(false);
         prepare(&repo, &root, &flag).unwrap();
         edited(&root);
-        publish(&root, "First change", false, &program, &flag).unwrap();
-        cleanup(&root, &flag).unwrap();
-        continue_work(&root, &program, &flag).unwrap();
+        let pr = publish(&root, "First version", false, &program, &flag).unwrap();
+        prepare_edits(&root, &program, &flag).unwrap();
         finish_continuation(&root).unwrap();
-        fs::write(root.join("work/a.txt"), "partial follow-up\n").unwrap();
-        mark_closing(&root, false, false).unwrap();
-        publish(&root, "Partial follow-up", true, &program, &flag).unwrap();
-        assert!(data.0.join("pr-draft").exists());
-        let published = load(&root).unwrap().published_head.unwrap();
-        cleanup(&root, &flag).unwrap();
-        continue_work(&root, &program, &flag).unwrap();
-        finish_continuation(&root).unwrap();
-        fs::write(root.join("work/a.txt"), "discard this\n").unwrap();
-        mark_closing(&root, true, false).unwrap();
-        cleanup(&root, &flag).unwrap();
+        let baseline = workspace::source_state(&root.join("before")).unwrap();
+        workspace::replace_source(&root, &baseline).unwrap();
+        assert_eq!(workspace::review(&root).unwrap().count(), 0);
         assert_eq!(
-            git(
-                &root,
-                &repo,
-                &["rev-parse", &load(&root).unwrap().branch],
-                &flag
-            )
-            .unwrap(),
-            published
+            publish(&root, "Revert changes", false, &program, &flag).unwrap(),
+            pr
         );
-        continue_work(&root, &program, &flag).unwrap();
-        assert_eq!(
-            fs::read_to_string(root.join("work/a.txt")).unwrap(),
-            "partial follow-up\n"
-        );
-        finish_continuation(&root).unwrap();
-        mark_closing(&root, true, false).unwrap();
-        cleanup(&root, &flag).unwrap();
+        assert_eq!(workspace::source_state(&checkout(&root)).unwrap(), baseline);
+        assert!(checkout(&root).exists());
     }
 
     #[test]
-    fn closing_after_an_interrupted_update_keeps_commits_already_in_the_pr() {
+    fn checkpoints_keep_edits_deletions_and_modes_across_close_prune_and_reopen() {
+        let (_data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        let base = load(&root).unwrap().base;
+        mark_closing(&root, false, false).unwrap();
+        checkpoint(&root, &flag).unwrap();
+        let first = load(&root).unwrap().checkpoint.unwrap();
+        assert_ne!(base, first);
+        assert!(load(&root).unwrap().pr.is_none());
+        checkpoint(&root, &flag).unwrap();
+        assert_eq!(
+            load(&root).unwrap().checkpoint.as_deref(),
+            Some(first.as_str())
+        );
+        prune(&root, &flag).unwrap();
+        prune(&root, &flag).unwrap();
+        assert!(!checkout(&root).exists());
+        reopen(&root, &flag).unwrap();
+        assert_eq!(
+            fs::read_to_string(checkout(&root).join("a.txt")).unwrap(),
+            "changed\n"
+        );
+        assert!(!checkout(&root).join("delete.txt").exists());
+        fs::write(root.join("work/a.txt"), "second edit\n").unwrap();
+        fs::remove_file(root.join("work/new.txt")).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(root.join("work/a.txt"), fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        checkpoint(&root, &flag).unwrap();
+        let second = load(&root).unwrap().checkpoint.unwrap();
+        assert_ne!(first, second);
+        reopen(&root, &flag).unwrap();
+        assert_eq!(
+            fs::read_to_string(checkout(&root).join("a.txt")).unwrap(),
+            "second edit\n"
+        );
+        assert!(!checkout(&root).join("new.txt").exists());
+        let pr = publish(&root, "Saved change", false, &program, &flag).unwrap();
+        assert_eq!(load(&root).unwrap().head.as_deref(), Some(second.as_str()));
+        assert!(pr.ends_with("/pull/1") && checkout(&root).exists());
+    }
+
+    #[test]
+    fn close_keeps_the_latest_source_after_an_interrupted_pr_update() {
         let (data, repo, root, program) = fixture();
         let flag = AtomicBool::new(false);
         prepare(&repo, &root, &flag).unwrap();
         edited(&root);
-        publish(&root, "First change", true, &program, &flag).unwrap();
-        cleanup(&root, &flag).unwrap();
-        continue_work(&root, &program, &flag).unwrap();
+        let pr = publish(&root, "First change", true, &program, &flag).unwrap();
+        prepare_edits(&root, &program, &flag).unwrap();
         finish_continuation(&root).unwrap();
         fs::write(root.join("work/a.txt"), "already pushed\n").unwrap();
         fs::write(data.0.join("ready-fail-once"), "").unwrap();
         assert!(publish(&root, "Follow-up", false, &program, &flag).is_err());
-        mark_closing(&root, true, false).unwrap();
-        cleanup(&root, &flag).unwrap();
-        continue_work(&root, &program, &flag).unwrap();
+        mark_closing(&root, false, false).unwrap();
+        checkpoint(&root, &flag).unwrap();
+        let head = load(&root).unwrap().checkpoint.unwrap();
+        prune(&root, &flag).unwrap();
+        reopen(&root, &flag).unwrap();
         assert_eq!(
             fs::read_to_string(root.join("work/a.txt")).unwrap(),
             "already pushed\n"
         );
-        finish_continuation(&root).unwrap();
-        mark_closing(&root, true, false).unwrap();
-        cleanup(&root, &flag).unwrap();
+        assert_eq!(
+            git(&root, &checkout(&root), &["rev-parse", "HEAD"], &flag).unwrap(),
+            head
+        );
+        assert_eq!(
+            publish(&root, "Follow-up", false, &program, &flag).unwrap(),
+            pr
+        );
     }
 
     #[test]
-    #[ignore = "runs a temporary Apple Container VM through worktree export and PR cleanup"]
-    fn vm_source_becomes_a_pr_and_cleanup_removes_the_vm_and_worktree() {
+    fn retention_and_checkpoint_refuse_outside_edits() {
+        let (_data, repo, root, _program) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        fs::write(checkout(&root).join("a.txt"), "outside edit").unwrap();
+        assert!(checkpoint(&root, &flag).is_err());
+        assert_eq!(
+            fs::read_to_string(checkout(&root).join("a.txt")).unwrap(),
+            "outside edit"
+        );
+        fs::write(checkout(&root).join("a.txt"), "original\n").unwrap();
+        checkpoint(&root, &flag).unwrap();
+        fs::write(checkout(&root).join("notes.txt"), "keep me").unwrap();
+        assert!(
+            prune(&root, &flag)
+                .unwrap_err()
+                .to_string()
+                .contains("pruning skipped")
+        );
+        assert_eq!(
+            fs::read_to_string(checkout(&root).join("notes.txt")).unwrap(),
+            "keep me"
+        );
+        fs::remove_file(checkout(&root).join("notes.txt")).unwrap();
+        prune(&root, &flag).unwrap();
+        let state = load(&root).unwrap();
+        git(
+            &root,
+            &repo,
+            &[
+                "update-ref",
+                &format!("refs/heads/{}", state.branch),
+                &state.base,
+            ],
+            &flag,
+        )
+        .unwrap();
+        assert!(
+            reopen(&root, &flag)
+                .unwrap_err()
+                .to_string()
+                .contains("saved branch changed")
+        );
+    }
+
+    #[test]
+    fn checkpoint_recovers_after_export_and_after_commit_without_duplicate_commits() {
+        let (_data, repo, root, _program) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        let state = load(&root).unwrap();
+        transfer(&root, &state, &flag).unwrap();
+        git(
+            &root,
+            &checkout(&root),
+            &["commit", "-m", "Saved but unacknowledged"],
+            &flag,
+        )
+        .unwrap();
+        let head = git(&root, &checkout(&root), &["rev-parse", "HEAD"], &flag).unwrap();
+        checkpoint(&root, &flag).unwrap();
+        assert_eq!(
+            load(&root).unwrap().checkpoint.as_deref(),
+            Some(head.as_str())
+        );
+        assert!(!root.join("transfer").exists());
+        checkpoint(&root, &flag).unwrap();
+        assert_eq!(
+            load(&root).unwrap().checkpoint.as_deref(),
+            Some(head.as_str())
+        );
+    }
+
+    #[test]
+    #[ignore = "runs a temporary Apple Container VM through publication, close and reopen"]
+    fn publishing_keeps_the_vm_and_closing_removes_it_without_losing_source() {
         let (_data, repo, root, program) = fixture();
         let flag = AtomicBool::new(false);
         prepare(&repo, &root, &flag).unwrap();
@@ -1836,11 +2149,15 @@ esac
                 assert_eq!(fs::read_to_string(repo.join("a.txt"))?, "original\n");
                 assert_eq!(fs::read_to_string(root.join("work/a.txt"))?, "VM edit\n");
                 let pr = publish(&root, "Change in VM", false, &program, &flag)?;
-                cleanup(&root, &flag)?;
-                assert!(!root.join("vm.json").exists() && !checkout(&root).exists());
-                assert_eq!(load(&root)?.phase, "cleaned");
+                assert!(root.join("vm.json").exists() && checkout(&root).exists());
+                mark_closing(&root, false, false)?;
+                checkpoint(&root, &flag)?;
+                assert!(!root.join("vm.json").exists() && checkout(&root).exists());
+                assert_eq!(load(&root)?.phase, "closed");
                 assert!(root.join("work/guest.txt").exists());
-                continue_work(&root, &program, &flag)?;
+                prune(&root, &flag)?;
+                reopen(&root, &flag)?;
+                prepare_edits(&root, &program, &flag)?;
                 finish_continuation(&root)?;
                 let mut vm =
                     crate::sandbox::Sandbox::prepare(&root, &flag, |label| eprintln!("{label}"))?;
@@ -1853,8 +2170,10 @@ esac
                     publish(&root, "Follow-up in VM", false, &program, &flag)?,
                     pr
                 );
-                cleanup(&root, &flag)?;
-                assert!(!root.join("vm.json").exists() && !checkout(&root).exists());
+                assert!(root.join("vm.json").exists() && checkout(&root).exists());
+                mark_closing(&root, false, false)?;
+                checkpoint(&root, &flag)?;
+                assert!(!root.join("vm.json").exists() && checkout(&root).exists());
                 let output = Command::new("container")
                     .args(["list", "--all", "--format", "json"])
                     .output()?;

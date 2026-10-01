@@ -12,7 +12,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 
 - [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
-- [Worktrees and PRs](docs/git-workflow.md): set up Git in any project folder, publish and continue the same PR. Close a mod to keep history; delete it to remove local data.
+- [Worktrees and PRs](docs/git-workflow.md): set up Git in any project folder and publish to a PR. Keep editing, or close with a saved checkpoint.
 - [Plan execution](docs/execution.md): one executor follows task dependencies and checks the combined result.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
@@ -22,7 +22,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 
 ### Current limits
 
-The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publication needs your confirmation. Downloads use a host-controlled domain allowlist. iOS and macOS builds need a later macOS VM backend. Existing snapshot mods can be adopted into Git or applied locally.
+The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publication needs your confirmation. Downloads use a host-controlled domain allowlist. iOS and macOS builds need a later macOS VM backend. Existing snapshot mods can be adopted into Git.
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
@@ -32,21 +32,19 @@ Rust owns the interface, scheduling, workers and saved state. A shared tool disp
 
 ```mermaid
 flowchart TB
-    goal["You · describe a mod"] --> harness["Rust harness · UI, state and scheduling"]
-    harness --> setup["Project setup · use Git or confirm a starting commit"]
-    setup --> worktree["Git branch + worktree · committed source"]
-    worktree --> planner["Laya routes · Codex plans read-only"]
-    planner --> executor["Codex executor · login stays on Mac"]
-    executor --> vm["Mod Linux VM · edit and verify"]
-    vm --> review["You · review the diff"]
-    review --> destination["GitHub repository · connect or create private if needed"]
-    destination --> pr["GitHub PR · you confirm publication"]
-    pr --> cleanup["Delete VM and worktree · keep branch and history"]
+    goal["Describe a codemod"] --> setup["Git branch + worktree"]
+    setup --> planner["Laya routes · Codex plans"]
+    planner --> build["Codex builds + Rust checks · local Linux VM"]
+    build --> ready["Version ready"]
+    ready --> edits["Send edits · plan the next round"]
+    edits --> planner
+    ready --> publish["Confirm publish · create or update PR"]
+    publish --> ready
 ```
 
 Laya recommends the planner configuration. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps Git and GitHub on the Mac and package setup in the worker’s own VM. Tasks run sequentially within a mod; different mods can run in parallel. Muse follows later.
 
-Published mods can restore their branch and plan further changes on the same PR. Closing moves a mod out of the active list while keeping its history. Each resumed execution creates a fresh VM.
+Publishing keeps the VM and worktree for further edits. Closing saves a local checkpoint and removes the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
 ## Get started
 
@@ -79,13 +77,13 @@ Start in an empty folder, an existing project or a Git repository. If Git has no
 
 Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth login` and `gh auth setup-git`.
 
-1. Describe your codemod and press **Enter**. Confirm Git setup if offered; its worktree is created, then planning starts.
-2. Review the numbered tasks. **Ctrl+O** shows files, checks and model details. Write follow-up instructions and press **Enter** to queue them.
-3. Press **Ctrl+R** to execute in the mod’s VM. The first run builds the sandbox image. Press it again to pause.
-4. **Ctrl+D** opens the diff. Press **p** to publish. If needed, connect a GitHub repository or create a private one; confirm the owner/name, then the PR. Publication removes the VM and worktree. Existing snapshot mods can use this flow too, including already-applied work; **a** still applies locally.
-5. **Ctrl+R** continues a published mod: describe the next change and review its fresh plan. In **Ctrl+P**, **c** closes a mod, **Tab** shows closed history and **d** deletes local data.
+1. Describe a codemod and press **Enter**. Confirm Git setup if offered. Planning and execution start automatically.
+2. Workers prepare a first version. **Ctrl+O** expands plan details; **Ctrl+R** stops or retries work.
+3. Send a message to request edits. Messages sent during work wait for the next round; the queue also supports steering.
+4. **Ctrl+D** reviews the diff. **Ctrl+S** starts publication; confirm the GitHub destination if needed, then the PR. Keep editing afterward to update the same PR.
+5. In **Ctrl+P**, **c** closes with a checkpoint, **Tab** shows closed mods, **r** reopens and **d** deletes local data.
 
-**Ctrl+R** also stops or retries unfinished planning. Reopening restores state without starting workers. Unfinished host executions move to Linux on their next run. Use `--no-motion` to turn off animations.
+Reopening the harness restores state without starting workers. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. A review worker comes later.
 
 ### Local model routing
 
@@ -101,11 +99,12 @@ This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to 
 
 | Key | Action |
 | --- | --- |
-| Enter | Queue an instruction |
+| Enter | Send edits or queue an instruction during work |
 | Ctrl+J | Newline |
-| Ctrl+P | Open codemods; switch or create one |
+| Ctrl+P | Switch, create, close, reopen or delete a codemod |
 | Ctrl+Q | Open the queue |
-| Ctrl+R | Run, stop, retry or continue a published PR |
+| Ctrl+R | Run, stop, retry or reopen a closed codemod |
+| Ctrl+S | Publish verified changes as a PR |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
@@ -126,7 +125,7 @@ Reopen from the same project root to restore them. Credentials stay with Codex. 
 
 ## What’s next
 
-Task worktrees inside each VM, then multiple Codex/Muse executors per mod. Shared context, memory, MCPs and skills follow in small batches.
+Task worktrees inside each VM, then multiple Codex/Muse executors and a review worker per mod. Shared context, memory, MCPs and skills follow in small batches.
 
 ## Development
 

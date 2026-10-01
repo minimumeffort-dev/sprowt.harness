@@ -52,7 +52,7 @@ container system start --enable-kernel-install
 codex -c 'cli_auth_credentials_store="file"' login
 ```
 
-Create a mod, review its plan and press **Ctrl+R**. The first execution builds the shared development image; later runs reuse it. **Ctrl+D** opens the diff. New codemods publish PRs. Existing snapshot mods can be adopted into Git or applied locally. See [Worktrees and PRs](git-workflow.md).
+Create a mod; its valid plan starts execution automatically. The first execution builds the shared development image; later runs reuse it. **Ctrl+D** opens the diff. New codemods publish PRs. Existing snapshot mods can be adopted into Git. See [Worktrees and PRs](git-workflow.md).
 
 The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Codex reads your manifests, installs a compatible runtime under `/home/sprowt`, then installs project dependencies under `/workspace`.
 
@@ -117,17 +117,17 @@ It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomain
 | --- | --- |
 | Running | Running; reused across tasks |
 | Paused or awaiting review | Retained with its runtime and dependencies |
-| PR published or local apply complete | Deleted; history and source exports stay on the Mac |
-| Git mod removed with changes | Draft PR saved, then VM and local workspace removed |
-| Empty or legacy mod removed | Deleted with its local workspace and history |
+| PR published or edits requested | Retained for further work |
+| Closed | Deleted after a local checkpoint; worktree and history stay |
+| Deleted | Deleted with the local workspace and history |
 
 Quitting stops VMs and retains unfinished mods’ disks. Reopening and **Ctrl+R** reconnect without losing dependencies. Reconnecting clears guest processes left by a crash. Shared images and the container service remain for reuse.
 
-Git mods delete their VM and worktree after saving the PR URL. Their published branch remains. Failed publication keeps source and VM; failed cleanup keeps the PR and offers **Ctrl+R** to retry. Continuing restores published source and creates a fresh VM when the new plan runs. Local apply saves its state before deleting the VM.
+Publication saves the PR URL and retains the VM and worktree. Edit rounds reuse the same VM, including runtimes and dependencies. Failed operations keep source and offer **Ctrl+R** to retry.
 
-Closing removes remaining runtime resources and retains history. Unpublished Git work can be exported to a draft PR or explicitly discarded. Deleting discards unpublished work and removes local history. See [Worktrees and PRs](git-workflow.md).
+Closing exports source, commits a local checkpoint and removes the VM; the worktree and history remain. Reopening creates a fresh VM when execution resumes. Deleting discards local source and history. Closed worktree retention removes only the host worktree, retaining the branch and exports. See [Worktrees and PRs](git-workflow.md).
 
-Unfinished mods created before VM support keep their working files. Their first explicit run starts a fresh executor conversation and reruns tasks in Linux; old host check results are cleared. Applied mods remain applied. A missing or altered VM blocks reconnection and preserves the last exported source for review.
+Unfinished mods created before VM support keep their working files. Their first explicit run starts a fresh executor conversation and reruns tasks in Linux; old host check results are cleared. Previously completed snapshot work can be adopted into Git. A missing or altered VM blocks reconnection and preserves the last exported source for review.
 
 This backend runs Linux. iOS and macOS builds need a later macOS VM backend. One executor per mod; different mods can run in parallel. Uses experimental [Codex executor interfaces](https://github.com/openai/codex/tree/rust-v0.159.2/codex-rs/exec-server) and [Codex managed networking](https://learn.chatgpt.com/docs/permissions).
 
@@ -137,7 +137,7 @@ The regular test suite covers permissions, input validation and publication reco
 
 ```sh
 cargo test tools::tests::package_calls -- --ignored --nocapture
-cargo test git_mod::tests::vm_source -- --ignored --nocapture
+cargo test git_mod::tests::publishing_keeps_the_vm -- --ignored --nocapture
 cargo test sandbox::tests::persistent_vm_checks -- --ignored --nocapture
 ```
 

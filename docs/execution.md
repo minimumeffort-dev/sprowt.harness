@@ -1,75 +1,52 @@
 # Plan execution
 
-A plan becomes code when you press **Ctrl+R**. One Codex executor runs tasks in dependency order in the mod’s Linux VM.
+Creating a codemod starts planning and execution automatically. One Codex executor follows dependencies in the mod’s Linux VM.
 
 ```mermaid
 flowchart TB
-    plan["Saved plan"] --> start["Ctrl+R · copy the mod worktree"]
-    start --> vm["Create or reconnect the mod’s Linux VM"]
-    vm --> choose["Rust · choose a task whose dependencies are done"]
-    choose --> worker["Codex · prepare runtime, edit and test in Linux"]
-    worker --> checks["Rust · rerun checks in the same VM"]
-    checks -->|"pass · tasks remain"| choose
-    checks -->|"failure or interruption"| paused["Keep files and progress · explicit retry"]
-    checks -->|"all tasks done"| final["Rerun all task checks together"]
-    final -->|"pass"| review["Ctrl+D · review the diff"]
-    review --> confirm["p, then Enter · confirm publication"]
-    confirm --> pr["Commit and push mod branch · create or update PR"]
-    pr --> cleanup["Delete VM and worktree · keep branch and history"]
+    plan["Valid saved plan"] --> vm["Create or reconnect the codemod VM"]
+    vm --> task["Choose a task whose dependencies are done"]
+    task --> worker["Codex · install runtime, edit and test"]
+    worker --> checks["Rust · rerun declared checks"]
+    checks -->|"Pass · tasks remain"| task
+    checks -->|"All tasks done"| final["Rerun every check against the combined source"]
+    final --> ready["Version ready · send edits or publish"]
 ```
+
+A failed check or interruption pauses execution with its cause. **Ctrl+R** retries unfinished work; completed tasks stay done.
 
 ## Working folder
 
-New codemods confirm Git setup if needed, then start from committed `HEAD` in a separate host worktree. The planner reads that worktree; the first execution copies its source into the VM. Your original checkout’s uncommitted and untracked files stay there.
+New codemods start from committed `HEAD` in their own host worktree. The first execution copies source into `/workspace` in Linux. Git metadata, host credentials and your original checkout stay on the Mac.
 
-Existing snapshot mods retain their starting files, including uncommitted and untracked code. New snapshots respect `.gitignore` even before Git is initialized. Every mod has a private folder outside the project with starting files, source exports and diff metadata. New source files stay visible even if a generated `.gitignore` would hide them.
+The host’s `work/` folder holds source exports for planning, review and checkpoint saves. It is not mounted into the VM. Credentials, dependencies and caches are excluded from snapshots; `.env.example` and `.env.sample` are included. Source files remain visible even if a generated `.gitignore` would hide them.
 
-Common credential files, including `.env` and `.npmrc`, are excluded. `.env.example` and `.env.sample` are included. Installed dependencies and build caches are excluded too. Other secrets in source files are still source files; keep them out of the project.
-
-The source snapshot is copied into `/workspace` inside the mod’s VM. The host’s `work/` folder holds exported source for diff review; it is not mounted into the guest. Host Git metadata stays on the Mac. Runtime installs and dependencies persist until PR publication, local apply or mod deletion removes the VM. See [Local Linux sandbox](sandbox.md).
-
-The executor cannot access the original project, harness state, host Codex credentials or Keychain. The planner remains read-only. See [Workers](workers.md) for the boundary.
+Runtimes and dependencies stay in the VM across edit rounds and publication. Closing removes that VM; reopening creates a fresh one when execution starts. See [Local Linux sandbox](sandbox.md) and [Workers](workers.md).
 
 ## Tasks and checks
 
-Rust dispatches one task at a time. Dependencies must be complete first. Queued follow-ups run between tasks; steering reaches the current turn.
+Rust dispatches one task at a time. Codex prepares project runtimes and dependencies; missing OS packages go through the [VM setup tool](sandbox.md#system-packages).
 
-The executor prepares the runtime and project dependencies. Missing OS packages go through the harness’s [VM setup tool](sandbox.md#system-packages); successful setup returns to the same task. Failed setup blocks completion with its cause.
+Each task returns a short summary and runnable commands for every declared check. Rust reruns them with a 30-second limit per command. Missing checks, nonzero exits, timeouts or checks that change source files block completion. After all tasks finish, every saved check runs again against the combined result.
 
-Codex returns a short task summary and runnable commands for each declared completion check. Rust reruns them in the same sandbox, with a 30-second limit per command. Missing checks, nonzero exits, timeouts or checks that change source files block completion. After all tasks finish, every saved check runs again against the combined result.
+The current task has a spinner through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide Codex; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.
 
-The plan shows task status. A dot spinner marks the running task and stays active through its checks; completed and waiting tasks stay still. **Ctrl+O** expands scopes, check commands, failures and final check results. Passing commands is evidence, not a guarantee that the plan or tests are good; review the code too. Declared file scopes guide Codex, while the sandbox enforces the folder boundary.
+## Request edits
 
-## Pause and recover
+Send a message through the composer. During implementation, ordinary messages wait in the queue until the current version passes verification. The next message starts a new plan against the latest source, including checks for the change and regressions. The execution workspace and conversation stay; the current plan and task results are replaced.
 
-**Ctrl+R** pauses execution. During verification, the current guest command is terminated and subsequent checks stop. Interrupted tasks keep their working files and runtime. Press Ctrl+R again to explicitly retry the unfinished task; completed tasks stay done.
+After a failed run, sending a message starts a revised plan against the saved source, including unfinished work.
 
-Reopening restores progress without starting workers. On reconnect, confirmed completed turns are verified without asking Codex to repeat the edits. Unconfirmed delivery pauses for explicit retry. Failed final checks can be rerun without regenerating completed tasks. Older executor conversations restart once to gain the system-package tool, keeping their VM, saved transcript and task progress.
+Use the queue’s **s** action to steer an active turn immediately. Steering and ordinary edit rounds are separate. See [Codemods and messages](codemods.md).
 
-## Review and publish
+## Pause, review and publish
 
-**Ctrl+D** opens the diff when execution is idle. After tasks and final checks pass, press **p** to publish. Confirm adoption for a snapshot mod, choose a GitHub repository if needed, then confirm the PR. Esc cancels. Source must match the verified result; outside edits to the worktree block publication.
+**Ctrl+R** pauses the worker or verification command. Files and runtime remain. Reconnecting verifies confirmed turns without repeating their edits; uncertain delivery waits for explicit retry. Failed final checks can rerun without regenerating completed tasks.
 
-The harness commits reviewed changes and creates or updates the mod’s PR. It saves the URL before removing the VM and worktree. History remains visible. **Ctrl+R** retries interrupted publication or cleanup; afterward it opens **Continue working** to plan changes on the same open PR. See [Worktrees and PRs](git-workflow.md) for closing and recovery.
+**Ctrl+D** reviews source while workers are idle. **Ctrl+S**, or **p** inside the diff, starts publication after verification. Confirm Git adoption or a GitHub destination if needed, then the PR. Publication commits and pushes to the codemod branch and retains the VM for more edits.
 
-## Local apply · unadopted snapshot mods
-
-1. **Ctrl+D** opens the diff when execution is idle. You can inspect partial work, but apply is available only after all tasks and final checks pass.
-2. Use **↑ / ↓** or **Fn + ↑ / ↓** to scroll. **Esc** returns to the conversation.
-3. Press **a**, then **Enter** to confirm applying. Esc cancels.
-
-The working files must match the snapshot that passed verification and the diff you reviewed. Every affected project file must still match its starting contents and permissions. A conflict stops the apply before any file is changed; reconcile it manually or start a fresh mod.
-
-Applying adds, edits and deletes files without committing in your target project. Files are replaced individually; a handled error rolls back earlier replacements. A crash midway can leave a partial apply; the starting copies remain in the mod folder's `before/` directory.
-
-After applying, the harness stops the executor and deletes the mod’s VM, including its runtime and dependencies. The plan, messages, checks, draft, queue and source exports stay on the Mac. Shared images remain for reuse. A failed or cancelled apply keeps the VM.
-
-If VM cleanup fails, changes stay applied. **Ctrl+R** retries cleanup; the pending state survives reopening. Older applied mods with retained VMs offer the same cleanup action. Cleanup finishes before Ctrl+R can start read-only follow-up questions against the project.
-
-Applied snapshot work can still be adopted and published with **Ctrl+D**, then **p**. Start a new mod for further code changes. Removing a snapshot mod deletes its history and unapplied work.
+Closing saves a local checkpoint and removes the VM. Deleting discards local work. See [Worktrees and PRs](git-workflow.md) for retention and recovery.
 
 ## Current limits
 
-One executor per mod. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. The harness offers Git setup for projects without commits. Git is required locally for worktrees, snapshots and diffs.
-
-Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).
+One executor per codemod. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).

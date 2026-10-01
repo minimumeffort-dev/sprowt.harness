@@ -92,6 +92,7 @@ impl Review {
         self.changes.len()
     }
 
+    #[cfg(test)]
     pub fn apply(&self, project: &Path, workspace: &Path) -> io::Result<()> {
         self.apply_inner(project, workspace, false)
     }
@@ -152,6 +153,14 @@ pub fn create(project: &Path, root: &Path) -> io::Result<()> {
             "The working folder must be outside the project.",
         ));
     }
+    create_with(root, |root| project_state(project, root))
+}
+
+pub fn create_snapshot(source: &Snapshot, root: &Path) -> io::Result<()> {
+    create_with(root, |_| Ok(source.clone()))
+}
+
+fn create_with(root: &Path, source: impl FnOnce(&Path) -> io::Result<Snapshot>) -> io::Result<()> {
     let existed = root.exists();
     if existed {
         if root.join("before").exists() || root.join("work").exists() {
@@ -178,7 +187,7 @@ pub fn create(project: &Path, root: &Path) -> io::Result<()> {
             root.join("base.git/info/exclude"),
             "node_modules/\ntarget/\n.venv/\nvenv/\n__pycache__/\n*.pyc\n.codex/\n.env*\n!.env.example\n!.env.sample\n.npmrc\n.netrc\n.pypirc\n.DS_Store\n",
         )?;
-        for (path, bytes, mode) in project_state(project, root)? {
+        for (path, bytes, mode) in source(root)? {
             let file = File { bytes, mode };
             write_file(&root.join("before"), &path, Some(&file))?;
             write_file(&root.join("work"), &path, Some(&file))?;

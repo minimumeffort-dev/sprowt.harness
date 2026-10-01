@@ -20,19 +20,25 @@ enum Tool {
     ConnectRepository,
     CreateWorktree,
     PublishPr,
-    ContinuePr,
+    PrepareEdits,
     CleanupMod,
+    CloseMod,
+    ReopenMod,
+    PruneMod,
     InstallPackages,
 }
 
-const REGISTRY: [Tool; 8] = [
+const REGISTRY: [Tool; 11] = [
     Tool::InitializeProject,
     Tool::AdoptSnapshot,
     Tool::ConnectRepository,
     Tool::CreateWorktree,
     Tool::PublishPr,
-    Tool::ContinuePr,
+    Tool::PrepareEdits,
     Tool::CleanupMod,
+    Tool::CloseMod,
+    Tool::ReopenMod,
+    Tool::PruneMod,
     Tool::InstallPackages,
 ];
 static LOG: Mutex<()> = Mutex::new(());
@@ -45,8 +51,11 @@ impl Tool {
             Self::ConnectRepository => "connect_repository",
             Self::CreateWorktree => "create_worktree",
             Self::PublishPr => "publish_pr",
-            Self::ContinuePr => "continue_pr",
+            Self::PrepareEdits => "prepare_edits",
             Self::CleanupMod => "cleanup_mod",
+            Self::CloseMod => "close_mod",
+            Self::ReopenMod => "reopen_mod",
+            Self::PruneMod => "prune_mod",
             Self::InstallPackages => packages::TOOL,
         }
     }
@@ -130,8 +139,11 @@ pub enum Request {
     ConnectRepository(git_mod::RepositoryRequest),
     CreateWorktree,
     PublishPr { draft: bool },
-    ContinuePr,
+    PrepareEdits,
     CleanupMod,
+    CloseMod,
+    ReopenMod,
+    PruneMod,
     InstallPackages(packages::Request),
 }
 
@@ -143,8 +155,11 @@ impl Request {
             Self::ConnectRepository(_) => Tool::ConnectRepository,
             Self::CreateWorktree => Tool::CreateWorktree,
             Self::PublishPr { .. } => Tool::PublishPr,
-            Self::ContinuePr => Tool::ContinuePr,
+            Self::PrepareEdits => Tool::PrepareEdits,
             Self::CleanupMod => Tool::CleanupMod,
+            Self::CloseMod => Tool::CloseMod,
+            Self::ReopenMod => Tool::ReopenMod,
+            Self::PruneMod => Tool::PruneMod,
             Self::InstallPackages(_) => Tool::InstallPackages,
         }
     }
@@ -318,9 +333,24 @@ impl<'a> Dispatcher<'a> {
                     )
                     .map(Output::PullRequest)
                 }
-                Request::ContinuePr => {
-                    progress("restoring PR workspace");
-                    git_mod::continue_work(root, self.github_cli, self.cancelled)?;
+                Request::PrepareEdits => {
+                    progress("preparing edits");
+                    git_mod::prepare_edits(root, self.github_cli, self.cancelled)?;
+                    Ok(Output::Done)
+                }
+                Request::CloseMod => {
+                    progress("saving checkpoint");
+                    git_mod::checkpoint(root, self.cancelled)?;
+                    Ok(Output::Done)
+                }
+                Request::ReopenMod => {
+                    progress("restoring worktree");
+                    git_mod::reopen(root, self.cancelled)?;
+                    Ok(Output::Done)
+                }
+                Request::PruneMod => {
+                    progress("pruning closed worktree");
+                    git_mod::prune(root, self.cancelled)?;
                     Ok(Output::Done)
                 }
                 Request::CleanupMod => {
@@ -449,8 +479,11 @@ mod tests {
             "connect_repository",
             "create_worktree",
             "publish_pr",
-            "continue_pr",
+            "prepare_edits",
             "cleanup_mod",
+            "close_mod",
+            "reopen_mod",
+            "prune_mod",
             "unknown",
         ] {
             let error = tools.worker_call(name, json!({}), |_| {}).unwrap_err();
@@ -469,7 +502,7 @@ mod tests {
             log.iter()
                 .filter(|entry| entry["status"] == "denied")
                 .count(),
-            9
+            12
         );
         assert!(
             log.iter()

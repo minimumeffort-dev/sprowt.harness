@@ -11,7 +11,7 @@ The interface keeps the project and worker status at the top, the conversation l
 
 ▤ codex · planner
 ctrl+o ▸ show plan details
-plan ready · numbered tasks
+execution · numbered tasks
 
 ◆ codex · executor · model · effort
 reply
@@ -30,9 +30,9 @@ Codex’s configured effort is used when available. When unset, the harness read
 
 Plans show task titles, outcomes and dependencies first. **Ctrl+O · show/hide plan details** sits beside the heading. It expands file scopes, completion checks and planner model details. Check commands appear in indented blocks; multiline code keeps its source indentation, and wrapped lines stay inside the block. Expanding keeps the heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
 
-Completed planner chatter stays saved but is hidden from the transcript. The plan shows task progress; details show check results. **Ctrl+D** opens a full-width diff. Use **p** to publish verified changes as a PR. Snapshot mods first offer Git adoption; **a** still applies them locally before adoption. See [Plan execution](execution.md).
+Completed planner chatter stays saved but is hidden from the transcript. The plan shows task progress; details show check results. **Ctrl+D** opens a full-width diff. Use **p** to publish verified changes as a PR, or **Ctrl+S** from the conversation. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
 
-Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Pending cleanup shows **Ctrl+R · retry Git operation**; a published mod offers **Ctrl+R · continue** on the same open PR.
+Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Failed operations show **Ctrl+R · retry Git operation**. A published mod keeps its composer for requesting edits on the same PR.
 
 Codemod, queue and project setup dialogs share spacing and keyboard hints. Git setup shows the starting file list. GitHub setup uses Tab to choose connect existing or create private, then confirms `owner/repository` before contacting GitHub. Hints adapt to the current view and terminal width. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
 
@@ -42,6 +42,7 @@ Codemod, queue and project setup dialogs share spacing and keyboard hints. Git s
 | --- | --- |
 | `sprowt-harness` | Open the current project |
 | `sprowt-harness setup` | Install the local Laya runtime and model |
+| `sprowt-harness --closed-worktree-days 0` | Keep closed worktrees indefinitely |
 | `sprowt-harness --no-motion` | Open with animations disabled |
 | `sprowt-harness --help` | Show available options |
 | `sprowt-harness --version` | Show the installed version |
@@ -52,9 +53,10 @@ Codemod, queue and project setup dialogs share spacing and keyboard hints. Git s
 | --- | --- |
 | Enter | Create a described mod, queue a message or save an edit |
 | Ctrl+J | Add a newline |
-| Ctrl+P | Switch, create or delete a codemod |
+| Ctrl+P | Switch, create, close, reopen or delete a codemod |
 | Ctrl+Q | Manage queued instructions |
-| Ctrl+R | Start, stop or retry; recover publication or cleanup |
+| Ctrl+R | Run, stop, retry or reopen a closed codemod |
+| Ctrl+S | Publish verified changes as a PR |
 | Ctrl+O | Show or hide saved plan details |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |

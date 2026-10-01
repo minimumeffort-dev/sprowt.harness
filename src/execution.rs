@@ -49,12 +49,6 @@ pub struct Report {
 }
 
 impl Execution {
-    pub fn vm_cleanup_pending(&self) -> bool {
-        self.status == "applied"
-            && self.backend == "apple-container"
-            && self.workspace.join("vm.json").exists()
-    }
-
     pub fn next_task(&self, plan: &Plan) -> Option<&TaskRun> {
         self.tasks.iter().find(|run| {
             run.status == "pending"

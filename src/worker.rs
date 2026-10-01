@@ -283,6 +283,8 @@ impl Worker {
         }
         let mut input = if self.role == Role::Planner && !steering {
             store.planner_input(self.mod_id)?
+        } else if !steering && self.role == Role::Executor && code_mod.execution.is_some() {
+            None
         } else {
             store.next_input(self.mod_id, steering)?
         };

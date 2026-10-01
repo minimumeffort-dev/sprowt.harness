@@ -33,10 +33,10 @@ Codex’s trusted app-server uses the host login and network for inference. Exec
 
 Worker labels show model and reasoning effort. An unset effort uses Codex’s model catalog default, sent explicitly with each new turn. Saved replies keep their own labels; missing historical effort is shown as unknown.
 
-- A new codemod confirms Git setup if needed, creates its branch and worktree, then starts its planner automatically. The planner and Laya read that committed source.
-- After planning, **Ctrl+R** starts or pauses execution. Rust selects tasks; queued instructions run between tasks. See [Plan execution](execution.md) for verification and publication.
+- A new codemod confirms Git setup if needed, creates its branch and worktree, then starts its planner automatically. The planner and Laya read that committed source initially and the latest exported source for edits.
+- A valid plan starts execution automatically. Rust selects tasks; ordinary queued messages wait for a verified version, then start the next edit plan. **Ctrl+R** stops or retries. See [Plan execution](execution.md) for verification and publication.
 - Reopening restores saved state. **Ctrl+R** reconnects a worker to its saved Codex conversation.
-- Quitting interrupts turns and stops agent processes and active VMs. Publishing deletes the VM and worktree while retaining history. Continuing an open PR starts fresh worker conversations for its new plan. Closing keeps history and offers a draft PR or discard for unfinished Git work; deletion removes local data. Failed operations remain retryable with Ctrl+R. Legacy mods keep local apply.
+- Publishing retains the VM and worktree. Each edit plan starts fresh worker conversations and keeps the transcript. Closing stops workers, saves a checkpoint and removes the VM; deletion discards local data. Reopening a closed mod starts fresh conversations when work resumes. Quitting stops processes and active VMs but keeps their disks. Failed operations remain retryable with Ctrl+R.
 
 The live status shows the model and configured reasoning effort reported by Codex and spins while work is in progress. Replies keep both labels when reopened. Laya still routes only the planner; the executor uses Codex’s resolved conversation settings. Unreported values stay omitted.
 

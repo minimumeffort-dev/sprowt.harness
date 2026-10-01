@@ -163,6 +163,11 @@ impl Store {
             ),
             (
                 "code_mods",
+                "closed_at",
+                "ALTER TABLE code_mods ADD COLUMN closed_at INTEGER",
+            ),
+            (
+                "code_mods",
                 "description",
                 "ALTER TABLE code_mods ADD COLUMN description TEXT",
             ),
@@ -443,9 +448,19 @@ impl Store {
 
     pub fn close_mod(&mut self, project_id: i64, mod_id: i64) -> Result<Option<i64>> {
         let transaction = self.0.transaction()?;
-        transaction.execute(
-            "UPDATE code_mods SET closed=1 WHERE id=?1 AND project_id=?2",
+        let changed = transaction.execute(
+            "UPDATE code_mods SET closed=1,closed_at=unixepoch() WHERE id=?1 AND project_id=?2",
             params![mod_id, project_id],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        transaction.execute("UPDATE task_runs SET status='paused' WHERE mod_id=?1 AND status IN ('sending','running','checking')", [mod_id])?;
+        transaction.execute("UPDATE executions SET status='blocked' WHERE mod_id=?1 AND status IN ('running','verifying')", [mod_id])?;
+        transaction.execute("UPDATE plans SET status='paused' WHERE mod_id=?1 AND status IN ('pending','running','sending')", [mod_id])?;
+        transaction.execute(
+            "UPDATE workers SET thread_id=NULL,pending=NULL WHERE mod_id=?1",
+            [mod_id],
         )?;
         transaction.execute("UPDATE projects SET active_mod_id=(SELECT id FROM code_mods WHERE project_id=?1 AND closed=0 ORDER BY id LIMIT 1) WHERE id=?1 AND active_mod_id=?2", params![project_id, mod_id])?;
         let selected = transaction.query_row(
@@ -457,13 +472,24 @@ impl Store {
         Ok(selected)
     }
 
-    pub fn follow_up(&mut self, mod_id: i64, request: &str) -> Result<()> {
+    pub fn follow_up(&mut self, mod_id: i64, request: &str, queued: Option<i64>) -> Result<()> {
         let transaction = self.0.transaction()?;
         let (description, attempt): (String, i64) = transaction.query_row("SELECT COALESCE(m.description,m.name),COALESCE(p.attempt,0) FROM code_mods m LEFT JOIN plans p ON p.mod_id=m.id WHERE m.id=?1", [mod_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
         let source = plan_source(mod_id, attempt + 1);
-        transaction.execute("UPDATE code_mods SET closed=0,draft='',description=?2 WHERE id=?1", params![mod_id, format!("{description}\n\nPublished work is already implemented. Plan only this follow-up:\n{request}")])?;
-        for table in ["task_runs", "executions"] {
-            transaction.execute(&format!("DELETE FROM {table} WHERE mod_id=?1"), [mod_id])?;
+        transaction.execute("UPDATE code_mods SET closed=0,closed_at=NULL,description=?2 WHERE id=?1", params![mod_id, format!("{description}\n\nUse the current source and finish any incomplete work. Plan this edit, including checks for the new behavior and regressions:\n{request}")])?;
+        transaction.execute("DELETE FROM task_runs WHERE mod_id=?1", [mod_id])?;
+        transaction.execute(
+            "UPDATE executions SET status='planning',checks='[]',fingerprint=NULL WHERE mod_id=?1",
+            [mod_id],
+        )?;
+        if let Some(id) = queued {
+            let changed = transaction.execute(
+                "DELETE FROM queued_messages WHERE mod_id=?1 AND id=?2 AND body=?3",
+                params![mod_id, id, request],
+            )?;
+            if changed != 1 {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
         }
         transaction.execute("INSERT INTO plans(mod_id,source,attempt) VALUES (?1,?2,?3) ON CONFLICT(mod_id) DO UPDATE SET status='pending',body=NULL,source=excluded.source,attempt=excluded.attempt,model=NULL,effort=NULL,routing=NULL", params![mod_id, source, attempt+1])?;
         transaction.execute(
@@ -474,8 +500,31 @@ impl Store {
             "INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,'user',?3)",
             params![mod_id, source, request],
         )?;
-        transaction.execute("UPDATE projects SET active_mod_id=?1 WHERE id=(SELECT project_id FROM code_mods WHERE id=?1)", [mod_id])?;
         transaction.commit()
+    }
+
+    pub fn reopen_mod(&self, mod_id: i64) -> Result<()> {
+        self.0.execute(
+            "UPDATE code_mods SET closed=0,closed_at=NULL WHERE id=?1",
+            [mod_id],
+        )?;
+        self.0.execute(
+            "UPDATE workers SET thread_id=NULL,pending=NULL WHERE mod_id=?1",
+            [mod_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn expired_worktrees(
+        &self,
+        project_id: i64,
+        days: u32,
+    ) -> Result<Vec<(i64, std::path::PathBuf)>> {
+        if days == 0 {
+            return Ok(Vec::new());
+        }
+        self.0.prepare("SELECT m.id,w.workspace FROM code_mods m JOIN mod_worktrees w ON w.mod_id=m.id WHERE m.project_id=?1 AND m.closed=1 AND m.closed_at IS NOT NULL AND m.closed_at <= unixepoch()-?2")?
+            .query_map(params![project_id,i64::from(days)*86400], |row| Ok((row.get(0)?,std::path::PathBuf::from(row.get::<_,String>(1)?))))?.collect()
     }
 
     pub fn git_root(&self, mod_id: i64) -> Result<Option<std::path::PathBuf>> {
@@ -879,7 +928,7 @@ impl Store {
     pub fn create_execution(&mut self, mod_id: i64, workspace: &Path, plan: &Plan) -> Result<()> {
         let transaction = self.0.transaction()?;
         transaction.execute(
-            "INSERT INTO executions(mod_id,workspace,backend) VALUES (?1,?2,'apple-container')",
+            "INSERT INTO executions(mod_id,workspace,backend) VALUES (?1,?2,'apple-container') ON CONFLICT(mod_id) DO UPDATE SET status='pending',checks='[]',fingerprint=NULL,backend='apple-container'",
             params![mod_id, workspace.to_string_lossy()],
         )?;
         for task in &plan.tasks {
@@ -1169,6 +1218,68 @@ pub(crate) mod test_support {
 mod tests {
     use super::{test_support::TestData, *};
     use serde_json::json;
+
+    #[test]
+    fn closed_worktree_retention_is_scoped_and_reopening_resets_its_clock() {
+        let data = TestData::new();
+        let mut store = data.store();
+        let first = store.load_project(Path::new("/first")).unwrap();
+        let second = store.load_project(Path::new("/second")).unwrap();
+        let a = store.create_mod(first.id, "A").unwrap();
+        let b = store.create_mod(second.id, "B").unwrap();
+        for (project, code_mod) in [(first.id, a.id), (second.id, b.id)] {
+            store
+                .save_git_root(code_mod, Path::new("/saved/worktree"))
+                .unwrap();
+            store.close_mod(project, code_mod).unwrap();
+            store
+                .0
+                .execute(
+                    "UPDATE code_mods SET closed_at=unixepoch()-31*86400 WHERE id=?1",
+                    [code_mod],
+                )
+                .unwrap();
+        }
+        assert!(store.expired_worktrees(first.id, 0).unwrap().is_empty());
+        assert_eq!(
+            store.expired_worktrees(first.id, 30).unwrap(),
+            [(a.id, std::path::PathBuf::from("/saved/worktree"))]
+        );
+        assert!(store.expired_worktrees(first.id, 32).unwrap().is_empty());
+        store.reopen_mod(a.id).unwrap();
+        assert!(store.expired_worktrees(first.id, 30).unwrap().is_empty());
+        store.close_mod(first.id, a.id).unwrap();
+        assert!(store.expired_worktrees(first.id, 30).unwrap().is_empty());
+        assert_eq!(store.expired_worktrees(second.id, 30).unwrap()[0].0, b.id);
+    }
+
+    #[test]
+    fn changed_queue_request_rolls_back_the_whole_edit_round() {
+        let data = TestData::new();
+        let mut store = data.store();
+        let project = store.load_project(Path::new("/edit")).unwrap();
+        let code_mod = store.create_mod(project.id, "Add greeting").unwrap();
+        let request = store.enqueue(code_mod.id, "First request").unwrap();
+        store.save_draft(code_mod.id, "keep draft").unwrap();
+        store
+            .edit_queued(code_mod.id, request.id, "Edited request")
+            .unwrap();
+        assert!(
+            store
+                .follow_up(code_mod.id, "First request", Some(request.id))
+                .is_err()
+        );
+        let state = data.store().load_project(Path::new("/edit")).unwrap();
+        let saved = &state.mods[0];
+        assert_eq!(saved.description, code_mod.description);
+        assert_eq!(
+            saved.planning.as_ref().unwrap().source,
+            code_mod.planning.as_ref().unwrap().source
+        );
+        assert_eq!(saved.messages.len(), 1);
+        assert_eq!(saved.queue[0].body, "Edited request");
+        assert_eq!(saved.draft, "keep draft");
+    }
 
     #[test]
     fn moving_legacy_execution_to_linux_keeps_work_and_replaces_old_verification() {

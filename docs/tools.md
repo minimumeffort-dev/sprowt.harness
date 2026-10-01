@@ -21,13 +21,16 @@ flowchart TB
 | `connect_repository` | Harness | Connect GitHub or create a confirmed private repository |
 | `create_worktree` | Harness | Git on the Mac |
 | `publish_pr` | Harness | Git and GitHub CLI on the Mac |
-| `continue_pr` | Harness | Check the open PR and restore its worktree |
+| `prepare_edits` | Harness | Check the saved PR when present; prepare the next edit round |
+| `close_mod` | Harness | Commit a local checkpoint and remove the VM |
+| `reopen_mod` | Harness | Restore the saved worktree and reopen |
+| `prune_mod` | Harness | Remove an unchanged closed worktree; retain its branch |
 | `cleanup_mod` | Harness | VM deletion and Git worktree cleanup |
 | `install_system_packages` | Executor | Package setup inside its own Linux VM |
 
 Only package installation is advertised to Codex, using a JSON input schema. Unknown tools, host operations requested by workers and package requests from planners are rejected. Package names and reasons use the same validation for JSON and typed Rust calls. The connected VM must match the workspace bound to that worker.
 
-Initial Git setup and the GitHub destination require confirmation. Setup checks the reviewed file snapshot; adoption preserves the saved baseline. Repository setup validates owner/name, checks history and records progress for retries. Publication requires confirmation and verified source. Closing can save unfinished work as a draft PR; discard requires its own selection. Continuation checks PR status and the saved commit. Git checkpoints own recovery. Credentials remain in host adapters.
+Initial Git setup and the GitHub destination require confirmation. Setup checks the reviewed file snapshot; adoption preserves the saved baseline. Repository setup validates owner/name, checks history and records progress for retries. Publication requires confirmation and verified source. Closing saves source locally before VM deletion. Pruning checks the saved commit and refuses outside edits. Edit rounds check PR status and its published commit when present. Git checkpoints own recovery. Credentials remain in host adapters.
 
 ## Progress and activity
 

@@ -32,6 +32,9 @@ struct Cli {
     /// Disable animations.
     #[arg(long)]
     no_motion: bool,
+    /// Prune closed worktrees after this many days; 0 keeps them indefinitely.
+    #[arg(long, default_value_t = 30)]
+    closed_worktree_days: u32,
 }
 
 #[derive(Subcommand)]
@@ -52,6 +55,8 @@ fn main() -> io::Result<()> {
     }
 
     let mut app = App::new(std::env::current_dir()?, !cli.no_motion)?;
+    app.prune_closed(cli.closed_worktree_days)
+        .map_err(io::Error::other)?;
     let mut terminal = ratatui::init();
     let _cleanup = TerminalCleanup;
     execute!(io::stdout(), EnableBracketedPaste)?;

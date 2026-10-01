@@ -17,9 +17,9 @@ flowchart TB
 | Role | Job today |
 | --- | --- |
 | Planner | Inspect the project and produce a task plan |
-| Executor | Implement plan tasks and answer queued instructions |
+| Executor | Implement and verify plan tasks |
 
-They have separate Codex conversations. The planner is read-only. **Ctrl+R** starts the executor in the mod’s Linux VM; Rust dispatches tasks in dependency order. See [Plan execution](execution.md).
+They have separate Codex conversations. The planner is read-only. A valid plan starts the executor automatically in the mod’s Linux VM; Rust dispatches tasks in dependency order. See [Plan execution](execution.md).
 
 ## Local model routing
 
@@ -58,10 +58,10 @@ The conversation shows a numbered outline: task titles, outcomes and dependencie
 
 Press **Ctrl+O** for file scopes, individual completion checks and model details. Press it again to collapse them. The full plan remains saved; changing its display does not change the plan or start a worker.
 
-**Plan ready** means planning finished. The Linux VM boundary appears below the outline. **Ctrl+R** executes the saved plan; **Ctrl+D** reviews the resulting diff.
+Once a valid plan is saved, execution begins automatically. **Ctrl+R** stops work or retries; **Ctrl+D** reviews source when workers are idle.
 
 ## Stop and retry
 
-Ctrl+R stops unfinished planning or retries it after interruption or failure. A valid plan is saved and displayed in the conversation. Once it is ready, Ctrl+R executes the plan without needing another message.
+Ctrl+R stops unfinished planning or retries it after interruption or failure. A valid plan is saved and displayed in the conversation. New plans proceed directly to execution. After an interruption, Ctrl+R explicitly resumes work.
 
-Reopening restores the saved plan without starting workers. Mods created before planning was added retain their original queue workflow.
+Reopening the harness restores saved progress without starting workers. Sending edits to a completed version creates a new plan against the latest source, with checks for the change and regressions. The conversation stays; the current plan is replaced.

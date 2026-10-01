@@ -11,7 +11,7 @@ flowchart TB
     mod --> pending["Queue and waiting steering"]
     mod --> execution["Execution · working folder, task status and check results"]
     mod --> workers["Workers · role, Codex conversation ID and pending delivery"]
-    mod --> git["Worktree path · publication and cleanup checkpoints"]
+    mod --> git["Worktree path · publication, close and retention checkpoints"]
 ```
 
 ## On macOS
@@ -26,8 +26,8 @@ flowchart TB
 ├── laya-models/      downloaded model cache
 └── workspaces/       private working folders per mod
     └── <mod>-<stamp>/
-        ├── checkout/ Git worktree; removed after publication
-        ├── git-mod.json branch, base commit, PR URL and recovery phase
+        ├── checkout/ Git worktree; retained until deletion or closed retention
+        ├── git-mod.json branch, base, checkpoint commit, PR URL and recovery phase
         ├── project-setup pending initial Git setup or snapshot adoption
         ├── repository-setup.json confirmed GitHub destination and recovery
         ├── snapshot-ready completed Git mod source transfer
@@ -45,11 +45,11 @@ flowchart TB
 
 Before Git setup is confirmed, its file preview uses a temporary workspace. Cancelling or exiting removes that preview. Confirmed setup records a codemod workspace so interruption can recover. Adopting a snapshot keeps its existing workspace and project identity.
 
-State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Replies save model and effort; plans save routing. Execution saves attempts, checks and the verified source fingerprint. SQLite stores each Git mod’s folder; `git-mod.json` records its branch, base, exported fingerprint, commit, PR URL and publication or removal intent.
+State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Replies save model and effort; plans save routing. Execution saves attempts, checks and the verified source fingerprint. SQLite stores each Git mod’s folder; `git-mod.json` records its branch, base, exported fingerprint, commit, PR URL and publication, close, edit or removal intent. Closing also saves a timestamp for retention.
 
 The [tool dispatcher](tools.md) records call IDs, callers, duration and outcomes in `tools.jsonl`. Inputs and outputs are omitted. Tool logs stay on the Mac and are removed with the mod; recovery uses saved execution state and Git checkpoints.
 
-Apple Container manages each VM’s disk separately. Code and dependencies persist until publication, local apply or mod deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
+Apple Container manages each VM’s disk separately. Code and dependencies persist across publication and edit rounds. Closing or deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
 
 The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
 
@@ -57,10 +57,12 @@ The database file uses owner-only permissions; its directory is private to your 
 
 Run from the same project to restore mods, drafts and conversations. Git subfolders resolve to the repository root. Workers start when requested. A moved repository has a different identity; relocating saved worktrees is unsupported.
 
-PR publication deletes the VM and worktree while retaining the branch, history and exports. The saved URL recovers after reopening; **Ctrl+R** retries pending cleanup. Git operations run in the background and stop on exit, retaining their checkpoints. Legacy local apply deletes only the VM and also keeps history.
+Publication retains the VM and worktree. The PR URL and commit are saved before success is shown. Failed Git operations keep their checkpoints and can retry with **Ctrl+R**.
 
-Closing marks the mod as closed in SQLite after resource cleanup. Its conversation and results remain in the closed list. Unpublished Git work can become a draft PR or be explicitly discarded. Deletion removes local records and source exports; existing PRs remain. Closing an unadopted snapshot mod discards unapplied files while keeping history.
+Closing exports source and commits a checkpoint before VM deletion, then marks the mod Closed in SQLite. History, draft, queue, branch and worktree stay. Deleting removes local records, source exports, worktree and VM; existing PRs remain.
 
-Continuing an open PR restores its branch, resets the current plan and worker conversations, and retains the transcript. The follow-up stays in the saved draft until restoration succeeds. Reopening the harness starts no workers. Codex may retain earlier conversations; credentials stay on the host.
+At project startup, closed worktrees older than `--closed-worktree-days` are pruned if their checkpoint is unchanged. The default is 30 days; 0 disables pruning. Branches, history and exports stay. Reopening restores a pruned worktree from its checkpoint; a fresh VM starts on execution.
+
+Each edit round consumes its queued request and replaces the current plan and task results in one transaction, retaining the workspace, transcript and composer draft. Reopening the harness starts no workers. Codex may retain earlier conversations; credentials stay on the host.
 
 Run one harness instance per project. Shared memory across projects, repository indexing and memory updates after merges are future layers.

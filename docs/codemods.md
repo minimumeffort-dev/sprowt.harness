@@ -13,17 +13,18 @@ flowchart TB
     executor --> vm["Own Linux VM · source copy and runtime"]
 ```
 
-The current harness supports one planner and one executor per mod. Workers in different mods can run at the same time. Planners read the mod worktree; executors work on its source copy in Linux. Multiple executors per mod come later. See [Plan execution](execution.md).
+The current harness supports one planner and one executor per mod. Workers in different mods can run at the same time. Planners read the worktree initially and exported source for edit rounds; executors work on its source copy in Linux. Multiple executors per mod come later. See [Plan execution](execution.md).
 
-Publishing a PR removes the mod’s VM and worktree. Its branch, plan, messages, draft and exported source remain. Existing snapshot mods can be adopted into Git, including locally applied work; local apply remains available before adoption.
+Publishing creates or updates a PR and keeps the VM for further edits. Closing saves a checkpoint and removes the VM; deletion discards local work. A review worker comes later.
 
 ## Create, switch, close
 
-- **Create:** open **Ctrl+P**, select **New codemod**, describe the change and press Enter. Review and confirm Git setup when offered. A worktree starts from the initial commit or existing `HEAD`, then planning starts. The first line becomes the title; the full description is saved.
+- **Create:** open **Ctrl+P**, select **New codemod**, describe the change and press Enter. Review and confirm Git setup when offered. A worktree starts from the initial commit or existing `HEAD`, then planning and execution start automatically. The first line becomes the title; the full description is saved.
 - **Switch:** open **Ctrl+P**, select a mod and press Enter. Its conversation and draft return. Other mods’ workers keep running.
-- **Continue:** on a published mod, press **Ctrl+R** or select it and press `r`. Describe the next change; a fresh plan targets the same open PR.
-- **Close:** select an active mod, press `c`, then Enter. History stays in the closed list; runtime resources are removed. Unpublished Git work offers a draft PR or discard. Closing an unadopted snapshot mod discards unapplied files.
-- **Closed history:** press **Tab** in the picker to switch lists. Enter opens history; closed mods do not run workers.
+- **Edit:** send a message through the composer. After the current version is verified, a fresh plan and execution round start against its source. Published mods use the same composer and PR.
+- **Publish:** **Ctrl+S** starts publication after verification; Enter confirms the PR. **Ctrl+D** lets you review the diff first.
+- **Close:** select an active mod, press `c`, then Enter. Save a local checkpoint, keep the worktree and history, and remove the VM. GitHub is not required. Older snapshot mods first offer Git adoption.
+- **Reopen:** press **Tab** for closed mods, then `r` on the selected mod. Its saved source returns; the next execution creates a fresh VM. Enter opens history without reopening.
 - **Delete:** press `d`, then Enter to permanently remove local history and discard unpublished work. Existing PRs remain on GitHub.
 
 See [Worktrees and PRs](git-workflow.md) for login, branch targets and recovery. Publishing saves work to GitHub; closing ends the local session. After a PR is merged or closed, start a new mod from the updated project.
@@ -32,7 +33,7 @@ The first launch in an empty project opens creation directly. Ctrl+J adds a newl
 
 ## Draft, queue, conversation
 
-A draft is what you are typing. Enter saves it to the queue. An enabled executor takes queued instructions in order, one turn at a time. Accepted instructions and replies appear in the conversation.
+A draft is what you are typing. Enter saves it to the queue. During work, ordinary instructions wait. Once a version is verified, the next instruction starts a new edit plan. Sending edits after a failed run replans against the work saved so far. That request and worker replies appear in the conversation. Drafts remain separate.
 
 Open **Ctrl+Q** to manage pending instructions:
 
@@ -53,13 +54,13 @@ Editing preserves your composer draft. Removing the last item closes the queue d
 ```mermaid
 flowchart TB
     draft["Your draft"] -->|"Enter"| queue["Saved queue"]
-    queue -->|"normal delivery"| next["Executor's next turn"]
+    queue -->|"After current version passes checks"| next["Next edit plan + execution round"]
     queue -->|"s · selected or marked"| waiting["Saved steering request"]
     waiting -->|"when a turn is running"| active["Active planner or executor turn"]
-    next -->|"Codex accepts"| history["Conversation history"]
+    next --> history["Conversation history"]
     active -->|"Codex accepts"| history
 ```
 
-Steering moves instructions out of the normal queue, preserving queue order. They stay saved until a worker accepts them into an active turn. Without an active turn, they wait; executing a plan task or a normal queued instruction starts one.
+Steering moves instructions out of the normal queue, preserving queue order. They stay saved until a worker accepts them into an active turn. Without an active turn, they wait until a plan task starts one.
 
-Ordinary queued instructions wait for the executor while planning runs. For connection and recovery behavior, see [Workers](workers.md).
+You can send messages while planning or execution runs. Steering reaches the active turn; normal edits wait for the next version. For connection and recovery behavior, see [Workers](workers.md).

@@ -1,35 +1,33 @@
 # Worktrees and pull requests
 
-A new codemod owns a Git branch and worktree. The harness handles empty folders, existing files and repositories that have no commits.
+Each codemod owns a branch, a host worktree and a local Linux VM. Workers prepare a version; you request edits or publish it.
 
 ## Start in any folder
 
 | Folder | Starting point |
 | --- | --- |
-| Empty, without Git | Confirm an empty initial commit. |
-| Existing files, without Git | Review the file list and confirm the initial commit. |
-| Git, without commits | Review and commit the starting files. |
-| Git, with commits | Use committed `HEAD`; local edits remain in your checkout. |
+| Empty, without Git | Confirm an empty initial commit |
+| Existing files, without Git | Review the files and confirm the initial commit |
+| Git, without commits | Review and commit the starting files |
+| Git, with commits | Use committed `HEAD`; local edits stay in your checkout |
 
-Setup respects `.gitignore` and excludes common credential files, dependencies and caches. Use ↑/↓ to review the list; Enter confirms and Esc returns to the description. Changed files block setup. Your source files stay in place; the initial commit preserves their bytes and executable permissions. New repositories use `main`; an existing unborn branch keeps its name.
+Setup respects `.gitignore` and excludes common credentials, dependencies and caches. Enter confirms; Esc returns to the description. Changed files block setup. Source bytes and executable permissions are preserved. New repositories use `main`; an existing unborn branch keeps its name.
 
 ```mermaid
 flowchart TB
-    base["1. Existing or confirmed starting commit"] -->|"Create branch + worktree"| mod["2. Mod worktree · Mac"]
-    mod -->|"Copy source"| vm["3. Mod VM · edit and verify"]
-    vm -->|"Export source"| review["4. Ctrl+D · review diff"]
-    review -->|"p"| destination["5. GitHub repository · connect or create private if needed"]
-    destination -->|"Confirm PR"| pr["6. Commit, push and create PR"]
-    pr -->|"PR saved"| cleanup["7. Delete VM and worktree · retain branch and history"]
+    base["Starting commit"] --> tree["Codemod branch + worktree · Mac"]
+    tree --> vm["Copy source to own Linux VM"]
+    vm --> ready["Workers build · checks pass"]
+    ready --> review["Review diff or send edits"]
+    review --> confirm["Confirm publication"]
+    confirm --> pr["Commit + push · create or update PR"]
 ```
 
-The planner reads the mod worktree. The executor gets a source copy in `/workspace`; the Mac’s `.git` pointer and credentials never enter the VM. One executor works there today. Task worktrees and parallel executors come later.
+Git metadata and credentials stay on the Mac. Workers edit `/workspace` inside the VM. Git and GitHub operations belong to the [harness tool dispatcher](tools.md).
 
-Worktree creation, publication and resource cleanup use the [tool dispatcher](tools.md). These operations are callable only by the harness; workers cannot invoke them.
+## Publish and edit
 
-## Publish
-
-Sign in with [GitHub CLI](https://cli.github.com/) and configure Git authentication:
+Sign in with [GitHub CLI](https://cli.github.com/):
 
 ```sh
 brew install gh
@@ -37,53 +35,46 @@ gh auth login
 gh auth setup-git
 ```
 
-After all tasks and combined checks pass, open **Ctrl+D** and press **p**. Without an origin remote, choose **connect existing** or **create private** using Tab. Enter `owner/repository`, then confirm the destination. An empty repository gets the starting commit before the PR. A populated repository must share history and contain the target branch; unrelated projects are rejected.
+After tasks and combined checks pass, **Ctrl+S** starts publication. You can also open **Ctrl+D** and press **p**. Source must match the verified version. Confirm the PR with Enter; Esc cancels.
 
-Confirm **Publish PR** with Enter. Reviewed changes are committed and pushed to the mod branch. The harness creates a PR, or updates its existing one. It does not merge the PR or edit your original checkout.
+Without an origin, choose **connect existing** or **create private** using Tab, enter `owner/repository`, then confirm. An empty repository gets the starting commit first. A populated repository must share history and contain the target branch.
 
-The PR targets the branch you were on when the mod was created. That branch must exist on GitHub. A detached starting commit uses the repository’s default branch. Generated branches use `sprowt/mod-<id>-<stamp>`.
+The PR targets your starting branch, or the GitHub default branch when starting detached. Codemod branches use `sprowt/mod-<id>-<stamp>`.
 
-## Continue working
+Publishing retains the VM, worktree and conversation. Send edits through the composer. A new plan covers the requested change and regression checks; execution reuses the VM. Publish again to update the same PR. The diff covers the codemod's changes from its original baseline.
 
-On a published mod, press **Ctrl+R**, describe the next change and press Enter. The harness checks that the PR is open and its commit matches the saved branch. It restores the worktree from the last published commit and prepares a fresh plan. Run that plan to create a fresh VM; publication pushes further commits to the same PR. Verified publication marks a draft PR ready for review.
+Merged or closed PRs require a new codemod from the updated project. Outside changes to the PR branch or worktree block publication and preserve local work.
 
-Merged or closed PRs require a new mod from the updated project. A branch changed outside the harness blocks continuation and retains saved work.
-
-## Close or delete
+## Close, reopen or delete
 
 Open **Ctrl+P**:
 
-| Action | Result |
-| --- | --- |
-| `c` · Close | Keep history in the closed list; delete the VM and worktree. |
-| `d` · Delete | Permanently remove local history and discard unpublished work. Existing PRs remain. |
+| Action | What stays | What is removed |
+| --- | --- | --- |
+| `c` · Close | Checkpoint commit, worktree, history, draft and queue | VM and its runtime |
+| `r` · Reopen a closed mod | Saved source and history | Nothing; a fresh VM starts on execution |
+| `d` · Delete | Existing PR on GitHub | Local codemod data, worktree and VM |
 
-Closing unfinished Git work offers **save changes as draft PR** or **discard unpublished changes**. Saving updates an existing PR when present and marks it as draft. Empty mods need no PR. Closing published work keeps its PR unchanged. Commits already pushed to an existing PR remain.
-
-**Tab** switches between active and closed mods. Enter opens history; **r** continues a published mod's open PR. Closing and deleting never merge a PR.
+Closing stops workers, exports their latest source, commits a local checkpoint and removes the VM. It works without GitHub, including unfinished work. The **Closed** flag lives in harness state; no Git tag is needed. **Tab** switches active and closed lists; Enter reads closed history.
 
 ```mermaid
-flowchart TB
-    work["Active mod · edit and verify"] -->|"Publish PR"| published["Published · history retained"]
-    published -->|"Continue · next change"| work
-    published -->|"Close"| closed["Closed · history retained"]
-    work -->|"Close · draft PR or discard"| closed
-    closed -->|"Continue an open PR"| work
-    closed -->|"Delete"| deleted["Local history removed · existing PR retained"]
+flowchart LR
+    active["Active · build, edit, publish"] -->|"Close · save checkpoint"| closed["Closed · VM removed"]
+    closed -->|"Reopen"| active
+    closed -->|"Retention expires"| saved["Saved branch + history · worktree pruned"]
+    saved -->|"Reopen · restore worktree"| active
 ```
 
-A failed push, PR update, restoration or cleanup retains the mod and recovery files. **Ctrl+R** retries; reopening starts no work automatically. Saved checkpoints prevent duplicate commits and PRs after uncertain responses. A PR with different commits blocks continuation or publication.
+Closed worktrees are pruned after **30 days**, checked when the harness opens that project. Use `--closed-worktree-days N`; **0** disables pruning. Only unchanged checkpoint worktrees are removed. The branch, history and source exports remain, so reopening can restore them. Outside edits skip pruning.
 
-Publication removes the VM and worktree after saving the PR URL. Messages and results remain until deletion. Continuing replaces the current plan and checks, retaining the conversation. Published branches remain locally and on GitHub; discarded source exports are removed.
+Failed publication, checkpoint saves or VM deletion retain work and recovery metadata. **Ctrl+R** retries. Closing and deleting leave existing PRs unchanged; publication creates or updates them.
 
-## Existing snapshot codemods
+## Saved snapshots and recovery
 
-Open **Ctrl+D**, then press **p**. Confirm using the saved starting files as the Git baseline. The harness adopts the finished source into a branch, retaining the plan, checks and conversation. Work already applied locally can be published too; it does not need another implementation run. Local files stay untouched. An existing repository must match the saved baseline.
+Older snapshot codemods offer Git adoption before publication or closing. Confirm the saved starting files as the baseline; the harness preserves their source, checks and conversation. Previously completed local work can be published without another implementation run. An existing repository must match that baseline.
 
-GitHub setup then follows the same flow. **a** remains available for local apply before adoption. Closing a snapshot mod without adopting it discards its unapplied files.
-
-Interrupted repository setup retains its request. **Ctrl+R** retries; **Ctrl+D**, then **p** lets you change the choice. If a repository was created but the response was lost, choose **connect existing** for the same destination. Existing remotes and unrelated remote history are never replaced.
+Interrupted repository setup retains its request. **Ctrl+R** retries; **Ctrl+D**, then **p** lets you change the destination. Existing remotes and unrelated history are never replaced.
 
 ## Current limits
 
-Symlinks and submodules are unsupported. GitHub Enterprise and other Git hosts are not connected yet.
+One executor per codemod. Parallel executors and review workers come later. Symlinks, submodules, GitHub Enterprise and other Git hosts are unsupported.
