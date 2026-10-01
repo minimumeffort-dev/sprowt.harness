@@ -52,7 +52,7 @@ container system start --enable-kernel-install
 codex -c 'cli_auth_credentials_store="file"' login
 ```
 
-Create a mod, review its plan and press **Ctrl+R**. The first execution builds the shared development image; later runs reuse it. **Ctrl+D** opens the diff. New Git mods publish PRs; existing mods and non-Git folders keep local apply. See [Worktrees and PRs](git-workflow.md).
+Create a mod, review its plan and press **Ctrl+R**. The first execution builds the shared development image; later runs reuse it. **Ctrl+D** opens the diff. New codemods publish PRs. Existing snapshot mods can be adopted into Git or applied locally. See [Worktrees and PRs](git-workflow.md).
 
 The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Codex reads your manifests, installs a compatible runtime under `/home/sprowt`, then installs project dependencies under `/workspace`.
 

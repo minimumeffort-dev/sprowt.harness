@@ -1,14 +1,26 @@
 # Worktrees and pull requests
 
-Each new mod in a Git project gets a branch and worktree from the current committed `HEAD`. Local edits and untracked files stay in your original checkout. Commit the source you want the mod to use before creating it.
+A new codemod owns a Git branch and worktree. The harness handles empty folders, existing files and repositories that have no commits.
+
+## Start in any folder
+
+| Folder | Starting point |
+| --- | --- |
+| Empty, without Git | Confirm an empty initial commit. |
+| Existing files, without Git | Review the file list and confirm the initial commit. |
+| Git, without commits | Review and commit the starting files. |
+| Git, with commits | Use committed `HEAD`; local edits remain in your checkout. |
+
+Setup respects `.gitignore` and excludes common credential files, dependencies and caches. Use ↑/↓ to review the list; Enter confirms and Esc returns to the description. Changed files block setup. Your source files stay in place; the initial commit preserves their bytes and executable permissions. New repositories use `main`; an existing unborn branch keeps its name.
 
 ```mermaid
 flowchart TB
-    base["1. Current Git commit"] -->|"Create branch + worktree"| mod["2. Mod worktree · Mac"]
+    base["1. Existing or confirmed starting commit"] -->|"Create branch + worktree"| mod["2. Mod worktree · Mac"]
     mod -->|"Copy source"| vm["3. Mod VM · edit and verify"]
     vm -->|"Export source"| review["4. Ctrl+D · review diff"]
-    review -->|"p, then Enter"| pr["5. Commit, push and create PR"]
-    pr -->|"PR saved"| cleanup["6. Delete VM and worktree · retain branch and history"]
+    review -->|"p"| destination["5. GitHub repository · connect or create private if needed"]
+    destination -->|"Confirm PR"| pr["6. Commit, push and create PR"]
+    pr -->|"PR saved"| cleanup["7. Delete VM and worktree · retain branch and history"]
 ```
 
 The planner reads the mod worktree. The executor gets a source copy in `/workspace`; the Mac’s `.git` pointer and credentials never enter the VM. One executor works there today. Task worktrees and parallel executors come later.
@@ -17,7 +29,7 @@ Worktree creation, publication and resource cleanup use the [tool dispatcher](to
 
 ## Publish
 
-You need a `github.com` origin remote, permission to push, and a signed-in [GitHub CLI](https://cli.github.com/):
+Sign in with [GitHub CLI](https://cli.github.com/) and configure Git authentication:
 
 ```sh
 brew install gh
@@ -25,7 +37,9 @@ gh auth login
 gh auth setup-git
 ```
 
-After all tasks and combined checks pass, open **Ctrl+D**. Press **p**, then **Enter** to **Publish PR**. Reviewed changes are committed and pushed to the mod branch. The harness creates a PR, or updates its existing one. It does not merge the PR or edit your original checkout.
+After all tasks and combined checks pass, open **Ctrl+D** and press **p**. Without an origin remote, choose **connect existing** or **create private** using Tab. Enter `owner/repository`, then confirm the destination. An empty repository gets the starting commit before the PR. A populated repository must share history and contain the target branch; unrelated projects are rejected.
+
+Confirm **Publish PR** with Enter. Reviewed changes are committed and pushed to the mod branch. The harness creates a PR, or updates its existing one. It does not merge the PR or edit your original checkout.
 
 The PR targets the branch you were on when the mod was created. That branch must exist on GitHub. A detached starting commit uses the repository’s default branch. Generated branches use `sprowt/mod-<id>-<stamp>`.
 
@@ -62,6 +76,14 @@ A failed push, PR update, restoration or cleanup retains the mod and recovery fi
 
 Publication removes the VM and worktree after saving the PR URL. Messages and results remain until deletion. Continuing replaces the current plan and checks, retaining the conversation. Published branches remain locally and on GitHub; discarded source exports are removed.
 
-## Compatibility
+## Existing snapshot codemods
 
-Existing mods and projects without Git keep their snapshot and local-apply workflow. New Git mods require an initial commit. Symlinks and submodules are unsupported. GitHub Enterprise and other Git hosts are not connected yet.
+Open **Ctrl+D**, then press **p**. Confirm using the saved starting files as the Git baseline. The harness adopts the finished source into a branch, retaining the plan, checks and conversation. Work already applied locally can be published too; it does not need another implementation run. Local files stay untouched. An existing repository must match the saved baseline.
+
+GitHub setup then follows the same flow. **a** remains available for local apply before adoption. Closing a snapshot mod without adopting it discards its unapplied files.
+
+Interrupted repository setup retains its request. **Ctrl+R** retries; **Ctrl+D**, then **p** lets you change the choice. If a repository was created but the response was lost, choose **connect existing** for the same destination. Existing remotes and unrelated remote history are never replaced.
+
+## Current limits
+
+Symlinks and submodules are unsupported. GitHub Enterprise and other Git hosts are not connected yet.

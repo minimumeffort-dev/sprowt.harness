@@ -15,6 +15,9 @@ use crate::{git_mod, packages, plan::Role, sandbox::Sandbox, store::CodeMod, wor
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tool {
+    InitializeProject,
+    AdoptSnapshot,
+    ConnectRepository,
     CreateWorktree,
     PublishPr,
     ContinuePr,
@@ -22,7 +25,10 @@ enum Tool {
     InstallPackages,
 }
 
-const REGISTRY: [Tool; 5] = [
+const REGISTRY: [Tool; 8] = [
+    Tool::InitializeProject,
+    Tool::AdoptSnapshot,
+    Tool::ConnectRepository,
     Tool::CreateWorktree,
     Tool::PublishPr,
     Tool::ContinuePr,
@@ -34,6 +40,9 @@ static LOG: Mutex<()> = Mutex::new(());
 impl Tool {
     fn name(self) -> &'static str {
         match self {
+            Self::InitializeProject => "initialize_project",
+            Self::AdoptSnapshot => "adopt_snapshot",
+            Self::ConnectRepository => "connect_repository",
             Self::CreateWorktree => "create_worktree",
             Self::PublishPr => "publish_pr",
             Self::ContinuePr => "continue_pr",
@@ -116,6 +125,9 @@ impl Context {
 }
 
 pub enum Request {
+    InitializeProject,
+    AdoptSnapshot,
+    ConnectRepository(git_mod::RepositoryRequest),
     CreateWorktree,
     PublishPr { draft: bool },
     ContinuePr,
@@ -126,6 +138,9 @@ pub enum Request {
 impl Request {
     fn tool(&self) -> Tool {
         match self {
+            Self::InitializeProject => Tool::InitializeProject,
+            Self::AdoptSnapshot => Tool::AdoptSnapshot,
+            Self::ConnectRepository(_) => Tool::ConnectRepository,
             Self::CreateWorktree => Tool::CreateWorktree,
             Self::PublishPr { .. } => Tool::PublishPr,
             Self::ContinuePr => Tool::ContinuePr,
@@ -244,6 +259,36 @@ impl<'a> Dispatcher<'a> {
             }
             let root = self.context.root()?;
             match request {
+                Request::InitializeProject => {
+                    let project = self.context.project.as_deref().unwrap();
+                    if !git_mod::has_commit(project)
+                        && workspace::fingerprint(&workspace::project_state(project, root)?)?
+                            != workspace::fingerprint(&workspace::source_state(
+                                &root.join("before"),
+                            )?)?
+                    {
+                        return Err(io::Error::other(
+                            "Starting files changed after review. Restore them or recreate this codemod.",
+                        ));
+                    }
+                    progress("setting up Git");
+                    git_mod::adopt(project, root, self.cancelled)?;
+                    Ok(Output::Done)
+                }
+                Request::AdoptSnapshot => {
+                    progress("adopting saved codemod");
+                    git_mod::adopt(
+                        self.context.project.as_deref().unwrap(),
+                        root,
+                        self.cancelled,
+                    )?;
+                    Ok(Output::Done)
+                }
+                Request::ConnectRepository(request) => {
+                    progress("connecting GitHub repository");
+                    git_mod::connect_repository(root, request, self.github_cli, self.cancelled)?;
+                    Ok(Output::Done)
+                }
                 Request::CreateWorktree => {
                     progress("creating worktree");
                     git_mod::prepare(
@@ -399,6 +444,9 @@ mod tests {
         );
         let mut tools = Dispatcher::new(&worker, None, &flag);
         for name in [
+            "initialize_project",
+            "adopt_snapshot",
+            "connect_repository",
             "create_worktree",
             "publish_pr",
             "continue_pr",
@@ -421,7 +469,7 @@ mod tests {
             log.iter()
                 .filter(|entry| entry["status"] == "denied")
                 .count(),
-            6
+            9
         );
         assert!(
             log.iter()

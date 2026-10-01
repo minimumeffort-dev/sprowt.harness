@@ -20,9 +20,9 @@ flowchart TB
 
 ## Working folder
 
-New Git mods start from committed `HEAD` in a separate host worktree. The planner reads that worktree; the first execution copies its source into the VM. Your original checkout’s uncommitted and untracked files stay there.
+New codemods confirm Git setup if needed, then start from committed `HEAD` in a separate host worktree. The planner reads that worktree; the first execution copies its source into the VM. Your original checkout’s uncommitted and untracked files stay there.
 
-Existing mods and non-Git projects retain snapshots of current files, including uncommitted and untracked code. Ignored files are left out in Git projects. Every mod has a private folder outside the project with starting files, source exports and diff metadata. New source files stay visible even if a generated `.gitignore` would hide them.
+Existing snapshot mods retain their starting files, including uncommitted and untracked code. New snapshots respect `.gitignore` even before Git is initialized. Every mod has a private folder outside the project with starting files, source exports and diff metadata. New source files stay visible even if a generated `.gitignore` would hide them.
 
 Common credential files, including `.env` and `.npmrc`, are excluded. `.env.example` and `.env.sample` are included. Installed dependencies and build caches are excluded too. Other secrets in source files are still source files; keep them out of the project.
 
@@ -48,11 +48,11 @@ Reopening restores progress without starting workers. On reconnect, confirmed co
 
 ## Review and publish
 
-**Ctrl+D** opens the diff when execution is idle. After tasks and final checks pass, press **p**, then **Enter** to publish a PR. Esc cancels. Source must match the verified result; outside edits to the worktree block publication.
+**Ctrl+D** opens the diff when execution is idle. After tasks and final checks pass, press **p** to publish. Confirm adoption for a snapshot mod, choose a GitHub repository if needed, then confirm the PR. Esc cancels. Source must match the verified result; outside edits to the worktree block publication.
 
 The harness commits reviewed changes and creates or updates the mod’s PR. It saves the URL before removing the VM and worktree. History remains visible. **Ctrl+R** retries interrupted publication or cleanup; afterward it opens **Continue working** to plan changes on the same open PR. See [Worktrees and PRs](git-workflow.md) for closing and recovery.
 
-## Local apply · existing mods and non-Git projects
+## Local apply · unadopted snapshot mods
 
 1. **Ctrl+D** opens the diff when execution is idle. You can inspect partial work, but apply is available only after all tasks and final checks pass.
 2. Use **↑ / ↓** or **Fn + ↑ / ↓** to scroll. **Esc** returns to the conversation.
@@ -66,10 +66,10 @@ After applying, the harness stops the executor and deletes the mod’s VM, inclu
 
 If VM cleanup fails, changes stay applied. **Ctrl+R** retries cleanup; the pending state survives reopening. Older applied mods with retained VMs offer the same cleanup action. Cleanup finishes before Ctrl+R can start read-only follow-up questions against the project.
 
-Start a new mod for further code changes. Removing a legacy or non-Git mod deletes its history and unapplied work.
+Applied snapshot work can still be adopted and published with **Ctrl+D**, then **p**. Start a new mod for further code changes. Removing a snapshot mod deletes its history and unapplied work.
 
 ## Current limits
 
-One executor per mod. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Projects without Git work too; Git is required locally for snapshots and diffs.
+One executor per mod. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. The harness offers Git setup for projects without commits. Git is required locally for worktrees, snapshots and diffs.
 
 Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).

@@ -1,6 +1,6 @@
 # Codemods and messages
 
-A codemod is one goal in one project. It owns its description, conversation, plan, queue, draft and execution workspace. New Git mods also own a branch and worktree.
+A codemod is one goal in one project. It owns its description, conversation, plan, queue, draft and execution workspace. New codemods also own a branch and worktree, with Git setup offered when needed.
 
 ```mermaid
 flowchart TB
@@ -15,14 +15,14 @@ flowchart TB
 
 The current harness supports one planner and one executor per mod. Workers in different mods can run at the same time. Planners read the mod worktree; executors work on its source copy in Linux. Multiple executors per mod come later. See [Plan execution](execution.md).
 
-Publishing a PR removes the mod’s VM and worktree. Its branch, plan, messages, draft and exported source remain. Existing mods and non-Git projects keep local apply.
+Publishing a PR removes the mod’s VM and worktree. Its branch, plan, messages, draft and exported source remain. Existing snapshot mods can be adopted into Git, including locally applied work; local apply remains available before adoption.
 
 ## Create, switch, close
 
-- **Create:** open **Ctrl+P**, select **New codemod**, describe the change and press Enter. In Git projects, a worktree starts from committed `HEAD`, then planning starts. The first line becomes the title; the full description is saved.
+- **Create:** open **Ctrl+P**, select **New codemod**, describe the change and press Enter. Review and confirm Git setup when offered. A worktree starts from the initial commit or existing `HEAD`, then planning starts. The first line becomes the title; the full description is saved.
 - **Switch:** open **Ctrl+P**, select a mod and press Enter. Its conversation and draft return. Other mods’ workers keep running.
 - **Continue:** on a published mod, press **Ctrl+R** or select it and press `r`. Describe the next change; a fresh plan targets the same open PR.
-- **Close:** select an active mod, press `c`, then Enter. History stays in the closed list; runtime resources are removed. Unpublished Git work offers a draft PR or discard. Legacy and non-Git closing discards unapplied files.
+- **Close:** select an active mod, press `c`, then Enter. History stays in the closed list; runtime resources are removed. Unpublished Git work offers a draft PR or discard. Closing an unadopted snapshot mod discards unapplied files.
 - **Closed history:** press **Tab** in the picker to switch lists. Enter opens history; closed mods do not run workers.
 - **Delete:** press `d`, then Enter to permanently remove local history and discard unpublished work. Existing PRs remain on GitHub.
 

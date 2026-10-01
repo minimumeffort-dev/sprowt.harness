@@ -12,7 +12,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 
 - [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
-- [Worktrees and PRs](docs/git-workflow.md): publish and continue the same PR. Close a mod to keep history; delete it to remove local data.
+- [Worktrees and PRs](docs/git-workflow.md): set up Git in any project folder, publish and continue the same PR. Close a mod to keep history; delete it to remove local data.
 - [Plan execution](docs/execution.md): one executor follows task dependencies and checks the combined result.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
@@ -22,7 +22,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 
 ### Current limits
 
-The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publication needs your confirmation. Downloads use a host-controlled domain allowlist. iOS and macOS builds need a later macOS VM backend. Existing mods and non-Git folders keep local apply.
+The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publication needs your confirmation. Downloads use a host-controlled domain allowlist. iOS and macOS builds need a later macOS VM backend. Existing snapshot mods can be adopted into Git or applied locally.
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
@@ -33,12 +33,14 @@ Rust owns the interface, scheduling, workers and saved state. A shared tool disp
 ```mermaid
 flowchart TB
     goal["You · describe a mod"] --> harness["Rust harness · UI, state and scheduling"]
-    harness --> worktree["Git branch + worktree · committed source"]
+    harness --> setup["Project setup · use Git or confirm a starting commit"]
+    setup --> worktree["Git branch + worktree · committed source"]
     worktree --> planner["Laya routes · Codex plans read-only"]
     planner --> executor["Codex executor · login stays on Mac"]
     executor --> vm["Mod Linux VM · edit and verify"]
     vm --> review["You · review the diff"]
-    review --> pr["GitHub PR · you confirm publication"]
+    review --> destination["GitHub repository · connect or create private if needed"]
+    destination --> pr["GitHub PR · you confirm publication"]
     pr --> cleanup["Delete VM and worktree · keep branch and history"]
 ```
 
@@ -73,12 +75,14 @@ Then open a terminal in the project you want to work on and run:
 sprowt-harness
 ```
 
-For Git projects, make an initial commit and sign in with `gh auth login` and `gh auth setup-git`. New mods start from committed `HEAD`; your local edits stay in the original checkout.
+Start in an empty folder, an existing project or a Git repository. If Git has no commits, review and confirm the starting files. The harness creates the initial commit, then a codemod worktree. Existing repositories use committed `HEAD`; local edits stay in your checkout.
 
-1. Describe your codemod and press **Enter**. Its worktree is created, then planning starts.
+Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth login` and `gh auth setup-git`.
+
+1. Describe your codemod and press **Enter**. Confirm Git setup if offered; its worktree is created, then planning starts.
 2. Review the numbered tasks. **Ctrl+O** shows files, checks and model details. Write follow-up instructions and press **Enter** to queue them.
 3. Press **Ctrl+R** to execute in the mod’s VM. The first run builds the sandbox image. Press it again to pause.
-4. **Ctrl+D** opens the diff. Press **p**, then **Enter** to publish a PR. Its VM and worktree are removed. Existing mods and non-Git folders use **a** to apply locally.
+4. **Ctrl+D** opens the diff. Press **p** to publish. If needed, connect a GitHub repository or create a private one; confirm the owner/name, then the PR. Publication removes the VM and worktree. Existing snapshot mods can use this flow too, including already-applied work; **a** still applies locally.
 5. **Ctrl+R** continues a published mod: describe the next change and review its fresh plan. In **Ctrl+P**, **c** closes a mod, **Tab** shows closed history and **d** deletes local data.
 
 **Ctrl+R** also stops or retries unfinished planning. Reopening restores state without starting workers. Unfinished host executions move to Linux on their next run. Use `--no-motion` to turn off animations.

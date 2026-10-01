@@ -49,6 +49,8 @@ impl GitMod {
 
 pub enum Result {
     Prepared,
+    Adopted,
+    RepositoryConnected,
     Snapshot,
     Reviewed(Review),
     Published,
@@ -115,6 +117,129 @@ pub fn project_root(project: &Path) -> Option<PathBuf> {
         .success()
         .then(|| PathBuf::from(String::from_utf8_lossy(&output.stdout).trim()))
         .and_then(|path| path.canonicalize().ok())
+}
+
+pub fn has_commit(project: &Path) -> bool {
+    workspace::trusted_git()
+        .arg("-C")
+        .arg(project)
+        .args(["rev-parse", "--verify", "HEAD^{commit}"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+pub fn has_origin(project: &Path) -> bool {
+    workspace::trusted_git()
+        .arg("-C")
+        .arg(project)
+        .args(["config", "--get", "remote.origin.url"])
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+pub fn initialize(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
+    let project_path = project.canonicalize()?;
+    if project_root(project).is_some_and(|repo| repo != project_path) {
+        return Err(io::Error::other(
+            "The project now belongs to a different repository. Reopen from its root.",
+        ));
+    }
+    if has_commit(project) {
+        return Ok(());
+    }
+    if !root.join("base.git").exists() {
+        return Err(io::Error::other(
+            "Review the starting files before Git setup.",
+        ));
+    }
+    if project_root(project).is_none() {
+        git(
+            root,
+            project,
+            &["init", "--initial-branch", "main"],
+            cancelled,
+        )?;
+    }
+    let index = root.join("initial-index");
+    let indexed = |args: &[&str]| -> io::Result<String> {
+        let mut command = safe_git(project)?;
+        command
+            .env("GIT_INDEX_FILE", &index)
+            .arg("-C")
+            .arg(project)
+            .args(args);
+        String::from_utf8(run(command, root, cancelled)?)
+            .map(|text| text.trim().to_owned())
+            .map_err(io::Error::other)
+    };
+    indexed(&["read-tree", "--empty"])?;
+    private(&index)?;
+    for (path, _, mode) in workspace::source_state(&root.join("before"))? {
+        let file = root.join("before").join(&path);
+        let hash = git(
+            root,
+            project,
+            &[
+                "hash-object",
+                "--no-filters",
+                "-w",
+                "--",
+                file.to_str().unwrap(),
+            ],
+            cancelled,
+        )?;
+        indexed(&[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            if mode & 0o111 != 0 {
+                "100755"
+            } else {
+                "100644"
+            },
+            &hash,
+            path.to_str().unwrap(),
+        ])?;
+    }
+    let tree = indexed(&["write-tree"])?;
+    let base = git(
+        root,
+        project,
+        &["commit-tree", &tree, "-m", "Initial project"],
+        cancelled,
+    )?;
+    let branch = git(root, project, &["symbolic-ref", "HEAD"], cancelled)?;
+    git(
+        root,
+        project,
+        &["update-ref", &branch, &base, ""],
+        cancelled,
+    )?;
+    git(root, project, &["read-tree", &base], cancelled)?;
+    fs::remove_file(index)?;
+    Ok(())
+}
+
+pub fn adopt(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
+    initialize(project, root, cancelled)?;
+    prepare(project, root, cancelled)?;
+    let baseline = workspace::fingerprint(&workspace::source_state(&root.join("before"))?)?;
+    if workspace::fingerprint(&workspace::source_state(&checkout(root))?)? != baseline {
+        return Err(io::Error::other(
+            "The repository baseline differs from this codemod's saved starting files. Work is retained.",
+        ));
+    }
+    fs::write(root.join("snapshot-ready"), b"ready")?;
+    if root.join("project-setup").exists() {
+        fs::remove_file(root.join("project-setup"))?;
+    }
+    Ok(())
+}
+
+pub fn setup_pending(root: &Path) -> Option<bool> {
+    fs::read_to_string(root.join("project-setup"))
+        .ok()
+        .map(|kind| kind == "saved")
 }
 
 pub fn checkout(root: &Path) -> PathBuf {
@@ -216,7 +341,7 @@ fn safe_git(path: &Path) -> io::Result<Command> {
             "^filter\\..*\\.(clean|smudge|process|required)$",
         ])
         .output()?;
-    let mut command = workspace::trusted_git();
+    let mut command = workspace::exact_git(path)?;
     command.args(["-c", "core.fsmonitor=false"]);
     for name in String::from_utf8_lossy(&filters.stdout).lines() {
         command.arg("-c").arg(format!(
@@ -532,6 +657,155 @@ fn gh(
         .map_err(io::Error::other)
 }
 
+#[derive(Clone, Deserialize, Serialize)]
+pub struct RepositoryRequest {
+    pub slug: String,
+    pub create: bool,
+}
+
+#[derive(Deserialize, Serialize)]
+struct RepositorySetup {
+    request: RepositoryRequest,
+    created: bool,
+    complete: bool,
+}
+
+pub fn repository_pending(root: &Path) -> Option<RepositoryRequest> {
+    let setup: RepositorySetup =
+        serde_json::from_slice(&fs::read(root.join("repository-setup.json")).ok()?).ok()?;
+    (!setup.complete).then_some(setup.request)
+}
+
+pub fn valid_slug(slug: &str) -> bool {
+    slug.split('/').count() == 2
+        && slug.split('/').all(|part| {
+            !part.is_empty()
+                && ![".", ".."].contains(&part)
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
+}
+
+pub fn connect_repository(
+    root: &Path,
+    request: RepositoryRequest,
+    program: &Path,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    if !valid_slug(&request.slug) {
+        return Err(io::Error::other(
+            "Use owner/repository, for example minimumeffort-dev/todo.",
+        ));
+    }
+    let state = load(root)?;
+    let checkpoint = root.join("repository-setup.json");
+    let mut setup: RepositorySetup = fs::read(&checkpoint)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .filter(|saved: &RepositorySetup| {
+            saved.request.slug == request.slug && saved.request.create == request.create
+        })
+        .unwrap_or(RepositorySetup {
+            request,
+            created: false,
+            complete: false,
+        });
+    let url = format!("https://github.com/{}.git", setup.request.slug);
+    if has_origin(&state.repo)
+        && git(
+            root,
+            &state.repo,
+            &["config", "--get", "remote.origin.url"],
+            cancelled,
+        )? != url
+    {
+        return Err(io::Error::other(
+            "This project already has a different origin remote. Work is retained.",
+        ));
+    }
+    fs::write(&checkpoint, serde_json::to_vec(&setup)?)?;
+    private(&checkpoint)?;
+    if setup.request.create && !setup.created {
+        gh(
+            root,
+            &state,
+            program,
+            &["repo", "create", &setup.request.slug, "--private"],
+            cancelled,
+        )
+        .map_err(|error| {
+            io::Error::other(format!(
+                "{error}\nIf the repository already exists, choose connect existing."
+            ))
+        })?;
+        setup.created = true;
+        fs::write(&checkpoint, serde_json::to_vec(&setup)?)?;
+    }
+    let repository: serde_json::Value = serde_json::from_str(&gh(
+        root,
+        &state,
+        program,
+        &[
+            "repo",
+            "view",
+            &setup.request.slug,
+            "--json",
+            "nameWithOwner,isEmpty,isPrivate,defaultBranchRef",
+        ],
+        cancelled,
+    )?)?;
+    if repository["nameWithOwner"]
+        .as_str()
+        .is_none_or(|name| !name.eq_ignore_ascii_case(&setup.request.slug))
+        || (setup.request.create && repository["isPrivate"] != true)
+    {
+        return Err(io::Error::other(
+            "GitHub did not confirm the requested repository and visibility.",
+        ));
+    }
+    let base = state.base_branch.as_deref().unwrap_or("main");
+    let destination = format!("{}:refs/heads/{base}", state.base);
+    let mut command = Command::new("git");
+    command
+        .stdin(Stdio::null())
+        .env_remove("GIT_DIR")
+        .env_remove("GIT_WORK_TREE")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .args(["-c", "core.hooksPath=/dev/null", "-C"])
+        .arg(&state.repo);
+    if repository["isEmpty"] == true {
+        command.args(["push", &url, &destination]);
+        run(command, root, cancelled)?;
+    } else {
+        command.args(["fetch", "--no-tags", &url, base]);
+        run(command, root, cancelled)?;
+        if git(
+            root,
+            &state.repo,
+            &["merge-base", &state.base, "FETCH_HEAD"],
+            cancelled,
+        )
+        .is_err()
+        {
+            return Err(io::Error::other(
+                "This repository has unrelated history. Clone it to a new folder or choose an empty repository. Saved work is retained.",
+            ));
+        }
+    }
+    if !has_origin(&state.repo) {
+        git(
+            root,
+            &state.repo,
+            &["remote", "add", "origin", &url],
+            cancelled,
+        )?;
+    }
+    setup.complete = true;
+    fs::write(&checkpoint, serde_json::to_vec(&setup)?)?;
+    Ok(())
+}
+
 pub fn publish(
     root: &Path,
     description: &str,
@@ -641,7 +915,7 @@ pub fn publish(
     let origin = git(
         root,
         &state.repo,
-        &["remote", "get-url", "origin"],
+        &["config", "--get", "remote.origin.url"],
         cancelled,
     )?;
     let slug = origin
@@ -649,15 +923,7 @@ pub fn publish(
         .or_else(|| origin.strip_prefix("git@github.com:"))
         .or_else(|| origin.strip_prefix("ssh://git@github.com/"))
         .map(|name| name.trim_end_matches(".git"))
-        .filter(|name| {
-            name.split('/').count() == 2
-                && name.split('/').all(|part| {
-                    !part.is_empty()
-                        && part
-                            .chars()
-                            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
-                })
-        })
+        .filter(|name| valid_slug(name))
         .ok_or_else(|| io::Error::other("PR publication needs a github.com origin remote."))?;
     let repository: serde_json::Value = serde_json::from_str(&gh(
         root,
@@ -910,6 +1176,12 @@ pub fn mark_closing(root: &Path, discard: bool, delete: bool) -> io::Result<()> 
     save(root, &state)
 }
 
+pub fn cancel_closing(root: &Path) -> io::Result<()> {
+    let mut state = load(root)?;
+    state.closing = false;
+    save(root, &state)
+}
+
 fn open_pr(
     root: &Path,
     state: &GitMod,
@@ -1083,6 +1355,17 @@ pub(crate) mod tests {
             &flag,
         )
         .unwrap();
+        git(
+            &root,
+            &repo,
+            &[
+                "config",
+                &format!("url.{}.insteadOf", bare.display()),
+                "https://github.com/fixture/project.git",
+            ],
+            &flag,
+        )
+        .unwrap();
         let program = data.0.join("fake-gh");
         let pr = data.0.join("pr-created");
         let failed = data.0.join("fail-once");
@@ -1094,7 +1377,15 @@ if [ -f '{state}' ]; then state=$(cat '{state}'); fi
 draft=false
 if [ -f '{draft}' ]; then draft=true; fi
 case "$1 $2" in
-  "repo view") printf '%s\n' '{{"nameWithOwner":"fixture/project","defaultBranchRef":{{"name":"main"}}}}' ;;
+  "repo create")
+    printf '%s\n' "$@" >> '{log}'
+    if [ -f '{repo_created}' ]; then exit 1; fi
+    touch '{repo_created}' ;;
+  "repo view")
+    if [ -f '{repo_view_fail}' ]; then rm '{repo_view_fail}'; exit 1; fi
+    empty=true
+    if git -C '{bare}' show-ref --quiet; then empty=false; fi
+    printf '{{"nameWithOwner":"fixture/project","isEmpty":%s,"isPrivate":true,"defaultBranchRef":{{"name":"main"}}}}\n' "$empty" ;;
   "pr list") if [ -f '{pr}' ]; then printf '[{{"url":"https://github.com/fixture/project/pull/1","headRefOid":"%s","state":"%s","isDraft":%s}}]\n' "$head" "$state" "$draft"; else printf '%s\n' '[]'; fi ;;
   "pr view") printf '{{"url":"https://github.com/fixture/project/pull/1","headRefOid":"%s","headRefName":"%s","state":"%s","isDraft":%s}}\n' "$head" "$branch" "$state" "$draft" ;;
   "pr ready")
@@ -1109,7 +1400,7 @@ case "$1 $2" in
     printf '%s\n' 'https://github.com/fixture/project/pull/1' ;;
   *) exit 1 ;;
 esac
-"#, pr=pr.display(), failed=failed.display(), log=data.0.join("gh-args").display(), checkout=checkout(&root).display(), repo=repo.display(), bare=bare.display(), state=data.0.join("pr-state").display(), draft=data.0.join("pr-draft").display(), ready_fail=data.0.join("ready-fail-once").display())).unwrap();
+"#, pr=pr.display(), failed=failed.display(), log=data.0.join("gh-args").display(), checkout=checkout(&root).display(), repo=repo.display(), bare=bare.display(), state=data.0.join("pr-state").display(), draft=data.0.join("pr-draft").display(), ready_fail=data.0.join("ready-fail-once").display(), repo_created=data.0.join("repo-created").display(), repo_view_fail=data.0.join("repo-view-fail").display())).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1123,6 +1414,127 @@ esac
         fs::write(root.join("work/a.txt"), "changed\n").unwrap();
         fs::write(root.join("work/new.txt"), "new\n").unwrap();
         fs::remove_file(root.join("work/delete.txt")).unwrap();
+    }
+
+    #[test]
+    fn private_repository_setup_recovers_and_publishes_only_the_baseline_to_main() {
+        let (data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        git(&root, &repo, &["remote", "remove", "origin"], &flag).unwrap();
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        let request = RepositoryRequest {
+            slug: "fixture/project".into(),
+            create: true,
+        };
+        fs::write(data.0.join("repo-view-fail"), "once").unwrap();
+        assert!(connect_repository(&root, request.clone(), &program, &flag).is_err());
+        assert!(repository_pending(&root).is_some() && !has_origin(&repo));
+        connect_repository(&root, request, &program, &flag).unwrap();
+        assert!(repository_pending(&root).is_none() && has_origin(&repo));
+        let log = fs::read_to_string(data.0.join("gh-args")).unwrap();
+        assert_eq!(log.lines().filter(|line| *line == "--private").count(), 1);
+        let bare = data.0.join("remote.git");
+        assert_eq!(
+            git(&root, &bare, &["rev-parse", "main"], &flag).unwrap(),
+            load(&root).unwrap().base
+        );
+        let pr = publish(&root, "A small change", false, &program, &flag).unwrap();
+        assert!(pr.ends_with("/pull/1"));
+        assert_eq!(
+            git(&root, &bare, &["show", "main:a.txt"], &flag).unwrap(),
+            "original"
+        );
+        cleanup(&root, &flag).unwrap();
+        assert!(!checkout(&root).exists());
+    }
+
+    #[test]
+    fn first_pr_from_existing_files_preserves_the_initial_source_bytes() {
+        let (data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        fs::remove_dir_all(repo.join(".git")).unwrap();
+        fs::write(repo.join(".gitattributes"), "*.txt text eol=lf\n").unwrap();
+        fs::write(repo.join("windows.txt"), "line\r\n").unwrap();
+        workspace::create(&repo, &root).unwrap();
+        adopt(&repo, &root, &flag).unwrap();
+        git(
+            &root,
+            &repo,
+            &[
+                "config",
+                &format!("url.{}.insteadOf", data.0.join("remote.git").display()),
+                "https://github.com/fixture/project.git",
+            ],
+            &flag,
+        )
+        .unwrap();
+        connect_repository(
+            &root,
+            RepositoryRequest {
+                slug: "fixture/project".into(),
+                create: false,
+            },
+            &program,
+            &flag,
+        )
+        .unwrap();
+        fs::write(root.join("work/a.txt"), "changed\n").unwrap();
+        publish(&root, "Update existing project", false, &program, &flag).unwrap();
+        assert_eq!(
+            fs::read(checkout(&root).join("windows.txt")).unwrap(),
+            b"line\r\n"
+        );
+        assert_eq!(
+            git(&root, &repo, &["show", "HEAD:a.txt"], &flag).unwrap(),
+            "original"
+        );
+        cleanup(&root, &flag).unwrap();
+    }
+
+    #[test]
+    fn connecting_unrelated_history_keeps_the_remote_and_saved_work_untouched() {
+        let (data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        git(&root, &repo, &["remote", "remove", "origin"], &flag).unwrap();
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        let bare = data.0.join("remote.git");
+        let tree = git(&root, &bare, &["mktree"], &flag).unwrap();
+        let head = git(
+            &root,
+            &bare,
+            &["commit-tree", &tree, "-m", "Unrelated project"],
+            &flag,
+        )
+        .unwrap();
+        git(
+            &root,
+            &bare,
+            &["update-ref", "refs/heads/main", &head],
+            &flag,
+        )
+        .unwrap();
+        let error = connect_repository(
+            &root,
+            RepositoryRequest {
+                slug: "fixture/project".into(),
+                create: false,
+            },
+            &program,
+            &flag,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("unrelated history"));
+        assert!(!has_origin(&repo));
+        assert_eq!(
+            git(&root, &bare, &["rev-parse", "main"], &flag).unwrap(),
+            head
+        );
+        assert_eq!(
+            fs::read_to_string(root.join("work/a.txt")).unwrap(),
+            "changed\n"
+        );
     }
 
     #[test]

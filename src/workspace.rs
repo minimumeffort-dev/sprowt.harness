@@ -55,6 +55,38 @@ pub fn source_state(root: &Path) -> io::Result<Snapshot> {
         .collect()
 }
 
+pub fn project_state(project: &Path, root: &Path) -> io::Result<Snapshot> {
+    let mut command = trusted_git();
+    if project.join(".git").exists() {
+        command.arg("-C").arg(project);
+    } else {
+        command
+            .arg("--git-dir")
+            .arg(root.join("base.git"))
+            .arg("--work-tree")
+            .arg(project);
+    }
+    let output = command
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .output()?;
+    checked(&output)?;
+    paths(&output.stdout)?
+        .into_iter()
+        .filter(|path| !excluded(path))
+        .filter_map(|path| match read_file(project, &path) {
+            Ok(Some(file)) => Some(Ok((path, file.bytes, file.mode))),
+            Ok(None) => None,
+            Err(error) => Some(Err(error)),
+        })
+        .collect()
+}
+
 impl Review {
     pub fn count(&self) -> usize {
         self.changes.len()
@@ -136,29 +168,6 @@ pub fn create(project: &Path, root: &Path) -> io::Result<()> {
     let result = (|| {
         fs::create_dir(root.join("before"))?;
         fs::create_dir(root.join("work"))?;
-        let paths = if project.join(".git").exists() {
-            let output = trusted_git()
-                .arg("-C")
-                .arg(project)
-                .args([
-                    "ls-files",
-                    "-z",
-                    "--cached",
-                    "--others",
-                    "--exclude-standard",
-                ])
-                .output()?;
-            checked(&output)?;
-            paths(&output.stdout)?
-        } else {
-            walk(project)?
-        };
-        for path in paths.into_iter().filter(|path| !excluded(path)) {
-            if let Some(file) = read_file(project, &path)? {
-                write_file(&root.join("before"), &path, Some(&file))?;
-                write_file(&root.join("work"), &path, Some(&file))?;
-            }
-        }
         checked(
             &trusted_git()
                 .args(["init", "--bare"])
@@ -169,6 +178,11 @@ pub fn create(project: &Path, root: &Path) -> io::Result<()> {
             root.join("base.git/info/exclude"),
             "node_modules/\ntarget/\n.venv/\nvenv/\n__pycache__/\n*.pyc\n.codex/\n.env*\n!.env.example\n!.env.sample\n.npmrc\n.netrc\n.pypirc\n.DS_Store\n",
         )?;
+        for (path, bytes, mode) in project_state(project, root)? {
+            let file = File { bytes, mode };
+            write_file(&root.join("before"), &path, Some(&file))?;
+            write_file(&root.join("work"), &path, Some(&file))?;
+        }
         run_git(root, &["add", "--force", "--all"])?;
         run_git(
             root,
@@ -192,7 +206,7 @@ pub fn review(root: &Path) -> io::Result<Review> {
     run_git(root, &["add", "--update"])?;
     for chunk in files.chunks(128) {
         checked(
-            &trusted_git()
+            &exact_git(&root.join("base.git"))?
                 .arg("--literal-pathspecs")
                 .arg("--git-dir")
                 .arg(root.join("base.git"))
@@ -457,8 +471,25 @@ pub(crate) fn trusted_git() -> Command {
     command
 }
 
+pub(crate) fn exact_git(path: &Path) -> io::Result<Command> {
+    let tree = trusted_git().arg("-C").arg(path).arg("mktree").output()?;
+    let mut command = trusted_git();
+    command
+        .args(["-c", "core.attributesFile=/dev/null"])
+        .env("GIT_ATTR_NOSYSTEM", "1");
+    if tree.status.success() {
+        command.arg(format!(
+            "--attr-source={}",
+            String::from_utf8(tree.stdout)
+                .map_err(io::Error::other)?
+                .trim()
+        ));
+    }
+    Ok(command)
+}
+
 fn run_git(root: &Path, args: &[&str]) -> io::Result<Vec<u8>> {
-    let output = trusted_git()
+    let output = exact_git(&root.join("base.git"))?
         .arg("--git-dir")
         .arg(root.join("base.git"))
         .arg("--work-tree")

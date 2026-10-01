@@ -30,11 +30,11 @@ Codex’s configured effort is used when available. When unset, the harness read
 
 Plans show task titles, outcomes and dependencies first. **Ctrl+O · show/hide plan details** sits beside the heading. It expands file scopes, completion checks and planner model details. Check commands appear in indented blocks; multiline code keeps its source indentation, and wrapped lines stay inside the block. Expanding keeps the heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
 
-Completed planner chatter stays saved but is hidden from the transcript. The plan shows task progress; details show check results. **Ctrl+D** opens a full-width diff. New Git mods use **p**, then **Enter** to publish verified changes as a PR; legacy and non-Git mods use **a** to apply locally. See [Plan execution](execution.md).
+Completed planner chatter stays saved but is hidden from the transcript. The plan shows task progress; details show check results. **Ctrl+D** opens a full-width diff. Use **p** to publish verified changes as a PR. Snapshot mods first offer Git adoption; **a** still applies them locally before adoption. See [Plan execution](execution.md).
 
-Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Pending cleanup shows **Ctrl+R · retry Git operation**; a published mod points to creating a new mod.
+Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Pending cleanup shows **Ctrl+R · retry Git operation**; a published mod offers **Ctrl+R · continue** on the same open PR.
 
-Codemod and queue dialogs share selection, spacing and keyboard hints. Hints adapt to the current view and terminal width. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
+Codemod, queue and project setup dialogs share spacing and keyboard hints. Git setup shows the starting file list. GitHub setup uses Tab to choose connect existing or create private, then confirms `owner/repository` before contacting GitHub. Hints adapt to the current view and terminal width. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
 
 ## Commands
 

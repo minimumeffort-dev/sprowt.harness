@@ -16,6 +16,9 @@ flowchart TB
 
 | Operation | Caller | Execution |
 | --- | --- | --- |
+| `initialize_project` | Harness | Create the confirmed initial commit and worktree |
+| `adopt_snapshot` | Harness | Attach saved starting files and verified work to Git |
+| `connect_repository` | Harness | Connect GitHub or create a confirmed private repository |
 | `create_worktree` | Harness | Git on the Mac |
 | `publish_pr` | Harness | Git and GitHub CLI on the Mac |
 | `continue_pr` | Harness | Check the open PR and restore its worktree |
@@ -24,7 +27,7 @@ flowchart TB
 
 Only package installation is advertised to Codex, using a JSON input schema. Unknown tools, host operations requested by workers and package requests from planners are rejected. Package names and reasons use the same validation for JSON and typed Rust calls. The connected VM must match the workspace bound to that worker.
 
-Publication requires confirmation and verified source. Closing can save unfinished work as a draft PR; discard requires its own selection. Continuation checks PR status and the saved commit. Git checkpoints own recovery. Credentials remain in host adapters.
+Initial Git setup and the GitHub destination require confirmation. Setup checks the reviewed file snapshot; adoption preserves the saved baseline. Repository setup validates owner/name, checks history and records progress for retries. Publication requires confirmation and verified source. Closing can save unfinished work as a draft PR; discard requires its own selection. Continuation checks PR status and the saved commit. Git checkpoints own recovery. Credentials remain in host adapters.
 
 ## Progress and activity
 

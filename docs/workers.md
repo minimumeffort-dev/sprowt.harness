@@ -33,7 +33,7 @@ Codex’s trusted app-server uses the host login and network for inference. Exec
 
 Worker labels show model and reasoning effort. An unset effort uses Codex’s model catalog default, sent explicitly with each new turn. Saved replies keep their own labels; missing historical effort is shown as unknown.
 
-- A new Git mod creates its branch and worktree, then starts its planner automatically. The planner and Laya read that committed source.
+- A new codemod confirms Git setup if needed, creates its branch and worktree, then starts its planner automatically. The planner and Laya read that committed source.
 - After planning, **Ctrl+R** starts or pauses execution. Rust selects tasks; queued instructions run between tasks. See [Plan execution](execution.md) for verification and publication.
 - Reopening restores saved state. **Ctrl+R** reconnects a worker to its saved Codex conversation.
 - Quitting interrupts turns and stops agent processes and active VMs. Publishing deletes the VM and worktree while retaining history. Continuing an open PR starts fresh worker conversations for its new plan. Closing keeps history and offers a draft PR or discard for unfinished Git work; deletion removes local data. Failed operations remain retryable with Ctrl+R. Legacy mods keep local apply.

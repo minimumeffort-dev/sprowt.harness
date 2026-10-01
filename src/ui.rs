@@ -47,6 +47,10 @@ pub fn continue_input() -> TextArea<'static> {
     field("continue working", "What should change in this PR?")
 }
 
+pub fn repository_input() -> TextArea<'static> {
+    field("GitHub repository", "owner/repository")
+}
+
 fn field(title: &'static str, placeholder: &'static str) -> TextArea<'static> {
     let mut input = TextArea::default();
     input.set_block(
@@ -77,7 +81,10 @@ pub fn draw(
     elapsed: Option<Duration>,
 ) -> Rect {
     let area = frame.area().inner(Margin::new(2, 1));
-    let mod_height = u16::from(!matches!(app.view, View::NewMod));
+    let mod_height = u16::from(!matches!(
+        app.view,
+        View::NewMod | View::ProjectSetup(false, _)
+    ));
     if area.width < 32 || area.height < 11 + mod_height {
         frame.render_widget(
             Paragraph::new("Make the terminal a little larger.\nCtrl+C to quit.")
@@ -220,7 +227,59 @@ pub fn draw(
         height: area.bottom().saturating_sub(mod_row.bottom() + gap),
         ..area
     };
-    if let View::Mods(index) = app.view {
+    if let View::ProjectSetup(saved, scroll) = app.view {
+        draw_project_setup(frame, app, saved, scroll, dialog_area);
+    } else if let View::Repository(create) = app.view {
+        let choices = Paragraph::new(vec![
+            Line::from(if create {
+                "○ connect existing   ◉ create private"
+            } else {
+                "◉ connect existing   ○ create private"
+            })
+            .fg(ACCENT),
+            Line::from("An empty repository gets the starting commit before the PR."),
+        ])
+        .wrap(Wrap { trim: false });
+        let rows = choices.line_count(dialog_area.width.saturating_sub(4));
+        let (body, _) = draw_dialog(
+            frame,
+            dialog_area,
+            "publish to GitHub",
+            rows + 4,
+            false,
+            &[("tab", "choose"), ("↵", "review"), ("esc", "back")],
+        );
+        let [choices_area, _, field] = Layout::vertical([
+            Constraint::Length(rows as u16),
+            Constraint::Length(1),
+            Constraint::Length(3),
+        ])
+        .areas(body);
+        frame.render_widget(choices, choices_area);
+        frame.render_widget(&app.input, field);
+    } else if let View::ConfirmRepository(create) = app.view {
+        let slug = app.input.lines().join("\n");
+        let text = Paragraph::new(format!(
+            "{} github.com/{}?\nThe starting commit is pushed if the repository is empty.",
+            if create {
+                "Create private repository"
+            } else {
+                "Connect to"
+            },
+            slug.trim()
+        ))
+        .wrap(Wrap { trim: false });
+        let rows = text.line_count(dialog_area.width.saturating_sub(4));
+        let (body, _) = draw_dialog(
+            frame,
+            dialog_area,
+            "confirm repository",
+            rows,
+            false,
+            &[("↵", "confirm"), ("esc", "back")],
+        );
+        frame.render_widget(text, body);
+    } else if let View::Mods(index) = app.view {
         draw_mod_picker(frame, app, index, dialog_area);
     } else if let View::DeleteMod(index) = app.view {
         draw_delete_mod(frame, app, index, dialog_area);
@@ -238,9 +297,9 @@ pub fn draw(
                 ..dialog_area
             },
         );
-    } else if matches!(app.view, View::Apply) {
+    } else if matches!(app.view, View::Apply | View::Publish) {
         let count = app.review.as_ref().map_or(0, |review| review.count());
-        let publishing = app.current_mod().is_some_and(|m| m.git_root.is_some());
+        let publishing = matches!(app.view, View::Publish);
         let text = Paragraph::new(if publishing {
             format!("Publish {count} changed files {}?\nThe branch is pushed; the VM and worktree are then deleted.", if app.git_state().is_some_and(|s| s.pr.is_some()) { "to the existing PR" } else { "as a PR" })
         } else { format!("Apply changes to {count} files in this project?\nFiles changed since the snapshot will block applying.") }).wrap(Wrap {trim:false});
@@ -612,11 +671,11 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     app.view = View::Review(scroll);
     frame.render_widget(body.scroll((scroll, 0)), panel);
     frame.render_widget(
-        Line::from(if app.can_apply() {
-            if app.current_mod().is_some_and(|m| m.git_root.is_some()) {
+        Line::from(if app.can_publish() {
+            if app.current_mod().is_some_and(|m| m.git_root.is_some()) || !app.can_apply() {
                 "↑↓ scroll  fn+↑/↓ page  p publish PR  esc back"
             } else {
-                "↑↓ scroll  fn+↑/↓ page  a apply  esc back"
+                "↑↓ scroll  p publish PR  a apply locally  esc back"
             }
         } else {
             "↑↓ scroll  fn+↑/↓ page  esc back"
@@ -624,6 +683,46 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
         .fg(KEY_HINT),
         footer,
     );
+}
+
+fn draw_project_setup(frame: &mut Frame, app: &mut App, saved: bool, scroll: u16, area: Rect) {
+    let mut lines = vec![
+        Line::from(if saved {
+            "Use the saved starting files as the Git baseline; keep the finished work."
+        } else {
+            "Create the initial Git commit from these starting files."
+        }),
+        Line::default(),
+    ];
+    if app.setup_files.is_empty() {
+        lines.push(Line::from("Empty starting point · create an empty commit").fg(KEY_HINT));
+    } else {
+        lines.extend(
+            app.setup_files
+                .iter()
+                .map(|path| Line::from(format!("  {path}"))),
+        );
+    }
+    let text = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let rows = text.line_count(area.width.saturating_sub(4));
+    let (body, _) = draw_dialog(
+        frame,
+        area,
+        "set up Git",
+        rows,
+        false,
+        &[
+            ("↑↓", "files"),
+            ("↵", if saved { "adopt" } else { "set up + plan" }),
+            ("esc", "back"),
+        ],
+    );
+    let scroll = scroll.min(
+        rows.saturating_sub(body.height as usize)
+            .min(u16::MAX as usize) as u16,
+    );
+    app.view = View::ProjectSetup(saved, scroll);
+    frame.render_widget(text.scroll((scroll, 0)), body);
 }
 
 fn dialog_selection() -> Style {
