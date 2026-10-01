@@ -1,6 +1,6 @@
 # Planning and Laya
 
-Creating a code mod starts planning from its description. You can describe the whole change immediately.
+Creating a code mod starts planning from its description. New Git mods first create a worktree from committed `HEAD`; Laya and the planner inspect that source. You can describe the whole change immediately.
 
 ```mermaid
 flowchart TB

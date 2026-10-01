@@ -107,21 +107,38 @@ pub fn draw(
                 .map(|path| format!("~/{}", path.display()))
         })
         .unwrap_or_else(|| app.project.display().to_string());
-    let status = app.current_worker().map_or_else(
-        || {
-            app.current_mod()
-                .and_then(|code_mod| code_mod.planning.as_ref())
-                .filter(|planning| planning.status != "ready")
-                .map_or(String::new(), |_| "▤ planning paused".into())
-        },
-        |worker| {
-            if worker.status == Status::Complete {
-                String::new()
-            } else {
-                worker.label(worker.busy().then(|| activity_glyph(elapsed)))
+    let status = app
+        .git_activity()
+        .map(|activity| format!("{} {activity}", activity_glyph(elapsed)))
+        .unwrap_or_else(|| {
+            if let Some(state) = app.git_state() {
+                if state.pr.is_some() {
+                    return if state.phase == "cleaned" {
+                        "◇ PR ready".into()
+                    } else {
+                        "◇ PR saved · cleanup pending".into()
+                    };
+                }
+                if app.git_retry_pending() {
+                    return "◇ Git operation paused · ctrl+r retry".into();
+                }
             }
-        },
-    );
+            app.current_worker().map_or_else(
+                || {
+                    app.current_mod()
+                        .and_then(|code_mod| code_mod.planning.as_ref())
+                        .filter(|planning| planning.status != "ready")
+                        .map_or(String::new(), |_| "▤ planning paused".into())
+                },
+                |worker| {
+                    if worker.status == Status::Complete {
+                        String::new()
+                    } else {
+                        worker.label(worker.busy().then(|| activity_glyph(elapsed)))
+                    }
+                },
+            )
+        });
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec!["sprowt".fg(ACCENT).bold(), " harness".bold()]),
@@ -200,15 +217,25 @@ pub fn draw(
         );
     } else if matches!(app.view, View::Apply) {
         let count = app.review.as_ref().map_or(0, |review| review.count());
-        let text = Paragraph::new(format!("Apply changes to {count} files in this project?\nFiles changed since the snapshot will block applying.")).wrap(Wrap {trim:false});
+        let publishing = app.current_mod().is_some_and(|m| m.git_root.is_some());
+        let text = Paragraph::new(if publishing {
+            format!("Publish {count} changed files as a PR?\nThe mod branch is pushed; its VM is deleted after publication.")
+        } else { format!("Apply changes to {count} files in this project?\nFiles changed since the snapshot will block applying.") }).wrap(Wrap {trim:false});
         let rows = text.line_count(dialog_area.width.saturating_sub(4));
         let (body, _) = draw_dialog(
             frame,
             dialog_area,
-            "apply changes?",
+            if publishing {
+                "create pull request?"
+            } else {
+                "apply changes?"
+            },
             rows,
             false,
-            &[("↵", "apply"), ("esc", "cancel")],
+            &[
+                ("↵", if publishing { "publish" } else { "apply" }),
+                ("esc", "cancel"),
+            ],
         );
         frame.render_widget(text, body);
     } else {
@@ -419,7 +446,9 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
 
 fn draw_delete_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     let code_mod = &app.mods[index];
-    let removal = if code_mod.execution.is_some() {
+    let removal = if code_mod.git_root.is_some() {
+        "Saves unfinished source in a draft PR, then deletes the VM, worktree and local history."
+    } else if code_mod.execution.is_some() {
         "Stops workers; deletes history, the VM and working folder."
     } else if app.has_worker(code_mod.id) {
         "Stops worker; removes history, queue and draft."
@@ -494,7 +523,11 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     frame.render_widget(body.scroll((scroll, 0)), panel);
     frame.render_widget(
         Line::from(if app.can_apply() {
-            "↑↓ scroll  fn+↑/↓ page  a apply  esc back"
+            if app.current_mod().is_some_and(|m| m.git_root.is_some()) {
+                "↑↓ scroll  fn+↑/↓ page  p create PR  esc back"
+            } else {
+                "↑↓ scroll  fn+↑/↓ page  a apply  esc back"
+            }
         } else {
             "↑↓ scroll  fn+↑/↓ page  esc back"
         })
@@ -585,7 +618,13 @@ fn fit_name(name: &str, width: u16) -> String {
 fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     let queued = app.current_mod().is_some_and(|m| !m.queue.is_empty());
     let worker = app.current_worker();
-    let run = if app
+    let run = if app.git_activity().is_some() {
+        None
+    } else if app.git_retry_pending() {
+        Some("retry Git operation")
+    } else if app.published() {
+        None
+    } else if app
         .current_mod()
         .and_then(|m| m.execution.as_ref())
         .is_some_and(|execution| execution.vm_cleanup_pending())
@@ -631,7 +670,11 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
             "pgup/pgdn scroll".into()
         });
     }
-    let mut hints = "↵ queue".to_owned();
+    let mut hints = if app.published() {
+        format!("{ctrl}p new mod")
+    } else {
+        "↵ queue".to_owned()
+    };
     for option in options {
         let candidate = format!("{hints}  {option}");
         if Span::raw(&candidate).width() + "  esc quit".len() <= width as usize {
@@ -723,6 +766,7 @@ fn plan_lines(
     details: bool,
     width: u16,
     activity: Option<&'static str>,
+    git_mod: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
         Line::from("▤ codex · planner").fg(ACCENT).bold(),
@@ -740,6 +784,7 @@ fn plan_lines(
                 "{} · {}/{} tasks done",
                 match execution.status.as_str() {
                     "review" => "changes ready",
+                    "applied" if git_mod => "PR created",
                     "applied" => "changes applied",
                     "blocked" => "execution paused",
                     "verifying" => "final checks",
@@ -899,9 +944,17 @@ fn plan_lines(
     lines.push(
         Line::from(
             if execution.is_some_and(|execution| execution.vm_cleanup_pending()) {
-                "changes applied · VM cleanup pending"
+                if git_mod {
+                    "PR saved · VM cleanup pending"
+                } else {
+                    "changes applied · VM cleanup pending"
+                }
             } else if execution.is_some_and(|execution| execution.status == "applied") {
-                "changes applied to the project"
+                if git_mod {
+                    "changes saved in the mod's PR"
+                } else {
+                    "changes applied to the project"
+                }
             } else {
                 "execution stays in the mod's Linux VM"
             },
@@ -951,6 +1004,7 @@ fn conversation_blocks<'a>(
                         details,
                         width,
                         activity,
+                        code_mod.git_root.is_some(),
                     )
                     .into(),
                     user: false,
@@ -967,7 +1021,9 @@ fn conversation_blocks<'a>(
                     0,
                     Line::from(format!(
                         "{}{}{}",
-                        if message.role == "planner" {
+                        if message.role == "harness" {
+                            "◇ sprowt"
+                        } else if message.role == "planner" {
                             "▤ codex · planner"
                         } else {
                             "◆ codex · executor"

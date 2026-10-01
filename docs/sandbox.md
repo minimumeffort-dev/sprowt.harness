@@ -27,17 +27,19 @@ Both VM connections use standard input/output. The harness reruns checks in the 
 
 ## Source files
 
-Files move in one direction: copy, work, review, apply. The VM gets a copy of your source; the original project stays on the Mac.
+Files move in one direction: worktree, copy, review, PR. The VM gets source files; the original checkout and Git metadata stay on the Mac.
 
 ```mermaid
 flowchart TB
-    source["1. Your project<br/>Mac · original source"]
+    source["1. Mod worktree<br/>Mac · committed source on its own branch"]
     workspace["2. /workspace<br/>Linux VM · code and dependencies"]
     review["3. Diff and check results<br/>Mac · review with Ctrl+D"]
-    applied["4. Your project<br/>Mac · reviewed changes applied"]
+    published["4. GitHub PR<br/>Commit and push reviewed source"]
+    cleaned["5. Cleanup<br/>Delete VM and worktree; retain branch and history"]
     source -->|"Copy source into the VM"| workspace
     workspace -->|"Export source only"| review
-    review -->|"Checks pass and you confirm apply"| applied
+    review -->|"Checks pass; p, then Enter"| published
+    published -->|"PR URL saved"| cleaned
 ```
 
 ## Use it
@@ -50,7 +52,7 @@ container system start --enable-kernel-install
 codex -c 'cli_auth_credentials_store="file"' login
 ```
 
-Create a mod, review its plan and press **Ctrl+R**. The first execution builds the shared development image; later runs reuse it. The terminal shows setup progress. **Ctrl+D** keeps the same diff and apply workflow.
+Create a mod, review its plan and press **Ctrl+R**. The first execution builds the shared development image; later runs reuse it. **Ctrl+D** opens the diff. New Git mods publish PRs; existing mods and non-Git folders keep local apply. See [Worktrees and PRs](git-workflow.md).
 
 The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Codex reads your manifests, installs a compatible runtime under `/home/sprowt`, then installs project dependencies under `/workspace`.
 
@@ -82,7 +84,7 @@ Existing mods keep their VM, runtime, source and transcript. Their first run aft
 - Codex’s guest sandbox keeps system files read-only for normal worker commands and forces network traffic through its domain proxy. The harness’s package installer uses a separate writable setup command in the VM. Direct connections and private network destinations are blocked. Guest loopback is available for local app checks.
 - Source exports preserve regular files, modes and deletions. Dependency folders and common credential files are excluded. Links and special files are rejected. Exports are limited to 512 MiB, with 64 MiB per source file.
 
-The planner still inspects the project through a read-only host OS sandbox. Host MCPs, apps, plugins and hooks stay disabled. VM execution currently needs a file-backed ChatGPT login; Keychain-only login is not supported by this connection.
+The planner inspects the mod worktree through a read-only host OS sandbox. Legacy mods inspect the project. Host MCPs, apps, plugins and hooks stay disabled. VM execution needs a file-backed ChatGPT login; Keychain-only login is unsupported.
 
 ## Downloads
 
@@ -113,12 +115,13 @@ It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomain
 | --- | --- |
 | Running | Running; reused across tasks |
 | Paused or awaiting review | Retained with its runtime and dependencies |
-| Successfully applied | Deleted; history and source exports stay on the Mac |
-| Mod deleted | Deleted along with its host workspace and history |
+| PR published or local apply complete | Deleted; history and source exports stay on the Mac |
+| Git mod removed with changes | Draft PR saved, then VM and local workspace removed |
+| Empty or legacy mod removed | Deleted with its local workspace and history |
 
 Quitting stops VMs and retains unfinished mods’ disks. Reopening and **Ctrl+R** reconnect without losing dependencies. Reconnecting clears guest processes left by a crash. Shared images and the container service remain for reuse.
 
-VM deletion happens after files are applied and the applied state is saved. If cleanup fails, the project keeps the changes. The VM marker stays until deletion succeeds; **Ctrl+R** retries cleanup, including after reopening. A failed or cancelled apply keeps the VM.
+Git mods delete their VM and host worktree after saving the PR URL. Their published branch remains. Failed publication keeps the source and VM; failed cleanup keeps the PR and offers **Ctrl+R** to retry. Local apply saves its applied state before deleting the VM and offers the same cleanup recovery. Removing a Git mod exports current guest files before publishing unfinished work as a draft PR.
 
 Unfinished mods created before VM support keep their working files. Their first explicit run starts a fresh executor conversation and reruns tasks in Linux; old host check results are cleared. Applied mods remain applied. A missing or altered VM blocks reconnection and preserves the last exported source for review.
 

@@ -15,6 +15,7 @@ pub struct CodeMod {
     pub description: String,
     pub planning: Option<Planning>,
     pub execution: Option<Execution>,
+    pub git_root: Option<std::path::PathBuf>,
     pub draft: String,
     pub messages: Vec<Message>,
     pub queue: Vec<QueuedMessage>,
@@ -195,6 +196,13 @@ impl Store {
             status TEXT NOT NULL DEFAULT 'pending', attempt INTEGER NOT NULL DEFAULT 1, source TEXT NOT NULL UNIQUE,
             turn_id TEXT, summary TEXT NOT NULL DEFAULT '', checks TEXT NOT NULL DEFAULT '[]', UNIQUE(mod_id,task_id)
         );").map_err(io::Error::other)?;
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS mod_worktrees (
+            mod_id INTEGER PRIMARY KEY REFERENCES code_mods(id), workspace TEXT NOT NULL
+        );",
+            )
+            .map_err(io::Error::other)?;
         let columns = connection
             .prepare("PRAGMA table_info(executions)")
             .map_err(io::Error::other)?
@@ -245,6 +253,7 @@ impl Store {
                     description: row.get(3)?,
                     planning: None,
                     execution: None,
+                    git_root: None,
                     draft: row.get(2)?,
                     messages: Vec::new(),
                     queue: Vec::new(),
@@ -255,6 +264,7 @@ impl Store {
         for code_mod in &mut mods {
             code_mod.planning = self.planning(code_mod.id)?;
             code_mod.execution = self.execution(code_mod.id)?;
+            code_mod.git_root = self.git_root(code_mod.id)?;
             let mut statement = self.0.prepare(
                 "SELECT item_id, role, body, model, effort FROM messages WHERE mod_id = ?1 ORDER BY id",
             )?;
@@ -352,6 +362,7 @@ impl Store {
             description: name.to_owned(),
             planning: self.planning(id)?,
             execution: None,
+            git_root: None,
             draft: String::new(),
             messages: if planned { vec![message] } else { Vec::new() },
             queue: Vec::new(),
@@ -401,6 +412,7 @@ impl Store {
             "messages",
             "workers",
             "plans",
+            "mod_worktrees",
         ] {
             transaction.execute(&format!("DELETE FROM {table} WHERE mod_id = ?1"), [mod_id])?;
         }
@@ -417,6 +429,25 @@ impl Store {
         self.0.execute(
             "UPDATE code_mods SET draft = ?1 WHERE id = ?2",
             params![draft, mod_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn git_root(&self, mod_id: i64) -> Result<Option<std::path::PathBuf>> {
+        self.0
+            .query_row(
+                "SELECT workspace FROM mod_worktrees WHERE mod_id=?1",
+                [mod_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map(|path| path.map(Into::into))
+    }
+
+    pub fn save_git_root(&self, mod_id: i64, root: &Path) -> Result<()> {
+        self.0.execute(
+            "INSERT INTO mod_worktrees(mod_id,workspace) VALUES (?1,?2)",
+            params![mod_id, root.to_string_lossy()],
         )?;
         Ok(())
     }

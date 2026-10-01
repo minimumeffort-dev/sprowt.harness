@@ -4,7 +4,7 @@ A plan becomes code when you press **Ctrl+R**. One Codex executor runs tasks in 
 
 ```mermaid
 flowchart TB
-    plan["Saved plan"] --> start["Ctrl+R · snapshot the project"]
+    plan["Saved plan"] --> start["Ctrl+R · copy the mod worktree"]
     start --> vm["Create or reconnect the mod’s Linux VM"]
     vm --> choose["Rust · choose a task whose dependencies are done"]
     choose --> worker["Codex · prepare runtime, edit and test in Linux"]
@@ -13,18 +13,20 @@ flowchart TB
     checks -->|"failure or interruption"| paused["Keep files and progress · explicit retry"]
     checks -->|"all tasks done"| final["Rerun all task checks together"]
     final -->|"pass"| review["Ctrl+D · review the diff"]
-    review --> confirm["a, then Enter · confirm apply"]
-    confirm --> project["Apply reviewed files to your project"]
-    project --> cleanup["Delete the mod’s VM · keep history and source exports"]
+    review --> confirm["p, then Enter · confirm publication"]
+    confirm --> pr["Commit and push mod branch · create PR"]
+    pr --> cleanup["Delete VM and worktree · keep branch and history"]
 ```
 
 ## Working folder
 
-The first run snapshots your current files, including uncommitted and untracked code. In Git projects, ignored files are left out. Every mod gets its own folder outside the project, with separate copies of files and private Git metadata for the diff. New source files stay visible in review even if a generated `.gitignore` rule would hide them.
+New Git mods start from committed `HEAD` in a separate host worktree. The planner reads that worktree; the first execution copies its source into the VM. Your original checkout’s uncommitted and untracked files stay there.
+
+Existing mods and non-Git projects retain snapshots of current files, including uncommitted and untracked code. Ignored files are left out in Git projects. Every mod has a private folder outside the project with starting files, source exports and diff metadata. New source files stay visible even if a generated `.gitignore` would hide them.
 
 Common credential files, including `.env` and `.npmrc`, are excluded. `.env.example` and `.env.sample` are included. Installed dependencies and build caches are excluded too. Other secrets in source files are still source files; keep them out of the project.
 
-The source snapshot is copied into `/workspace` inside the mod’s VM. The host’s `work/` folder holds exported source for diff review; it is not mounted into the guest. Runtime installs and dependencies persist until apply or mod deletion removes the VM. See [Local Linux sandbox](sandbox.md) for setup, download policy and lifecycle.
+The source snapshot is copied into `/workspace` inside the mod’s VM. The host’s `work/` folder holds exported source for diff review; it is not mounted into the guest. Host Git metadata stays on the Mac. Runtime installs and dependencies persist until PR publication, local apply or mod deletion removes the VM. See [Local Linux sandbox](sandbox.md).
 
 The executor cannot access the original project, harness state, host Codex credentials or Keychain. The planner remains read-only. See [Workers](workers.md) for the boundary.
 
@@ -44,7 +46,13 @@ The plan shows task status. A dot spinner marks the running task and stays activ
 
 Reopening restores progress without starting workers. On reconnect, confirmed completed turns are verified without asking Codex to repeat the edits. Unconfirmed delivery pauses for explicit retry. Failed final checks can be rerun without regenerating completed tasks. Older executor conversations restart once to gain the system-package tool, keeping their VM, saved transcript and task progress.
 
-## Review and apply
+## Review and publish
+
+**Ctrl+D** opens the diff when execution is idle. After all tasks and final checks pass, press **p**, then **Enter** to create a PR. Esc cancels. Source must match the verified result; outside edits to the worktree block publication.
+
+The harness exports reviewed files, commits the mod branch, pushes it and creates a PR. It saves the URL before removing the VM and worktree. **Ctrl+R** retries interrupted publication or cleanup. See [Worktrees and PRs](git-workflow.md) for requirements and draft PRs on removal.
+
+## Local apply · existing mods and non-Git projects
 
 1. **Ctrl+D** opens the diff when execution is idle. You can inspect partial work, but apply is available only after all tasks and final checks pass.
 2. Use **↑ / ↓** or **Fn + ↑ / ↓** to scroll. **Esc** returns to the conversation.
@@ -58,7 +66,7 @@ After applying, the harness stops the executor and deletes the mod’s VM, inclu
 
 If VM cleanup fails, changes stay applied. **Ctrl+R** retries cleanup; the pending state survives reopening. Older applied mods with retained VMs offer the same cleanup action. Cleanup finishes before Ctrl+R can start read-only follow-up questions against the project.
 
-Start a new mod for further code changes. Deleting a mod removes its history and working folder, including unapplied work.
+Start a new mod for further code changes. Removing a legacy or non-Git mod deletes its history and unapplied work.
 
 ## Current limits
 

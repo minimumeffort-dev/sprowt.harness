@@ -7,7 +7,7 @@ flowchart TB
     harness["Rust harness"] <-->|"local JSON-RPC"| codex["Codex app-server"]
     login["Existing ChatGPT login"] -->|"authentication"| codex
     codex <-->|"model requests / responses"| models["OpenAI models · internet"]
-    codex -->|"planner reads · OS sandbox"| project["Project source and docs"]
+    codex -->|"planner reads · OS sandbox"| project["Mod worktree · source and docs"]
     codex <-->|"executor tools · stdio"| guest["Codex exec-server · Linux VM"]
     harness -->|"independent checks"| guest
     guest <-->|"runtime setup / edits / tests"| work["/workspace · isolated project copy"]
@@ -33,10 +33,10 @@ Codex’s trusted app-server uses the host login and network for inference. Exec
 
 Worker labels show model and reasoning effort. An unset effort uses Codex’s model catalog default, sent explicitly with each new turn. Saved replies keep their own labels; missing historical effort is shown as unknown.
 
-- A new mod starts its planner automatically.
-- After planning, **Ctrl+R** starts or pauses plan execution. Rust selects tasks; queued instructions run between tasks. See [Plan execution](execution.md) for verification and applying changes.
+- A new Git mod creates its branch and worktree, then starts its planner automatically. The planner and Laya read that committed source.
+- After planning, **Ctrl+R** starts or pauses execution. Rust selects tasks; queued instructions run between tasks. See [Plan execution](execution.md) for verification and publication.
 - Reopening restores saved state. **Ctrl+R** reconnects a worker to its saved Codex conversation.
-- Quitting interrupts turns and stops agent processes and active VMs. Applying deletes the mod’s VM and keeps its history; deleting the mod removes its workspace and history too. Failed VM cleanup stays retryable with Ctrl+R.
+- Quitting interrupts turns and stops agent processes and active VMs. PR publication deletes the VM and worktree while retaining history. Removal preserves unfinished Git source in a draft PR before cleanup. Publication and cleanup failures remain retryable with Ctrl+R. Legacy mods keep local apply.
 
 The live status shows the model and configured reasoning effort reported by Codex and spins while work is in progress. Replies keep both labels when reopened. Laya still routes only the planner; the executor uses Codex’s resolved conversation settings. Unreported values stay omitted.
 

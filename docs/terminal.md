@@ -30,7 +30,9 @@ Codex’s configured effort is used when available. When unset, the harness read
 
 Plans show task titles, outcomes and dependencies first. **Ctrl+O · show/hide plan details** sits beside the heading. It expands file scopes, completion checks and planner model details. Check commands appear in indented blocks; multiline code keeps its source indentation, and wrapped lines stay inside the block. Expanding keeps the heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
 
-Completed planner chatter stays saved but is hidden from the transcript. During execution, the plan shows task status and a count of completed tasks. Check results appear in details. **Ctrl+D** opens a full-width diff when execution is idle; **a**, then **Enter** confirms applying verified changes. See [Plan execution](execution.md).
+Completed planner chatter stays saved but is hidden from the transcript. The plan shows task progress; details show check results. **Ctrl+D** opens a full-width diff. New Git mods use **p**, then **Enter** to publish verified changes as a PR; legacy and non-Git mods use **a** to apply locally. See [Plan execution](execution.md).
+
+Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Pending cleanup shows **Ctrl+R · retry Git operation**; a published mod points to creating a new mod.
 
 Code mod and queue dialogs share selection, spacing and keyboard hints. Hints adapt to the current view and terminal width. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
 
@@ -52,7 +54,7 @@ Code mod and queue dialogs share selection, spacing and keyboard hints. Hints ad
 | Ctrl+J | Add a newline |
 | Ctrl+P | Switch, create or delete a code mod |
 | Ctrl+Q | Manage queued instructions |
-| Ctrl+R | Start, stop or retry; retry pending VM cleanup after apply |
+| Ctrl+R | Start, stop or retry; recover publication or cleanup |
 | Ctrl+O | Show or hide saved plan details |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |

@@ -12,15 +12,16 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 
 - [Code mods and messages](docs/code-mods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
-- [Plan execution](docs/execution.md): one executor follows task dependencies. Verify, review the diff, then apply.
-- [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex chooses runtimes and dependencies; the harness installs requested OS packages. Applying changes deletes the VM and keeps the mod’s history.
+- [Worktrees and PRs](docs/git-workflow.md): each new Git mod gets its own branch. Review verified changes, publish a PR, then remove its VM and worktree.
+- [Plan execution](docs/execution.md): one executor follows task dependencies and checks the combined result.
+- [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
 - [Terminal and companion](docs/terminal.md): model and effort labels, dot spinners for active workers and tasks, readable plans and the animated Sprowt pet.
 
 ### Current limits
 
-The planner uses a read-only host sandbox. Execution uses a Linux VM; applying changes needs your confirmation. Downloads use a host-controlled domain allowlist. iOS and macOS builds need a later macOS VM backend.
+The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publication needs your confirmation. Downloads use a host-controlled domain allowlist. iOS and macOS builds need a later macOS VM backend. Existing mods and non-Git folders keep local apply.
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
@@ -30,20 +31,17 @@ Rust owns the interface, task scheduling, worker lifecycle and saved state. A sm
 
 ```mermaid
 flowchart TB
-    terminal["You · terminal CLI"] <-->|"instructions / progress"| harness["Rust harness"]
-    harness <-->|"save / restore"| state[("SQLite · plans and task progress")]
-    harness <-->|"model recommendation"| laya["Local Laya"]
-    harness --> planner["Codex planner · read-only"]
-    planner -->|"inspect"| project["Your project"]
-    harness --> executor["Codex agent · login stays on Mac"]
-    project -->|"source snapshot"| vm["Apple Container · Linux VM per mod"]
-    executor <-->|"native command and file tools"| vm
-    harness -->|"OS package setup and independent checks"| vm
-    vm -->|"export source"| review["Diff and check results"]
-    review -->|"you confirm apply"| project
+    goal["You · describe a mod"] --> harness["Rust harness · UI, state and scheduling"]
+    harness --> worktree["Git branch + worktree · committed source"]
+    worktree --> planner["Laya routes · Codex plans read-only"]
+    planner --> executor["Codex executor · login stays on Mac"]
+    executor --> vm["Mod Linux VM · edit and verify"]
+    vm --> review["You · review the diff"]
+    review --> pr["GitHub PR · you confirm publication"]
+    pr --> cleanup["Delete VM and worktree · keep branch and history"]
 ```
 
-Laya recommends the planner configuration. Codex inference uses your subscription and the internet. Codex installs project runtimes and dependencies inside the VM. For OS packages, it sends names and a reason to a harness-owned setup tool; Rust installs from signed Debian repositories. Normal commands keep their sandbox restrictions. Tasks run sequentially within a mod; different mods can run in parallel. Applying changes deletes that mod’s VM; history and source exports stay on the Mac. Muse follows later.
+Laya recommends the planner configuration. Codex uses your subscription and installs project dependencies in the VM. Rust installs requested OS packages and reruns checks independently. Tasks run sequentially within a mod; different mods can run in parallel. Git and GitHub operations stay on the Mac and run in the background. Muse follows later.
 
 ## Get started
 
@@ -72,10 +70,12 @@ Then open a terminal in the project you want to work on and run:
 sprowt-harness
 ```
 
-1. Describe your code mod and press **Enter**. Planning starts automatically.
+For Git projects, make an initial commit and sign in with `gh auth login` and `gh auth setup-git`. New mods start from committed `HEAD`; your local edits stay in the original checkout.
+
+1. Describe your code mod and press **Enter**. Its worktree is created, then planning starts.
 2. Review the numbered tasks. **Ctrl+O** shows files, checks and model details. Write follow-up instructions and press **Enter** to queue them.
 3. Press **Ctrl+R** to execute in the mod’s VM. The first run builds the sandbox image. Press it again to pause.
-4. When changes are ready, **Ctrl+D** opens the diff. Press **a**, then **Enter** to apply.
+4. When changes are ready, **Ctrl+D** opens the diff. Press **p**, then **Enter** to create a PR. Its VM and worktree are removed after publication. Existing mods and non-Git folders use **a** to apply locally.
 
 **Ctrl+R** also stops or retries unfinished planning. Reopening restores state without starting workers. Unfinished host executions move to Linux on their next run. Use `--no-motion` to turn off animations.
 
@@ -97,7 +97,7 @@ This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to 
 | Ctrl+J | Newline |
 | Ctrl+P | Open code mods; switch or create one |
 | Ctrl+Q | Open the queue |
-| Ctrl+R | Run, stop or retry; retry pending VM cleanup after apply |
+| Ctrl+R | Run, stop or retry; recover pending publication or cleanup |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
@@ -108,7 +108,7 @@ Dialog actions and steering are covered in [Code mods and messages](docs/code-mo
 
 ## Local data
 
-Mods, plans, task progress, check results, conversations, queues and drafts save automatically in SQLite. Working folders live beside the database. On macOS:
+Mods, plans, task progress, check results, conversations, queues and drafts save automatically in SQLite. Worktrees and source exports live beside the database. On macOS:
 
 ```text
 ~/Library/Application Support/sprowt-harness/state.db
@@ -118,7 +118,7 @@ Reopen from the same project root to restore them. Credentials stay with Codex. 
 
 ## What’s next
 
-Multiple Codex/Muse executors per mod. Shared context, memory, MCPs and skills follow in small batches. The earlier [VM validation probe](docs/sandbox-validation.md) records how we tested the connection before integrating it.
+Task worktrees inside each VM, then multiple Codex/Muse executors per mod. Shared context, memory, MCPs and skills follow in small batches. The earlier [VM validation probe](docs/sandbox-validation.md) records the initial connection tests.
 
 ## Development
 

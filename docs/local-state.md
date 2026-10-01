@@ -1,6 +1,6 @@
 # Local state
 
-One SQLite database stores harness state for all projects. Projects are identified by their canonical folder path; each mod’s data stays scoped to that project.
+One SQLite database stores harness state for all projects. Git projects use their canonical repository root; other folders use their canonical path. Each mod’s data stays scoped to that project.
 
 ```mermaid
 flowchart TB
@@ -11,6 +11,7 @@ flowchart TB
     mod --> pending["Queue and waiting steering"]
     mod --> execution["Execution · working folder, task status and check results"]
     mod --> workers["Workers · role, Codex conversation ID and pending delivery"]
+    mod --> git["Worktree path · publication and cleanup checkpoints"]
 ```
 
 ## On macOS
@@ -25,6 +26,9 @@ flowchart TB
 ├── laya-models/      downloaded model cache
 └── workspaces/       private working folders per mod
     └── <mod>-<stamp>/
+        ├── checkout/ Git worktree for new Git mods; removed after publication
+        ├── git-mod.json branch, base commit, PR URL and recovery phase
+        ├── snapshot-ready completed Git mod source transfer
         ├── before/   starting files
         ├── work/     source exported from the VM
         ├── base.git/ private diff metadata
@@ -36,18 +40,18 @@ flowchart TB
         └── review.patch
 ```
 
-State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. New agent replies also save their reported model and reasoning effort. Plans save model selection and routing. Execution saves the backend, task attempts, delivery and turn IDs, verification results and the fingerprint of verified source files.
+State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Replies save model and effort; plans save routing. Execution saves attempts, checks and the verified source fingerprint. SQLite stores each Git mod’s folder; `git-mod.json` records its branch, base, exported fingerprint, commit, PR URL and publication or removal intent.
 
-Apple Container manages each VM’s disk separately. Code, installed runtimes and dependencies persist there across restarts until apply or mod deletion removes the VM. The host workspace holds starting files and source exports for review. Quitting stops active VMs and keeps unfinished mods’ disks. Setup may briefly create an image build context and source archive inside the private workspace.
+Apple Container manages each VM’s disk separately. Code and dependencies persist until publication, local apply or mod deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
 
 The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
 
 ## Reopen and delete
 
-Run the harness from the same project root to restore mods, the selected mod, drafts, queues and conversations. Workers start when requested. A renamed or moved folder has a different project identity.
+Run from the same project to restore mods, drafts and conversations. Git subfolders resolve to the repository root. Workers start when requested. A moved repository has a different identity; relocating saved worktrees is unsupported.
 
-Applying deletes the mod’s VM while keeping its saved state and host workspace. An applied mod with `vm.json` still present has pending cleanup; **Ctrl+R** retries deletion. It stays applied even if cleanup fails.
+PR publication deletes the VM and worktree while retaining the branch, history and exports. The saved URL recovers after reopening; **Ctrl+R** retries pending cleanup. Git operations run in the background and stop on exit, retaining their checkpoints. Legacy local apply deletes only the VM and also keeps history.
 
-Deleting a mod removes its VM, plan, conversation, queue, draft, steering, execution records and working folder, including unapplied work. VM deletion must succeed before harness records are removed. Codex may keep earlier conversation records in its original directory. Credentials stay on the host.
+Removing a Git mod with changes first publishes a draft PR. Cleanup must succeed before its local records are removed. Published branches and PRs remain. Legacy and non-Git deletion removes unapplied work directly. Codex may retain earlier conversation records; credentials stay on the host.
 
 Run one harness instance per project. Shared memory across projects, repository indexing and memory updates after merges are future layers.

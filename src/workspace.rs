@@ -61,13 +61,26 @@ impl Review {
     }
 
     pub fn apply(&self, project: &Path, workspace: &Path) -> io::Result<()> {
+        self.apply_inner(project, workspace, false)
+    }
+
+    pub fn export(&self, project: &Path, workspace: &Path) -> io::Result<()> {
+        self.apply_inner(project, workspace, true)
+    }
+
+    pub fn paths(&self) -> impl Iterator<Item = &Path> {
+        self.changes.iter().map(|change| change.path.as_path())
+    }
+
+    fn apply_inner(&self, project: &Path, workspace: &Path, resume: bool) -> io::Result<()> {
         if fingerprint(&source_state(&workspace.join("work"))?)? != self.fingerprint {
             return Err(io::Error::other(
                 "The working folder changed after review. Reopen the diff.",
             ));
         }
         for change in &self.changes {
-            if read_file(project, &change.path)? != change.before {
+            let current = read_file(project, &change.path)?;
+            if current != change.before && !(resume && current == change.after) {
                 return Err(io::Error::other(format!(
                     "{} changed in the project. Nothing was applied.",
                     change.path.display()
@@ -80,6 +93,9 @@ impl Review {
             }
         }
         for (index, change) in self.changes.iter().enumerate() {
+            if resume && read_file(project, &change.path)? == change.after {
+                continue;
+            }
             if let Err(error) = write_file(project, &change.path, change.after.as_ref()) {
                 for previous in self.changes[..index].iter().rev() {
                     if let Err(rollback) =
@@ -104,7 +120,14 @@ pub fn create(project: &Path, root: &Path) -> io::Result<()> {
             "The working folder must be outside the project.",
         ));
     }
-    fs::create_dir(root)?;
+    let existed = root.exists();
+    if existed {
+        if root.join("before").exists() || root.join("work").exists() {
+            return Err(io::Error::other("A source snapshot already exists."));
+        }
+    } else {
+        fs::create_dir(root)?;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -154,7 +177,12 @@ pub fn create(project: &Path, root: &Path) -> io::Result<()> {
         Ok(())
     })();
     if result.is_err() {
-        let _ = fs::remove_dir_all(root);
+        for name in ["before", "work", "base.git"] {
+            let _ = fs::remove_dir_all(root.join(name));
+        }
+        if !existed {
+            let _ = fs::remove_dir(root);
+        }
     }
     result
 }
@@ -406,7 +434,7 @@ fn write_file(root: &Path, path: &Path, file: Option<&File>) -> io::Result<()> {
     }
 }
 
-fn trusted_git() -> Command {
+pub(crate) fn trusted_git() -> Command {
     let mut command = Command::new("git");
     command
         .env_clear()
