@@ -30,6 +30,8 @@ pub enum View {
     Chat,
     Mods(usize),
     DeleteMod(usize),
+    CloseMod(usize, bool),
+    ContinueMod(usize),
     NewMod,
     Queue(usize),
     EditQueue(usize),
@@ -48,6 +50,7 @@ pub struct App {
     pub focus_plan: bool,
     pub review: Option<Review>,
     pub queue_selection: BTreeSet<i64>,
+    pub show_closed: bool,
     workers: BTreeMap<i64, Worker>,
     auto_plans: BTreeSet<i64>,
     git_jobs: BTreeMap<i64, Job>,
@@ -84,6 +87,7 @@ impl App {
             .collect::<BTreeMap<_, _>>();
         for code_mod in &mut state.mods {
             if let Some(git) = git_states.get(&code_mod.id)
+                && git.published()
                 && let Some(url) = &git.pr
             {
                 if code_mod.execution.is_some() {
@@ -111,8 +115,8 @@ impl App {
         let active = state
             .mods
             .iter()
-            .position(|code_mod| Some(code_mod.id) == state.active_mod_id)
-            .or_else(|| (!state.mods.is_empty()).then_some(0));
+            .position(|code_mod| Some(code_mod.id) == state.active_mod_id && !code_mod.closed)
+            .or_else(|| state.mods.iter().position(|m| !m.closed));
         if let Some(index) = active {
             store.select_mod(state.id, state.mods[index].id)?;
         }
@@ -131,6 +135,7 @@ impl App {
             focus_plan: false,
             review: None,
             queue_selection: BTreeSet::new(),
+            show_closed: false,
             workers: BTreeMap::new(),
             auto_plans: BTreeSet::new(),
             git_jobs: BTreeMap::new(),
@@ -208,7 +213,8 @@ impl App {
     fn handle(&mut self, event: Event) -> Result<()> {
         match event {
             Event::Paste(text) => match self.view {
-                View::Chat | View::EditQueue(_) => {
+                View::Chat if self.read_only() => {}
+                View::Chat | View::EditQueue(_) | View::ContinueMod(_) => {
                     self.input
                         .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                 }
@@ -218,6 +224,7 @@ impl App {
                 }
                 View::Mods(_)
                 | View::DeleteMod(_)
+                | View::CloseMod(_, _)
                 | View::Queue(_)
                 | View::Review(_)
                 | View::Apply => {}
@@ -232,13 +239,43 @@ impl App {
                     View::Chat => self.chat_key(key)?,
                     View::Mods(index) => self.picker_key(key, index)?,
                     View::DeleteMod(index) => match key.code {
-                        KeyCode::Esc => self.view = View::Mods(index),
+                        KeyCode::Esc => {
+                            self.view = View::Mods(
+                                self.picker_indices()
+                                    .iter()
+                                    .position(|i| *i == index)
+                                    .unwrap_or(0),
+                            )
+                        }
                         KeyCode::Enter
                             if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
                         {
                             self.delete_mod(index)?;
                         }
                         _ => {}
+                    },
+                    View::CloseMod(index, discard) => match key.code {
+                        KeyCode::Esc => self.view = View::Mods(0),
+                        KeyCode::Up | KeyCode::Down if self.close_choices(index) => {
+                            self.view = View::CloseMod(index, !discard);
+                        }
+                        KeyCode::Enter
+                            if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
+                        {
+                            self.finish_mod(index, discard, false)?;
+                        }
+                        _ => {}
+                    },
+                    View::ContinueMod(index) => match key.code {
+                        KeyCode::Esc => {
+                            self.view = View::Chat;
+                            self.restore_input();
+                        }
+                        KeyCode::Enter if key.modifiers.is_empty() => self.continue_mod(index)?,
+                        KeyCode::Char('j') if ctrl => self.input.insert_newline(),
+                        _ => {
+                            self.input.input(key);
+                        }
                     },
                     View::Queue(index) => self.queue_key(key, index)?,
                     View::EditQueue(index) => self.edit_key(key, index)?,
@@ -255,8 +292,15 @@ impl App {
                         KeyCode::PageUp => {
                             self.view = View::Review(scroll.saturating_sub(self.page_size))
                         }
-                        KeyCode::Char('a' | 'p')
-                            if key.modifiers.is_empty() && self.can_apply() =>
+                        KeyCode::Char(action)
+                            if key.modifiers.is_empty()
+                                && self.can_apply()
+                                && action
+                                    == if self.current_mod().is_some_and(|m| m.git_root.is_some()) {
+                                        'p'
+                                    } else {
+                                        'a'
+                                    } =>
                         {
                             self.view = View::Apply
                         }
@@ -272,6 +316,7 @@ impl App {
                         _ => {}
                     },
                     View::NewMod => match key.code {
+                        KeyCode::Char('p') if ctrl => self.view = View::Mods(0),
                         KeyCode::Esc => {
                             if self.active.is_some() {
                                 self.view = View::Chat;
@@ -290,7 +335,7 @@ impl App {
             }
             _ => {}
         }
-        if matches!(self.view, View::Chat) {
+        if matches!(self.view, View::Chat) && !self.read_only() {
             self.save_draft()?;
         }
         Ok(())
@@ -300,7 +345,15 @@ impl App {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.quit = true,
-            KeyCode::Char('p') if ctrl => self.view = View::Mods(self.active.unwrap_or(0)),
+            KeyCode::Char('p') if ctrl => {
+                self.show_closed = self.current_mod().is_some_and(|m| m.closed);
+                self.view = View::Mods(
+                    self.picker_indices()
+                        .iter()
+                        .position(|i| Some(*i) == self.active)
+                        .unwrap_or(0),
+                );
+            }
             KeyCode::Char('q')
                 if ctrl
                     && self
@@ -331,28 +384,60 @@ impl App {
                 self.history_offset = self.history_offset.saturating_sub(self.page_size)
             }
             _ => {
-                self.input.input(key);
+                if !self.read_only() {
+                    self.input.input(key);
+                }
             }
         }
         Ok(())
     }
 
     fn picker_key(&mut self, key: KeyEvent, index: usize) -> Result<()> {
+        let indices = self.picker_indices();
+        let selected = indices.get(index).copied();
+        let count = indices.len();
         match key.code {
             KeyCode::Up => self.view = View::Mods(index.saturating_sub(1)),
-            KeyCode::Down => self.view = View::Mods((index + 1).min(self.mods.len())),
-            KeyCode::Esc => self.view = View::Chat,
+            KeyCode::Down => self.view = View::Mods((index + 1).min(count)),
+            KeyCode::Tab => {
+                self.show_closed = !self.show_closed;
+                self.view = View::Mods(0);
+            }
+            KeyCode::Esc => {
+                self.view = if self.active.is_some() {
+                    View::Chat
+                } else {
+                    View::NewMod
+                };
+                self.restore_input();
+            }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.view = View::Chat
             }
-            KeyCode::Char('d') if key.modifiers.is_empty() && index < self.mods.len() => {
-                self.view = View::DeleteMod(index);
+            KeyCode::Char('d') if key.modifiers.is_empty() && selected.is_some() => {
+                self.view = View::DeleteMod(selected.unwrap());
             }
-            KeyCode::Enter if index == self.mods.len() => {
+            KeyCode::Char('c')
+                if key.modifiers.is_empty() && !self.show_closed && selected.is_some() =>
+            {
+                self.view = View::CloseMod(selected.unwrap(), false);
+            }
+            KeyCode::Char('r')
+                if key.modifiers.is_empty()
+                    && selected.is_some_and(|i| {
+                        self.git_states
+                            .get(&self.mods[i].id)
+                            .is_some_and(|s| s.published())
+                    }) =>
+            {
+                self.open_continue(selected.unwrap())?;
+            }
+            KeyCode::Enter if index == count => {
                 self.view = View::NewMod;
                 self.input = ui::name_input();
             }
             KeyCode::Enter => {
+                let index = selected.unwrap();
                 self.store
                     .select_mod(self.project_id, self.mods[index].id)?;
                 self.active = Some(index);
@@ -547,6 +632,10 @@ impl App {
     }
 
     fn delete_mod(&mut self, index: usize) -> Result<()> {
+        self.finish_mod(index, true, true)
+    }
+
+    fn finish_mod(&mut self, index: usize, discard: bool, delete: bool) -> Result<()> {
         if let Some(root) = self.mods[index].git_root.clone() {
             let id = self.mods[index].id;
             if self.git_jobs.contains_key(&id) {
@@ -566,41 +655,62 @@ impl App {
             self.auto_plans.remove(&id);
             self.git_jobs.insert(
                 id,
-                Job::start("saving and removing mod", move |cancelled| {
-                    drop(workers);
-                    let mut tools = Dispatcher::new(&context, None, cancelled);
-                    if !root.join("git-mod.json").exists() {
-                        if ["checkout", "work", "vm.json"]
-                            .iter()
-                            .any(|name| root.join(name).exists())
-                        {
-                            return Err(io::Error::other(
-                                "Missing worktree metadata; files are retained.",
-                            ));
+                Job::start(
+                    if delete {
+                        "deleting mod"
+                    } else {
+                        "closing mod"
+                    },
+                    move |cancelled| {
+                        drop(workers);
+                        let mut tools = Dispatcher::new(&context, None, cancelled);
+                        if !root.join("git-mod.json").exists() {
+                            if ["checkout", "work", "vm.json"]
+                                .iter()
+                                .any(|name| root.join(name).exists())
+                            {
+                                return Err(io::Error::other(
+                                    "Missing worktree metadata; files are retained.",
+                                ));
+                            }
+                            if delete {
+                                git_mod::remove_files(&root, cancelled)?;
+                            }
+                            return Ok(if delete {
+                                git_mod::Result::Removed
+                            } else {
+                                git_mod::Result::Closed
+                            });
                         }
-                        git_mod::remove_files(&root, cancelled)?;
-                        return Ok(git_mod::Result::Removed);
-                    }
-                    git_mod::mark_removing(&root)?;
-                    if git_mod::load(&root)?.phase == "preparing"
-                        && git_mod::checkout(&root).exists()
-                    {
-                        tools.execute(Request::CreateWorktree, |_| {})?;
-                    }
-                    if root.join("vm.json").exists() {
-                        let mut vm = crate::sandbox::Sandbox::prepare(&root, cancelled, |_| {})?;
-                        vm.export(cancelled)?;
-                    }
-                    if root.join("work").exists()
-                        && git_mod::load(&root)?.pr.is_none()
-                        && workspace::review(&root)?.count() > 0
-                    {
-                        tools.execute(Request::PublishPr { draft: true }, |_| {})?;
-                    }
-                    tools.execute(Request::CleanupMod, |_| {})?;
-                    git_mod::remove_files(&root, cancelled)?;
-                    Ok(git_mod::Result::Removed)
-                }),
+                        git_mod::mark_closing(&root, discard, delete)?;
+                        if git_mod::load(&root)?.phase == "preparing"
+                            && git_mod::checkout(&root).exists()
+                        {
+                            tools.execute(Request::CreateWorktree, |_| {})?;
+                        }
+                        if !discard && root.join("vm.json").exists() {
+                            let mut vm =
+                                crate::sandbox::Sandbox::prepare(&root, cancelled, |_| {})?;
+                            vm.export(cancelled)?;
+                        }
+                        if !discard
+                            && root.join("work").exists()
+                            && !git_mod::load(&root)?.published()
+                            && workspace::review(&root)?.count() > 0
+                        {
+                            tools.execute(Request::PublishPr { draft: true }, |_| {})?;
+                        }
+                        tools.execute(Request::CleanupMod, |_| {})?;
+                        if delete {
+                            git_mod::remove_files(&root, cancelled)?;
+                        }
+                        Ok(if delete {
+                            git_mod::Result::Removed
+                        } else {
+                            git_mod::Result::Closed
+                        })
+                    },
+                ),
             );
             self.view = View::Chat;
             self.notice = None;
@@ -630,8 +740,16 @@ impl App {
             self.restore_input();
             return Ok(());
         }
-        let selected = self.store.delete_mod(self.project_id, mod_id)?;
-        self.mods.remove(index);
+        let selected = if delete {
+            self.store.delete_mod(self.project_id, mod_id)?
+        } else {
+            self.store.close_mod(self.project_id, mod_id)?
+        };
+        if delete {
+            self.mods.remove(index);
+        } else {
+            self.mods[index].closed = true;
+        }
         let cleanup_error = workspace.and_then(|path| std::fs::remove_dir_all(path).err());
         self.active = self
             .mods
@@ -645,7 +763,8 @@ impl App {
         }
         if let Some(error) = cleanup_error {
             self.notice = Some(format!(
-                "Mod deleted; working folder cleanup failed: {error}"
+                "Mod {}; working folder cleanup failed: {error}",
+                if delete { "deleted" } else { "closed" }
             ));
         }
         self.queue_selection.clear();
@@ -662,8 +781,75 @@ impl App {
         self.workers.values().any(|worker| worker.mod_id == mod_id)
     }
 
+    pub fn picker_indices(&self) -> Vec<usize> {
+        self.mods
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.closed == self.show_closed)
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    pub fn read_only(&self) -> bool {
+        self.published()
+            || self.current_mod().is_some_and(|m| {
+                m.closed || m.execution.as_ref().is_some_and(|e| e.status == "applied")
+            })
+    }
+
+    pub fn close_choices(&self, index: usize) -> bool {
+        self.mods[index].git_root.is_some()
+            && self
+                .git_states
+                .get(&self.mods[index].id)
+                .is_none_or(|s| !s.published())
+    }
+
+    fn open_continue(&mut self, index: usize) -> Result<()> {
+        if self.git_jobs.contains_key(&self.mods[index].id) {
+            return Ok(());
+        }
+        self.store
+            .select_mod(self.project_id, self.mods[index].id)?;
+        self.active = Some(index);
+        self.view = View::ContinueMod(index);
+        self.input = ui::continue_input();
+        self.input.insert_str(&self.mods[index].draft);
+        self.notice = None;
+        Ok(())
+    }
+
+    fn continue_mod(&mut self, index: usize) -> Result<()> {
+        let request = self.input.lines().join("\n");
+        if request.trim().is_empty() {
+            return Ok(());
+        }
+        self.store.save_draft(self.mods[index].id, &request)?;
+        self.mods[index].draft = request;
+        self.start_continuation(index);
+        Ok(())
+    }
+
+    fn start_continuation(&mut self, index: usize) {
+        let context = Context::harness(&self.project, &self.mods[index]);
+        self.git_jobs.insert(
+            self.mods[index].id,
+            Job::start("restoring PR workspace", move |cancelled| {
+                Dispatcher::new(&context, None, cancelled).execute(Request::ContinuePr, |_| {})?;
+                Ok(git_mod::Result::Continued)
+            }),
+        );
+        self.view = View::Chat;
+        self.notice = None;
+        self.restore_input();
+    }
+
     pub fn git_state(&self) -> Option<&GitMod> {
         self.current_mod().and_then(|m| self.git_states.get(&m.id))
+    }
+
+    pub fn git_mod_at(&self, index: usize) -> Option<&GitMod> {
+        self.git_states.get(&self.mods[index].id)
     }
 
     pub fn git_activity(&self) -> Option<&str> {
@@ -677,6 +863,8 @@ impl App {
             m.git_root.is_some()
                 && self.git_states.get(&m.id).is_none_or(|state| {
                     state.removing
+                        || (state.closing && !m.closed)
+                        || state.continuing
                         || state.publishing
                         || !["ready", "cleaned"].contains(&state.phase.as_str())
                 })
@@ -684,7 +872,7 @@ impl App {
     }
 
     pub fn published(&self) -> bool {
-        self.git_state().is_some_and(|state| state.pr.is_some())
+        self.git_state().is_some_and(GitMod::published)
     }
 
     fn source_project(&self, index: usize) -> PathBuf {
@@ -725,6 +913,17 @@ impl App {
         if self.mods[active].git_root.is_some() {
             match self.git_states.get(&id) {
                 Some(state) if state.removing => return self.delete_mod(active),
+                Some(state) if state.continuing => {
+                    self.start_continuation(active);
+                    return Ok(());
+                }
+                Some(state) if state.closing && !self.mods[active].closed => {
+                    return self.finish_mod(active, state.discarding, false);
+                }
+                Some(state) if state.published() && state.phase == "cleaned" => {
+                    self.open_continue(active)?;
+                    return Ok(());
+                }
                 state if state.is_none_or(|state| state.phase == "preparing") => {
                     let context = Context::harness(&self.project, &self.mods[active]);
                     self.git_jobs.insert(
@@ -747,6 +946,9 @@ impl App {
                 Some(state) if state.phase == "cleaned" => return Ok(()),
                 _ => {}
             }
+        }
+        if self.mods[active].closed {
+            return Ok(());
         }
         if self.mods[active]
             .execution
@@ -914,7 +1116,8 @@ impl App {
     }
 
     pub fn can_apply(&self) -> bool {
-        !self.execution_busy()
+        self.current_mod().is_some_and(|m| !m.closed)
+            && !self.execution_busy()
             && self
                 .review
                 .as_ref()
@@ -1077,7 +1280,9 @@ impl App {
             .then(|| self.current_mod().map(|code_mod| code_mod.id))
             .flatten();
         let deleting_mod = match self.view {
-            View::DeleteMod(index) => Some(self.mods[index].id),
+            View::DeleteMod(index) | View::CloseMod(index, _) | View::ContinueMod(index) => {
+                Some(self.mods[index].id)
+            }
             _ => None,
         };
         let reviewing_mod = matches!(self.view, View::Review(_) | View::Apply)
@@ -1095,7 +1300,8 @@ impl App {
                 editing_mod != Some(code_mod.id)
                     && deleting_mod != Some(code_mod.id)
                     && reviewing_mod != Some(code_mod.id)
-                    && !self.git_jobs.contains_key(&code_mod.id),
+                    && !self.git_jobs.contains_key(&code_mod.id)
+                    && !code_mod.closed,
                 &code_mod
                     .git_root
                     .as_ref()
@@ -1155,7 +1361,7 @@ impl App {
             };
             let root = self.mods[index].git_root.clone().unwrap();
             if let Ok(state) = git_mod::load(&root) {
-                if state.pr.is_some() && self.mods[index].execution.is_some() {
+                if state.published() && self.mods[index].execution.is_some() {
                     self.store.execution_status(id, "applied")?;
                     self.mods[index].execution = self.store.execution(id)?;
                 }
@@ -1221,6 +1427,46 @@ impl App {
                 Ok(git_mod::Result::Published) => {
                     self.notice = None;
                 }
+                Ok(git_mod::Result::Continued) => {
+                    let was_active = self.current_mod().is_some_and(|m| m.id == id);
+                    let request = self.mods[index].draft.clone();
+                    if !request.is_empty() {
+                        self.store.follow_up(id, &request)?;
+                    }
+                    git_mod::finish_continuation(&root)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    let state = self.store.load_project(&self.project)?;
+                    self.mods[index] = state.mods.into_iter().find(|m| m.id == id).unwrap();
+                    self.git_states.insert(id, git_mod::load(&root).unwrap());
+                    self.auto_plans.insert(id);
+                    if was_active {
+                        self.active = Some(index);
+                        self.show_closed = false;
+                        self.view = View::Chat;
+                        self.history_offset = 0;
+                        self.plan_details = false;
+                        self.focus_plan = false;
+                        self.notice = None;
+                        self.restore_input();
+                    } else if let Some(active) = self.active {
+                        self.store
+                            .select_mod(self.project_id, self.mods[active].id)?;
+                    }
+                }
+                Ok(git_mod::Result::Closed) => {
+                    let selected = self.store.close_mod(self.project_id, id)?;
+                    self.mods[index].closed = true;
+                    if self.current_mod().is_some_and(|m| m.id == id) {
+                        self.active = self.mods.iter().position(|m| Some(m.id) == selected);
+                        self.view = if self.active.is_some() {
+                            View::Chat
+                        } else {
+                            View::NewMod
+                        };
+                        self.restore_input();
+                    }
+                    self.notice = None;
+                }
                 Ok(git_mod::Result::Removed) => {
                     let was_active = self.current_mod().is_some_and(|m| m.id == id);
                     let selected = self.store.delete_mod(self.project_id, id)?;
@@ -1250,7 +1496,9 @@ impl App {
                         .map(|error| error.to_string());
                 }
                 Err(error) => {
-                    self.notice = Some(if self.current_mod().is_some_and(|m| m.id == id) {
+                    self.notice = Some(if error.kind() == io::ErrorKind::Unsupported {
+                        error.to_string()
+                    } else if self.current_mod().is_some_and(|m| m.id == id) {
                         format!("{error} Work is retained; Ctrl+R retries.")
                     } else {
                         format!(
@@ -1293,15 +1541,15 @@ impl App {
     }
 
     fn submit(&mut self) -> Result<()> {
-        if self.published()
+        if self.read_only()
             || self.git_activity().is_some_and(|activity| {
-                matches!(activity, "publishing PR" | "saving and removing mod")
+                matches!(
+                    activity,
+                    "publishing PR" | "closing mod" | "deleting mod" | "restoring PR workspace"
+                )
             })
         {
-            self.notice = Some(
-                "This mod is being saved or is published. Create a new mod for more changes."
-                    .into(),
-            );
+            self.notice = Some("Use Continue working for an open PR, or start a new mod.".into());
             return Ok(());
         }
         let message = self.input.lines().join("\n");
@@ -1544,6 +1792,173 @@ mod tests {
                 .filter(|m| m.item_id.as_deref() == Some(&format!("pr:{id}")))
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn closing_archives_history_and_the_picker_separates_closed_mods() {
+        let (data, mut app, root) = execution_app();
+        let id = app.mods[0].id;
+        let history = app.mods[0]
+            .messages
+            .iter()
+            .map(|m| m.body.clone())
+            .collect::<Vec<_>>();
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::CloseMod(0, false)));
+        assert!(
+            rows(&screen(&mut app, 100, 30))
+                .join("\n")
+                .contains("Keep history")
+        );
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(!root.exists());
+        assert!(app.mods[0].closed);
+        assert!(matches!(app.view, View::NewMod));
+        let project = app.project.clone();
+        drop(app);
+        let mut app = App::load(project, false, data.store()).unwrap();
+        assert!(app.current_mod().is_none());
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert!(app.picker_indices().is_empty());
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.picker_indices(), [0]);
+        assert!(
+            rows(&screen(&mut app, 100, 30))
+                .join("\n")
+                .contains("closed code mods (1)")
+        );
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.current_mod().unwrap().id, id);
+        assert_eq!(
+            app.mods[0]
+                .messages
+                .iter()
+                .map(|m| m.body.clone())
+                .collect::<Vec<_>>(),
+            history
+        );
+        let display = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(display.contains("closed · history saved"));
+        assert!(!display.contains("Describe a feature"));
+        paste(&mut app, "ignored in closed history");
+        assert_eq!(app.mods[0].draft, "keep this draft");
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.mods.is_empty());
+    }
+
+    #[test]
+    fn follow_up_keeps_conversation_and_prepares_a_fresh_plan() {
+        let (_data, mut app, _root) = execution_app();
+        let id = app.mods[0].id;
+        let previous_source = app.mods[0].planning.as_ref().unwrap().source.clone();
+        let count = app.mods[0].messages.len();
+        app.store.close_mod(app.project_id, id).unwrap();
+        app.store.follow_up(id, "Add due dates").unwrap();
+        let state = app.store.load_project(&app.project).unwrap();
+        let code_mod = &state.mods[0];
+        assert!(!code_mod.closed && code_mod.execution.is_none());
+        assert!(code_mod.draft.is_empty());
+        assert_eq!(state.active_mod_id, Some(id));
+        let planning = code_mod.planning.as_ref().unwrap();
+        assert_eq!(planning.status, "pending");
+        assert!(planning.plan.is_none());
+        assert_ne!(planning.source, previous_source);
+        assert_eq!(code_mod.messages.len(), count + 1);
+        assert_eq!(code_mod.messages.last().unwrap().body, "Add due dates");
+        assert!(
+            code_mod
+                .description
+                .contains("Plan only this follow-up:\nAdd due dates")
+        );
+    }
+
+    #[test]
+    fn a_closed_published_mod_continues_with_a_new_plan_and_saved_history() {
+        let (data, project, root, program) = git_mod::tests::fixture();
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        git_mod::prepare(&project, &root, &flag).unwrap();
+        workspace::create(&git_mod::checkout(&root), &root).unwrap();
+        std::fs::write(root.join("work/a.txt"), "published\n").unwrap();
+        let pr = git_mod::publish(&root, "Greeting", false, &program, &flag).unwrap();
+        git_mod::cleanup(&root, &flag).unwrap();
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let code_mod = store.create_mod(project_id, "Greeting").unwrap();
+        store.save_git_root(code_mod.id, &root).unwrap();
+        let mut app = App::load(project.clone(), false, store).unwrap();
+        let display = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(display.contains("ctrl+r continue") && !display.contains("Describe a feature"));
+        app.finish_mod(0, false, false).unwrap();
+        wait_git(&mut app);
+        assert!(app.mods[0].closed && git_mod::load(&root).unwrap().pr.as_deref() == Some(&pr));
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(matches!(app.view, View::ContinueMod(0)));
+        paste(&mut app, "Add sorting");
+        app.store.save_draft(code_mod.id, "Add sorting").unwrap();
+        app.mods[0].draft = "Add sorting".into();
+        let restored_root = root.clone();
+        app.git_jobs.insert(
+            code_mod.id,
+            Job::start("restoring PR workspace", move |cancelled| {
+                git_mod::continue_work(&restored_root, &program, cancelled)?;
+                Ok(git_mod::Result::Continued)
+            }),
+        );
+        app.view = View::Chat;
+        wait_git(&mut app);
+        assert!(!app.mods[0].closed && !app.published());
+        assert_eq!(app.mods[0].planning.as_ref().unwrap().status, "pending");
+        assert!(app.auto_plans.contains(&code_mod.id));
+        assert_eq!(app.mods[0].messages.last().unwrap().body, "Add sorting");
+        assert!(app.mods[0].messages.iter().any(|m| m.body.contains(&pr)));
+        assert_eq!(
+            std::fs::read_to_string(root.join("work/a.txt")).unwrap(),
+            "published\n"
+        );
+        assert!(!root.join("vm.json").exists());
+        assert!(app.input.lines()[0].is_empty());
+        app.finish_mod(0, true, false).unwrap();
+        wait_git(&mut app);
+    }
+
+    #[test]
+    fn closing_a_git_mod_can_discard_without_github_and_retain_history() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("a.txt"), "original\n").unwrap();
+        commit_project(&project);
+        let mut app = App::load(project.clone(), false, data.store()).unwrap();
+        paste(&mut app, "Change greeting");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        wait_git(&mut app);
+        let root = app.mods[0].git_root.clone().unwrap();
+        workspace::create(&git_mod::checkout(&root), &root).unwrap();
+        std::fs::write(root.join("work/a.txt"), "unpublished\n").unwrap();
+        key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
+        let display = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(
+            display.contains("save changes as draft PR")
+                && display.contains("discard unpublished changes")
+        );
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        wait_git(&mut app);
+        assert!(app.mods[0].closed && !git_mod::checkout(&root).exists());
+        assert!(!root.join("work").exists());
+        assert!(git_mod::load(&root).unwrap().pr.is_none());
+        assert_eq!(app.mods[0].messages[0].body, "Change greeting");
+        assert_eq!(
+            std::fs::read_to_string(project.join("a.txt")).unwrap(),
+            "original\n"
         );
     }
 

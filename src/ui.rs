@@ -43,6 +43,10 @@ pub fn edit_input() -> TextArea<'static> {
     field("edit queued message", "")
 }
 
+pub fn continue_input() -> TextArea<'static> {
+    field("continue working", "What should change in this PR?")
+}
+
 fn field(title: &'static str, placeholder: &'static str) -> TextArea<'static> {
     let mut input = TextArea::default();
     input.set_block(
@@ -84,6 +88,7 @@ pub fn draw(
     }
 
     let gap = u16::from(area.height >= 13 + 2 * mod_height);
+    let read_only = matches!(app.view, View::Chat) && app.read_only();
     let [header, _, mod_row, _, content, _, input, footer] = Layout::vertical([
         Constraint::Length(4),
         Constraint::Length(gap),
@@ -91,7 +96,7 @@ pub fn draw(
         Constraint::Length(gap * mod_height),
         Constraint::Min(1),
         Constraint::Length(gap),
-        Constraint::Length(5),
+        Constraint::Length(if read_only { 0 } else { 5 }),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -111,8 +116,11 @@ pub fn draw(
         .git_activity()
         .map(|activity| format!("{} {activity}", activity_glyph(elapsed)))
         .unwrap_or_else(|| {
+            if app.current_mod().is_some_and(|m| m.closed) {
+                return "□ closed · history saved".into();
+            }
             if let Some(state) = app.git_state() {
-                if state.pr.is_some() {
+                if state.published() {
                     return if state.phase == "cleaned" {
                         "◇ PR ready".into()
                     } else {
@@ -158,14 +166,27 @@ pub fn draw(
         app.current_mod()
             .map_or("", |code_mod| code_mod.name.as_str()),
         mod_row,
-        matches!(app.view, View::Mods(_) | View::DeleteMod(_)),
+        matches!(
+            app.view,
+            View::Mods(_) | View::DeleteMod(_) | View::CloseMod(_, _)
+        ),
     );
     let mut can_scroll = false;
-    if matches!(app.view, View::Chat | View::EditQueue(_)) {
-        let count = app.current_mod().map_or(0, |code_mod| code_mod.queue.len());
-        let steering = app
-            .current_mod()
-            .map_or(0, |code_mod| code_mod.steering.len());
+    if matches!(
+        app.view,
+        View::Chat | View::EditQueue(_) | View::ContinueMod(_)
+    ) {
+        let count = if read_only {
+            0
+        } else {
+            app.current_mod().map_or(0, |code_mod| code_mod.queue.len())
+        };
+        let steering = if read_only {
+            0
+        } else {
+            app.current_mod()
+                .map_or(0, |code_mod| code_mod.steering.len())
+        };
         let steering_height = if steering == 0 {
             0
         } else {
@@ -203,6 +224,8 @@ pub fn draw(
         draw_mod_picker(frame, app, index, dialog_area);
     } else if let View::DeleteMod(index) = app.view {
         draw_delete_mod(frame, app, index, dialog_area);
+    } else if let View::CloseMod(index, discard) = app.view {
+        draw_close_mod(frame, app, index, discard, dialog_area);
     } else if let View::Queue(index) = app.view {
         draw_queue_editor(frame, app, index, dialog_area);
     } else if let View::Review(scroll) = app.view {
@@ -219,14 +242,14 @@ pub fn draw(
         let count = app.review.as_ref().map_or(0, |review| review.count());
         let publishing = app.current_mod().is_some_and(|m| m.git_root.is_some());
         let text = Paragraph::new(if publishing {
-            format!("Publish {count} changed files as a PR?\nThe mod branch is pushed; its VM is deleted after publication.")
+            format!("Publish {count} changed files {}?\nThe branch is pushed; the VM and worktree are then deleted.", if app.git_state().is_some_and(|s| s.pr.is_some()) { "to the existing PR" } else { "as a PR" })
         } else { format!("Apply changes to {count} files in this project?\nFiles changed since the snapshot will block applying.") }).wrap(Wrap {trim:false});
         let rows = text.line_count(dialog_area.width.saturating_sub(4));
         let (body, _) = draw_dialog(
             frame,
             dialog_area,
             if publishing {
-                "create pull request?"
+                "publish PR?"
             } else {
                 "apply changes?"
             },
@@ -239,7 +262,9 @@ pub fn draw(
         );
         frame.render_widget(text, body);
     } else {
-        frame.render_widget(&app.input, input);
+        if !read_only {
+            frame.render_widget(&app.input, input);
+        }
         let shortcuts = match app.view {
             View::NewMod => format!(
                 "↵ create + plan{}   esc {}",
@@ -258,6 +283,7 @@ pub fn draw(
                 "enter save   ctrl+j newline   esc cancel".into()
             }
             View::EditQueue(_) => "↵ save  esc cancel".into(),
+            View::ContinueMod(_) => "↵ continue + plan  ctrl+j newline  esc back".into(),
             _ => chat_hints(app, footer.width, can_scroll),
         };
         frame.render_widget(Line::from(shortcuts).fg(MUTED), footer);
@@ -399,31 +425,47 @@ fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, open: bool) {
 }
 
 fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
+    let indices = app.picker_indices();
+    let count = indices.len();
     let mut hints = vec![("↑↓", "select"), ("↵", "open")];
-    if index < app.mods.len() {
+    if index < count {
+        if !app.show_closed {
+            hints.push(("c", "close"));
+        }
+        if app
+            .git_mod_at(indices[index])
+            .is_some_and(|s| s.published())
+        {
+            hints.push(("r", "continue"));
+        }
         hints.push(("d", "delete"));
     }
+    hints.push(("tab", if app.show_closed { "active" } else { "closed" }));
     hints.push(("esc", "back"));
     let (list_area, new_mod) = draw_dialog(
         frame,
         area,
-        &format!("code mods ({})", app.mods.len()),
-        app.mods.len(),
+        &format!(
+            "{} code mods ({count})",
+            if app.show_closed { "closed" } else { "active" }
+        ),
+        count,
         true,
         &hints,
     );
-    let items = app.mods.iter().map(|code_mod| {
+    let items = indices.iter().map(|&i| {
+        let code_mod = &app.mods[i];
         let active = app
             .current_mod()
             .is_some_and(|active| active.id == code_mod.id);
         Line::from(vec![
-            format!("{MOD_GLYPH} ").fg(ACCENT),
+            format!("{} ", if code_mod.closed { "□" } else { MOD_GLYPH }).fg(ACCENT),
             Span::raw(fit_name(&code_mod.name, list_area.width.saturating_sub(4))),
             (if active { " ✓" } else { "" }).fg(ACCENT),
         ])
     });
     let selected = dialog_selection();
-    let highlight = if index < app.mods.len() {
+    let highlight = if index < count {
         selected
     } else {
         Style::new()
@@ -431,11 +473,12 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     frame.render_stateful_widget(
         List::new(items).highlight_style(highlight),
         list_area,
-        &mut ListState::default().with_selected(Some(index.min(app.mods.len().saturating_sub(1)))),
+        &mut ListState::default()
+            .with_selected((count > 0).then_some(index.min(count.saturating_sub(1)))),
     );
     let action = Line::from(vec!["+ ".fg(ACCENT), "new code mod".into()]);
     frame.render_widget(
-        if index == app.mods.len() {
+        if index == count {
             action.style(selected)
         } else {
             action
@@ -447,7 +490,7 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
 fn draw_delete_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     let code_mod = &app.mods[index];
     let removal = if code_mod.git_root.is_some() {
-        "Saves unfinished source in a draft PR, then deletes the VM, worktree and local history."
+        "Permanently deletes local history and discards unpublished work. Existing PRs stay on GitHub."
     } else if code_mod.execution.is_some() {
         "Stops workers; deletes history, the VM and working folder."
     } else if app.has_worker(code_mod.id) {
@@ -471,6 +514,53 @@ fn draw_delete_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         rows,
         false,
         &[("↵", "delete"), ("esc", "cancel")],
+    );
+    frame.render_widget(body, content);
+}
+
+fn draw_close_mod(frame: &mut Frame, app: &App, index: usize, discard: bool, area: Rect) {
+    let choices = app.close_choices(index);
+    let mut lines = vec![
+        Line::from(fit_name(
+            &app.mods[index].name,
+            area.width.saturating_sub(6),
+        ))
+        .bold(),
+        Line::from(if choices {
+            "Keep history; delete the VM and worktree."
+        } else if app.mods[index].git_root.is_some() {
+            "Keep history and the PR; delete remaining runtime resources."
+        } else {
+            "Keep history; discard unapplied files and delete the VM."
+        })
+        .fg(KEY_HINT),
+    ];
+    if choices {
+        lines.push(Line::default());
+        lines.push(Line::from("save changes as draft PR").style(if !discard {
+            dialog_selection()
+        } else {
+            Style::new()
+        }));
+        lines.push(Line::from("discard unpublished changes").style(if discard {
+            dialog_selection()
+        } else {
+            Style::new()
+        }));
+    }
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let mut hints = vec![];
+    if choices {
+        hints.push(("↑↓", "select"));
+    }
+    hints.extend([("↵", "close"), ("esc", "cancel")]);
+    let (content, _) = draw_dialog(
+        frame,
+        area,
+        "close code mod?",
+        body.line_count(area.width.saturating_sub(4)),
+        false,
+        &hints,
     );
     frame.render_widget(body, content);
 }
@@ -524,7 +614,7 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     frame.render_widget(
         Line::from(if app.can_apply() {
             if app.current_mod().is_some_and(|m| m.git_root.is_some()) {
-                "↑↓ scroll  fn+↑/↓ page  p create PR  esc back"
+                "↑↓ scroll  fn+↑/↓ page  p publish PR  esc back"
             } else {
                 "↑↓ scroll  fn+↑/↓ page  a apply  esc back"
             }
@@ -623,13 +713,15 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     } else if app.git_retry_pending() {
         Some("retry Git operation")
     } else if app.published() {
-        None
+        Some("continue")
     } else if app
         .current_mod()
         .and_then(|m| m.execution.as_ref())
         .is_some_and(|execution| execution.vm_cleanup_pending())
     {
         Some("cleanup VM")
+    } else if app.read_only() {
+        None
     } else if worker.is_some_and(|w| w.enabled) {
         Some("stop")
     } else if app
@@ -656,13 +748,19 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     if let Some(action) = run {
         options.push(format!("{ctrl}r {action}"));
     }
-    if queued {
+    if queued && !app.read_only() {
         options.push(format!("{ctrl}q manage"));
     }
-    if app.current_mod().is_some_and(|m| m.execution.is_some()) && !app.execution_busy() {
+    if app
+        .current_mod()
+        .is_some_and(|m| m.execution.is_some() && !m.closed)
+        && !app.execution_busy()
+    {
         options.push(format!("{ctrl}d changes"));
     }
-    options.push(format!("{ctrl}j newline"));
+    if !app.read_only() {
+        options.push(format!("{ctrl}j newline"));
+    }
     if can_scroll {
         options.push(if cfg!(target_os = "macos") {
             "fn+↑/↓ scroll".into()
@@ -670,8 +768,8 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
             "pgup/pgdn scroll".into()
         });
     }
-    let mut hints = if app.published() {
-        format!("{ctrl}p new mod")
+    let mut hints = if app.read_only() {
+        format!("{ctrl}p mods")
     } else {
         "↵ queue".to_owned()
     };
@@ -784,7 +882,7 @@ fn plan_lines(
                 "{} · {}/{} tasks done",
                 match execution.status.as_str() {
                     "review" => "changes ready",
-                    "applied" if git_mod => "PR created",
+                    "applied" if git_mod => "PR published",
                     "applied" => "changes applied",
                     "blocked" => "execution paused",
                     "verifying" => "final checks",

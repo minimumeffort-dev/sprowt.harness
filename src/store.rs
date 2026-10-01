@@ -13,6 +13,7 @@ pub struct CodeMod {
     pub id: i64,
     pub name: String,
     pub description: String,
+    pub closed: bool,
     pub planning: Option<Planning>,
     pub execution: Option<Execution>,
     pub git_root: Option<std::path::PathBuf>,
@@ -157,6 +158,11 @@ impl Store {
         for (table, column, sql) in [
             (
                 "code_mods",
+                "closed",
+                "ALTER TABLE code_mods ADD COLUMN closed INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "code_mods",
                 "description",
                 "ALTER TABLE code_mods ADD COLUMN description TEXT",
             ),
@@ -244,13 +250,14 @@ impl Store {
         )?;
         let mut statement = self
             .0
-            .prepare("SELECT id, name, draft, COALESCE(description,name) FROM code_mods WHERE project_id = ?1 ORDER BY id")?;
+            .prepare("SELECT id, name, draft, COALESCE(description,name), closed FROM code_mods WHERE project_id = ?1 ORDER BY id")?;
         let mut mods = statement
             .query_map([id], |row| {
                 Ok(CodeMod {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     description: row.get(3)?,
+                    closed: row.get(4)?,
                     planning: None,
                     execution: None,
                     git_root: None,
@@ -360,6 +367,7 @@ impl Store {
             id,
             name: title,
             description: name.to_owned(),
+            closed: false,
             planning: self.planning(id)?,
             execution: None,
             git_root: None,
@@ -392,7 +400,7 @@ impl Store {
         )?;
         let selected = if active == Some(mod_id) {
             transaction.query_row(
-                "SELECT id FROM code_mods WHERE project_id = ?1 AND id != ?2 ORDER BY id LIMIT 1",
+                "SELECT id FROM code_mods WHERE project_id = ?1 AND id != ?2 AND closed=0 ORDER BY id LIMIT 1",
                 params![project_id, mod_id],
                 |row| row.get(0),
             ).optional()?
@@ -431,6 +439,43 @@ impl Store {
             params![draft, mod_id],
         )?;
         Ok(())
+    }
+
+    pub fn close_mod(&mut self, project_id: i64, mod_id: i64) -> Result<Option<i64>> {
+        let transaction = self.0.transaction()?;
+        transaction.execute(
+            "UPDATE code_mods SET closed=1 WHERE id=?1 AND project_id=?2",
+            params![mod_id, project_id],
+        )?;
+        transaction.execute("UPDATE projects SET active_mod_id=(SELECT id FROM code_mods WHERE project_id=?1 AND closed=0 ORDER BY id LIMIT 1) WHERE id=?1 AND active_mod_id=?2", params![project_id, mod_id])?;
+        let selected = transaction.query_row(
+            "SELECT active_mod_id FROM projects WHERE id=?1",
+            [project_id],
+            |row| row.get(0),
+        )?;
+        transaction.commit()?;
+        Ok(selected)
+    }
+
+    pub fn follow_up(&mut self, mod_id: i64, request: &str) -> Result<()> {
+        let transaction = self.0.transaction()?;
+        let (description, attempt): (String, i64) = transaction.query_row("SELECT COALESCE(m.description,m.name),COALESCE(p.attempt,0) FROM code_mods m LEFT JOIN plans p ON p.mod_id=m.id WHERE m.id=?1", [mod_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let source = plan_source(mod_id, attempt + 1);
+        transaction.execute("UPDATE code_mods SET closed=0,draft='',description=?2 WHERE id=?1", params![mod_id, format!("{description}\n\nPublished work is already implemented. Plan only this follow-up:\n{request}")])?;
+        for table in ["task_runs", "executions"] {
+            transaction.execute(&format!("DELETE FROM {table} WHERE mod_id=?1"), [mod_id])?;
+        }
+        transaction.execute("INSERT INTO plans(mod_id,source,attempt) VALUES (?1,?2,?3) ON CONFLICT(mod_id) DO UPDATE SET status='pending',body=NULL,source=excluded.source,attempt=excluded.attempt,model=NULL,effort=NULL,routing=NULL", params![mod_id, source, attempt+1])?;
+        transaction.execute(
+            "UPDATE workers SET thread_id=NULL,pending=NULL WHERE mod_id=?1",
+            [mod_id],
+        )?;
+        transaction.execute(
+            "INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,'user',?3)",
+            params![mod_id, source, request],
+        )?;
+        transaction.execute("UPDATE projects SET active_mod_id=?1 WHERE id=(SELECT project_id FROM code_mods WHERE id=?1)", [mod_id])?;
+        transaction.commit()
     }
 
     pub fn git_root(&self, mod_id: i64) -> Result<Option<std::path::PathBuf>> {

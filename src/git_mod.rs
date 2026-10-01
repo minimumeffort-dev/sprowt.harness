@@ -29,6 +29,22 @@ pub struct GitMod {
     pub removing: bool,
     #[serde(default)]
     pub publishing: bool,
+    #[serde(default)]
+    pub closing: bool,
+    #[serde(default)]
+    pub discarding: bool,
+    #[serde(default)]
+    pub continuing: bool,
+    #[serde(default)]
+    pub published_head: Option<String>,
+}
+
+impl GitMod {
+    pub fn published(&self) -> bool {
+        self.pr.is_some()
+            && !self.continuing
+            && matches!(self.phase.as_str(), "published" | "cleaned")
+    }
 }
 
 pub enum Result {
@@ -36,6 +52,8 @@ pub enum Result {
     Snapshot,
     Reviewed(Review),
     Published,
+    Continued,
+    Closed,
     Removed,
 }
 
@@ -253,11 +271,15 @@ pub fn prepare(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
             draft: false,
             removing: false,
             publishing: false,
+            closing: false,
+            discarding: false,
+            continuing: false,
+            published_head: None,
         };
         save(root, &state)?;
         state
     };
-    if state.phase == "cleaned" || (state.pr.is_some() && !checkout(root).exists()) {
+    if state.phase == "cleaned" || (state.published() && !checkout(root).exists()) {
         return Ok(());
     }
     if state.phase != "preparing" {
@@ -520,9 +542,20 @@ pub fn publish(
     cancelled: &AtomicBool,
 ) -> io::Result<String> {
     let mut state = load(root)?;
-    if let Some(pr) = &state.pr {
+    if state.published()
+        && let Some(pr) = &state.pr
+    {
         return Ok(pr.clone());
     }
+    if state.draft != draft {
+        state.draft = draft;
+        save(root, &state)?;
+    }
+    let previous_pr = if state.pr.is_some() {
+        Some(open_pr(root, &state, program, cancelled)?)
+    } else {
+        None
+    };
     validate(root, &state, cancelled)?;
     let path = checkout(root);
     let review = workspace::review(root)?;
@@ -665,7 +698,7 @@ pub fn publish(
             "--state",
             "all",
             "--json",
-            "url,headRefOid",
+            "url,headRefOid,state,isDraft",
         ],
         cancelled,
     )?)?;
@@ -674,12 +707,27 @@ pub fn publish(
         .and_then(|items| items.first())
         .and_then(|item| item["url"].as_str())
         .map(str::to_owned);
-    if existing.is_some() && prs[0]["headRefOid"].as_str() != state.head.as_deref() {
+    let existing_draft = existing.as_ref().and_then(|_| prs[0]["isDraft"].as_bool());
+    if existing.is_some() && prs[0]["state"] != "OPEN" {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "This PR is merged or closed. Start a new mod from the updated project.",
+        ));
+    }
+    if previous_pr.is_some() && existing.as_deref() != state.pr.as_deref() {
+        return Err(io::Error::other(
+            "Cannot find the saved PR on this branch. Work is retained.",
+        ));
+    }
+    if existing.is_some()
+        && prs[0]["headRefOid"].as_str() != state.head.as_deref()
+        && !(previous_pr.is_some() && prs[0]["headRefOid"].as_str() == Some(&state.base))
+    {
         return Err(io::Error::other(
             "Existing PR has different commits; work is retained.",
         ));
     }
-    if existing.is_none() {
+    if existing.is_none() || prs[0]["headRefOid"].as_str() != state.head.as_deref() {
         let destination = format!("HEAD:refs/heads/{}", state.branch);
         let mut command = Command::new("git");
         command
@@ -741,7 +789,16 @@ pub fn publish(
             "GitHub did not return a PR URL; retry publication.",
         ));
     }
+    if existing_draft.is_some_and(|was_draft| was_draft != draft) {
+        let mut args = vec!["pr", "ready", &pr];
+        if draft {
+            args.push("--undo");
+        }
+        gh(root, &state, program, &args, cancelled)?;
+    }
     state.pr = Some(pr.clone());
+    state.published_head = state.head.clone();
+    state.draft = draft;
     state.publishing = false;
     state.phase = "published".into();
     save(root, &state)?;
@@ -753,23 +810,33 @@ pub fn cleanup(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
     if state.phase == "cleaned" {
         return Ok(());
     }
-    if state.pr.is_none() && !["ready", "preparing"].contains(&state.phase.as_str()) {
+    if !state.discarding
+        && state.pr.is_none()
+        && !["ready", "preparing"].contains(&state.phase.as_str())
+    {
         return Err(io::Error::other("Publish saved changes before cleanup."));
     }
     let path = checkout(root);
-    if state.pr.is_none() && root.join("work").exists() && workspace::review(root)?.count() > 0 {
+    if !state.discarding
+        && !state.published()
+        && root.join("work").exists()
+        && workspace::review(root)?.count() > 0
+    {
         return Err(io::Error::other(
             "The mod has source changes to preserve before cleanup.",
         ));
     }
     if path.exists() {
         validate(root, &state, cancelled)?;
-        if !git(root, &path, &["status", "--porcelain"], cancelled)?.is_empty() {
+        if !state.discarding && !git(root, &path, &["status", "--porcelain"], cancelled)?.is_empty()
+        {
             return Err(io::Error::other(
                 "Worktree has unsaved changes; cleanup paused.",
             ));
         }
-        if state.pr.is_none() && git(root, &path, &["rev-parse", "HEAD"], cancelled)? != state.base
+        if !state.discarding
+            && state.pr.is_none()
+            && git(root, &path, &["rev-parse", "HEAD"], cancelled)? != state.base
         {
             return Err(io::Error::other(
                 "Worktree has unpublished commits; cleanup paused.",
@@ -782,8 +849,11 @@ pub fn cleanup(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
         command
             .arg("-C")
             .arg(&state.repo)
-            .args(["worktree", "remove"])
-            .arg(&path);
+            .args(["worktree", "remove"]);
+        if state.discarding {
+            command.arg("--force");
+        }
+        command.arg(&path);
         run(command, root, cancelled)?;
     }
     if state.pr.is_none()
@@ -802,17 +872,147 @@ pub fn cleanup(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
         git(
             root,
             &state.repo,
-            &["branch", "-d", &state.branch],
+            &[
+                "branch",
+                if state.discarding { "-D" } else { "-d" },
+                &state.branch,
+            ],
             cancelled,
         )?;
+    }
+    if state.discarding {
+        if let Some(head) = state
+            .published_head
+            .as_ref()
+            .or(state.head.as_ref())
+            .filter(|_| state.pr.is_some())
+        {
+            git(
+                root,
+                &state.repo,
+                &["update-ref", &format!("refs/heads/{}", state.branch), head],
+                cancelled,
+            )?;
+        }
+        clear_snapshot(root)?;
     }
     state.phase = "cleaned".into();
     save(root, &state)
 }
 
-pub fn mark_removing(root: &Path) -> io::Result<()> {
+pub fn mark_closing(root: &Path, discard: bool, delete: bool) -> io::Result<()> {
     let mut state = load(root)?;
-    state.removing = true;
+    if discard && state.pr.is_some() && state.phase == "pushed" {
+        // Pushed changes are already in the existing PR.
+        state.published_head = state.head.clone();
+    }
+    state.closing = !delete;
+    state.removing = delete;
+    state.discarding = discard;
+    save(root, &state)
+}
+
+fn open_pr(
+    root: &Path,
+    state: &GitMod,
+    program: &Path,
+    cancelled: &AtomicBool,
+) -> io::Result<serde_json::Value> {
+    let url = state
+        .pr
+        .as_deref()
+        .ok_or_else(|| io::Error::other("This mod has no PR to continue."))?;
+    let pr: serde_json::Value = serde_json::from_str(&gh(
+        root,
+        state,
+        program,
+        &[
+            "pr",
+            "view",
+            url,
+            "--json",
+            "url,state,headRefOid,headRefName,isDraft",
+        ],
+        cancelled,
+    )?)?;
+    if pr["state"] != "OPEN" {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "This PR is merged or closed. Start a new mod from the updated project.",
+        ));
+    }
+    let expected = state.published_head.as_ref().or(state.head.as_ref());
+    if pr["headRefName"] != state.branch
+        || (pr["headRefOid"].as_str() != expected.map(String::as_str)
+            && pr["headRefOid"].as_str() != state.head.as_deref())
+    {
+        return Err(io::Error::other(
+            "The PR branch changed outside the harness. Work is retained.",
+        ));
+    }
+    Ok(pr)
+}
+
+fn clear_snapshot(root: &Path) -> io::Result<()> {
+    for name in [
+        "before",
+        "work",
+        "base.git",
+        "snapshot-ready",
+        "review.patch",
+    ] {
+        let path = root.join(name);
+        if path.is_dir() {
+            fs::remove_dir_all(path)?;
+        } else if path.exists() {
+            fs::remove_file(path)?;
+        }
+    }
+    Ok(())
+}
+
+pub fn continue_work(root: &Path, program: &Path, cancelled: &AtomicBool) -> io::Result<()> {
+    let mut state = load(root)?;
+    open_pr(root, &state, program, cancelled)?;
+    if !state.continuing {
+        if !state.published() {
+            return Err(io::Error::other(
+                "Finish the current work before continuing the PR.",
+            ));
+        }
+        cleanup(root, cancelled)?;
+        state = load(root)?;
+        let head = state
+            .published_head
+            .clone()
+            .or(state.head.clone())
+            .ok_or_else(|| io::Error::other("The published commit is missing."))?;
+        if git(root, &state.repo, &["rev-parse", &state.branch], cancelled)? != head {
+            return Err(io::Error::other(
+                "The local PR branch changed. Work is retained.",
+            ));
+        }
+        state.published_head = Some(head.clone());
+        state.base = head;
+        state.phase = "preparing".into();
+        state.fingerprint = None;
+        state.publishing = false;
+        state.closing = false;
+        state.removing = false;
+        state.discarding = false;
+        state.continuing = true;
+        save(root, &state)?;
+    }
+    prepare(&state.repo, root, cancelled)?;
+    clear_snapshot(root)?;
+    workspace::create(&checkout(root), root)?;
+    fs::write(root.join("snapshot-ready"), b"ready")?;
+    Ok(())
+}
+
+pub fn finish_continuation(root: &Path) -> io::Result<()> {
+    let mut state = load(root)?;
+    state.continuing = false;
     save(root, &state)
 }
 
@@ -889,17 +1089,29 @@ pub(crate) mod tests {
         let pr = data.0.join("pr-created");
         let failed = data.0.join("fail-once");
         fs::write(&program, format!(r#"#!/bin/sh
+branch=$(git -C '{repo}' for-each-ref --format='%(refname:short)' refs/heads/sprowt/)
+head=$(git -C '{bare}' rev-parse "$branch" 2>/dev/null)
+state=OPEN
+if [ -f '{state}' ]; then state=$(cat '{state}'); fi
+draft=false
+if [ -f '{draft}' ]; then draft=true; fi
 case "$1 $2" in
   "repo view") printf '%s\n' '{{"nameWithOwner":"fixture/project","defaultBranchRef":{{"name":"main"}}}}' ;;
-  "pr list") if [ -f '{pr}' ]; then printf '[{{"url":"https://github.com/fixture/project/pull/1","headRefOid":"%s"}}]\n' "$(cat '{pr}')"; else printf '%s\n' '[]'; fi ;;
+  "pr list") if [ -f '{pr}' ]; then printf '[{{"url":"https://github.com/fixture/project/pull/1","headRefOid":"%s","state":"%s","isDraft":%s}}]\n' "$head" "$state" "$draft"; else printf '%s\n' '[]'; fi ;;
+  "pr view") printf '{{"url":"https://github.com/fixture/project/pull/1","headRefOid":"%s","headRefName":"%s","state":"%s","isDraft":%s}}\n' "$head" "$branch" "$state" "$draft" ;;
+  "pr ready")
+    printf '%s\n' "$@" >> '{log}'
+    if [ -f '{ready_fail}' ]; then rm '{ready_fail}'; exit 1; fi
+    if [ "$4" = '--undo' ]; then touch '{draft}'; else rm -f '{draft}'; fi ;;
   "pr create")
     printf '%s\n' "$@" >> '{log}'
     git -C '{checkout}' rev-parse HEAD > '{pr}'
+    for arg in "$@"; do if [ "$arg" = '--draft' ]; then touch '{draft}'; fi; done
     if [ -f '{failed}' ]; then rm '{failed}'; printf '%s\n' 'connection interrupted after PR creation' >&2; exit 1; fi
     printf '%s\n' 'https://github.com/fixture/project/pull/1' ;;
   *) exit 1 ;;
 esac
-"#, pr=pr.display(), failed=failed.display(), log=data.0.join("gh-args").display(), checkout=checkout(&root).display())).unwrap();
+"#, pr=pr.display(), failed=failed.display(), log=data.0.join("gh-args").display(), checkout=checkout(&root).display(), repo=repo.display(), bare=bare.display(), state=data.0.join("pr-state").display(), draft=data.0.join("pr-draft").display(), ready_fail=data.0.join("ready-fail-once").display())).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -1018,7 +1230,7 @@ esac
         let flag = AtomicBool::new(false);
         prepare(&repo, &root, &flag).unwrap();
         edited(&root);
-        mark_removing(&root).unwrap();
+        mark_closing(&root, false, false).unwrap();
         assert!(cleanup(&root, &flag).is_err());
         publish(&root, "Partial work", true, &program, &flag).unwrap();
         assert!(
@@ -1027,8 +1239,169 @@ esac
                 .contains("--draft")
         );
         cleanup(&root, &flag).unwrap();
-        assert!(load(&root).unwrap().removing);
+        assert!(load(&root).unwrap().closing);
         assert!(load(&root).unwrap().pr.is_some());
+    }
+
+    #[test]
+    fn continuing_restores_source_and_updates_the_same_pr_after_an_interruption() {
+        let (data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        let url = publish(&root, "First change", true, &program, &flag).unwrap();
+        let first = load(&root).unwrap().head.unwrap();
+        cleanup(&root, &flag).unwrap();
+        continue_work(&root, &program, &flag).unwrap();
+        continue_work(&root, &program, &flag).unwrap();
+        assert!(load(&root).unwrap().continuing);
+        assert_eq!(workspace::review(&root).unwrap().count(), 0);
+        assert_eq!(
+            fs::read_to_string(root.join("work/a.txt")).unwrap(),
+            "changed\n"
+        );
+        finish_continuation(&root).unwrap();
+        fs::write(root.join("work/a.txt"), "follow-up\n").unwrap();
+        fs::write(data.0.join("ready-fail-once"), "").unwrap();
+        assert!(publish(&root, "Follow-up", false, &program, &flag).is_err());
+        let second = load(&root).unwrap().head.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            publish(&root, "Follow-up", false, &program, &flag).unwrap(),
+            url
+        );
+        assert!(!data.0.join("pr-draft").exists());
+        assert_eq!(
+            fs::read_to_string(data.0.join("gh-args"))
+                .unwrap()
+                .lines()
+                .filter(|s| *s == "create")
+                .count(),
+            1
+        );
+        cleanup(&root, &flag).unwrap();
+        let remote = data.0.join("remote.git");
+        let reference = format!("refs/heads/{}", load(&root).unwrap().branch);
+        git(&root, &remote, &["update-ref", &reference, &first], &flag).unwrap();
+        assert!(
+            continue_work(&root, &program, &flag)
+                .unwrap_err()
+                .to_string()
+                .contains("outside the harness")
+        );
+        assert!(!checkout(&root).exists());
+        git(&root, &remote, &["update-ref", &reference, &second], &flag).unwrap();
+        fs::write(data.0.join("pr-state"), "MERGED").unwrap();
+        assert!(
+            continue_work(&root, &program, &flag)
+                .unwrap_err()
+                .to_string()
+                .contains("merged or closed")
+        );
+        assert!(!checkout(&root).exists());
+        assert_eq!(
+            fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "original\n"
+        );
+    }
+
+    #[test]
+    fn interrupted_publication_can_be_saved_as_draft_on_close() {
+        let (data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        fs::write(data.0.join("fail-once"), "").unwrap();
+        assert!(publish(&root, "Change", false, &program, &flag).is_err());
+        mark_closing(&root, false, false).unwrap();
+        publish(&root, "Change", true, &program, &flag).unwrap();
+        assert!(data.0.join("pr-draft").exists());
+        cleanup(&root, &flag).unwrap();
+    }
+
+    #[test]
+    fn discard_cleans_owned_work_without_creating_a_pr() {
+        let (_data, repo, root, _) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        assert!(cleanup(&root, &flag).is_err());
+        mark_closing(&root, true, false).unwrap();
+        cleanup(&root, &flag).unwrap();
+        assert!(!checkout(&root).exists() && !root.join("work").exists());
+        let state = load(&root).unwrap();
+        assert!(state.closing && state.pr.is_none());
+        assert!(git(&root, &repo, &["rev-parse", &state.branch], &flag).is_err());
+        assert_eq!(
+            fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "original\n"
+        );
+    }
+
+    #[test]
+    fn continued_work_can_be_saved_as_draft_or_discarded() {
+        let (data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        publish(&root, "First change", false, &program, &flag).unwrap();
+        cleanup(&root, &flag).unwrap();
+        continue_work(&root, &program, &flag).unwrap();
+        finish_continuation(&root).unwrap();
+        fs::write(root.join("work/a.txt"), "partial follow-up\n").unwrap();
+        mark_closing(&root, false, false).unwrap();
+        publish(&root, "Partial follow-up", true, &program, &flag).unwrap();
+        assert!(data.0.join("pr-draft").exists());
+        let published = load(&root).unwrap().published_head.unwrap();
+        cleanup(&root, &flag).unwrap();
+        continue_work(&root, &program, &flag).unwrap();
+        finish_continuation(&root).unwrap();
+        fs::write(root.join("work/a.txt"), "discard this\n").unwrap();
+        mark_closing(&root, true, false).unwrap();
+        cleanup(&root, &flag).unwrap();
+        assert_eq!(
+            git(
+                &root,
+                &repo,
+                &["rev-parse", &load(&root).unwrap().branch],
+                &flag
+            )
+            .unwrap(),
+            published
+        );
+        continue_work(&root, &program, &flag).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("work/a.txt")).unwrap(),
+            "partial follow-up\n"
+        );
+        finish_continuation(&root).unwrap();
+        mark_closing(&root, true, false).unwrap();
+        cleanup(&root, &flag).unwrap();
+    }
+
+    #[test]
+    fn closing_after_an_interrupted_update_keeps_commits_already_in_the_pr() {
+        let (data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        publish(&root, "First change", true, &program, &flag).unwrap();
+        cleanup(&root, &flag).unwrap();
+        continue_work(&root, &program, &flag).unwrap();
+        finish_continuation(&root).unwrap();
+        fs::write(root.join("work/a.txt"), "already pushed\n").unwrap();
+        fs::write(data.0.join("ready-fail-once"), "").unwrap();
+        assert!(publish(&root, "Follow-up", false, &program, &flag).is_err());
+        mark_closing(&root, true, false).unwrap();
+        cleanup(&root, &flag).unwrap();
+        continue_work(&root, &program, &flag).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("work/a.txt")).unwrap(),
+            "already pushed\n"
+        );
+        finish_continuation(&root).unwrap();
+        mark_closing(&root, true, false).unwrap();
+        cleanup(&root, &flag).unwrap();
     }
 
     #[test]
@@ -1052,11 +1425,26 @@ esac
                 drop(vm);
                 assert_eq!(fs::read_to_string(repo.join("a.txt"))?, "original\n");
                 assert_eq!(fs::read_to_string(root.join("work/a.txt"))?, "VM edit\n");
-                publish(&root, "Change in VM", false, &program, &flag)?;
+                let pr = publish(&root, "Change in VM", false, &program, &flag)?;
                 cleanup(&root, &flag)?;
                 assert!(!root.join("vm.json").exists() && !checkout(&root).exists());
                 assert_eq!(load(&root)?.phase, "cleaned");
                 assert!(root.join("work/guest.txt").exists());
+                continue_work(&root, &program, &flag)?;
+                finish_continuation(&root)?;
+                let mut vm =
+                    crate::sandbox::Sandbox::prepare(&root, &flag, |label| eprintln!("{label}"))?;
+                let check = crate::execution::Check { check: "Fresh VM contains the published source".into(),
+                    command: vec!["/bin/sh".into(), "-c".into(), "test \"$(cat a.txt)\" = 'VM edit' && test -f guest.txt && test ! -f delete.txt && printf 'follow-up\\n' > a.txt".into()] };
+                let (_, checks) = vm.verify(&[check], &flag)?;
+                assert_eq!(checks[0].exit_code, Some(0), "{}", checks[0].output);
+                drop(vm);
+                assert_eq!(
+                    publish(&root, "Follow-up in VM", false, &program, &flag)?,
+                    pr
+                );
+                cleanup(&root, &flag)?;
+                assert!(!root.join("vm.json").exists() && !checkout(&root).exists());
                 let output = Command::new("container")
                     .args(["list", "--all", "--format", "json"])
                     .output()?;

@@ -12,7 +12,7 @@ The harness works independently of sprowt.finance. I plan to open source it as i
 
 - [Code mods and messages](docs/code-mods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
-- [Worktrees and PRs](docs/git-workflow.md): each new Git mod gets its own branch. Review verified changes, publish a PR, then remove its VM and worktree.
+- [Worktrees and PRs](docs/git-workflow.md): publish and continue the same PR. Close a mod to keep history; delete it to remove local data.
 - [Plan execution](docs/execution.md): one executor follows task dependencies and checks the combined result.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
@@ -43,6 +43,8 @@ flowchart TB
 ```
 
 Laya recommends the planner configuration. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps Git and GitHub on the Mac and package setup in the worker’s own VM. Tasks run sequentially within a mod; different mods can run in parallel. Muse follows later.
+
+Published mods can restore their branch and plan further changes on the same PR. Closing moves a mod out of the active list while keeping its history. Each resumed execution creates a fresh VM.
 
 ## Get started
 
@@ -76,7 +78,8 @@ For Git projects, make an initial commit and sign in with `gh auth login` and `g
 1. Describe your code mod and press **Enter**. Its worktree is created, then planning starts.
 2. Review the numbered tasks. **Ctrl+O** shows files, checks and model details. Write follow-up instructions and press **Enter** to queue them.
 3. Press **Ctrl+R** to execute in the mod’s VM. The first run builds the sandbox image. Press it again to pause.
-4. When changes are ready, **Ctrl+D** opens the diff. Press **p**, then **Enter** to create a PR. Its VM and worktree are removed after publication. Existing mods and non-Git folders use **a** to apply locally.
+4. **Ctrl+D** opens the diff. Press **p**, then **Enter** to publish a PR. Its VM and worktree are removed. Existing mods and non-Git folders use **a** to apply locally.
+5. **Ctrl+R** continues a published mod: describe the next change and review its fresh plan. In **Ctrl+P**, **c** closes a mod, **Tab** shows closed history and **d** deletes local data.
 
 **Ctrl+R** also stops or retries unfinished planning. Reopening restores state without starting workers. Unfinished host executions move to Linux on their next run. Use `--no-motion` to turn off animations.
 
@@ -98,7 +101,7 @@ This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to 
 | Ctrl+J | Newline |
 | Ctrl+P | Open code mods; switch or create one |
 | Ctrl+Q | Open the queue |
-| Ctrl+R | Run, stop or retry; recover pending publication or cleanup |
+| Ctrl+R | Run, stop, retry or continue a published PR |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |

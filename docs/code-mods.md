@@ -17,13 +17,16 @@ The current harness supports one planner and one executor per mod. Workers in di
 
 Publishing a PR removes the mod’s VM and worktree. Its branch, plan, messages, draft and exported source remain. Existing mods and non-Git projects keep local apply.
 
-## Create, switch, delete
+## Create, switch, close
 
 - **Create:** open **Ctrl+P**, select **New code mod**, describe the change and press Enter. In Git projects, a worktree starts from committed `HEAD`, then planning starts. The first line becomes the title; the full description is saved.
 - **Switch:** open **Ctrl+P**, select a mod and press Enter. Its conversation and draft return. Other mods’ workers keep running.
-- **Delete:** select a mod, press `d`, then Enter to confirm. Git mods save unfinished source changes as a draft PR before removing the VM, worktree and local history. A publication failure retains the mod. Empty mods need no PR. Legacy and non-Git mods remove their unapplied work directly.
+- **Continue:** on a published mod, press **Ctrl+R** or select it and press `r`. Describe the next change; a fresh plan targets the same open PR.
+- **Close:** select an active mod, press `c`, then Enter. History stays in the closed list; runtime resources are removed. Unpublished Git work offers a draft PR or discard. Legacy and non-Git closing discards unapplied files.
+- **Closed history:** press **Tab** in the picker to switch lists. Enter opens history; closed mods do not run workers.
+- **Delete:** press `d`, then Enter to permanently remove local history and discard unpublished work. Existing PRs remain on GitHub.
 
-See [Worktrees and PRs](git-workflow.md) for login, branch targets and recovery. Published Git mods retain their history; create a new mod for further changes.
+See [Worktrees and PRs](git-workflow.md) for login, branch targets and recovery. Publishing saves work to GitHub; closing ends the local session. After a PR is merged or closed, start a new mod from the updated project.
 
 The first launch in an empty project opens creation directly. Ctrl+J adds a newline. Esc cancels creation, or quits when no mod exists.
 

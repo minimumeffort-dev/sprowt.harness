@@ -17,13 +17,15 @@ use crate::{git_mod, packages, plan::Role, sandbox::Sandbox, store::CodeMod, wor
 enum Tool {
     CreateWorktree,
     PublishPr,
+    ContinuePr,
     CleanupMod,
     InstallPackages,
 }
 
-const REGISTRY: [Tool; 4] = [
+const REGISTRY: [Tool; 5] = [
     Tool::CreateWorktree,
     Tool::PublishPr,
+    Tool::ContinuePr,
     Tool::CleanupMod,
     Tool::InstallPackages,
 ];
@@ -34,6 +36,7 @@ impl Tool {
         match self {
             Self::CreateWorktree => "create_worktree",
             Self::PublishPr => "publish_pr",
+            Self::ContinuePr => "continue_pr",
             Self::CleanupMod => "cleanup_mod",
             Self::InstallPackages => packages::TOOL,
         }
@@ -115,6 +118,7 @@ impl Context {
 pub enum Request {
     CreateWorktree,
     PublishPr { draft: bool },
+    ContinuePr,
     CleanupMod,
     InstallPackages(packages::Request),
 }
@@ -124,6 +128,7 @@ impl Request {
         match self {
             Self::CreateWorktree => Tool::CreateWorktree,
             Self::PublishPr { .. } => Tool::PublishPr,
+            Self::ContinuePr => Tool::ContinuePr,
             Self::CleanupMod => Tool::CleanupMod,
             Self::InstallPackages(_) => Tool::InstallPackages,
         }
@@ -250,7 +255,7 @@ impl<'a> Dispatcher<'a> {
                 }
                 Request::PublishPr { draft } => {
                     if !draft
-                        && git_mod::load(root)?.pr.is_none()
+                        && !git_mod::load(root)?.published()
                         && self.context.verified.as_deref()
                             != Some(&workspace::review(root)?.fingerprint)
                     {
@@ -267,6 +272,11 @@ impl<'a> Dispatcher<'a> {
                         self.cancelled,
                     )
                     .map(Output::PullRequest)
+                }
+                Request::ContinuePr => {
+                    progress("restoring PR workspace");
+                    git_mod::continue_work(root, self.github_cli, self.cancelled)?;
+                    Ok(Output::Done)
                 }
                 Request::CleanupMod => {
                     progress("cleaning up mod");
@@ -388,7 +398,13 @@ mod tests {
             [packages::TOOL]
         );
         let mut tools = Dispatcher::new(&worker, None, &flag);
-        for name in ["create_worktree", "publish_pr", "cleanup_mod", "unknown"] {
+        for name in [
+            "create_worktree",
+            "publish_pr",
+            "continue_pr",
+            "cleanup_mod",
+            "unknown",
+        ] {
             let error = tools.worker_call(name, json!({}), |_| {}).unwrap_err();
             assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         }
@@ -405,7 +421,7 @@ mod tests {
             log.iter()
                 .filter(|entry| entry["status"] == "denied")
                 .count(),
-            5
+            6
         );
         assert!(
             log.iter()

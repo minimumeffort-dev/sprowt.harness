@@ -49,12 +49,14 @@ Apple Container manages each VM’s disk separately. Code and dependencies persi
 
 The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
 
-## Reopen and delete
+## Reopen, close and delete
 
 Run from the same project to restore mods, drafts and conversations. Git subfolders resolve to the repository root. Workers start when requested. A moved repository has a different identity; relocating saved worktrees is unsupported.
 
 PR publication deletes the VM and worktree while retaining the branch, history and exports. The saved URL recovers after reopening; **Ctrl+R** retries pending cleanup. Git operations run in the background and stop on exit, retaining their checkpoints. Legacy local apply deletes only the VM and also keeps history.
 
-Removing a Git mod with changes first publishes a draft PR. Cleanup must succeed before its local records are removed. Published branches and PRs remain. Legacy and non-Git deletion removes unapplied work directly. Codex may retain earlier conversation records; credentials stay on the host.
+Closing marks the mod as closed in SQLite after resource cleanup. Its conversation and results remain in the closed list. Unpublished Git work can become a draft PR or be explicitly discarded. Deletion removes local records and source exports; existing PRs remain. Legacy and non-Git closing discards unapplied files while keeping history.
+
+Continuing an open PR restores its branch, resets the current plan and worker conversations, and retains the transcript. The follow-up stays in the saved draft until restoration succeeds. Reopening the harness starts no workers. Codex may retain earlier conversations; credentials stay on the host.
 
 Run one harness instance per project. Shared memory across projects, repository indexing and memory updates after merges are future layers.

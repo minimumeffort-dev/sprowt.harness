@@ -14,7 +14,7 @@ flowchart TB
     checks -->|"all tasks done"| final["Rerun all task checks together"]
     final -->|"pass"| review["Ctrl+D · review the diff"]
     review --> confirm["p, then Enter · confirm publication"]
-    confirm --> pr["Commit and push mod branch · create PR"]
+    confirm --> pr["Commit and push mod branch · create or update PR"]
     pr --> cleanup["Delete VM and worktree · keep branch and history"]
 ```
 
@@ -48,9 +48,9 @@ Reopening restores progress without starting workers. On reconnect, confirmed co
 
 ## Review and publish
 
-**Ctrl+D** opens the diff when execution is idle. After all tasks and final checks pass, press **p**, then **Enter** to create a PR. Esc cancels. Source must match the verified result; outside edits to the worktree block publication.
+**Ctrl+D** opens the diff when execution is idle. After tasks and final checks pass, press **p**, then **Enter** to publish a PR. Esc cancels. Source must match the verified result; outside edits to the worktree block publication.
 
-The harness exports reviewed files, commits the mod branch, pushes it and creates a PR. It saves the URL before removing the VM and worktree. **Ctrl+R** retries interrupted publication or cleanup. See [Worktrees and PRs](git-workflow.md) for requirements and draft PRs on removal.
+The harness commits reviewed changes and creates or updates the mod’s PR. It saves the URL before removing the VM and worktree. History remains visible. **Ctrl+R** retries interrupted publication or cleanup; afterward it opens **Continue working** to plan changes on the same open PR. See [Worktrees and PRs](git-workflow.md) for closing and recovery.
 
 ## Local apply · existing mods and non-Git projects
 

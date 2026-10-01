@@ -123,7 +123,9 @@ It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomain
 
 Quitting stops VMs and retains unfinished mods’ disks. Reopening and **Ctrl+R** reconnect without losing dependencies. Reconnecting clears guest processes left by a crash. Shared images and the container service remain for reuse.
 
-Git mods delete their VM and host worktree after saving the PR URL. Their published branch remains. Failed publication keeps the source and VM; failed cleanup keeps the PR and offers **Ctrl+R** to retry. Local apply saves its applied state before deleting the VM and offers the same cleanup recovery. Removing a Git mod exports current guest files before publishing unfinished work as a draft PR.
+Git mods delete their VM and worktree after saving the PR URL. Their published branch remains. Failed publication keeps source and VM; failed cleanup keeps the PR and offers **Ctrl+R** to retry. Continuing restores published source and creates a fresh VM when the new plan runs. Local apply saves its state before deleting the VM.
+
+Closing removes remaining runtime resources and retains history. Unpublished Git work can be exported to a draft PR or explicitly discarded. Deleting discards unpublished work and removes local history. See [Worktrees and PRs](git-workflow.md).
 
 Unfinished mods created before VM support keep their working files. Their first explicit run starts a fresh executor conversation and reruns tasks in Linux; old host check results are cleared. Applied mods remain applied. A missing or altered VM blocks reconnection and preserves the last exported source for review.
 

@@ -18,12 +18,13 @@ flowchart TB
 | --- | --- | --- |
 | `create_worktree` | Harness | Git on the Mac |
 | `publish_pr` | Harness | Git and GitHub CLI on the Mac |
+| `continue_pr` | Harness | Check the open PR and restore its worktree |
 | `cleanup_mod` | Harness | VM deletion and Git worktree cleanup |
 | `install_system_packages` | Executor | Package setup inside its own Linux VM |
 
 Only package installation is advertised to Codex, using a JSON input schema. Unknown tools, host operations requested by workers and package requests from planners are rejected. Package names and reasons use the same validation for JSON and typed Rust calls. The connected VM must match the workspace bound to that worker.
 
-PR publication follows the existing user confirmation and source verification. Draft publication preserves unfinished work during confirmed removal. Git checkpoints still own publication recovery; the dispatcher does not replace them. Credentials remain in host adapters.
+Publication requires confirmation and verified source. Closing can save unfinished work as a draft PR; discard requires its own selection. Continuation checks PR status and the saved commit. Git checkpoints own recovery. Credentials remain in host adapters.
 
 ## Progress and activity
 
