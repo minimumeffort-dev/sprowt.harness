@@ -62,6 +62,9 @@ pub struct App {
     auto_runs: BTreeSet<i64>,
     git_jobs: BTreeMap<i64, Job>,
     git_states: BTreeMap<i64, GitMod>,
+    targets: BTreeMap<i64, crate::mod_sync::Target>,
+    target_checks: BTreeMap<i64, Instant>,
+    update_errors: BTreeSet<i64>,
     router: Option<Router>,
     notice: Option<String>,
     store: Store,
@@ -156,6 +159,9 @@ impl App {
             auto_runs: BTreeSet::new(),
             git_jobs: BTreeMap::new(),
             git_states,
+            targets: BTreeMap::new(),
+            target_checks: BTreeMap::new(),
+            update_errors: BTreeSet::new(),
             router: None,
             notice: None,
             store,
@@ -239,12 +245,16 @@ impl App {
                 || self.motion
                 || !self.workers.is_empty()
                 || !self.git_jobs.is_empty()
+                || self
+                    .mods
+                    .iter()
+                    .any(|m| !m.closed && m.execution.is_some() && m.git_root.is_some())
             {
                 let timeout = if self.welcome.running() {
                     Duration::from_millis(33)
                 } else {
                     if self.workers.is_empty() && self.git_jobs.is_empty() {
-                        next_pose
+                        next_pose.min(Duration::from_secs(1))
                     } else {
                         next_pose.min(Duration::from_millis(50))
                     }
@@ -467,6 +477,16 @@ impl App {
             }
             KeyCode::Char('q') if ctrl => {}
             KeyCode::Char('r') if ctrl => self.toggle_worker()?,
+            KeyCode::Char('u')
+                if ctrl
+                    && self.current_mod().is_some_and(|m| {
+                        !m.closed && m.execution.is_some() && m.git_root.is_some()
+                    }) =>
+            {
+                if let Some(index) = self.active {
+                    self.check_target(index, false);
+                }
+            }
             KeyCode::Char('d') if ctrl => self.open_review()?,
             KeyCode::Char('s') if ctrl && self.version_ready() => {
                 self.review = None;
@@ -827,6 +847,16 @@ impl App {
         if !self.can_publish() {
             return Ok(());
         }
+        if self.current_mod().is_some_and(|m| m.git_root.is_some())
+            && git_mod::has_origin(&self.project)
+        {
+            self.check_target(self.active.unwrap(), true);
+            return Ok(());
+        }
+        self.confirm_publication()
+    }
+
+    fn confirm_publication(&mut self) -> Result<()> {
         let code_mod = &self.mods[self.active.unwrap()];
         if let Some(root) = &code_mod.git_root {
             if self
@@ -1157,23 +1187,193 @@ impl App {
 
     pub fn git_retry_pending(&self) -> bool {
         self.current_mod().is_some_and(|m| {
-            m.git_root.as_ref().is_some_and(|root| {
-                git_mod::setup_pending(root).is_some()
-                    || git_mod::repository_pending(root).is_some()
-            }) || m.git_root.is_some()
-                && self.git_states.get(&m.id).is_none_or(|state| {
-                    state.removing
-                        || (state.closing && !m.closed)
-                        || state.continuing
-                        || state.publishing
-                        || !["ready", "published", "cleaned", "closed", "pruned"]
-                            .contains(&state.phase.as_str())
+            self.update_errors.contains(&m.id)
+                || m.git_root.as_ref().is_some_and(|root| {
+                    git_mod::setup_pending(root).is_some()
+                        || git_mod::repository_pending(root).is_some()
                 })
+                || m.git_root.is_some()
+                    && self.git_states.get(&m.id).is_none_or(|state| {
+                        state.removing
+                            || (state.closing && !m.closed)
+                            || state.continuing
+                            || state.publishing
+                            || !["ready", "published", "cleaned", "closed", "pruned"]
+                                .contains(&state.phase.as_str())
+                    })
         })
     }
 
     pub fn published(&self) -> bool {
         self.git_state().is_some_and(GitMod::published)
+    }
+
+    pub fn upstream_status(&self) -> Option<String> {
+        let code_mod = self.current_mod()?;
+        let target = self.targets.get(&code_mod.id)?;
+        match target.pr_state.as_deref() {
+            Some("MERGED") => Some("✓ PR merged · start a new codemod for more changes".into()),
+            Some("CLOSED") => Some("□ PR closed · start a new codemod for more changes".into()),
+            _ if self.git_state().is_some_and(|s| s.base != target.head) => Some(format!(
+                "{} changed · update and recheck after current work finishes",
+                target.branch
+            )),
+            _ => None,
+        }
+    }
+
+    fn check_target(&mut self, index: usize, publish: bool) {
+        let code_mod = &self.mods[index];
+        if code_mod.closed
+            || code_mod.git_root.is_none()
+            || self.git_jobs.contains_key(&code_mod.id)
+        {
+            return;
+        }
+        let context = Context::harness(&self.project, code_mod);
+        self.update_errors.remove(&code_mod.id);
+        self.target_checks.insert(code_mod.id, Instant::now());
+        self.git_jobs.insert(
+            code_mod.id,
+            Job::start("checking target branch", move |cancelled| {
+                let target = match Dispatcher::new(&context, None, cancelled)
+                    .execute(Request::CheckTarget, |_| {})?
+                {
+                    crate::tools::Output::Target(target) => target,
+                    _ => unreachable!(),
+                };
+                Ok(git_mod::Result::TargetChecked { target, publish })
+            }),
+        );
+    }
+
+    fn start_update(&mut self, index: usize, target: crate::mod_sync::Target) {
+        let id = self.mods[index].id;
+        if self.git_jobs.contains_key(&id)
+            || self
+                .workers
+                .values()
+                .any(|w| w.mod_id == id && (w.enabled || w.busy()))
+        {
+            return;
+        }
+        let Some(plan) = self.mods[index]
+            .planning
+            .as_ref()
+            .and_then(|p| p.plan.clone())
+        else {
+            return;
+        };
+        let context = Context::harness(&self.project, &self.mods[index]);
+        let workers = self
+            .workers
+            .keys()
+            .filter(|key| self.workers[key].mod_id == id)
+            .copied()
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|key| self.workers.remove(&key))
+            .collect::<Vec<_>>();
+        self.git_jobs.insert(
+            id,
+            Job::start("updating from target branch", move |cancelled| {
+                drop(workers);
+                Dispatcher::new(&context, None, cancelled)
+                    .execute(Request::UpdateTarget { target, plan }, |_| {})?;
+                Ok(git_mod::Result::Updated)
+            }),
+        );
+        if self.current_mod().is_some_and(|m| m.id == id) {
+            self.review = None;
+            self.publish_after_review = false;
+            self.view = View::Chat;
+        }
+    }
+
+    fn maintain_updates(&mut self) -> Result<()> {
+        for index in 0..self.mods.len() {
+            let code_mod = &self.mods[index];
+            let id = code_mod.id;
+            let Some(root) = code_mod.git_root.as_ref() else {
+                continue;
+            };
+            if code_mod.closed || code_mod.execution.is_none() || self.git_jobs.contains_key(&id) {
+                continue;
+            }
+            if self.update_errors.contains(&id) {
+                continue;
+            }
+            if self.current_mod().is_some_and(|m| m.id == id)
+                && !matches!(self.view, View::Chat | View::Mods(_))
+            {
+                continue;
+            }
+            let busy = self
+                .workers
+                .values()
+                .any(|w| w.mod_id == id && (w.enabled || w.busy()));
+            if let Some(update) = crate::mod_sync::load(root)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+            {
+                if !busy && (!update.prepared || !update.installed) {
+                    self.start_update(
+                        index,
+                        crate::mod_sync::Target {
+                            branch: update.branch,
+                            head: update.target,
+                            pr_state: None,
+                        },
+                    );
+                } else if !busy
+                    && code_mod
+                        .execution
+                        .as_ref()
+                        .is_some_and(|e| e.complete() && e.status == "review")
+                {
+                    let context = Context::harness(&self.project, code_mod);
+                    self.git_jobs.insert(
+                        id,
+                        Job::start("saving verified merge", move |cancelled| {
+                            Dispatcher::new(&context, None, cancelled)
+                                .execute(Request::FinishUpdate, |_| {})?;
+                            Ok(git_mod::Result::UpdateFinished)
+                        }),
+                    );
+                }
+                continue;
+            }
+            if self
+                .targets
+                .get(&id)
+                .is_some_and(|t| t.pr_state.as_deref().is_some_and(|s| s != "OPEN"))
+            {
+                continue;
+            }
+            if !busy
+                && code_mod.execution.as_ref().is_some_and(|e| {
+                    e.complete() && matches!(e.status.as_str(), "review" | "applied")
+                })
+                && let Some(target) = self.targets.get(&id)
+                && self
+                    .git_states
+                    .get(&id)
+                    .is_some_and(|s| s.base != target.head)
+            {
+                self.start_update(index, target.clone());
+            } else if self
+                .target_checks
+                .get(&id)
+                .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
+                && self.git_states.get(&id).is_some_and(|s| {
+                    ["ready", "published"].contains(&s.phase.as_str())
+                        && !s.publishing
+                        && !s.closing
+                })
+            {
+                self.check_target(index, false);
+            }
+        }
+        Ok(())
     }
 
     fn source_project(&self, index: usize) -> PathBuf {
@@ -1290,6 +1490,17 @@ impl App {
         };
         let id = self.mods[active].id;
         if self.git_jobs.contains_key(&id) {
+            return Ok(());
+        }
+        if self.update_errors.remove(&id)
+            && self.mods[active].git_root.as_ref().is_none_or(|root| {
+                crate::mod_sync::load(root)
+                    .ok()
+                    .flatten()
+                    .is_none_or(|u| !u.installed)
+            })
+        {
+            self.check_target(active, false);
             return Ok(());
         }
         if self.mods[active].git_root.is_some() {
@@ -1632,6 +1843,16 @@ impl App {
             && !self.execution_busy()
             && self.current_mod().is_some_and(|m| {
                 !m.closed
+                    && m.git_root
+                        .as_ref()
+                        .is_none_or(|root| !root.join("main-update.json").exists())
+                    && self.targets.get(&m.id).is_none_or(|target| {
+                        target.pr_state.as_deref().is_none_or(|s| s == "OPEN")
+                            && self
+                                .git_states
+                                .get(&m.id)
+                                .is_none_or(|s| s.base == target.head)
+                    })
                     && m.queue.is_empty()
                     && m.steering.is_empty()
                     && m.execution.as_ref().is_some_and(|e| {
@@ -1798,6 +2019,7 @@ impl App {
             self.auto_runs.remove(&self.mods[index].id);
             self.start_execution(index)?;
         }
+        self.maintain_updates()?;
         let edits = self
             .mods
             .iter()
@@ -1806,6 +2028,12 @@ impl App {
                 !m.closed
                     && !m.queue.is_empty()
                     && !self.git_jobs.contains_key(&m.id)
+                    && m.git_root.as_ref().is_none_or(|root| {
+                        crate::mod_sync::load(root)
+                            .ok()
+                            .flatten()
+                            .is_none_or(|u| u.installed)
+                    })
                     && self
                         .git_states
                         .get(&m.id)
@@ -1872,7 +2100,7 @@ impl App {
             .filter_map(|(id, job)| job.poll().map(|result| (*id, result)))
             .collect::<Vec<_>>();
         for (id, result) in finished {
-            self.git_jobs.remove(&id);
+            let label = self.git_jobs.remove(&id).map(|job| job.label);
             let Some(index) = self.mods.iter().position(|m| m.id == id) else {
                 continue;
             };
@@ -1933,7 +2161,7 @@ impl App {
                         if self.git_states.get(&id).is_some_and(|state| state.closing) {
                             self.finish_mod(index, false, false)?;
                         } else if self.can_publish() {
-                            self.view = View::Publish;
+                            self.open_publication()?;
                         }
                     }
                 }
@@ -1951,6 +2179,34 @@ impl App {
                     self.store.restart_plan(id)?;
                     self.mods[index].planning = self.store.planning(id)?;
                     self.auto_plans.insert(id);
+                    self.notice = None;
+                }
+                Ok(git_mod::Result::TargetChecked { target, publish }) => {
+                    if let Some(target) = target {
+                        self.targets.insert(id, target);
+                    } else {
+                        self.targets.remove(&id);
+                    }
+                    if publish
+                        && self.current_mod().is_some_and(|m| m.id == id)
+                        && self.can_publish()
+                    {
+                        self.confirm_publication()?;
+                    }
+                }
+                Ok(git_mod::Result::Updated) => {
+                    let mut update = crate::mod_sync::load(&root).unwrap().unwrap();
+                    self.store.install_update(id, &root, &update)?;
+                    update.installed = true;
+                    crate::mod_sync::save(&root, &update)
+                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                    let state = self.store.load_project(&self.project)?;
+                    self.mods[index] = state.mods.into_iter().find(|m| m.id == id).unwrap();
+                    self.start_worker(index, Role::Executor)?;
+                    self.notice = None;
+                }
+                Ok(git_mod::Result::UpdateFinished) => {
+                    self.target_checks.remove(&id);
                     self.notice = None;
                 }
                 Ok(git_mod::Result::Snapshot) => {
@@ -2049,6 +2305,23 @@ impl App {
                         .map(|error| error.to_string());
                 }
                 Err(error) => {
+                    if matches!(
+                        label,
+                        Some("updating from target branch" | "saving verified merge")
+                    ) {
+                        self.update_errors.insert(id);
+                        if label == Some("saving verified merge") {
+                            if let Some(task) = self.mods[index]
+                                .execution
+                                .as_ref()
+                                .and_then(|e| e.tasks.last())
+                            {
+                                self.store.task_status(id, &task.source, "blocked", None)?;
+                            }
+                            self.store.execution_status(id, "blocked")?;
+                            self.mods[index].execution = self.store.execution(id)?;
+                        }
+                    }
                     if self.current_mod().is_some_and(|m| m.id == id) {
                         self.publish_after_review = false;
                     }
@@ -2170,6 +2443,70 @@ mod tests {
             "local edit\n"
         );
         assert!(app.auto_plans.contains(&code_mod.id));
+    }
+
+    #[test]
+    fn upstream_updates_wait_for_workers_and_keep_drafts_and_queued_edits() {
+        let (data, repo, root, target, plan) = crate::mod_sync::tests::fixture();
+        let mut store = data.store();
+        let project = store.load_project(&repo).unwrap();
+        let code_mod = store.create_mod(project.id, "Improve deletion").unwrap();
+        let id = code_mod.id;
+        store.save_git_root(id, &root).unwrap();
+        store
+            .save_plan(id, &code_mod.planning.as_ref().unwrap().source, &plan)
+            .unwrap();
+        store.create_execution(id, &root, &plan).unwrap();
+        std::fs::write(root.join("work/delete.txt"), "codemod version\n").unwrap();
+        let run = store.execution(id).unwrap().unwrap().tasks[0]
+            .source
+            .clone();
+        let checks = vec![crate::execution::CheckResult {
+            task: None,
+            check: plan.tasks[0].checks[0].clone(),
+            command: vec!["/usr/bin/true".into()],
+            exit_code: Some(0),
+            output: String::new(),
+        }];
+        store
+            .finish_task(id, &run, "done", "Done", &checks)
+            .unwrap();
+        let fingerprint = workspace::review(&root).unwrap().fingerprint;
+        store
+            .execution_checks(id, "review", &checks, Some(&fingerprint))
+            .unwrap();
+        store.enqueue(id, "Later edit").unwrap();
+        store.save_draft(id, "Keep this draft").unwrap();
+        let mut app = App::load(repo, false, store).unwrap();
+        app.targets.insert(id, target);
+        app.target_checks.insert(id, Instant::now());
+        let record = app.store.worker_for(id, Role::Planner).unwrap();
+        let mut worker =
+            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        worker.status = Status::Running;
+        worker.enabled = true;
+        app.workers.insert(worker.id, worker);
+        app.maintain_updates().unwrap();
+        assert!(app.git_jobs.is_empty() && !root.join("main-update.json").exists());
+        assert!(!app.version_ready());
+        let worker = app.workers.values_mut().next().unwrap();
+        worker.enabled = false;
+        worker.status = Status::Ready;
+        app.maintain_updates().unwrap();
+        let job = app.git_jobs.remove(&id).unwrap();
+        let started = Instant::now();
+        loop {
+            if let Some(result) = job.poll() {
+                assert!(matches!(result.unwrap(), git_mod::Result::Updated));
+                break;
+            }
+            assert!(started.elapsed() < Duration::from_secs(15));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(app.input.lines(), ["Keep this draft"]);
+        assert_eq!(app.mods[0].queue[0].body, "Later edit");
+        assert!(app.workers.is_empty() && root.join("main-update.json").exists());
+        assert!(matches!(app.view, View::Chat));
     }
 
     #[test]

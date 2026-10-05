@@ -34,7 +34,32 @@ Local edits and staging are preserved. Files previously left untracked after pub
 
 Overlapping tracked edits, divergent history, unavailable remotes and active Git operations stop setup with an error. Resolve the named conflict and press **Ctrl+R**. No planner starts with stale source. Detached commits, local-only branches and projects without a remote keep their local starting point; a missing configured upstream is an error.
 
-If planning failed before execution, **Ctrl+R** refreshes an untouched worktree from the updated project and starts a fresh planner conversation. History, queued instructions and the draft stay. Once execution has started, the codemod’s baseline stays fixed.
+If planning failed before execution, **Ctrl+R** refreshes an untouched worktree from the updated project and starts a fresh planner conversation. History, queued instructions and the draft stay. Executing codemods use the update flow below.
+
+## When another codemod merges
+
+Build codemods in parallel; merge their PRs one at a time on GitHub. The harness checks each target branch every **30 seconds** while open. **Ctrl+U** checks immediately.
+
+```mermaid
+flowchart TB
+    merged["PR A merges on GitHub"] --> wait["Codemod B finishes current workers"]
+    wait --> checkpoint["Save B's checkpoint"]
+    checkpoint --> combine["Combine latest target branch with B"]
+    combine --> worker["Codex resolves text conflicts and checks both goals"]
+    worker --> checks["Harness reruns checks on combined source"]
+    checks --> ready["Review B · publish to update its existing PR"]
+    ready --> merge["Merge B on GitHub"]
+```
+
+An open PR becomes a draft as soon as a newer target is detected. Its workers finish before source changes. Finished versions update automatically; paused or failed work waits for retry or edits. This changes B's branch and source copy, leaving your original project folder untouched.
+
+The integration plan carries the codemod's checks and adds combined regression checks. A resolution worker receives the original goals, upstream commit messages and conflicting versions. Technical text conflicts are resolved in B's existing VM. Conflicting product intent pauses with a question; answer through the composer. Clean merges get the same verification.
+
+Passing checks save a merge commit with both parents. Drafts, queues and history stay; the diff now compares B with the updated target. Worker runtimes remain, while completed task folders are replaced. **Publish** updates the same PR and marks it ready after confirmation. Publication checks the target again, so changes arriving during verification trigger another update.
+
+Interrupted updates retain a checkpoint and resume safely. **Ctrl+R** retries failures. Binary conflicts, rewritten target history, protected file changes or outside worktree edits pause for manual reconciliation. Both Git commits and saved work remain.
+
+This is branch synchronization, not a GitHub merge queue. The harness does not merge PRs or enforce their merge order; use GitHub branch protection or its merge queue to require current checks at merge time.
 
 ## Publish and edit
 
@@ -52,7 +77,7 @@ Without an origin, choose **connect existing** or **create private** using Tab, 
 
 The PR targets your starting branch, or the GitHub default branch when starting detached. Codemod branches use `sprowt/mod-<id>-<stamp>`.
 
-Publishing retains the VM, worktree and conversation. Send edits through the composer. A new plan covers the requested change and regression checks; execution reuses the VM. Publish again to update the same PR. The diff covers the codemod's changes from its original baseline.
+Publishing retains the VM, worktree and conversation. Send edits through the composer. A new plan covers the requested change and regression checks; execution reuses the VM. Publish again to update the same PR. The diff covers the codemod's changes against its latest checked target.
 
 Merged or closed PRs require a new codemod. Its remote check brings merged changes into the local starting branch. Outside changes to the PR branch or worktree block publication and preserve local work.
 

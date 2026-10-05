@@ -206,6 +206,7 @@ impl Sandbox {
         progress("checking Linux VM isolation");
         vm.boundary(cancelled)?;
         vm.restore_tasks(cancelled)?;
+        vm.import_update(cancelled)?;
         let active = vm.tasks.active;
         for id in vm.tasks.round.clone() {
             vm.checkpoint_task(id)?;

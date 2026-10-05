@@ -52,6 +52,12 @@ impl GitMod {
 pub enum Result {
     Prepared,
     Refreshed,
+    TargetChecked {
+        target: Option<crate::mod_sync::Target>,
+        publish: bool,
+    },
+    Updated,
+    UpdateFinished,
     Adopted,
     RepositoryConnected,
     Snapshot,
@@ -255,7 +261,7 @@ pub fn load(root: &Path) -> io::Result<GitMod> {
     serde_json::from_slice(&fs::read(root.join("git-mod.json"))?).map_err(io::Error::other)
 }
 
-fn save(root: &Path, state: &GitMod) -> io::Result<()> {
+pub(crate) fn save(root: &Path, state: &GitMod) -> io::Result<()> {
     let next = root.join("git-mod-next.json");
     fs::write(&next, serde_json::to_vec(state)?)?;
     private(&next)?;
@@ -263,7 +269,7 @@ fn save(root: &Path, state: &GitMod) -> io::Result<()> {
     fs::rename(next, root.join("git-mod.json"))
 }
 
-fn private(path: &Path) -> io::Result<()> {
+pub(crate) fn private(path: &Path) -> io::Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -337,7 +343,20 @@ pub(crate) fn git(
     args: &[&str],
     cancelled: &AtomicBool,
 ) -> io::Result<String> {
+    git_index(root, path, args, None, cancelled)
+}
+
+pub(crate) fn git_index(
+    root: &Path,
+    path: &Path,
+    args: &[&str],
+    index: Option<&Path>,
+    cancelled: &AtomicBool,
+) -> io::Result<String> {
     let mut command = safe_git(path)?;
+    if let Some(index) = index {
+        command.env("GIT_INDEX_FILE", index);
+    }
     command.arg("-C").arg(path).args(args);
     String::from_utf8(run(command, root, cancelled)?)
         .map(|text| text.trim_end().to_owned())
@@ -573,7 +592,7 @@ pub fn prepare(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
     save(root, &state)
 }
 
-fn validate(root: &Path, state: &GitMod, cancelled: &AtomicBool) -> io::Result<()> {
+pub(crate) fn validate(root: &Path, state: &GitMod, cancelled: &AtomicBool) -> io::Result<()> {
     let path = checkout(root);
     if fs::symlink_metadata(&path)?.file_type().is_symlink()
         || git(
@@ -702,7 +721,22 @@ pub fn refresh(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
     fs::remove_file(marker)
 }
 
-fn stage(root: &Path, path: &Path, review: &Review, cancelled: &AtomicBool) -> io::Result<()> {
+pub(crate) fn stage(
+    root: &Path,
+    path: &Path,
+    review: &Review,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    stage_index(root, path, review, None, cancelled)
+}
+
+pub(crate) fn stage_index(
+    root: &Path,
+    path: &Path,
+    review: &Review,
+    index: Option<&Path>,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
     for relative in review.paths() {
         let name = relative
             .to_str()
@@ -724,7 +758,7 @@ fn stage(root: &Path, path: &Path, review: &Review, cancelled: &AtomicBool) -> i
             };
             #[cfg(not(unix))]
             let executable = false;
-            git(
+            git_index(
                 root,
                 path,
                 &[
@@ -735,13 +769,15 @@ fn stage(root: &Path, path: &Path, review: &Review, cancelled: &AtomicBool) -> i
                     hash.trim(),
                     name,
                 ],
+                index,
                 cancelled,
             )?;
         } else {
-            git(
+            git_index(
                 root,
                 path,
                 &["update-index", "--force-remove", "--", name],
+                index,
                 cancelled,
             )?;
         }
@@ -749,7 +785,7 @@ fn stage(root: &Path, path: &Path, review: &Review, cancelled: &AtomicBool) -> i
     Ok(())
 }
 
-fn gh(
+pub(crate) fn gh(
     root: &Path,
     state: &GitMod,
     program: &Path,
@@ -1248,6 +1284,16 @@ pub fn cleanup(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
         command.arg(&path);
         run(command, root, cancelled)?;
     }
+    git(
+        root,
+        &state.repo,
+        &[
+            "update-ref",
+            "-d",
+            &format!("refs/sprowt/upstream/{}", state.branch),
+        ],
+        cancelled,
+    )?;
     if state.pr.is_none()
         && git(
             root,
@@ -1310,7 +1356,7 @@ pub fn cancel_closing(root: &Path) -> io::Result<()> {
     save(root, &state)
 }
 
-fn open_pr(
+pub(crate) fn open_pr(
     root: &Path,
     state: &GitMod,
     program: &Path,
@@ -1416,7 +1462,7 @@ pub fn prepare_edits(root: &Path, program: &Path, cancelled: &AtomicBool) -> io:
 }
 
 // Keep an incremental export until its commit is saved, so interrupted copies can resume.
-fn transfer(root: &Path, state: &GitMod, cancelled: &AtomicBool) -> io::Result<()> {
+pub(crate) fn transfer(root: &Path, state: &GitMod, cancelled: &AtomicBool) -> io::Result<()> {
     let path = checkout(root);
     let export = root.join("transfer");
     let source = workspace::source_state(&root.join("work"))?;
@@ -1495,6 +1541,17 @@ pub fn checkpoint(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
     if root.join("checkpoint-error").exists() {
         drop(crate::sandbox::Sandbox::prepare(root, cancelled, |_| {})?);
     }
+    save_source(root, cancelled)?;
+    crate::sandbox::delete(root)?;
+    let mut state = load(root)?;
+    state.publishing = false;
+    state.continuing = false;
+    state.fingerprint = None;
+    state.phase = "closed".into();
+    save(root, &state)
+}
+
+pub(crate) fn save_source(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
     let mut state = load(root)?;
     if !checkout(root).exists() {
         reopen(root, cancelled)?;
@@ -1544,12 +1601,7 @@ pub fn checkpoint(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
     if export.exists() {
         fs::remove_dir_all(export)?;
     }
-    crate::sandbox::delete(root)?;
-    state.publishing = false;
-    state.continuing = false;
-    state.fingerprint = None;
-    state.phase = "closed".into();
-    save(root, &state)
+    Ok(())
 }
 
 pub fn prune(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {

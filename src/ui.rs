@@ -122,6 +122,11 @@ pub fn draw(
             if app.current_mod().is_some_and(|m| m.closed) {
                 return "□ closed · history saved".into();
             }
+            if let Some(status) = app.upstream_status()
+                && app.current_worker().is_none_or(|w| !w.busy())
+            {
+                return status;
+            }
             if let Some(state) = app.git_state() {
                 if state.published() {
                     return "◇ PR published · send a message to request edits".into();
@@ -829,6 +834,12 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     if app.version_ready() {
         options.push(format!("{ctrl}s publish PR"));
     }
+    if app
+        .current_mod()
+        .is_some_and(|m| !m.closed && m.git_root.is_some() && m.execution.is_some())
+    {
+        options.push(format!("{ctrl}u update base"));
+    }
     if let Some(action) = run {
         options.push(format!("{ctrl}r {action}"));
     }
@@ -953,7 +964,13 @@ fn plan_lines(
     git_mod: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = vec![
-        Line::from("▤ codex · planner").fg(ACCENT).bold(),
+        Line::from(if planning.source.starts_with("upstream:") {
+            "▤ integration plan"
+        } else {
+            "▤ codex · planner"
+        })
+        .fg(ACCENT)
+        .bold(),
         Line::from(vec![
             "  ctrl+o ".fg(ACCENT),
             if details {

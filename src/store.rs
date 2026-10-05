@@ -773,7 +773,13 @@ impl Store {
                 .iter()
                 .find(|task| task.id == run.task_id)
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            vec![crate::execution::task_prompt(&plan, task, run.id)]
+            let mut prompt = crate::execution::task_prompt(&plan, task, run.id);
+            if let Some(update) = crate::mod_sync::load(&execution.workspace)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+            {
+                prompt.push_str(&format!("\nIntegration context:\n{}", update.context));
+            }
+            vec![prompt]
         } else {
             return Err(rusqlite::Error::InvalidQuery);
         };
@@ -1105,6 +1111,44 @@ impl Store {
             "UPDATE workers SET thread_id=NULL,pending=NULL WHERE mod_id=?1 AND role='executor'",
             [mod_id],
         )?;
+        transaction.commit()
+    }
+
+    pub fn install_update(
+        &mut self,
+        mod_id: i64,
+        root: &Path,
+        update: &crate::mod_sync::Update,
+    ) -> Result<()> {
+        let source = format!("upstream:{}", update.target);
+        let transaction = self.0.transaction()?;
+        let current: Option<String> = transaction
+            .query_row("SELECT source FROM plans WHERE mod_id=?1", [mod_id], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        if current.as_deref() == Some(&source) {
+            return transaction.commit();
+        }
+        transaction.execute("DELETE FROM task_runs WHERE mod_id=?1", [mod_id])?;
+        transaction.execute("INSERT INTO plans(mod_id,source,status,body) VALUES (?1,?2,'ready',?3) ON CONFLICT(mod_id) DO UPDATE SET source=excluded.source,status='ready',body=excluded.body,model=NULL,effort=NULL,routing=NULL", params![mod_id,source,serde_json::to_string(&update.plan).unwrap()])?;
+        transaction.execute("INSERT INTO executions(mod_id,workspace,backend) VALUES (?1,?2,'apple-container') ON CONFLICT(mod_id) DO UPDATE SET status='pending',checks='[]',fingerprint=NULL,backend='apple-container'", params![mod_id,root.to_string_lossy()])?;
+        for task in &update.plan.tasks {
+            transaction.execute(
+                "INSERT INTO task_runs(mod_id,task_id,source) VALUES (?1,?2,?3)",
+                params![mod_id, task.id, format!("pending:{source}")],
+            )?;
+            let id = transaction.last_insert_rowid();
+            transaction.execute(
+                "UPDATE task_runs SET source=?2 WHERE id=?1",
+                params![id, task_source(id, 1)],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE workers SET thread_id=NULL,pending=NULL WHERE mod_id=?1",
+            [mod_id],
+        )?;
+        transaction.execute("INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,'harness',?3) ON CONFLICT(mod_id,item_id) DO NOTHING", params![mod_id,source,format!("Updating from {} · {} conflicts · rechecking combined changes", update.branch,update.conflicts.len())])?;
         transaction.commit()
     }
 

@@ -11,7 +11,13 @@ use std::{
 
 use serde_json::{Value, json};
 
-use crate::{git_mod, packages, plan::Role, sandbox::Sandbox, store::CodeMod, workspace};
+use crate::{
+    git_mod, mod_sync, packages,
+    plan::{Plan, Role},
+    sandbox::Sandbox,
+    store::CodeMod,
+    workspace,
+};
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tool {
@@ -20,6 +26,9 @@ enum Tool {
     ConnectRepository,
     CreateWorktree,
     RefreshWorktree,
+    CheckTarget,
+    UpdateTarget,
+    FinishUpdate,
     PublishPr,
     PrepareEdits,
     CleanupMod,
@@ -29,12 +38,15 @@ enum Tool {
     InstallPackages,
 }
 
-const REGISTRY: [Tool; 12] = [
+const REGISTRY: [Tool; 15] = [
     Tool::InitializeProject,
     Tool::AdoptSnapshot,
     Tool::ConnectRepository,
     Tool::CreateWorktree,
     Tool::RefreshWorktree,
+    Tool::CheckTarget,
+    Tool::UpdateTarget,
+    Tool::FinishUpdate,
     Tool::PublishPr,
     Tool::PrepareEdits,
     Tool::CleanupMod,
@@ -53,6 +65,9 @@ impl Tool {
             Self::ConnectRepository => "connect_repository",
             Self::CreateWorktree => "create_worktree",
             Self::RefreshWorktree => "refresh_worktree",
+            Self::CheckTarget => "check_target",
+            Self::UpdateTarget => "update_target",
+            Self::FinishUpdate => "finish_update",
             Self::PublishPr => "publish_pr",
             Self::PrepareEdits => "prepare_edits",
             Self::CleanupMod => "cleanup_mod",
@@ -155,7 +170,15 @@ pub enum Request {
     ConnectRepository(git_mod::RepositoryRequest),
     CreateWorktree,
     RefreshWorktree,
-    PublishPr { draft: bool },
+    CheckTarget,
+    UpdateTarget {
+        target: mod_sync::Target,
+        plan: Plan,
+    },
+    FinishUpdate,
+    PublishPr {
+        draft: bool,
+    },
     PrepareEdits,
     CleanupMod,
     CloseMod,
@@ -172,6 +195,9 @@ impl Request {
             Self::ConnectRepository(_) => Tool::ConnectRepository,
             Self::CreateWorktree => Tool::CreateWorktree,
             Self::RefreshWorktree => Tool::RefreshWorktree,
+            Self::CheckTarget => Tool::CheckTarget,
+            Self::UpdateTarget { .. } => Tool::UpdateTarget,
+            Self::FinishUpdate => Tool::FinishUpdate,
             Self::PublishPr { .. } => Tool::PublishPr,
             Self::PrepareEdits => Tool::PrepareEdits,
             Self::CleanupMod => Tool::CleanupMod,
@@ -188,6 +214,7 @@ pub enum Output {
     Done,
     PullRequest(String),
     Text(String),
+    Target(Option<mod_sync::Target>),
 }
 
 impl Output {
@@ -195,6 +222,7 @@ impl Output {
         match self {
             Self::Done => "Done".into(),
             Self::PullRequest(url) | Self::Text(url) => url,
+            Self::Target(target) => target.map_or("No remote".into(), |t| t.head),
         }
     }
 }
@@ -358,6 +386,9 @@ impl<'a> Dispatcher<'a> {
                             "PR publication needs the verified source. Recheck before publishing.",
                         ));
                     }
+                    if !draft {
+                        mod_sync::require_current(root, self.github_cli, self.cancelled)?;
+                    }
                     progress("publishing PR");
                     git_mod::publish(
                         root,
@@ -371,6 +402,37 @@ impl<'a> Dispatcher<'a> {
                 Request::PrepareEdits => {
                     progress("preparing edits");
                     git_mod::prepare_edits(root, self.github_cli, self.cancelled)?;
+                    Ok(Output::Done)
+                }
+                Request::CheckTarget => {
+                    let target = mod_sync::target(root, self.github_cli, self.cancelled)?;
+                    let state = git_mod::load(root)?;
+                    if target.as_ref().is_some_and(|t| {
+                        t.head != state.base && t.pr_state.as_deref() == Some("OPEN")
+                    }) {
+                        mod_sync::hold_pr(root, self.github_cli, self.cancelled)?;
+                    }
+                    Ok(Output::Target(target))
+                }
+                Request::UpdateTarget { target, plan } => {
+                    if mod_sync::load(root)?.is_none()
+                        && (self.context.verified.is_none()
+                            || self.context.verified.as_deref()
+                                != Some(&workspace::review(root)?.fingerprint))
+                    {
+                        return Err(io::Error::other(
+                            "Wait for the current version to finish before updating.",
+                        ));
+                    }
+                    mod_sync::hold_pr(root, self.github_cli, self.cancelled)?;
+                    mod_sync::prepare(root, &target, &plan, self.cancelled)?;
+                    Ok(Output::Done)
+                }
+                Request::FinishUpdate => {
+                    let fingerprint = self.context.verified.as_deref().ok_or_else(|| {
+                        io::Error::other("Combined checks must pass before saving the merge.")
+                    })?;
+                    mod_sync::finish(root, fingerprint, self.cancelled)?;
                     Ok(Output::Done)
                 }
                 Request::CloseMod => {
@@ -520,6 +582,9 @@ mod tests {
             "close_mod",
             "reopen_mod",
             "prune_mod",
+            "check_target",
+            "update_target",
+            "finish_update",
             "unknown",
         ] {
             let error = tools.worker_call(name, json!({}), |_| {}).unwrap_err();
@@ -538,7 +603,7 @@ mod tests {
             log.iter()
                 .filter(|entry| entry["status"] == "denied")
                 .count(),
-            12
+            15
         );
         assert!(
             log.iter()
@@ -637,6 +702,13 @@ mod tests {
             .unwrap();
         workspace::create(&git_mod::checkout(&root), &root).unwrap();
         fs::write(root.join("work/a.txt"), "edited\n").unwrap();
+        git_mod::git(
+            &root,
+            context.project.as_ref().unwrap(),
+            &["push", "origin", "main"],
+            &flag,
+        )
+        .unwrap();
         let mut tools = Dispatcher::new(&context, None, &flag);
         tools.github_cli = &gh;
         assert!(

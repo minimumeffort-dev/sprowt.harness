@@ -45,6 +45,39 @@ pub fn folder(id: i64) -> String {
 }
 
 impl Sandbox {
+    pub(crate) fn import_update(&mut self, cancelled: &AtomicBool) -> io::Result<()> {
+        let Some(mut update) = crate::mod_sync::load(self.root())? else {
+            return Ok(());
+        };
+        if update.imported {
+            return Ok(());
+        }
+        let source = workspace::source_state(&self.root().join("work"))?;
+        self.replace_guest_source("/workspace", &source, cancelled)?;
+        if self.guest_exists(&format!("{GIT}/HEAD"))? {
+            self.commit_source(None, &source, cancelled)?;
+        }
+        for id in self.tasks.round.clone() {
+            self.remove_task(id, cancelled)?;
+            self.git(
+                None,
+                &["update-ref", "-d", &format!("refs/heads/task/{id}")],
+                cancelled,
+            )?;
+        }
+        self.tasks = TaskWorktrees::default();
+        let drafts = self.root().join("task-drafts");
+        if drafts.exists() {
+            fs::remove_dir_all(drafts)?;
+        }
+        self.save_tasks()?;
+        if self.guest_exists(&format!("{GIT}/HEAD"))? {
+            self.checkpoint_tasks(cancelled)?;
+        }
+        update.imported = true;
+        crate::mod_sync::save(self.root(), &update)
+    }
+
     pub fn assign_task(&mut self, id: i64, worker: i64, cancelled: &AtomicBool) -> io::Result<()> {
         self.tasks.owners.insert(id, worker);
         self.guest(&["/bin/mkdir", "-p", &worker_home(worker)], cancelled)?;

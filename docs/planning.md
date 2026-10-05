@@ -66,4 +66,4 @@ Ctrl+R stops unfinished planning or retries it after interruption or failure. An
 
 A valid plan is saved and displayed in the conversation. New plans proceed directly to execution. After an interruption, Ctrl+R explicitly resumes work.
 
-Reopening the harness restores saved progress without starting workers. Sending edits to a completed version creates a new plan against the latest source, with checks for the change and regressions. The conversation stays; the current plan is replaced.
+Reopening restores progress; unfinished work waits for retry. Finished versions can update automatically from merged work, using an integration plan. Sending edits creates a new plan against the latest source, with checks for the change and regressions. The conversation stays; the current plan is replaced.

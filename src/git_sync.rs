@@ -155,7 +155,7 @@ pub fn project(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
     finish(root)
 }
 
-fn network(project: &Path) -> Command {
+pub(crate) fn network(project: &Path) -> Command {
     let mut command = Command::new("git");
     command
         .stdin(Stdio::null())

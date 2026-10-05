@@ -35,7 +35,9 @@ flowchart TB
         ├── sync-before-index original staging checkpoint during sync
         ├── sync-index temporary staging used for the fast-forward
         ├── refresh-target pending starting-source refresh; removed when complete
-        ├── before/   starting files
+        ├── main-update.json pending target, checkpoint, conflicts and integration plan
+        ├── main-update/ immutable merge snapshots and temporary merge index
+        ├── before/   latest checked target files
         ├── work/     source exported from the VM
         ├── base.git/ private diff metadata
         ├── tasks.json task round, worker ownership and integration state
@@ -65,7 +67,7 @@ Project synchronization uses a temporary Git index and locks the real index whil
 
 ## Reopen, close and delete
 
-Run from the same project to restore mods, drafts and conversations. Git subfolders resolve to the repository root. Workers start when requested. A moved repository has a different identity; relocating saved worktrees is unsupported.
+Run from the same project to restore mods, drafts and conversations. Git subfolders resolve to the repository root. Unfinished work waits for retry; finished versions can update from merged work. A moved repository has a different identity; relocating saved worktrees is unsupported.
 
 Publication retains the VM and worktree. The PR URL and commit are saved before success is shown. Failed Git operations keep their checkpoints and can retry with **Ctrl+R**.
 
@@ -73,6 +75,8 @@ Closing stops all workers, checkpoints their drafts, saves guest task branches i
 
 At project startup, closed worktrees older than `--closed-worktree-days` are pruned if their checkpoint is unchanged. The default is 30 days; 0 disables pruning. Branches, history and exports stay. Reopening restores a pruned worktree from its checkpoint; a fresh VM starts on execution.
 
-Each edit round consumes its queued request and replaces the current plan and task results in one transaction, retaining the workspace, transcript and composer draft. Reopening the harness starts no workers. Codex may retain earlier conversations; credentials stay on the host.
+Each edit round consumes its queued request and replaces the current plan and task results in one transaction, retaining the workspace, transcript and composer draft. Target updates install their integration plan atomically too; drafts, queues and history stay. Immutable snapshots make interrupted baseline replacement repeatable. A temporary index and saved merge commit let finalization resume without losing ancestry. Successful updates remove their recovery snapshots.
+
+Reopening leaves unfinished work paused. Finished versions can automatically update when the target branch changes. Codex may retain earlier conversations; credentials stay on the host.
 
 Run one harness instance per project. Shared memory across projects, repository indexing and memory updates after merges are future layers.

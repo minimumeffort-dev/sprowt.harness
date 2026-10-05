@@ -12,7 +12,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 
 - [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
-- [Worktrees and PRs](docs/git-workflow.md): sync merged changes, create a worktree and publish a PR. Keep editing, or close with a saved checkpoint.
+- [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
 - [Plan execution](docs/execution.md): up to two Codex executors work in parallel, with separate task folders and combined verification.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod, with local sockets for browser checks. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Workers within and across mods can run in parallel.
@@ -45,11 +45,16 @@ flowchart TB
     edits --> planner
     ready --> publish["Confirm publish · create or update PR"]
     publish --> ready
+    upstream["Another PR merges"] --> update["Save checkpoint · combine latest target branch"]
+    update --> verify["Codex resolves conflicts · Rust rechecks"]
+    verify --> ready
 ```
 
 Laya recommends the planner configuration. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse follows later.
 
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
+
+Merge PRs one at a time on GitHub. The harness checks target branches every 30 seconds while open. Other codemods finish their current work, save a checkpoint and update in their existing VM. A worker resolves text conflicts and rechecks the combined code. Open PRs become drafts during the update; Publish updates the same PR and marks it ready again. Product decisions pause for your input; binary conflicts need manual resolution.
 
 ## Get started
 
@@ -88,7 +93,7 @@ Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth lo
 4. **Ctrl+D** reviews the diff. **Ctrl+S** starts publication; confirm the GitHub destination if needed, then the PR. Keep editing afterward to update the same PR.
 5. In **Ctrl+P**, **c** closes with a checkpoint, **Tab** shows closed mods, **r** reopens and **d** deletes local data.
 
-Reopening the harness restores state without starting workers. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. A review worker comes later.
+Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. A review worker comes later.
 
 ### Local model routing
 
@@ -110,6 +115,7 @@ This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to 
 | Ctrl+Q | Open the queue |
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
+| Ctrl+U | Check the target branch and update when current work finishes |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
