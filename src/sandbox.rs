@@ -330,7 +330,7 @@ impl Sandbox {
             .open(self.root.join("sandbox.log"))?;
         private(&self.root.join("sandbox.log"), 0o600)?;
         let mut command = container();
-        command.args(args).stdout(Stdio::null()).stderr(log);
+        command.args(args).stdout(log.try_clone()?).stderr(log);
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
@@ -521,8 +521,9 @@ impl Sandbox {
             .map(|(domain, access)| format!("{}={}", json!(domain), json!(access)))
             .collect::<Vec<_>>()
             .join(",");
+        // Codex 0.159.2 needs this guest-only grant for Chromium's local IPC.
         format!(
-            "permissions.{name}={{filesystem={{\"/\"=\"read\",{}=\"write\",{}=\"read\",{}=\"write\",\"/tmp\"=\"write\"}},network={{enabled=true,domains={{{domains}}},allow_local_binding=true}}}}",
+            "permissions.{name}={{filesystem={{\"/\"=\"read\",{}=\"write\",{}=\"read\",{}=\"write\",\"/tmp\"=\"write\"}},network={{enabled=true,domains={{{domains}}},allow_local_binding=true,dangerously_allow_all_unix_sockets=true}}}}",
             json!(cwd),
             json!(format!("{cwd}/.git")),
             json!(home)
@@ -594,7 +595,7 @@ impl Sandbox {
         installing: bool,
     ) -> io::Result<(Option<i64>, Vec<u8>, Vec<u8>)> {
         let sandbox = self.process_permissions(installing);
-        let proxy = json!({"proxy":{"enabled":true,"enableSocks5":false,"enableSocks5Udp":false,"allowUpstreamProxy":false,"dangerouslyAllowAllUnixSockets":false,"mode":"full","domains":self.domains,"unixSockets":{},"allowLocalBinding":true},"auditMetadata":{}});
+        let proxy = json!({"proxy":{"enabled":true,"enableSocks5":false,"enableSocks5Udp":false,"allowUpstreamProxy":false,"dangerouslyAllowAllUnixSockets":!installing,"mode":"full","domains":self.domains,"unixSockets":{},"allowLocalBinding":true},"auditMetadata":{}});
         let task_folder = self.task_folder();
         let home = self.runtime_home();
         let rpc = self.rpc.as_mut().unwrap();
@@ -779,7 +780,7 @@ impl Sandbox {
     }
 
     fn boundary(&mut self, cancelled: &AtomicBool) -> io::Result<()> {
-        let code = "test \"$(uname -s)\" = Linux && test ! -e /root/.ssh && test ! -e /home/sprowt/.codex/auth.json && test ! -e /opt/codex-home/auth.json && test -z \"${OPENAI_API_KEY}${CODEX_API_KEY}${CODEX_ACCESS_TOKEN}\" && ! touch /usr/local/bin/sprowt-canary && (curl -sI --max-time 5 https://sprowt-policy-check.invalid | grep -q '403 Forbidden') && ! curl --noproxy '*' --resolve github.com:443:140.82.112.3 -fsI --max-time 5 https://github.com >/dev/null && ! curl -fsI --max-time 5 http://192.168.64.1:80 >/dev/null";
+        let code = "test \"$(uname -s)\" = Linux && (if test -e /root/.ssh || test -L /root/.ssh; then test -d /root/.ssh && ! test -L /root/.ssh && entries=$(find /root/.ssh -mindepth 1 -print -quit) && test -z \"$entries\"; fi) && test ! -e /home/sprowt/.codex/auth.json && test ! -e /opt/codex-home/auth.json && test -z \"${OPENAI_API_KEY}${CODEX_API_KEY}${CODEX_ACCESS_TOKEN}\" && ! touch /usr/local/bin/sprowt-canary && (curl -sI --max-time 5 https://sprowt-policy-check.invalid | grep -q '403 Forbidden') && ! curl --noproxy '*' --resolve github.com:443:140.82.112.3 -fsI --max-time 5 https://github.com >/dev/null && ! curl -fsI --max-time 5 http://192.168.64.1:80 >/dev/null";
         let (exit, _, error) = self.run(
             &["/bin/sh".into(), "-c".into(), code.into()],
             cancelled,
@@ -1374,7 +1375,7 @@ mod tests {
                 let probe = root.join("network-test.c");
                 fs::write(
                     &probe,
-                    "#include <errno.h>\n#include <sys/socket.h>\nint main(void) { return socket(AF_INET, SOCK_STREAM, 0) == -1 && errno == EPERM ? 0 : 1; }\n",
+                    "#include <errno.h>\n#include <sys/socket.h>\n#include <linux/netlink.h>\nint main(void) { if (socket(AF_INET, SOCK_STREAM, 0) != -1 || errno != EPERM) return 1; return socket(AF_NETLINK, SOCK_RAW, NETLINK_AUDIT) == -1 && errno == EAFNOSUPPORT ? 0 : 1; }\n",
                 )?;
                 vm.control(
                     &[
@@ -1397,7 +1398,25 @@ mod tests {
                 )?;
                 vm.offline_install(&["/opt/sprowt-apt/network-test"], &cancelled)?;
                 vm.install_packages(&request, &cancelled)?;
+                vm.control(
+                    &["exec", &vm.name, "/bin/mkdir", "-p", "/root/.ssh"],
+                    &cancelled,
+                )?;
                 vm.boundary(&cancelled)?;
+                vm.control(
+                    &[
+                        "exec",
+                        &vm.name,
+                        "/usr/bin/touch",
+                        "/root/.ssh/credential-canary",
+                    ],
+                    &cancelled,
+                )?;
+                assert!(vm.boundary(&cancelled).is_err());
+                vm.control(
+                    &["exec", &vm.name, "/bin/rm", "/root/.ssh/credential-canary"],
+                    &cancelled,
+                )?;
                 let checks = vec![Check { task: None, check:"Package installed and source retained".into(),command:vec!["/bin/sh".into(),"-c".into(),"/usr/bin/jq --version && test \"$(cat keep.txt)\" = 'source stays' && ! touch /opt/sprowt-apt/worker-write".into()]}];
                 assert_eq!(vm.verify(&checks, &cancelled)?.1[0].exit_code, Some(0));
                 drop(vm);

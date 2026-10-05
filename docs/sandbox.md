@@ -76,11 +76,23 @@ flowchart TB
 
 The harness accepts names only: no shell commands, URLs, repository changes or removal requests. It downloads signed packages from official Debian 12 repositories through the existing proxy and allowlist. It then runs the installer inside the VM with networking blocked by a small Linux syscall filter. Only setup can write system files; normal worker commands stay restricted. Trusted Debian install scripts run in the VM, with no host mounts or credentials. Packages that require network access during installation report a setup error.
 
+The offline installer reports kernel auditing as unavailable, allowing package scripts to create system users without opening audit or network sockets. Setup output is retained in the mod's private `sandbox.log`.
+
+Debian can create an empty `/root/.ssh` directory. Reconnection permits that empty directory and rejects any contents or links there, alongside the existing login-file checks.
+
 Setup progress appears beside the active worker. Requests and results are saved in the mod’s `packages.jsonl`; Codex also saves the tool result in its conversation. **Ctrl+R** stops setup; a retry completes pending package configuration before continuing. A failed installation keeps the working files and reports its error.
 
 Uses Codex’s experimental [dynamic tool interface](https://learn.chatgpt.com/docs/app-server#dynamic-tool-calls-experimental).
 
 If a saved executor conversation lacks the setup tool, reconnecting opens a new conversation. The goal, saved plan, unfinished task and accepted user instructions supply its context. The VM, runtime, source and transcript are retained; completed tasks stay complete.
+
+## Browser checks
+
+Chromium needs local Unix sockets to start. Worker commands and independent checks allow these sockets inside the codemod VM. Codex **0.159.2** requires `dangerously_allow_all_unix_sockets` for socket creation; an exact socket allowlist does not permit browser IPC. This grants access to guest sockets, including other guest processes, so it is not a separate communication boundary between workers. Host sockets are never mounted or forwarded. The domain proxy and task file restrictions still apply.
+
+Start the app and browser in the same check command so they share the command's loopback network. Use a free port and stop both afterward. Missing browser libraries go through `install_system_packages`; runtimes and browser downloads remain the worker's choice.
+
+Restart the harness after upgrading, then use **Ctrl+R** to retry a blocked task. Its saved source and completed tasks are retained.
 
 ## The boundary
 
@@ -147,6 +159,7 @@ cargo test sandbox::tests::persistent_vm_checks -- --ignored --nocapture
 cargo test sandbox::tests::task_worktrees -- --ignored --nocapture
 cargo test codex::tests::task_turn -- --ignored --nocapture
 cargo test codex::tests::two_clients_share_a_vm -- --ignored --nocapture
+cargo test codex::tests::browser_turn_and_verification -- --ignored --nocapture
 ```
 
-These use temporary repositories and VMs, checking worker restrictions, tool ownership, source transfer and cleanup. GitHub publication uses a local fixture. The Codex tests use short subscription-backed turns, including two simultaneous workers. Native VM tests require the pinned host and guest Codex versions; shared images remain for reuse.
+These use temporary repositories and VMs, checking worker restrictions, tool ownership, source transfer and cleanup. GitHub publication uses a local fixture. The Codex tests use short subscription-backed turns, including two simultaneous workers. The browser check installs Chromium, renders a local page through both execution paths and verifies socket, network and file boundaries. Native VM tests require the pinned host and guest Codex versions; shared images remain for reuse.

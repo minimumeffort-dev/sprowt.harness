@@ -807,6 +807,99 @@ mod tests {
     use std::fs;
 
     #[test]
+    #[ignore = "checks Chromium through a real worker and verifier in a temporary VM"]
+    fn browser_turn_and_verification_preserve_boundaries() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("browser_check.py"),
+            include_str!("../tests/fixtures/browser_check.py"),
+        )
+        .unwrap();
+        let parent = data.0.join("workspaces");
+        fs::create_dir(&parent).unwrap();
+        let root = parent.join(format!("browser-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let mut m = store
+            .create_mod(project_id, "Check browser startup")
+            .unwrap();
+        let plan = Plan::parse(&json!({"summary":"Browser checks", "tasks":[
+            {"id":"browser","title":"Check browser","outcome":"Browser starts","files":["marker.txt"],"depends_on":[],"worker":"codex","checks":["Browser and boundaries pass"]},
+            {"id":"peer","title":"Peer fixture","outcome":"Peer stays isolated","files":["peer.txt"],"depends_on":[],"worker":"codex","checks":["Peer stays isolated"]}
+        ]}).to_string()).unwrap();
+        store.create_execution(m.id, &root, &plan).unwrap();
+        m.execution = store.execution(m.id).unwrap();
+        let worker = store.worker_at(m.id, Role::Executor, 0).unwrap().id;
+        let peer = store.worker_at(m.id, Role::Executor, 1).unwrap().id;
+        let runs = &m.execution.as_ref().unwrap().tasks;
+        let flag = AtomicBool::new(false);
+        let command = vec![
+            "/usr/bin/python3".into(),
+            "browser_check.py".into(),
+            format!("/tasks/{}", runs[1].id),
+            format!("/home/sprowt/workers/{peer}"),
+        ];
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &flag, |label| eprintln!("{label}"))?;
+                vm.install_packages(&crate::packages::Request::parse(json!({
+                    "packages":["chromium","python3"], "reason":"Check browser IPC and sandbox boundaries"
+                }))?, &flag)?;
+                vm.prepare_tasks(&runs.iter().map(|run| run.id).collect::<Vec<_>>(), &flag)?;
+                vm.assign_task(runs[1].id, peer, &flag)?;
+                vm.assign_task(runs[0].id, worker, &flag)?;
+                let check = Check {
+                    task: Some(runs[0].id),
+                    check: "Browser and boundaries pass".into(),
+                    command: command.clone(),
+                };
+                let (_, checked) = vm.verify(std::slice::from_ref(&check), &flag)?;
+                assert_eq!(checked[0].exit_code, Some(0), "{}", checked[0].output);
+                eprintln!("Verifier browser and boundary checks passed");
+                drop(vm);
+                let mut client = Client::start(
+                    &project,
+                    None,
+                    Role::Executor,
+                    &m.description,
+                    Some(&plan),
+                    None,
+                    Context::worker(&m, worker, Role::Executor),
+                )?;
+                let deadline = std::time::Instant::now() + Duration::from_secs(180);
+                let mut complete = false;
+                while std::time::Instant::now() < deadline && !complete {
+                    for event in client.poll() {
+                        match event {
+                            Event::Ready { .. } => client.send(Action::Run {
+                                source: runs[0].source.clone(),
+                                text: format!("Run exactly {} in your task folder. It checks Chromium startup, local Unix sockets, network restrictions and peer write boundaries. It starts and stops its own local app. Only if it exits 0, write exactly ok to marker.txt and report completed. Do not modify browser_check.py, install anything or write other source files. The completion check is 'Browser and boundaries pass'; use that same Python command.", command.join(" ")),
+                            })?,
+                            Event::Notification(message) if message["method"] == "turn/completed" => {
+                                assert_eq!(message["params"]["turn"]["status"], "completed");
+                                complete = true;
+                            }
+                            Event::Failed(error) | Event::Rejected { message: error, .. } => return Err(io::Error::other(error)),
+                            _ => {}
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                assert!(complete, "Browser worker timed out");
+                client.shutdown();
+                assert_eq!(fs::read_to_string(root.join("work/marker.txt"))?, "ok");
+                eprintln!("Worker browser and boundary checks passed");
+                Ok(())
+            },
+        ));
+        crate::sandbox::delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
+
+    #[test]
     #[ignore = "runs two concurrent Codex tasks in one temporary Apple Container VM"]
     fn two_clients_share_a_vm_and_run_isolated_tasks_concurrently() {
         let data = TestData::new();
