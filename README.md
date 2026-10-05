@@ -46,6 +46,7 @@ flowchart TB
     ready --> publish["Confirm publish · create or update PR"]
     publish --> ready
     upstream["Another PR merges"] --> update["Save checkpoint · combine latest target branch"]
+    upstream --> local["Project check · safely update local branch"]
     update --> verify["Codex resolves conflicts · Rust rechecks"]
     verify --> ready
 ```
@@ -54,7 +55,9 @@ Laya recommends the planner configuration. Codex uses your subscription and inst
 
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
-Merge PRs one at a time on GitHub. The harness checks target branches every 30 seconds while open. Other codemods finish their current work, save a checkpoint and update in their existing VM. A worker resolves text conflicts and rechecks the combined code. Open PRs become drafts during the update; Publish updates the same PR and marks it ready again. Product decisions pause for your input; binary conflicts need manual resolution.
+Merge PRs one at a time on GitHub. The harness syncs your project branch on startup and every 30 seconds while open, even with no codemods. Local edits and staging stay; unsafe updates pause. **Ctrl+U** checks immediately.
+
+Other codemods finish their current work, save a checkpoint and update in their existing VM. A worker resolves text conflicts and rechecks the combined code. Open PRs become drafts during the update; Publish updates the same PR and marks it ready again. Product decisions pause for your input; binary conflicts need manual resolution.
 
 Source checkpoints exclude generated test caches, package metadata and new runtime databases. Already committed fixtures remain source. Runtime data stays in the VM, separate from the PR.
 
@@ -117,7 +120,7 @@ This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to 
 | Ctrl+Q | Open the queue |
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
-| Ctrl+U | Check the target branch and update when current work finishes |
+| Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |

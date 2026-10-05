@@ -1,6 +1,6 @@
 # Harness tools
 
-A small Rust dispatcher handles harness-owned operations. It checks the caller, validates inputs and routes work to the existing adapter. Context comes from saved mod and worker state; model arguments cannot choose a host path, identity or VM.
+A small Rust dispatcher handles harness-owned operations. It checks the caller, validates inputs and routes work to the existing adapter. Context comes from saved project, mod and worker state; model arguments cannot choose a host path, identity or VM.
 
 ```mermaid
 flowchart TB
@@ -16,6 +16,7 @@ flowchart TB
 
 | Operation | Caller | Execution |
 | --- | --- | --- |
+| `sync_project` | Harness | Safely fast-forward the project branch, independent of codemods |
 | `initialize_project` | Harness | Create the confirmed initial commit and worktree |
 | `adopt_snapshot` | Harness | Attach saved starting files and verified work to Git |
 | `connect_repository` | Harness | Connect GitHub or create a confirmed private repository |
@@ -44,7 +45,7 @@ Target updates wait for idle workers and a verified version. Publication fetches
 
 Adapters report progress and return a typed result or an error. Existing cancellation and timeouts remain: Git/GitHub commands have a two-minute limit; managed package commands have a fifteen-minute limit.
 
-Each workspace’s host-only `tools.jsonl` records call ID, tool, mod, worker when present, caller, status and duration. It omits arguments, outputs and credentials. Start records without an outcome can indicate an interrupted call. This log is diagnostic; it does not drive retries. Removing the mod removes its log.
+Each workspace’s host-only `tools.jsonl` records call ID, tool, mod, worker when present, caller, status and duration. Project sync uses its own project folder and has no mod ID. Logs omit arguments, outputs and credentials. Start records without an outcome can indicate an interrupted call. This log is diagnostic; it does not drive retries. Removing a mod removes its log; the project sync folder stays.
 
 ## Extend it
 

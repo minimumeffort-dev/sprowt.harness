@@ -22,7 +22,30 @@ struct Sync {
 }
 
 pub fn project(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
-    if root.join("sync-project.json").exists() {
+    let pending = root.join("sync-project.json").exists();
+    let common = match git(
+        root,
+        project,
+        &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        cancelled,
+    ) {
+        Ok(path) => path,
+        Err(_) if !pending => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(Path::new(&common).join("sprowt-sync.lock"))?;
+    lock.try_lock().map_err(|error| match error {
+        fs::TryLockError::WouldBlock => io::Error::new(
+            io::ErrorKind::WouldBlock,
+            "Project synchronization is already running; retry shortly.",
+        ),
+        fs::TryLockError::Error(error) => error,
+    })?;
+    if pending {
         let state: Sync = serde_json::from_slice(&fs::read(root.join("sync-project.json"))?)?;
         if state.project != project.canonicalize()? || state.workspace != root.canonicalize()? {
             return Err(io::Error::other(
@@ -119,7 +142,7 @@ pub fn project(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
     .is_err()
     {
         return Err(io::Error::other(format!(
-            "Local {name} and {remote}/{} have diverged. Reconcile them before starting a codemod.",
+            "Local {name} and {remote}/{} have diverged. Reconcile them before syncing.",
             reference.trim_start_matches("refs/heads/")
         )));
     }
@@ -397,6 +420,33 @@ pub(crate) mod tests {
         let target = git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap();
         git(&root, &repo, &["checkout", "main"], &flag).unwrap();
         (data, repo, root, target)
+    }
+
+    #[test]
+    fn project_and_mod_syncs_share_a_repository_lock() {
+        let (_data, repo, root, target) = remote_change();
+        let flag = AtomicBool::new(false);
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(repo.join(".git/sprowt-sync.lock"))
+            .unwrap();
+        lock.try_lock().unwrap();
+        assert_eq!(
+            project(&repo, &root, &flag).unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_ne!(
+            git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
+            target
+        );
+        drop(lock);
+        project(&repo, &root, &flag).unwrap();
+        assert_eq!(
+            git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
+            target
+        );
     }
 
     #[test]

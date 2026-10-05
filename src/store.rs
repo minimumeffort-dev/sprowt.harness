@@ -1090,6 +1090,18 @@ impl Store {
         Ok(parent.join(format!("{mod_id}-{stamp}")))
     }
 
+    pub fn project_path(&self, project_id: i64) -> io::Result<std::path::PathBuf> {
+        let database = self
+            .0
+            .path()
+            .ok_or_else(|| io::Error::other("Missing state path."))?;
+        Ok(Path::new(database)
+            .parent()
+            .unwrap()
+            .join("projects")
+            .join(project_id.to_string()))
+    }
+
     pub fn create_execution(&mut self, mod_id: i64, workspace: &Path, plan: &Plan) -> Result<()> {
         let transaction = self.0.transaction()?;
         transaction.execute(

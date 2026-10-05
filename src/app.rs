@@ -61,6 +61,10 @@ pub struct App {
     auto_plans: BTreeSet<i64>,
     auto_runs: BTreeSet<i64>,
     git_jobs: BTreeMap<i64, Job>,
+    project_job: Option<Job>,
+    project_check: Option<Instant>,
+    project_error: Option<String>,
+    project_sync_root: PathBuf,
     git_states: BTreeMap<i64, GitMod>,
     targets: BTreeMap<i64, crate::mod_sync::Target>,
     target_checks: BTreeMap<i64, Instant>,
@@ -135,6 +139,9 @@ impl App {
             store.select_mod(state.id, state.mods[index].id)?;
         }
         let mut app = Self {
+            project_sync_root: store
+                .project_path(state.id)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
             project,
             input: ui::input(),
             mods: state.mods,
@@ -158,6 +165,9 @@ impl App {
             auto_plans: BTreeSet::new(),
             auto_runs: BTreeSet::new(),
             git_jobs: BTreeMap::new(),
+            project_job: None,
+            project_check: None,
+            project_error: None,
             git_states,
             targets: BTreeMap::new(),
             target_checks: BTreeMap::new(),
@@ -241,27 +251,22 @@ impl App {
                     .process(elapsed.into(), frame.buffer_mut(), header);
             })?;
 
-            if self.welcome.running()
-                || self.motion
-                || !self.workers.is_empty()
-                || !self.git_jobs.is_empty()
-                || self
-                    .mods
-                    .iter()
-                    .any(|m| !m.closed && m.execution.is_some() && m.git_root.is_some())
+            let timeout = if self.welcome.running() {
+                Duration::from_millis(33)
+            } else if self.workers.is_empty()
+                && self.git_jobs.is_empty()
+                && self.project_job.is_none()
             {
-                let timeout = if self.welcome.running() {
-                    Duration::from_millis(33)
+                if self.motion {
+                    next_pose.min(Duration::from_secs(1))
                 } else {
-                    if self.workers.is_empty() && self.git_jobs.is_empty() {
-                        next_pose.min(Duration::from_secs(1))
-                    } else {
-                        next_pose.min(Duration::from_millis(50))
-                    }
-                };
-                if !event::poll(timeout)? {
-                    continue;
+                    Duration::from_secs(1)
                 }
+            } else {
+                next_pose.min(Duration::from_millis(50))
+            };
+            if !event::poll(timeout)? {
+                continue;
             }
             self.handle(event::read()?).map_err(io::Error::other)?;
         }
@@ -293,6 +298,21 @@ impl App {
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                 if ctrl && key.code == KeyCode::Char('c') {
                     self.quit = true;
+                    return Ok(());
+                }
+                if ctrl
+                    && key.code == KeyCode::Char('u')
+                    && matches!(self.view, View::Chat | View::NewMod | View::Mods(_))
+                {
+                    self.project_check = None;
+                    self.maintain_project();
+                    if matches!(self.view, View::Chat)
+                        && let Some(index) = self.active
+                        && !self.mods[index].closed
+                        && self.mods[index].execution.is_some()
+                    {
+                        self.check_target(index, false);
+                    }
                     return Ok(());
                 }
                 match self.view {
@@ -477,16 +497,6 @@ impl App {
             }
             KeyCode::Char('q') if ctrl => {}
             KeyCode::Char('r') if ctrl => self.toggle_worker()?,
-            KeyCode::Char('u')
-                if ctrl
-                    && self.current_mod().is_some_and(|m| {
-                        !m.closed && m.execution.is_some() && m.git_root.is_some()
-                    }) =>
-            {
-                if let Some(index) = self.active {
-                    self.check_target(index, false);
-                }
-            }
             KeyCode::Char('d') if ctrl => self.open_review()?,
             KeyCode::Char('s') if ctrl && self.version_ready() => {
                 self.review = None;
@@ -767,6 +777,7 @@ impl App {
             }
             return Ok(());
         }
+        self.project_job.take();
         let mut code_mod = self.store.create_mod(self.project_id, name)?;
         {
             let root = self
@@ -1185,6 +1196,10 @@ impl App {
             .map(|job| job.label)
     }
 
+    pub fn project_activity(&self) -> Option<&str> {
+        self.project_job.as_ref().map(|job| job.label)
+    }
+
     pub fn git_retry_pending(&self) -> bool {
         self.current_mod().is_some_and(|m| {
             self.update_errors.contains(&m.id)
@@ -1376,6 +1391,26 @@ impl App {
         Ok(())
     }
 
+    fn maintain_project(&mut self) {
+        if self.project_job.is_some()
+            || !self.git_jobs.is_empty()
+            || self
+                .project_check
+                .is_some_and(|checked| checked.elapsed() < Duration::from_secs(30))
+        {
+            return;
+        }
+        self.project_check = Some(Instant::now());
+        if !git_mod::has_commit(&self.project) {
+            return;
+        }
+        let context = Context::project(&self.project, self.project_sync_root.clone());
+        self.project_job = Some(Job::start("syncing project branch", move |cancelled| {
+            Dispatcher::new(&context, None, cancelled).execute(Request::SyncProject, |_| {})?;
+            Ok(git_mod::Result::ProjectSynced)
+        }));
+    }
+
     fn source_project(&self, index: usize) -> PathBuf {
         self.mods[index]
             .git_root
@@ -1443,6 +1478,7 @@ impl App {
                     .find_map(|w| w.error.as_deref())
             })
             .or(self.notice.as_deref())
+            .or(self.project_error.as_deref())
     }
 
     fn companion_mood(&self) -> sprout::Mood {
@@ -1965,6 +2001,7 @@ impl App {
 
     fn poll_workers(&mut self) -> Result<()> {
         self.poll_git_jobs()?;
+        self.maintain_project();
         for mod_id in std::mem::take(&mut self.auto_plans) {
             if let Some(index) = self.mods.iter().position(|m| m.id == mod_id) {
                 self.start_worker(index, Role::Planner)?;
@@ -2094,6 +2131,17 @@ impl App {
     }
 
     fn poll_git_jobs(&mut self) -> Result<()> {
+        if let Some(result) = self.project_job.as_ref().and_then(Job::poll) {
+            self.project_job.take();
+            self.project_error = match result {
+                Ok(git_mod::Result::ProjectSynced) => None,
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                    self.project_error.take()
+                }
+                Err(error) => Some(format!("Project sync paused: {error} Ctrl+U retries.")),
+                _ => unreachable!(),
+            };
+        }
         let finished = self
             .git_jobs
             .iter()
@@ -2136,6 +2184,7 @@ impl App {
                 self.git_states.insert(id, state);
             }
             match result {
+                Ok(git_mod::Result::ProjectSynced) => unreachable!(),
                 Ok(git_mod::Result::Adopted) => {
                     if self.mods[index]
                         .execution
@@ -2443,6 +2492,133 @@ mod tests {
             "local edit\n"
         );
         assert!(app.auto_plans.contains(&code_mod.id));
+    }
+
+    #[test]
+    fn startup_sync_updates_main_without_a_mod_and_preserves_local_edits() {
+        let (data, repo, root, target) = crate::git_sync::tests::remote_change();
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        std::fs::write(repo.join("new.txt"), "local edit\n").unwrap();
+        std::fs::write(repo.join("delete.txt"), "staged edit\n").unwrap();
+        git_mod::git(&root, &repo, &["add", "delete.txt"], &flag).unwrap();
+        let staged = git_mod::git(&root, &repo, &["diff", "--cached", "--raw"], &flag).unwrap();
+        let mut app = App::load(repo.clone(), false, data.store()).unwrap();
+        app.input.insert_str("Keep this description");
+        app.poll_workers().unwrap();
+        wait_git(&mut app);
+        assert!(app.mods.is_empty() && app.worker_error().is_none());
+        assert_eq!(
+            git_mod::git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
+            target
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("new.txt")).unwrap(),
+            "local edit\n"
+        );
+        assert_eq!(
+            git_mod::git(&root, &repo, &["diff", "--cached", "--raw"], &flag).unwrap(),
+            staged
+        );
+        assert_eq!(app.input.lines().join("\n"), "Keep this description");
+        let saved = app.project_sync_root.clone();
+        drop(app);
+        assert_eq!(
+            App::load(repo, false, data.store())
+                .unwrap()
+                .project_sync_root,
+            saved
+        );
+    }
+
+    #[test]
+    fn periodic_sync_survives_deleting_the_last_published_mod() {
+        let (data, repo, root, target) = crate::git_sync::tests::remote_change();
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        git_mod::git(
+            &root,
+            &repo,
+            &["push", "--force", "origin", "main:main"],
+            &flag,
+        )
+        .unwrap();
+        git_mod::prepare(&repo, &root, &flag).unwrap();
+        let mut git = git_mod::load(&root).unwrap();
+        git.phase = "published".into();
+        git.pr = Some("https://github.com/fixture/project/pull/1".into());
+        git.head = Some(git.base.clone());
+        git_mod::save(&root, &git).unwrap();
+        let mut store = data.store();
+        let project = store.load_project(&repo).unwrap().id;
+        let code_mod = store.create_mod(project, "Published change").unwrap();
+        store.save_git_root(code_mod.id, &root).unwrap();
+        let mut app = App::load(repo.clone(), false, store).unwrap();
+        app.poll_workers().unwrap();
+        wait_git(&mut app);
+        app.delete_mod(0).unwrap();
+        wait_git(&mut app);
+        assert!(app.mods.is_empty() && !root.exists());
+        git_mod::git(
+            &app.project_sync_root,
+            &repo,
+            &["push", "origin", &format!("{target}:main")],
+            &flag,
+        )
+        .unwrap();
+        app.poll_workers().unwrap();
+        assert!(app.project_job.is_none());
+        app.project_check = Some(Instant::now() - Duration::from_secs(31));
+        app.poll_workers().unwrap();
+        wait_git(&mut app);
+        assert!(app.worker_error().is_none());
+        assert_eq!(
+            git_mod::git(&app.project_sync_root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
+            target
+        );
+        assert!(app.mods.is_empty() && app.project_sync_root.exists());
+    }
+
+    #[test]
+    fn unsafe_project_sync_keeps_files_and_ctrl_u_retries_from_new_mod() {
+        let (data, repo, root, target) = crate::git_sync::tests::remote_change();
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        let before = git_mod::git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap();
+        std::fs::write(repo.join("a.txt"), "local edit\n").unwrap();
+        let mut app = App::load(repo.clone(), false, data.store()).unwrap();
+        app.input.insert_str("Next feature");
+        app.poll_workers().unwrap();
+        wait_git(&mut app);
+        assert!(app.worker_error().unwrap().contains("Project sync paused"));
+        assert_eq!(
+            git_mod::git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
+            before
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo.join("a.txt")).unwrap(),
+            "local edit\n"
+        );
+        std::fs::write(repo.join("a.txt"), "original\n").unwrap();
+        key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert!(app.worker_error().is_none());
+        assert_eq!(
+            git_mod::git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
+            target
+        );
+        assert_eq!(app.input.lines().join("\n"), "Next feature");
+    }
+
+    #[test]
+    fn project_sync_keeps_codemod_controls_available() {
+        let (_data, mut app, _root) = execution_app();
+        app.project_job = Some(Job::start("syncing project branch", |cancelled| {
+            while !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(git_mod::Result::ProjectSynced)
+        }));
+        assert!(!app.execution_busy());
+        assert!(app.version_ready());
+        app.open_review().unwrap();
+        assert!(matches!(app.view, View::Review(_)) && app.can_publish());
     }
 
     #[test]
@@ -2788,7 +2964,7 @@ mod tests {
 
     fn wait_git(app: &mut App) {
         let start = Instant::now();
-        while !app.git_jobs.is_empty() {
+        while !app.git_jobs.is_empty() || app.project_job.is_some() {
             assert!(start.elapsed() < Duration::from_secs(15));
             std::thread::sleep(Duration::from_millis(10));
             app.poll_git_jobs().unwrap();

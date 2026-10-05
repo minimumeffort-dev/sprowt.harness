@@ -21,6 +21,7 @@ use crate::{
 
 #[derive(Clone, Copy, PartialEq)]
 enum Tool {
+    SyncProject,
     InitializeProject,
     AdoptSnapshot,
     ConnectRepository,
@@ -38,7 +39,8 @@ enum Tool {
     InstallPackages,
 }
 
-const REGISTRY: [Tool; 15] = [
+const REGISTRY: [Tool; 16] = [
+    Tool::SyncProject,
     Tool::InitializeProject,
     Tool::AdoptSnapshot,
     Tool::ConnectRepository,
@@ -60,6 +62,7 @@ static LOG: Mutex<()> = Mutex::new(());
 impl Tool {
     fn name(self) -> &'static str {
         match self {
+            Self::SyncProject => "sync_project",
             Self::InitializeProject => "initialize_project",
             Self::AdoptSnapshot => "adopt_snapshot",
             Self::ConnectRepository => "connect_repository",
@@ -80,20 +83,21 @@ impl Tool {
 
     fn permitted(self, context: &Context) -> bool {
         match self {
+            Self::SyncProject => context.worker.is_none() && context.project.is_some(),
             Self::InstallPackages => {
                 context
                     .worker
                     .is_some_and(|(_, role)| role == Role::Executor)
                     && context.root.is_some()
             }
-            _ => context.worker.is_none(),
+            _ => context.worker.is_none() && context.mod_id.is_some(),
         }
     }
 }
 
 pub struct Context {
     pub tasks: Vec<i64>,
-    mod_id: i64,
+    mod_id: Option<i64>,
     worker: Option<(i64, Role)>,
     root: Option<PathBuf>,
     project: Option<PathBuf>,
@@ -102,13 +106,25 @@ pub struct Context {
 }
 
 impl Context {
+    pub fn project(project: &Path, root: PathBuf) -> Self {
+        Self {
+            tasks: Vec::new(),
+            mod_id: None,
+            worker: None,
+            root: Some(root),
+            project: Some(project.to_owned()),
+            description: String::new(),
+            verified: None,
+        }
+    }
+
     pub fn harness(project: &Path, code_mod: &CodeMod) -> Self {
         Self {
             tasks: code_mod
                 .execution
                 .as_ref()
                 .map_or_else(Vec::new, |e| e.tasks.iter().map(|t| t.id).collect()),
-            mod_id: code_mod.id,
+            mod_id: Some(code_mod.id),
             worker: None,
             root: code_mod
                 .git_root
@@ -130,7 +146,7 @@ impl Context {
                 .execution
                 .as_ref()
                 .map_or_else(Vec::new, |e| e.tasks.iter().map(|t| t.id).collect()),
-            mod_id: code_mod.id,
+            mod_id: Some(code_mod.id),
             worker: Some((id, role)),
             root: if role == Role::Executor {
                 code_mod
@@ -165,6 +181,7 @@ impl Context {
 }
 
 pub enum Request {
+    SyncProject,
     InitializeProject,
     AdoptSnapshot,
     ConnectRepository(git_mod::RepositoryRequest),
@@ -190,6 +207,7 @@ pub enum Request {
 impl Request {
     fn tool(&self) -> Tool {
         match self {
+            Self::SyncProject => Tool::SyncProject,
             Self::InitializeProject => Tool::InitializeProject,
             Self::AdoptSnapshot => Tool::AdoptSnapshot,
             Self::ConnectRepository(_) => Tool::ConnectRepository,
@@ -285,7 +303,9 @@ impl<'a> Dispatcher<'a> {
             .duration_since(UNIX_EPOCH)
             .map_err(io::Error::other)?
             .as_nanos();
-        if tool == Some(Tool::CreateWorktree) && self.context.worker.is_none() {
+        if matches!(tool, Some(Tool::CreateWorktree | Tool::SyncProject))
+            && self.context.worker.is_none()
+        {
             let root = self.context.root()?;
             fs::create_dir_all(root)?;
             #[cfg(unix)]
@@ -320,6 +340,15 @@ impl<'a> Dispatcher<'a> {
             }
             let root = self.context.root()?;
             match request {
+                Request::SyncProject => {
+                    progress("syncing project branch");
+                    crate::git_sync::project(
+                        self.context.project.as_deref().unwrap(),
+                        root,
+                        self.cancelled,
+                    )?;
+                    Ok(Output::Done)
+                }
                 Request::InitializeProject => {
                     let project = self.context.project.as_deref().unwrap();
                     if !git_mod::has_commit(project)
@@ -558,6 +587,29 @@ mod tests {
     }
 
     #[test]
+    fn project_sync_has_no_mod_and_cannot_run_mod_operations() {
+        let (data, repo, _, target) = crate::git_sync::tests::remote_change();
+        let root = data.0.join("project-sync");
+        let context = Context::project(&repo, root.clone());
+        let flag = AtomicBool::new(false);
+        let mut tools = Dispatcher::new(&context, None, &flag);
+        tools.execute(Request::SyncProject, |_| {}).unwrap();
+        assert_eq!(
+            git_mod::git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
+            target
+        );
+        assert_eq!(
+            tools
+                .execute(Request::CleanupMod, |_| {})
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::PermissionDenied
+        );
+        assert!(advertised(&context).is_empty());
+        assert!(records(&root).iter().all(|entry| entry["mod_id"].is_null()));
+    }
+
+    #[test]
     fn workers_cannot_discover_or_invoke_host_operations() {
         let (_data, context, _) = fixture();
         let flag = AtomicBool::new(false);
@@ -572,6 +624,7 @@ mod tests {
         );
         let mut tools = Dispatcher::new(&worker, None, &flag);
         for name in [
+            "sync_project",
             "initialize_project",
             "adopt_snapshot",
             "connect_repository",
@@ -603,11 +656,11 @@ mod tests {
             log.iter()
                 .filter(|entry| entry["status"] == "denied")
                 .count(),
-            15
+            16
         );
         assert!(
             log.iter()
-                .all(|entry| entry["worker_id"] == 9 && entry["mod_id"] == context.mod_id)
+                .all(|entry| entry["worker_id"] == 9 && entry["mod_id"] == json!(context.mod_id))
         );
         let planner = worker_context(&context, Role::Planner);
         assert!(advertised(&planner).is_empty());
@@ -767,7 +820,7 @@ mod tests {
             || -> io::Result<()> {
                 let mut vm = Sandbox::prepare(&root, &flag, |label| eprintln!("{label}"))?;
                 let mut other = worker_context(&context, Role::Executor);
-                other.mod_id += 1;
+                other.mod_id = other.mod_id.map(|id| id + 1);
                 other.root = Some(data.0.join("other-mod"));
                 fs::create_dir_all(other.root().unwrap())?;
                 let arguments = json!({"packages":["jq"],"reason":"Read fixture JSON"});

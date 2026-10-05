@@ -24,6 +24,12 @@ flowchart TB
 ├── network.json      guest download allowlist
 ├── laya-runtime/     Python runtime installed by setup
 ├── laya-models/      downloaded model cache
+├── projects/         project sync state, independent of codemods
+│   └── <project>/
+│       ├── sync-project.json pending fast-forward; removed when complete
+│       ├── sync-before-index original staging checkpoint during sync
+│       ├── sync-index temporary staging used for the fast-forward
+│       └── tools.jsonl project sync activity; metadata only
 └── workspaces/       private working folders per mod
     └── <mod>-<stamp>/
         ├── checkout/ Git worktree; retained until deletion or closed retention
@@ -65,7 +71,9 @@ Generated test caches and new runtime databases stay on the VM disk, outside sou
 
 The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
 
-Project synchronization uses a temporary Git index and locks the real index while fast-forwarding. Its checkpoint completes an interrupted index update on retry. Git hooks and project filters are disabled. Planning starts only after synchronization and worktree setup finish.
+Project synchronization uses a temporary Git index and locks the real index while fast-forwarding. Its checkpoint completes an interrupted index update on retry. A repository lock serializes project sync with codemod setup. Git hooks and project filters are disabled. Planning starts only after synchronization and worktree setup finish.
+
+Background sync checks on startup and every 30 seconds, even without mods or animations. Its recovery folder stays when a mod is deleted. **Ctrl+U** retries immediately; quitting stops checks until the project opens again. See [Keep the project current](git-workflow.md#keep-the-project-current).
 
 ## Reopen, close and delete
 

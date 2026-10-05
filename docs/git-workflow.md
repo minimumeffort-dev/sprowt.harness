@@ -26,13 +26,25 @@ flowchart TB
 
 Original project Git metadata and credentials stay on the Mac. A separate Git repository inside the VM manages task worktrees under `/tasks/<id>` and combined source at `/workspace`. The harness owns guest Git operations; the [tool dispatcher](tools.md) handles host worktrees and GitHub publication. See [Plan execution](execution.md).
 
-## Keep the starting source current
+## Keep the project current
 
-Before a new codemod, fetch the current branch’s configured upstream, or the same branch on `origin`. Fast-forward local commits only; never rebase, create a merge commit or push the project branch. Already current or locally ahead branches keep their committed source.
+The project syncs on startup and every **30 seconds** while the harness is open, including with zero codemods. Publishing, closing or deleting a codemod does not stop this check. Merge its PR later on GitHub and local `main` catches up when you are on `main`. With the harness closed, it catches up next time you open it. **Ctrl+U** checks immediately from the conversation, codemod picker or new-mod screen.
+
+```mermaid
+flowchart TB
+    github["PR merges on GitHub"] --> check["Project checks its remote"]
+    check --> safe{"Safe to update?"}
+    safe -->|Yes| local["Local branch advances · edits and staging stay"]
+    safe -->|No| pause["Keep local files · show the conflict"]
+    pause --> retry["Resolve it · Ctrl+U retries"]
+    retry --> check
+```
+
+Fetch the checked-out branch’s configured upstream, or the same branch on `origin`. Updates only fast-forward; they never switch branches, rebase, create a merge commit or push the project branch. Already current or locally ahead branches keep their committed source. Creating a codemod also checks before making its worktree.
 
 Local edits and staging are preserved. Files previously left untracked after publication become tracked against the merged commit; differing local bytes remain unstaged edits. The codemod gets committed source, so local edits are not included in its PR.
 
-Overlapping tracked edits, divergent history, unavailable remotes and active Git operations stop setup with an error. Resolve the named conflict and press **Ctrl+R**. No planner starts with stale source. Detached commits, local-only branches and projects without a remote keep their local starting point; a missing configured upstream is an error.
+Overlapping tracked edits, divergent history, unavailable remotes and active Git operations pause sync with an error. Resolve the cause and press **Ctrl+U**, or wait for the next check. Failed codemod setup uses **Ctrl+R**. No planner starts with stale source. Detached commits, local-only branches and projects without a remote keep their local starting point; a missing configured upstream is an error.
 
 If planning failed before execution, **Ctrl+R** refreshes an untouched worktree from the updated project and starts a fresh planner conversation. History, queued instructions and the draft stay. Executing codemods use the update flow below.
 
@@ -51,7 +63,7 @@ flowchart TB
     ready --> merge["Merge B on GitHub"]
 ```
 
-An open PR becomes a draft as soon as a newer target is detected. Its workers finish before source changes. Finished versions update automatically; paused or failed work waits for retry or edits. This changes B's branch and source copy, leaving your original project folder untouched.
+An open PR becomes a draft as soon as a newer target is detected. Its workers finish before source changes. Finished versions update automatically; paused or failed work waits for retry or edits. This updates B's branch and VM source separately from the project's fast-forward above.
 
 The integration plan carries the codemod's checks and adds combined regression checks. A resolution worker receives the original goals, upstream commit messages and conflicting versions. Technical text conflicts are resolved in B's existing VM. Conflicting product intent pauses with a question; answer through the composer. Clean merges get the same verification.
 
@@ -79,7 +91,7 @@ The PR targets your starting branch, or the GitHub default branch when starting 
 
 Publishing retains the VM, worktree and conversation. Send edits through the composer. A new plan covers the requested change and regression checks; execution reuses the VM. Publish again to update the same PR. The diff covers the codemod's changes against its latest checked target.
 
-Merged or closed PRs require a new codemod. Its remote check brings merged changes into the local starting branch. Outside changes to the PR branch or worktree block publication and preserve local work.
+Merged or closed PRs require a new codemod. Project sync brings merged changes into the local starting branch independently. Outside changes to the PR branch or worktree block publication and preserve local work.
 
 ## Close, reopen or delete
 

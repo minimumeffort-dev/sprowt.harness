@@ -151,6 +151,13 @@ pub fn draw(
                 },
             )
         });
+    let status = if status.is_empty() {
+        app.project_activity().map_or(status, |activity| {
+            format!("{} {activity}", activity_glyph(elapsed))
+        })
+    } else {
+        status
+    };
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec!["sprowt".fg(ACCENT).bold(), " harness".bold()]),

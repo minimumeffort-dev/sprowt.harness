@@ -50,6 +50,7 @@ impl GitMod {
 }
 
 pub enum Result {
+    ProjectSynced,
     Prepared,
     Refreshed,
     TargetChecked {

@@ -59,7 +59,7 @@ Git setup shows the starting file list. GitHub setup uses Tab to choose connect 
 | Ctrl+Q | Manage queued instructions |
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
-| Ctrl+U | Check the target branch; update after current work finishes |
+| Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide saved plan details |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
@@ -70,6 +70,8 @@ Git setup shows the starting file list. GitHub setup uses Tab to choose connect 
 Pasted text keeps its line breaks. Dialog actions are covered in [Codemods and messages](codemods.md).
 
 Target updates show an **integration plan** with the same task progress and details toggle. The status names target changes or a merged PR; publication stays unavailable until combined checks pass. See [Worktrees and PRs](git-workflow.md#when-another-codemod-merges).
+
+Project sync runs independently on startup and every 30 seconds, including with no codemods and `--no-motion`. **Ctrl+U** also works in the new-mod screen and picker. An unsafe update leaves files intact and shows the cause beside the project heading.
 
 ## Sprowt companion
 

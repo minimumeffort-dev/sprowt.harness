@@ -23,7 +23,7 @@ Publishing creates or updates a PR and keeps the VM for further edits. Closing s
 - **Switch:** open **Ctrl+P**, select a mod and press Enter. Its conversation and draft return. Other mods’ workers keep running.
 - **Edit:** send a message through the composer. After the current version is verified, a fresh plan and execution round start against its source. Published mods use the same composer and PR.
 - **Publish:** **Ctrl+S** starts publication after verification; Enter confirms the PR. **Ctrl+D** lets you review the diff first.
-- **Update:** **Ctrl+U** checks for merged work. Finished versions update and recheck automatically; running workers finish first. An existing PR becomes draft until you publish the verified update.
+- **Update:** **Ctrl+U** syncs the project branch and checks for merged work. Finished versions update and recheck automatically; running workers finish first. An existing PR becomes draft until you publish the verified update.
 - **Close:** select an active mod, press `c`, then Enter. Save a local checkpoint, keep the worktree and history, and remove the VM. GitHub is not required. Older snapshot mods first offer Git adoption.
 - **Reopen:** press **Tab** for closed mods, then `r` on the selected mod. Its saved source returns; the next execution creates a fresh VM. Enter opens history without reopening.
 - **Delete:** press `d`, then Enter to permanently remove local history and discard unpublished work. Existing PRs remain on GitHub.
