@@ -13,9 +13,9 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
 - [Worktrees and PRs](docs/git-workflow.md): sync merged changes, create a worktree and publish a PR. Keep editing, or close with a saved checkpoint.
-- [Plan execution](docs/execution.md): one executor works in separate task worktrees, combines changes and checks the result.
+- [Plan execution](docs/execution.md): up to two Codex executors work in parallel, with separate task folders and combined verification.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
-- [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Different mods can run in parallel.
+- [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Workers within and across mods can run in parallel.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
 - [Terminal and companion](docs/terminal.md): readable plans, worker model and effort, task spinners and a Sprowt pet that reacts to planning, work and results.
@@ -35,8 +35,11 @@ flowchart TB
     goal["Describe a codemod"] --> sync["Check remote · safely update project branch"]
     sync --> setup["Git branch + worktree"]
     setup --> planner["Laya routes · Codex plans"]
-    planner --> build["Task worktrees · Codex builds + Rust checks"]
-    build --> combine["Combine changes + verify · local Linux VM"]
+    planner --> schedule["Rust scheduler · ready tasks"]
+    schedule --> first["Codex worker 1 · own task worktree"]
+    schedule --> second["Codex worker 2 · own task worktree"]
+    first --> combine["Combine one result at a time · verify together"]
+    second --> combine
     combine --> ready["Version ready"]
     ready --> edits["Send edits · plan the next round"]
     edits --> planner
@@ -44,7 +47,7 @@ flowchart TB
     publish --> ready
 ```
 
-Laya recommends the planner configuration. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Tasks run sequentially within a mod; different mods can run in parallel. Muse follows later.
+Laya recommends the planner configuration. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse follows later.
 
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
@@ -129,7 +132,7 @@ Git ignores local environment files, credentials, logs and databases. Use placeh
 
 ## What’s next
 
-Multiple Codex executors using the task worktrees, then Muse and a review worker per mod. Shared context, memory, MCPs and skills follow in small batches.
+Muse, direct worker communication and a review worker per mod. Shared context, memory, MCPs and skills follow in small batches.
 
 ## Development
 

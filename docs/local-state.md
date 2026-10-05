@@ -38,10 +38,12 @@ flowchart TB
         ├── before/   starting files
         ├── work/     source exported from the VM
         ├── base.git/ private diff metadata
-        ├── tasks.json task round, active worktree and integration state
+        ├── tasks.json task round, worker ownership and integration state
         ├── tasks.bundle sanitized guest Git branches for VM recovery
+        ├── task-drafts/ sanitized task baselines and unfinished source
+        ├── checkpoint-error present if a worker checkpoint needs recovery
         ├── vm.json   VM identity and image digest; removed after VM deletion
-        ├── host-codex/ private host agent state; never shared with the guest
+        ├── host-codex/ private worker directories and login links; never shared with the guest
         ├── sandbox.log setup diagnostics
         ├── packages.jsonl OS package requests and results
         ├── tools.jsonl harness tool activity; metadata only
@@ -51,11 +53,11 @@ flowchart TB
 
 Before Git setup is confirmed, its file preview uses a temporary workspace. Cancelling or exiting removes that preview. Confirmed setup records a codemod workspace so interruption can recover. Adopting a snapshot keeps its existing workspace and project identity.
 
-State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Replies save model and effort; plans save routing. Execution saves attempts, checks and the verified source fingerprint. SQLite stores each Git mod’s folder; `git-mod.json` records its branch, base, exported fingerprint, commit, PR URL and publication, close, edit or removal intent. Closing also saves a timestamp for retention.
+State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Replies save model and effort; plans save routing. Execution saves task ownership, attempts, checks and the verified source fingerprint. SQLite stores each Git mod’s folder; `git-mod.json` records its branch, base, exported fingerprint, commit, PR URL and publication, close, edit or removal intent. Closing also saves a timestamp for retention.
 
 The [tool dispatcher](tools.md) records call IDs, callers, duration and outcomes in `tools.jsonl`. Inputs and outputs are omitted. Tool logs stay on the Mac and are removed with the mod; recovery uses saved execution state and Git checkpoints.
 
-Apple Container manages each VM’s disk separately. Shared runtimes and download caches persist across publication and edit rounds. Task folders and their local dependencies are removed after successful final checks. Closing or deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
+Apple Container manages each VM’s disk separately. Per-worker runtimes and download caches persist across publication and edit rounds. Task folders and their local dependencies are removed after successful final checks. Closing or deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
 
 The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
 
@@ -67,7 +69,7 @@ Run from the same project to restore mods, drafts and conversations. Git subfold
 
 Publication retains the VM and worktree. The PR URL and commit are saved before success is shown. Failed Git operations keep their checkpoints and can retry with **Ctrl+R**.
 
-Closing exports source, saves guest task branches in a Git bundle and commits a checkpoint before VM deletion, then marks the mod Closed in SQLite. History, draft, queue, branch and worktree stay. Deleting removes local records, source exports, worktree and VM; existing PRs remain.
+Closing stops all workers, checkpoints their drafts, saves guest task branches in a Git bundle and commits a checkpoint before VM deletion, then marks the mod Closed in SQLite. History, draft, queue, branch and worktree stay. Deleting removes local records, source exports, worktree and VM; existing PRs remain.
 
 At project startup, closed worktrees older than `--closed-worktree-days` are pruned if their checkpoint is unchanged. The default is 30 days; 0 disables pruning. Branches, history and exports stay. Reopening restores a pruned worktree from its checkpoint; a fresh VM starts on execution.
 

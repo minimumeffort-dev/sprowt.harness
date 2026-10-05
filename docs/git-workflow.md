@@ -88,4 +88,4 @@ Interrupted repository setup retains its request. **Ctrl+R** retries; **Ctrl+D**
 
 ## Current limits
 
-One executor per codemod. Parallel executors and review workers come later. Symlinks, submodules, GitHub Enterprise and other Git hosts are unsupported.
+Up to two Codex executors per codemod. Review workers come later. Symlinks, submodules, GitHub Enterprise and other Git hosts are unsupported.

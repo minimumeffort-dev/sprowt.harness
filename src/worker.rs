@@ -83,7 +83,9 @@ impl Worker {
                     restart_if_missing: record.pending.is_none()
                         && code_mod.execution.as_ref().is_none_or(|execution| {
                             !execution.tasks.iter().any(|run| {
-                                ["sending", "running", "checking"].contains(&run.status.as_str())
+                                run.worker == Some(record.id)
+                                    && ["sending", "running", "checking"]
+                                        .contains(&run.status.as_str())
                             })
                         }),
                 }),
@@ -160,7 +162,11 @@ impl Worker {
         });
         format!(
             "{glyph} codex · {}{}{} · {state} · {}",
-            self.role.name(),
+            if self.role == Role::Executor {
+                format!("executor · w{}", self.id)
+            } else {
+                self.role.name().into()
+            },
             self.model
                 .as_ref()
                 .map_or(String::new(), |model| format!(" · {model}")),
@@ -286,7 +292,11 @@ impl Worker {
         } else if !steering && self.role == Role::Executor && code_mod.execution.is_some() {
             None
         } else {
-            store.next_input(self.mod_id, steering)?
+            if steering {
+                store.next_steering(self.mod_id, self.id)?
+            } else {
+                store.next_input(self.mod_id, false)?
+            }
         };
         if input.is_none()
             && self.role == Role::Executor
@@ -303,7 +313,12 @@ impl Worker {
             if input.is_none() {
                 let execution = code_mod.execution.as_ref().unwrap();
                 let applied = execution.status == "applied";
-                if execution.complete() && execution.status != "applied" {
+                if execution.complete()
+                    && !matches!(
+                        execution.status.as_str(),
+                        "applied" | "verifying" | "review"
+                    )
+                {
                     let checks = execution
                         .tasks
                         .iter()
@@ -317,8 +332,16 @@ impl Worker {
                     store.execution_status(self.mod_id, "verifying")?;
                     code_mod.execution = store.execution(self.mod_id)?;
                     self.begin_checks(format!("final:{}", self.mod_id), checks);
-                } else {
+                } else if !execution
+                    .tasks
+                    .iter()
+                    .any(|run| ["sending", "running", "checking"].contains(&run.status.as_str()))
+                    || execution.complete()
+                {
                     self.enabled = false;
+                    if execution.status == "review" {
+                        self.status = Status::Complete;
+                    }
                 }
                 if applied {
                     self.status = Status::Complete;
@@ -481,7 +504,27 @@ impl Worker {
                     store.pending(self.id, None)?;
                     self.pending = None;
                 }
-                // A rejected steer must leave its request available for the next active turn.
+                if source.starts_with("00000002-") {
+                    code_mod
+                        .queue
+                        .extend(store.reject_steering(self.mod_id, self.id, &source)?);
+                    code_mod.steering = store.steering(self.mod_id)?;
+                    save_message(
+                        store,
+                        code_mod,
+                        Message {
+                            item_id: Some(format!("rejected:{source}:{}", self.id)),
+                            role: "harness".into(),
+                            body: format!(
+                                "Steering not accepted · w{}. Queued for the next edit round.",
+                                self.id
+                            ),
+                            model: None,
+                            effort: None,
+                        },
+                    )?;
+                    return Ok(());
+                }
                 self.enabled = false;
                 self.error = Some(message);
                 if self.turn.is_none() {
@@ -511,7 +554,9 @@ impl Worker {
                             .tasks
                             .iter()
                             .find(|run| {
-                                ["sending", "running", "checking"].contains(&run.status.as_str())
+                                (run.worker == Some(self.id) || run.worker.is_none())
+                                    && ["sending", "running", "checking"]
+                                        .contains(&run.status.as_str())
                             })
                             .map(|run| run.source.clone())
                     });
@@ -594,7 +639,7 @@ impl Worker {
                     code_mod,
                     Message {
                         item_id: Some(format!("result:{source}")),
-                        role: "codex".into(),
+                        role: format!("codex:{}", self.id),
                         body: summary,
                         model: self.model.clone(),
                         effort: self.effort.clone(),
@@ -626,7 +671,7 @@ impl Worker {
                                 .cloned()
                                 .unwrap_or(Message {
                                     item_id: Some(id.into()),
-                                    role: "codex".into(),
+                                    role: format!("codex:{}", self.id),
                                     body: String::new(),
                                     model: self.model.clone(),
                                     effort: self.effort.clone(),
@@ -700,7 +745,7 @@ impl Worker {
             .queue
             .retain(|message| crate::store::source_id(message.id, false) != input.source);
         if input.source.starts_with("00000002-") {
-            code_mod.steering.drain(..input.texts.len());
+            code_mod.steering = store.steering(self.mod_id)?;
         }
         save_message(
             store,
@@ -712,7 +757,21 @@ impl Worker {
                 model: None,
                 effort: None,
             },
-        )
+        )?;
+        if input.source.starts_with("00000002-") {
+            save_message(
+                store,
+                code_mod,
+                Message {
+                    item_id: Some(format!("delivered:{}:{}", input.source, self.id)),
+                    role: "harness".into(),
+                    body: format!("Steering delivered · w{}", self.id),
+                    model: None,
+                    effort: None,
+                },
+            )?;
+        }
+        Ok(())
     }
 
     fn item(
@@ -781,7 +840,11 @@ impl Worker {
             code_mod,
             Message {
                 item_id: Some(id.into()),
-                role: role.into(),
+                role: if role == "codex" {
+                    format!("codex:{}", self.id)
+                } else {
+                    role.into()
+                },
                 body,
                 model: if historical || role == "user" {
                     None
@@ -910,10 +973,10 @@ impl Worker {
             .execution
             .as_ref()
             .and_then(|execution| {
-                execution
-                    .tasks
-                    .iter()
-                    .find(|run| ["sending", "running", "checking"].contains(&run.status.as_str()))
+                execution.tasks.iter().find(|run| {
+                    (run.worker == Some(self.id) || run.worker.is_none())
+                        && ["sending", "running", "checking"].contains(&run.status.as_str())
+                })
             })
             .cloned();
         let Some(run) = active else {
@@ -996,15 +1059,17 @@ impl Worker {
         code_mod: &CodeMod,
         checks: &[crate::execution::CheckResult],
     ) -> bool {
-        let unchanged =
-            workspace::source_state(&code_mod.execution.as_ref().unwrap().workspace.join("work"))
-                .ok()
-                .is_some_and(|state| self.verify_before.as_ref() == Some(&state));
+        let unchanged = !self
+            .task_source
+            .as_ref()
+            .is_some_and(|source| source.starts_with("final:"))
+            || workspace::source_state(
+                &code_mod.execution.as_ref().unwrap().workspace.join("work"),
+            )
+            .ok()
+            .is_some_and(|state| self.verify_before.as_ref() == Some(&state));
         if !unchanged {
-            self.error = Some(
-                "Verification changed source files. Review the working folder before retrying."
-                    .into(),
-            );
+            self.error = Some("Source changed after final verification. Run checks again.".into());
         }
         unchanged
             && !checks.is_empty()
@@ -1147,7 +1212,11 @@ mod tests {
                     task: None,
                     check: worker.verification[0].check.clone(),
                     command: worker.verification[0].command.clone(),
-                    exit_code: Some(if case == "failure" { 1 } else { 0 }),
+                    exit_code: if case == "source changed" {
+                        None
+                    } else {
+                        Some(if case == "failure" { 1 } else { 0 })
+                    },
                     output: String::new(),
                 }]
             };

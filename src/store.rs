@@ -239,6 +239,29 @@ impl Store {
                 connection.execute_batch(sql).map_err(io::Error::other)?;
             }
         }
+        let has_worker = connection
+            .prepare("PRAGMA table_info(task_runs)")
+            .map_err(io::Error::other)?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(io::Error::other)?
+            .collect::<Result<Vec<_>>>()
+            .map_err(io::Error::other)?
+            .iter()
+            .any(|name| name == "worker_id");
+        if !has_worker {
+            connection
+                .execute_batch("ALTER TABLE task_runs ADD COLUMN worker_id INTEGER")
+                .map_err(io::Error::other)?;
+        }
+        connection
+            .execute_batch(
+                "CREATE TABLE IF NOT EXISTS steering_deliveries (
+            request_id INTEGER NOT NULL REFERENCES steering_requests(id) ON DELETE CASCADE,
+            worker_id INTEGER NOT NULL REFERENCES workers(id),
+            delivered INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(request_id,worker_id)
+        );",
+            )
+            .map_err(io::Error::other)?;
         Ok(Self(connection))
     }
 
@@ -412,6 +435,7 @@ impl Store {
         } else {
             active
         };
+        transaction.execute("DELETE FROM steering_deliveries WHERE request_id IN (SELECT id FROM steering_requests WHERE mod_id=?1)", [mod_id])?;
         transaction.execute(
             "DELETE FROM steering_messages WHERE request_id IN
              (SELECT id FROM steering_requests WHERE mod_id = ?1)",
@@ -602,7 +626,12 @@ impl Store {
         transaction.commit()
     }
 
+    #[cfg(test)]
     pub fn request_steering(&mut self, mod_id: i64, ids: &[i64]) -> Result<Vec<String>> {
+        self.steer_to(mod_id, ids, &[])
+    }
+
+    pub fn steer_to(&mut self, mod_id: i64, ids: &[i64], workers: &[i64]) -> Result<Vec<String>> {
         if ids.is_empty() {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
@@ -629,6 +658,20 @@ impl Store {
             [mod_id],
         )?;
         let request_id = transaction.last_insert_rowid();
+        for worker in workers {
+            let valid: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM workers WHERE id=?1 AND mod_id=?2)",
+                params![worker, mod_id],
+                |r| r.get(0),
+            )?;
+            if !valid {
+                return Err(rusqlite::Error::InvalidQuery);
+            }
+            transaction.execute(
+                "INSERT INTO steering_deliveries(request_id,worker_id) VALUES (?1,?2)",
+                params![request_id, worker],
+            )?;
+        }
         let mut bodies = Vec::new();
         for (position, message) in messages.into_iter().enumerate() {
             transaction.execute(
@@ -644,13 +687,19 @@ impl Store {
         transaction.commit()?;
         Ok(bodies)
     }
+    #[cfg(test)]
     pub fn worker(&self, mod_id: i64) -> Result<WorkerRecord> {
         self.worker_for(mod_id, Role::Executor)
     }
 
+    #[cfg(test)]
     pub fn worker_for(&self, mod_id: i64, role: Role) -> Result<WorkerRecord> {
+        self.worker_at(mod_id, role, 0)
+    }
+
+    pub fn worker_at(&self, mod_id: i64, role: Role, slot: usize) -> Result<WorkerRecord> {
         let read = || {
-            self.0.query_row("SELECT id, thread_id, pending FROM workers WHERE mod_id = ?1 AND role = ?2 ORDER BY id LIMIT 1", params![mod_id,role.name()],
+            self.0.query_row("SELECT id, thread_id, pending FROM workers WHERE mod_id = ?1 AND role = ?2 ORDER BY id LIMIT 1 OFFSET ?3", params![mod_id,role.name(),slot as i64],
             |row| Ok(WorkerRecord { id:row.get(0)?, thread_id:row.get(1)?, pending:row.get(2)? })).optional()
         };
         if let Some(worker) = read()? {
@@ -751,6 +800,81 @@ impl Store {
             .transpose()
     }
 
+    pub fn next_steering(&self, mod_id: i64, worker: i64) -> Result<Option<Submission>> {
+        let id: Option<i64> = self.0.query_row("SELECT r.id FROM steering_requests r
+            WHERE r.mod_id=?1 AND (
+                EXISTS(SELECT 1 FROM steering_deliveries d WHERE d.request_id=r.id AND d.worker_id=?2 AND d.delivered=0)
+                OR NOT EXISTS(SELECT 1 FROM steering_deliveries d WHERE d.request_id=r.id))
+            ORDER BY r.id LIMIT 1", params![mod_id,worker], |r| r.get(0)).optional()?;
+        let input = id
+            .map(|id| self.submission(mod_id, &source_id(id, true)))
+            .transpose()?;
+        if let Some(input) = &input {
+            let assigned: bool = self.0.query_row(
+                "SELECT EXISTS(SELECT 1 FROM steering_deliveries WHERE request_id=?1)",
+                [id.unwrap()],
+                |r| r.get(0),
+            )?;
+            if !assigned && self.is_pending(mod_id, &input.source)? {
+                return Ok(None);
+            }
+        }
+        Ok(input)
+    }
+
+    pub fn reject_steering(
+        &mut self,
+        mod_id: i64,
+        worker: i64,
+        source: &str,
+    ) -> Result<Vec<QueuedMessage>> {
+        let input = self.submission(mod_id, source)?;
+        let id = i64::from_str_radix(source.rsplit('-').next().unwrap_or(""), 16)
+            .map_err(|_| rusqlite::Error::InvalidQuery)?;
+        let tx = self.0.transaction()?;
+        let targeted: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM steering_deliveries WHERE request_id=?1)",
+            [id],
+            |r| r.get(0),
+        )?;
+        let returned: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM steering_deliveries WHERE request_id=?1 AND delivered=-1)",
+            [id],
+            |r| r.get(0),
+        )?;
+        if targeted && tx.execute("UPDATE steering_deliveries SET delivered=-1 WHERE request_id=?1 AND worker_id=?2 AND delivered=0", params![id,worker])? != 1 {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
+        let mut queued = Vec::new();
+        if !returned {
+            for body in input.texts {
+                tx.execute("INSERT INTO queued_messages(mod_id,position,body) VALUES (?1,(SELECT COALESCE(MAX(position),-1)+1 FROM queued_messages WHERE mod_id=?1),?2)", params![mod_id,body])?;
+                queued.push(QueuedMessage {
+                    id: tx.last_insert_rowid(),
+                    body,
+                });
+            }
+        }
+        let waiting: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM steering_deliveries WHERE request_id=?1 AND delivered=0)",
+            [id],
+            |r| r.get(0),
+        )?;
+        if !waiting {
+            tx.execute("DELETE FROM steering_deliveries WHERE request_id=?1", [id])?;
+            tx.execute("DELETE FROM steering_messages WHERE request_id=?1", [id])?;
+            tx.execute("DELETE FROM steering_requests WHERE id=?1", [id])?;
+        }
+        tx.execute("UPDATE workers SET pending=NULL WHERE id=?1", [worker])?;
+        tx.commit()?;
+        Ok(queued)
+    }
+
+    pub fn steering(&self, mod_id: i64) -> Result<Vec<String>> {
+        self.0.prepare("SELECT m.body FROM steering_messages m JOIN steering_requests r ON r.id=m.request_id WHERE r.mod_id=?1 ORDER BY r.id,m.position")?
+            .query_map([mod_id], |r| r.get(0))?.collect()
+    }
+
     pub fn acknowledge(&mut self, worker: i64, input: &Submission) -> Result<()> {
         let transaction = self.0.transaction()?;
         let mod_id: i64 = transaction.query_row(
@@ -794,6 +918,23 @@ impl Store {
             if !belongs {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }
+            let targeted: bool = transaction.query_row(
+                "SELECT EXISTS(SELECT 1 FROM steering_deliveries WHERE request_id=?1)",
+                [id],
+                |r| r.get(0),
+            )?;
+            if targeted {
+                let changed = transaction.execute("UPDATE steering_deliveries SET delivered=1 WHERE request_id=?1 AND worker_id=?2 AND delivered=0", params![id,worker])?;
+                if changed != 1 {
+                    return Err(rusqlite::Error::InvalidQuery);
+                }
+                let waiting: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM steering_deliveries WHERE request_id=?1 AND delivered=0)", [id], |r| r.get(0))?;
+                if waiting {
+                    transaction.execute("UPDATE workers SET pending=NULL WHERE id=?1", [worker])?;
+                    return transaction.commit();
+                }
+            }
+            transaction.execute("DELETE FROM steering_deliveries WHERE request_id=?1", [id])?;
             transaction.execute("DELETE FROM steering_messages WHERE request_id=?1", [id])?;
             transaction.execute(
                 "DELETE FROM steering_requests WHERE mod_id=?1 AND id=?2",
@@ -987,11 +1128,12 @@ impl Store {
         let Some((workspace, status, checks, fingerprint, backend)) = result else {
             return Ok(None);
         };
-        let mut statement = self.0.prepare("SELECT id,task_id,status,source,turn_id,summary,checks FROM task_runs WHERE mod_id=?1 ORDER BY id")?;
+        let mut statement = self.0.prepare("SELECT id,task_id,status,source,turn_id,summary,checks,worker_id FROM task_runs WHERE mod_id=?1 ORDER BY id")?;
         let tasks = statement
             .query_map([mod_id], |row| {
                 let checks: String = row.get(6)?;
                 Ok(TaskRun {
+                    worker: row.get(7)?,
                     id: row.get(0)?,
                     task_id: row.get(1)?,
                     status: row.get(2)?,
@@ -1027,22 +1169,30 @@ impl Store {
         let execution = self
             .execution(mod_id)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-        if execution.status == "applied"
-            || execution
-                .tasks
-                .iter()
-                .any(|run| !["pending", "done"].contains(&run.status.as_str()))
+        if matches!(
+            execution.status.as_str(),
+            "applied" | "review" | "verifying"
+        ) || execution
+            .tasks
+            .iter()
+            .filter(|run| ["sending", "running", "checking"].contains(&run.status.as_str()))
+            .count()
+            >= 2
+            || execution.tasks.iter().any(|run| {
+                run.worker == Some(worker)
+                    && ["sending", "running", "checking"].contains(&run.status.as_str())
+            })
         {
             return Ok(None);
         }
-        let Some(task) = execution.next_task(plan) else {
+        let Some(task) = execution.next_task(plan, worker) else {
             return Ok(None);
         };
         let input = self.submission(mod_id, &task.source)?;
         let transaction = self.0.transaction()?;
         transaction.execute(
-            "UPDATE task_runs SET status='sending' WHERE id=?1 AND status='pending'",
-            [task.id],
+            "UPDATE task_runs SET status='sending',worker_id=?2 WHERE id=?1 AND status='pending'",
+            params![task.id, worker],
         )?;
         transaction.execute(
             "UPDATE workers SET pending=?2 WHERE id=?1",
@@ -1092,7 +1242,7 @@ impl Store {
         if changed != 1 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        transaction.execute("UPDATE executions SET status=CASE WHEN ?2!='done' THEN 'blocked' ELSE 'running' END WHERE mod_id=?1", params![mod_id,status])?;
+        transaction.execute("UPDATE executions SET status=CASE WHEN EXISTS(SELECT 1 FROM task_runs WHERE mod_id=?1 AND status IN ('blocked','paused')) THEN 'blocked' ELSE 'running' END WHERE mod_id=?1", [mod_id])?;
         transaction.commit()
     }
 
@@ -1236,6 +1386,141 @@ pub(crate) mod test_support {
 mod tests {
     use super::{test_support::TestData, *};
     use serde_json::json;
+
+    #[test]
+    fn two_workers_claim_independent_tasks_and_keep_retry_ownership() {
+        let data = TestData::new();
+        let mut store = data.store();
+        let project = store.load_project(Path::new("/parallel")).unwrap();
+        let m = store.create_mod(project.id, "Build two parts").unwrap();
+        let plan = Plan::parse(&serde_json::json!({"summary":"Two parts", "tasks":[
+            {"id":"a","title":"A","outcome":"A ready","files":["a.txt"],"depends_on":[],"worker":"codex","checks":["A works"]},
+            {"id":"b","title":"B","outcome":"B ready","files":["b.txt"],"depends_on":[],"worker":"codex","checks":["B works"]},
+            {"id":"c","title":"Combine","outcome":"Combined","files":["c.txt"],"depends_on":["a","b"],"worker":"codex","checks":["Both work"]}
+        ]}).to_string()).unwrap();
+        store
+            .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
+            .unwrap();
+        store
+            .create_execution(m.id, &data.0.join("work"), &plan)
+            .unwrap();
+        let a = store.worker_at(m.id, Role::Executor, 0).unwrap().id;
+        let b = store.worker_at(m.id, Role::Executor, 1).unwrap().id;
+        let first = store.task_input(m.id, a, &plan).unwrap().unwrap();
+        assert!(store.task_input(m.id, a, &plan).unwrap().is_none());
+        let second = store.task_input(m.id, b, &plan).unwrap().unwrap();
+        assert_ne!(first.source, second.source);
+        assert!(store.task_input(m.id, b, &plan).unwrap().is_none());
+        store
+            .finish_task(m.id, &first.source, "blocked", "A stopped", &[])
+            .unwrap();
+        store
+            .finish_task(m.id, &second.source, "done", "B ready", &[])
+            .unwrap();
+        assert!(store.task_input(m.id, b, &plan).unwrap().is_none());
+        assert_eq!(store.execution(m.id).unwrap().unwrap().status, "blocked");
+        drop(store);
+        let mut store = data.store();
+        store.retry_tasks(m.id).unwrap();
+        assert!(store.task_input(m.id, b, &plan).unwrap().is_none());
+        let retry = store.task_input(m.id, a, &plan).unwrap().unwrap();
+        assert_ne!(retry.source, first.source);
+        assert_eq!(
+            crate::task_worktree::task_id(&retry.source).unwrap(),
+            crate::task_worktree::task_id(&first.source).unwrap()
+        );
+        store
+            .finish_task(m.id, &retry.source, "done", "A ready", &[])
+            .unwrap();
+        let third = store.task_input(m.id, b, &plan).unwrap().unwrap();
+        assert!(third.texts[0].contains("Combined"));
+        assert_eq!(
+            store
+                .execution(m.id)
+                .unwrap()
+                .unwrap()
+                .tasks
+                .iter()
+                .filter(|r| r.status == "done")
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn broadcast_steering_waits_for_each_worker_acknowledgment() {
+        let data = TestData::new();
+        let mut store = data.store();
+        let project = store.load_project(Path::new("/steering-two")).unwrap();
+        let m = store.create_mod(project.id, "Two workers").unwrap();
+        let a = store.worker_at(m.id, Role::Executor, 0).unwrap().id;
+        let b = store.worker_at(m.id, Role::Executor, 1).unwrap().id;
+        let message = store.enqueue(m.id, "Keep it small").unwrap();
+        store.steer_to(m.id, &[message.id], &[a, b]).unwrap();
+        let input = store.next_steering(m.id, a).unwrap().unwrap();
+        for worker in [a, b] {
+            store.pending(worker, Some(&input.source)).unwrap();
+        }
+        store.acknowledge(a, &input).unwrap();
+        assert!(store.next_steering(m.id, a).unwrap().is_none());
+        assert_eq!(store.steering(m.id).unwrap(), ["Keep it small"]);
+        drop(store);
+        let mut store = data.store();
+        assert_eq!(
+            store.next_steering(m.id, b).unwrap().unwrap().source,
+            input.source
+        );
+        store.acknowledge(b, &input).unwrap();
+        assert!(store.steering(m.id).unwrap().is_empty());
+        let state = store.load_project(Path::new("/steering-two")).unwrap();
+        assert_eq!(
+            state.mods[0]
+                .messages
+                .iter()
+                .filter(|m| m.item_id.as_deref() == Some(&input.source))
+                .count(),
+            1
+        );
+        let message = store.enqueue(m.id, "Only B").unwrap();
+        store.steer_to(m.id, &[message.id], &[b]).unwrap();
+        assert!(store.next_steering(m.id, a).unwrap().is_none());
+        assert!(store.next_steering(m.id, b).unwrap().is_some());
+        store.delete_mod(project.id, m.id).unwrap();
+    }
+
+    #[test]
+    fn rejected_broadcast_returns_to_queue_once_without_claiming_delivery() {
+        let data = TestData::new();
+        let mut store = data.store();
+        let project = store.load_project(Path::new("/rejected-steering")).unwrap();
+        let m = store.create_mod(project.id, "Two workers").unwrap();
+        let a = store.worker_at(m.id, Role::Executor, 0).unwrap().id;
+        let b = store.worker_at(m.id, Role::Executor, 1).unwrap().id;
+        let message = store.enqueue(m.id, "Change direction").unwrap();
+        store.steer_to(m.id, &[message.id], &[a, b]).unwrap();
+        let input = store.next_steering(m.id, a).unwrap().unwrap();
+        assert_eq!(
+            store.reject_steering(m.id, a, &input.source).unwrap().len(),
+            1
+        );
+        assert!(store.next_steering(m.id, a).unwrap().is_none());
+        assert!(store.next_steering(m.id, b).unwrap().is_some());
+        assert!(
+            store
+                .reject_steering(m.id, b, &input.source)
+                .unwrap()
+                .is_empty()
+        );
+        let state = store.load_project(Path::new("/rejected-steering")).unwrap();
+        assert_eq!(state.mods[0].queue.len(), 1);
+        assert!(state.mods[0].steering.is_empty());
+        assert!(
+            !state.mods[0]
+                .messages
+                .iter()
+                .any(|m| m.item_id.as_deref() == Some(&input.source))
+        );
+    }
 
     #[test]
     fn closed_worktree_retention_is_scoped_and_reopening_resets_its_clock() {

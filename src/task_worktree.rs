@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, fs, io, sync::atomic::AtomicBool};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs, io,
+    sync::atomic::AtomicBool,
+};
 
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +16,8 @@ const GIT: &str = "/opt/sprowt-git/repo";
 #[derive(Default, Deserialize, Serialize)]
 pub struct TaskWorktrees {
     pub round: Vec<i64>,
+    #[serde(default)]
+    pub owners: BTreeMap<i64, i64>,
     pub active: Option<i64>,
     pub integrated: BTreeSet<i64>,
     #[serde(default)]
@@ -30,11 +36,29 @@ pub fn task_id(source: &str) -> io::Result<i64> {
         .ok_or_else(|| io::Error::other("Invalid task identity."))
 }
 
+pub fn worker_home(id: i64) -> String {
+    format!("/home/sprowt/workers/{id}")
+}
+
 pub fn folder(id: i64) -> String {
     format!("/tasks/{id}")
 }
 
 impl Sandbox {
+    pub fn assign_task(&mut self, id: i64, worker: i64, cancelled: &AtomicBool) -> io::Result<()> {
+        self.tasks.owners.insert(id, worker);
+        self.guest(&["/bin/mkdir", "-p", &worker_home(worker)], cancelled)?;
+        self.activate_task(id, cancelled)?;
+        self.save_tasks()
+    }
+
+    pub fn runtime_home(&self) -> String {
+        self.tasks
+            .active
+            .and_then(|id| self.tasks.owners.get(&id).copied())
+            .map_or_else(|| "/home/sprowt".into(), worker_home)
+    }
+
     pub fn task_folder(&self) -> String {
         self.tasks
             .active
@@ -122,7 +146,8 @@ impl Sandbox {
         if self.tasks.round == ids {
             return Ok(());
         }
-        let source = self.export(cancelled)?;
+        self.export(cancelled)?;
+        let source = workspace::source_state(&self.root().join("work"))?;
         self.guest(
             &["/bin/mkdir", "-p", "/tasks", "/opt/sprowt-git"],
             cancelled,
@@ -158,6 +183,10 @@ impl Sandbox {
                 cancelled,
             )?;
         }
+        let drafts = self.root().join("task-drafts");
+        if drafts.exists() {
+            fs::remove_dir_all(drafts)?;
+        }
         self.tasks = TaskWorktrees {
             round: ids.to_vec(),
             ..Default::default()
@@ -171,6 +200,15 @@ impl Sandbox {
             return Err(io::Error::other("Task does not belong to this execution."));
         }
         self.ensure_task(id, cancelled)?;
+        let dir = self.root().join("task-drafts");
+        fs::create_dir_all(&dir)?;
+        let base = dir.join(format!("{id}-base.json"));
+        if !base.exists() {
+            fs::write(
+                base,
+                serde_json::to_vec(&self.snapshot("/workspace", cancelled)?)?,
+            )?;
+        }
         if self.tasks.active == Some(id) {
             return Ok(());
         }
@@ -253,7 +291,7 @@ impl Sandbox {
             let id = task_id(source)?;
             self.activate_task(id, cancelled)?;
             let (before, results) = self.verify(checks, cancelled)?;
-            let unchanged = before == workspace::source_state(&self.root().join("work"))?;
+            let unchanged = before == self.snapshot(&folder(id), &keep)?;
             let passed = unchanged
                 && !checks.is_empty()
                 && results.len() == checks.len()
@@ -261,6 +299,12 @@ impl Sandbox {
             if passed {
                 self.integrate_task(id, cancelled)?;
                 return Ok((self.snapshot("/workspace", &keep)?, results));
+            }
+            let mut results = results;
+            if !unchanged && let Some(result) = results.last_mut() {
+                result.exit_code = None;
+                result.output =
+                    "Verification changed source files. Fix the check before retrying.".into();
             }
             return Ok((before, results));
         }
@@ -277,7 +321,7 @@ impl Sandbox {
             }
             let (_, mut checked) = self.verify(group, cancelled)?;
             if let Some(result) = checked.last_mut()
-                && workspace::source_state(&self.root().join("work"))? != combined
+                && self.snapshot(&self.task_folder(), &keep)? != combined
             {
                 result.exit_code = None;
                 result.output =
@@ -331,6 +375,86 @@ impl Sandbox {
                 &["worktree", "remove", "--force", &folder(id)],
                 cancelled,
             )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn save_draft(&self, source: &Snapshot) -> io::Result<()> {
+        if let Some(id) = self
+            .tasks
+            .active
+            .filter(|id| !self.tasks.integrated.contains(id))
+        {
+            let dir = self.root().join("task-drafts");
+            fs::create_dir_all(&dir)?;
+            let next = dir.join(format!("{id}.next"));
+            fs::write(&next, serde_json::to_vec(source)?)?;
+            fs::rename(next, dir.join(format!("{id}.json")))?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn review_source(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
+        let mut combined = self
+            .snapshot("/workspace", cancelled)?
+            .into_iter()
+            .map(|(path, bytes, mode)| (path, (bytes, mode)))
+            .collect::<BTreeMap<_, _>>();
+        for id in &self.tasks.round {
+            if self.tasks.integrated.contains(id) {
+                continue;
+            }
+            let dir = self.root().join("task-drafts");
+            let draft = dir.join(format!("{id}.json"));
+            let base = dir.join(format!("{id}-base.json"));
+            if !draft.exists() || !base.exists() {
+                continue;
+            }
+            let base: Snapshot = serde_json::from_slice(&fs::read(base)?)?;
+            let draft: Snapshot = serde_json::from_slice(&fs::read(draft)?)?;
+            let base: BTreeMap<_, _> = base.into_iter().map(|(p, b, m)| (p, (b, m))).collect();
+            let draft: BTreeMap<_, _> = draft.into_iter().map(|(p, b, m)| (p, (b, m))).collect();
+            for path in base.keys().chain(draft.keys()).collect::<BTreeSet<_>>() {
+                if base.get(path) == draft.get(path) {
+                    continue;
+                }
+                let current = combined.get(path);
+                let changed = draft.get(path);
+                if current != base.get(path)
+                    && current != changed
+                    && !changed.is_some_and(|(bytes, _)| bytes.starts_with(b"<<<<<<<"))
+                {
+                    let left = current.map_or(&[][..], |(bytes, _)| bytes.as_slice());
+                    let right = changed.map_or(&[][..], |(bytes, _)| bytes.as_slice());
+                    let (Ok(left), Ok(right)) =
+                        (std::str::from_utf8(left), std::str::from_utf8(right))
+                    else {
+                        return Err(io::Error::other(
+                            "Unfinished tasks conflict in a binary file. Both branches are saved; resolve the task before closing or replanning.",
+                        ));
+                    };
+                    let mode = changed.or(current).map_or(0o644, |(_, mode)| *mode);
+                    let bytes = format!(
+                        "<<<<<<< combined draft\n{left}\n=======\n{right}\n>>>>>>> task {id}\n"
+                    )
+                    .into_bytes();
+                    combined.insert(path.clone(), (bytes, mode));
+                } else if let Some(file) = changed {
+                    combined.insert(path.clone(), file.clone());
+                } else {
+                    combined.remove(path);
+                }
+            }
+        }
+        Ok(combined.into_iter().map(|(p, (b, m))| (p, b, m)).collect())
+    }
+
+    pub fn checkpoint_task(&mut self, id: i64) -> io::Result<()> {
+        if !self.tasks.integrated.contains(&id)
+            && self.guest_exists(&format!("{}/.git", folder(id)))?
+        {
+            self.tasks.active = Some(id);
+            self.export(&AtomicBool::new(false))?;
         }
         Ok(())
     }

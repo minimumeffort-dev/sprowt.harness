@@ -23,7 +23,7 @@ sequenceDiagram
     Tools-->>Harness: Check results
 ```
 
-Both VM connections use standard input/output. The harness reruns checks in the same VM that Codex used.
+Each worker and the verification connection use standard input/output. The harness reruns checks in the same VM that Codex used.
 
 ## Source files
 
@@ -55,9 +55,11 @@ codex -c 'cli_auth_credentials_store="file"' login
 
 Create a mod; its valid plan starts execution automatically. The first execution builds the shared development image; later runs reuse it. **Ctrl+D** opens the diff. New codemods publish PRs. Existing snapshot mods can be adopted into Git. See [Worktrees and PRs](git-workflow.md).
 
-The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Codex reads your manifests, installs a compatible runtime under `/home/sprowt`, then installs project dependencies in its task worktree. Git objects are shared inside the VM; task dependencies remain in their own folders until final verification succeeds.
+The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Codex reads your manifests, installs a compatible runtime under its own `/home/sprowt/workers/<worker-id>` (HOME), then installs project dependencies in its task worktree. Git objects are shared inside the VM; task dependencies remain in their own folders until final verification succeeds.
 
 ## System packages
+
+One controller owns each VM and serializes system package installs, task checkpoints, checks and Git integration. Worker commands run concurrently in separate task worktrees and runtime homes.
 
 The executor chooses packages from project requirements and missing-library errors. For Playwright, it can inspect the installed browser dependency list. It calls `install_system_packages` with Debian package names and a short reason.
 
@@ -85,7 +87,7 @@ If a saved executor conversation lacks the setup tool, reconnecting opens a new 
 - Commands, edits and independent checks use the same VM. A disconnected guest stops work; it never falls back to host execution.
 - No host folders, login files, SSH agent, service sockets or ports are mounted or forwarded.
 - Codex’s guest sandbox keeps system files read-only for normal worker commands and forces network traffic through its domain proxy. The harness’s package installer uses a separate writable setup command in the VM. Direct connections and private network destinations are blocked. Guest loopback is available for local app checks.
-- Each task writes only its assigned worktree, shared runtimes and temporary files. The harness owns the combined source and guest Git metadata; task workers cannot commit or merge.
+- Each task writes only its assigned worktree, its own runtime home and temporary files. The harness owns the combined source and guest Git metadata; task workers cannot commit or merge.
 - Source exports preserve regular files, modes and deletions. Dependency folders and common credential files are excluded. Links and special files are rejected. Exports are limited to 512 MiB, with 64 MiB per source file.
 
 The planner inspects the mod worktree through a read-only host OS sandbox. Legacy mods inspect the project. Host MCPs, apps, plugins and hooks stay disabled. VM execution needs a file-backed ChatGPT login; Keychain-only login is unsupported.
@@ -126,13 +128,13 @@ It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomain
 
 Quitting stops VMs and retains unfinished mods’ disks. Reopening and **Ctrl+R** reconnect without losing dependencies. Reconnecting clears guest processes left by a crash. Shared images and the container service remain for reuse.
 
-Publication saves the PR URL and retains the VM and worktree. Edit rounds reuse the same VM and shared runtime/download caches. Completed task folders and their local dependencies are removed after the combined checks pass. Failed operations keep source and offer **Ctrl+R** to retry.
+Publication saves the PR URL and retains the VM and worktree. Edit rounds reuse the same VM and per-worker runtime/download caches. Completed task folders and their local dependencies are removed after the combined checks pass. Failed operations keep source and offer **Ctrl+R** to retry.
 
 Closing exports source and task branches, commits a local checkpoint and removes the VM; the worktree and history remain. Reopening creates a fresh VM when execution resumes, restoring task branches from a local Git bundle. Runtime installations are not part of that bundle. Deleting discards local source and history. Closed worktree retention removes only the host worktree, retaining the branch and exports. See [Worktrees and PRs](git-workflow.md).
 
 Unfinished mods created before VM support keep their working files. Their first explicit run starts a fresh executor conversation and reruns tasks in Linux; old host check results are cleared. Previously completed snapshot work can be adopted into Git. A missing or altered VM blocks reconnection and preserves the last exported source for review.
 
-This backend runs Linux. iOS and macOS builds need a later macOS VM backend. One executor per mod; different mods can run in parallel. Uses experimental [Codex executor interfaces](https://github.com/openai/codex/tree/rust-v0.159.2/codex-rs/exec-server) and [Codex managed networking](https://learn.chatgpt.com/docs/permissions).
+This backend runs Linux. iOS and macOS builds need a later macOS VM backend. Up to two executors per mod; different mods can also run in parallel. Uses experimental [Codex executor interfaces](https://github.com/openai/codex/tree/rust-v0.159.2/codex-rs/exec-server) and [Codex managed networking](https://learn.chatgpt.com/docs/permissions).
 
 ## Verify the boundary
 
@@ -144,6 +146,7 @@ cargo test git_mod::tests::publishing_keeps_the_vm -- --ignored --nocapture
 cargo test sandbox::tests::persistent_vm_checks -- --ignored --nocapture
 cargo test sandbox::tests::task_worktrees -- --ignored --nocapture
 cargo test codex::tests::task_turn -- --ignored --nocapture
+cargo test codex::tests::two_clients_share_a_vm -- --ignored --nocapture
 ```
 
-These use temporary repositories and VMs, checking worker restrictions, tool ownership, source transfer and cleanup. GitHub publication uses a local fixture. The Codex task test uses one short subscription-backed turn. Native VM tests require the pinned host and guest Codex versions; shared images remain for reuse.
+These use temporary repositories and VMs, checking worker restrictions, tool ownership, source transfer and cleanup. GitHub publication uses a local fixture. The Codex tests use short subscription-backed turns, including two simultaneous workers. Native VM tests require the pinned host and guest Codex versions; shared images remain for reuse.

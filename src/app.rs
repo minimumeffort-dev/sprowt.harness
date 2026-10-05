@@ -57,6 +57,7 @@ pub struct App {
     pub setup_files: Vec<String>,
     setup_root: Option<PathBuf>,
     workers: BTreeMap<i64, Worker>,
+    pub steer_target: Option<i64>,
     auto_plans: BTreeSet<i64>,
     auto_runs: BTreeSet<i64>,
     git_jobs: BTreeMap<i64, Job>,
@@ -150,6 +151,7 @@ impl App {
             setup_files: Vec::new(),
             setup_root: None,
             workers: BTreeMap::new(),
+            steer_target: None,
             auto_plans: BTreeSet::new(),
             auto_runs: BTreeSet::new(),
             git_jobs: BTreeMap::new(),
@@ -578,6 +580,7 @@ impl App {
         {
             self.view = View::Chat;
             self.queue_selection.clear();
+            self.steer_target = None;
             return Ok(());
         }
         let Some(active) = self.active else {
@@ -590,6 +593,14 @@ impl App {
         } else {
             false
         };
+        if key.code == KeyCode::Char('t') && key.modifiers.is_empty() {
+            let workers = self.running_workers();
+            self.steer_target = self
+                .steer_target
+                .and_then(|id| workers.iter().position(|w| *w == id))
+                .map_or_else(|| workers.first().copied(), |i| workers.get(i + 1).copied());
+            return Ok(());
+        }
         if key.code == KeyCode::Char('s') && key.modifiers.is_empty() {
             let ids = if self.queue_selection.is_empty() {
                 self.mods[active]
@@ -608,7 +619,19 @@ impl App {
                     return Ok(());
                 }
             }
-            let messages = self.store.request_steering(mod_id, &ids)?;
+            let running = self.running_workers();
+            let targets = if let Some(id) = self.steer_target {
+                if !running.contains(&id) {
+                    self.notice =
+                        Some("That worker has stopped. Select a running worker or all.".into());
+                    return Ok(());
+                }
+                vec![id]
+            } else {
+                running
+            };
+            let messages = self.store.steer_to(mod_id, &ids, &targets)?;
+            self.steer_target = None;
             self.mods[active]
                 .queue
                 .retain(|message| !ids.contains(&message.id));
@@ -1182,13 +1205,43 @@ impl App {
         };
         workers()
             .find(|worker| worker.role == Role::Planner && worker.enabled)
+            .or_else(|| workers().find(|worker| worker.role == Role::Executor && worker.busy()))
+            .or_else(|| {
+                workers().find(|worker| worker.role == Role::Executor && worker.error.is_some())
+            })
             .or_else(|| workers().find(|worker| worker.role == Role::Executor))
             .or_else(|| workers().next())
     }
 
+    pub fn running_workers(&self) -> Vec<i64> {
+        self.current_mod().map_or_else(Vec::new, |m| {
+            self.workers
+                .values()
+                .filter(|w| {
+                    w.mod_id == m.id && w.role == Role::Executor && w.status == Status::Running
+                })
+                .map(|w| w.id)
+                .collect()
+        })
+    }
+
+    pub fn worker_count(&self) -> usize {
+        self.current_mod().map_or(0, |m| {
+            self.workers
+                .values()
+                .filter(|w| w.mod_id == m.id && w.role == Role::Executor && w.busy())
+                .count()
+        })
+    }
+
     pub fn worker_error(&self) -> Option<&str> {
-        self.current_worker()
-            .and_then(|worker| worker.error.as_deref())
+        self.current_mod()
+            .and_then(|m| {
+                self.workers
+                    .values()
+                    .filter(|w| w.mod_id == m.id)
+                    .find_map(|w| w.error.as_deref())
+            })
             .or(self.notice.as_deref())
     }
 
@@ -1393,6 +1446,27 @@ impl App {
                 self.mods[active].execution = self.store.execution(mod_id)?;
             }
         }
+        if role == Role::Executor {
+            let running = self
+                .workers
+                .values()
+                .any(|w| w.mod_id == mod_id && (w.enabled || w.busy()));
+            if running {
+                for worker in self
+                    .workers
+                    .values_mut()
+                    .filter(|w| w.mod_id == mod_id && w.role == role && w.enabled)
+                {
+                    worker.toggle();
+                }
+                return Ok(());
+            }
+            self.workers
+                .retain(|_, w| w.mod_id != mod_id || w.role != role);
+            self.store.retry_tasks(mod_id)?;
+            self.mods[active].execution = self.store.execution(mod_id)?;
+            return self.start_worker(active, role);
+        }
         if let Some(worker) = self
             .workers
             .values_mut()
@@ -1472,13 +1546,24 @@ impl App {
     }
 
     fn start_worker(&mut self, index: usize, role: Role) -> Result<()> {
+        let count = if role == Role::Executor {
+            self.mods[index]
+                .execution
+                .as_ref()
+                .map_or(1, |e| e.tasks.len().min(2))
+        } else {
+            1
+        };
+        for slot in 0..count {
+            self.start_worker_slot(index, role, slot)?;
+        }
+        Ok(())
+    }
+
+    fn start_worker_slot(&mut self, index: usize, role: Role, slot: usize) -> Result<()> {
         let project = self.source_project(index);
         let mod_id = self.mods[index].id;
-        let record = if role == Role::Executor {
-            self.store.worker(mod_id)?
-        } else {
-            self.store.worker_for(mod_id, role)?
-        };
+        let record = self.store.worker_at(mod_id, role, slot)?;
         self.workers.remove(&record.id);
         let routing = if role == Role::Planner {
             if record.pending.is_none()
@@ -2848,6 +2933,7 @@ mod tests {
         worker.status = Status::Running;
         worker.model = Some("current-model".into());
         worker.effort = Some("high".into());
+        let id = worker.id;
         app.workers.insert(worker.id, worker);
         let execution = app.mods[0].execution.as_mut().unwrap();
         execution.status = "running".into();
@@ -2868,13 +2954,15 @@ mod tests {
             ))
             .join("\n");
             assert!(screen.contains(&format!(
-                "{glyph} codex · executor · current-model · high · running"
+                "{glyph} codex · executor · w{id} · current-model · high · running"
             )));
             assert!(screen.contains("◆ codex · executor · previous-model · low"));
             assert!(screen.contains(&format!("{glyph} 1. Greeting")));
         }
         let still = rows(&screen(&mut app, 116, 40)).join("\n");
-        assert!(still.contains("⠿ codex · executor · current-model · high"));
+        assert!(still.contains(&format!(
+            "⠿ codex · executor · w{id} · current-model · high"
+        )));
         assert!(still.contains("⠿ 1. Greeting"));
         app.workers.values_mut().next().unwrap().status = Status::Checking;
         app.mods[0].execution.as_mut().unwrap().tasks[0].status = "checking".into();
@@ -2894,11 +2982,87 @@ mod tests {
             Some(Duration::from_millis(80)),
         ))
         .join("\n");
-        assert!(idle.contains("◆ codex · executor · current-model · high · ready"));
+        assert!(idle.contains(&format!(
+            "◆ codex · executor · w{id} · current-model · high · ready"
+        )));
         assert!(!idle.contains('⠙'));
         app.workers.values_mut().next().unwrap().role = Role::Planner;
         let planner = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(planner.contains("▤ codex · planner · current-model · high · ready"));
+    }
+
+    #[test]
+    fn two_workers_show_task_ownership_and_queue_target_without_losing_draft() {
+        let (_data, mut app, _root) = execution_app();
+        let id = app.current_mod().unwrap().id;
+        let mut workers = Vec::new();
+        for slot in 0..2 {
+            let record = app.store.worker_at(id, Role::Executor, slot).unwrap();
+            let mut worker = Worker::start(
+                &app.project,
+                app.current_mod().unwrap(),
+                record,
+                Role::Planner,
+                None,
+            )
+            .unwrap();
+            worker.role = Role::Executor;
+            worker.status = Status::Running;
+            worker.model = Some("test-model".into());
+            worker.effort = Some("high".into());
+            workers.push(worker.id);
+            app.workers.insert(worker.id, worker);
+        }
+        let plan = app.mods[0]
+            .planning
+            .as_mut()
+            .unwrap()
+            .plan
+            .as_mut()
+            .unwrap();
+        let mut second = plan.tasks[0].clone();
+        second.id = "two".into();
+        second.title = "Second task".into();
+        plan.tasks.push(second);
+        let execution = app.mods[0].execution.as_mut().unwrap();
+        execution.status = "running".into();
+        execution.tasks[0].status = "running".into();
+        execution.tasks[0].worker = Some(workers[0]);
+        let mut second = execution.tasks[0].clone();
+        second.id += 1;
+        second.task_id = "two".into();
+        second.worker = Some(workers[1]);
+        execution.tasks.push(second);
+        let view = rows(&screen_at(
+            &mut app,
+            120,
+            36,
+            Some(Duration::from_millis(80)),
+        ))
+        .join("\n");
+        assert!(view.contains("2 workers running"));
+        assert!(view.contains(&format!("⠙ 1. Greeting · w{}", workers[0])));
+        assert!(view.contains(&format!("⠙ 2. Second task · w{}", workers[1])));
+        let queued = app.store.enqueue(id, "Only the second worker").unwrap();
+        app.mods[0].queue.push(queued);
+        key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
+        assert_eq!(app.steer_target, Some(workers[1]));
+        let view = rows(&screen(&mut app, 120, 36))
+            .join("\n")
+            .replace('\u{a0}', " ");
+        assert!(view.contains(&format!("target: w{}", workers[1])));
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Chat));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(app.store.next_steering(id, workers[0]).unwrap().is_none());
+        assert!(app.store.next_steering(id, workers[1]).unwrap().is_some());
+        for worker in app.workers.values_mut() {
+            worker.status = Status::Ready;
+        }
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(app.workers.values().all(|w| !w.enabled));
     }
 
     #[test]

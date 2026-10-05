@@ -26,7 +26,7 @@ const SELECTED: Color = Color::Rgb(62, 73, 55);
 const USER_BACKGROUND: Color = Color::Rgb(43, 49, 43);
 const KEY_HINT: Color = Color::Rgb(161, 170, 160);
 const MOD_GLYPH: &str = "◇";
-const DIALOG_WIDTH: u16 = 80;
+const DIALOG_WIDTH: u16 = 100;
 
 pub fn input() -> TextArea<'static> {
     field("message", "Describe a feature, a fix, or an idea...")
@@ -165,6 +165,7 @@ pub fn draw(
         app.current_mod()
             .map_or("", |code_mod| code_mod.name.as_str()),
         mod_row,
+        app.worker_count(),
         matches!(
             app.view,
             View::Mods(_) | View::DeleteMod(_) | View::CloseMod(_)
@@ -423,6 +424,12 @@ fn draw_queue_editor(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     } else {
         hints.push(("k/j", "reorder"));
     }
+    let target = app
+        .steer_target
+        .map_or_else(|| "target: all".into(), |id| format!("target: w{id}"));
+    if !app.running_workers().is_empty() {
+        hints.push(("t", &target));
+    }
     hints.push(("esc", "back"));
     let title = if app.queue_selection.is_empty() {
         format!("queue ({count})")
@@ -437,13 +444,23 @@ fn draw_queue_editor(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     );
 }
 
-fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, open: bool) {
-    let [label, selector, _] = Layout::horizontal([
+fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, workers: usize, open: bool) {
+    let [label, selector, status] = Layout::horizontal([
         Constraint::Length(11),
         Constraint::Length(area.width.saturating_sub(11).min(54)),
         Constraint::Min(0),
     ])
     .areas(area);
+    if workers > 0 {
+        frame.render_widget(
+            Line::from(format!(
+                "  {workers} {} running",
+                if workers == 1 { "worker" } else { "workers" }
+            ))
+            .fg(ACCENT),
+            status,
+        );
+    }
     frame.render_widget(Line::from("<codemod/>").fg(KEY_HINT), label);
     frame.render_widget(
         Block::new()
@@ -1000,6 +1017,15 @@ fn plan_lines(
                 .fg(if marker == "!" { Color::Red } else { ACCENT })
                 .bold(),
             task.title.clone().bold(),
+            run.and_then(|r| r.worker)
+                .filter(|_| {
+                    matches!(
+                        run.unwrap().status.as_str(),
+                        "running" | "sending" | "checking"
+                    )
+                })
+                .map_or(String::new(), |id| format!(" · w{id}"))
+                .fg(KEY_HINT),
         ]));
         lines.push(Line::from(format!("   {}", task.outcome)));
         let dependencies: Vec<_> = task
@@ -1161,11 +1187,14 @@ fn conversation_blocks<'a>(
                     Line::from(format!(
                         "{}{}{}",
                         if message.role == "harness" {
-                            "◇ sprowt"
+                            "◇ sprowt".to_owned()
                         } else if message.role == "planner" {
-                            "▤ codex · planner"
+                            "▤ codex · planner".to_owned()
                         } else {
-                            "◆ codex · executor"
+                            message.role.strip_prefix("codex:").map_or_else(
+                                || "◆ codex · executor".into(),
+                                |id| format!("◆ codex · executor · w{id}"),
+                            )
                         },
                         message
                             .model

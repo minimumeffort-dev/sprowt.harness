@@ -206,8 +206,31 @@ impl Sandbox {
         progress("checking Linux VM isolation");
         vm.boundary(cancelled)?;
         vm.restore_tasks(cancelled)?;
+        let active = vm.tasks.active;
+        for id in vm.tasks.round.clone() {
+            vm.checkpoint_task(id)?;
+        }
+        vm.tasks.active = active;
         vm.export(cancelled)?;
+        let error = root.join("checkpoint-error");
+        if error.exists() {
+            fs::remove_file(error)?;
+        }
         Ok(vm)
+    }
+
+    pub fn worker_home(&self, id: i64) -> io::Result<PathBuf> {
+        let home = self.home.join(format!("worker-{id}"));
+        fs::create_dir_all(&home)?;
+        private(&home, 0o700)?;
+        if !home.join("auth.json").exists() {
+            std::os::unix::fs::symlink(self.home.join("auth.json"), home.join("auth.json"))?;
+        }
+        fs::copy(
+            self.home.join("environments.toml"),
+            home.join("environments.toml"),
+        )?;
+        Ok(home)
     }
 
     fn login(&self) -> io::Result<()> {
@@ -491,7 +514,7 @@ impl Sandbox {
         fs::rename(next, path)
     }
 
-    fn profile(&self, name: &str, cwd: &str) -> String {
+    fn profile(&self, name: &str, cwd: &str, home: &str) -> String {
         let domains = self
             .domains
             .iter()
@@ -499,15 +522,16 @@ impl Sandbox {
             .collect::<Vec<_>>()
             .join(",");
         format!(
-            "permissions.{name}={{filesystem={{\"/\"=\"read\",{}=\"write\",{}=\"read\",\"/home/sprowt\"=\"write\",\"/tmp\"=\"write\"}},network={{enabled=true,domains={{{domains}}},allow_local_binding=true}}}}",
+            "permissions.{name}={{filesystem={{\"/\"=\"read\",{}=\"write\",{}=\"read\",{}=\"write\",\"/tmp\"=\"write\"}},network={{enabled=true,domains={{{domains}}},allow_local_binding=true}}}}",
             json!(cwd),
-            json!(format!("{cwd}/.git"))
+            json!(format!("{cwd}/.git")),
+            json!(home)
         )
     }
 
     pub fn configuration(&self) -> Vec<String> {
         vec![
-            self.profile("sprowt_vm", "/workspace"),
+            self.profile("sprowt_vm", "/workspace", "/home/sprowt"),
             "default_permissions=\"sprowt_vm\"".into(),
             "features.network_proxy=true".into(),
             format!("shell_environment_policy.set.PATH={}", json!(GUEST_PATH)),
@@ -515,17 +539,22 @@ impl Sandbox {
         ]
     }
 
-    pub fn task_configuration(&self) -> Vec<String> {
-        self.tasks
+    pub fn worker_configuration(&self, worker: i64) -> Vec<String> {
+        let home = crate::task_worktree::worker_home(worker);
+        let mut config: Vec<_> = self
+            .tasks
             .round
             .iter()
             .map(|id| {
                 self.profile(
                     &format!("sprowt_task_{id}"),
                     &crate::task_worktree::folder(*id),
+                    &home,
                 )
             })
-            .collect()
+            .collect();
+        config.push(format!("shell_environment_policy.set.HOME={}", json!(home)));
+        config
     }
 
     fn permissions(&self) -> Value {
@@ -535,7 +564,8 @@ impl Sandbox {
     fn process_permissions(&self, installing: bool) -> Value {
         let cwd = self.task_folder();
         let git = format!("{cwd}/.git");
-        let entries = [("/","read"),(cwd.as_str(),"write"),(git.as_str(),"read"),("/home/sprowt","write"),("/tmp","write")].map(|(path,access)| json!({"path":{"type":"path","path":format!("file://{path}")},"access":access}));
+        let home = self.runtime_home();
+        let entries = [("/","read"),(cwd.as_str(),"write"),(git.as_str(),"read"),(home.as_str(),"write"),("/tmp","write")].map(|(path,access)| json!({"path":{"type":"path","path":format!("file://{path}")},"access":access}));
         let filesystem = if installing {
             json!({"type":"unrestricted"})
         } else {
@@ -566,9 +596,10 @@ impl Sandbox {
         let sandbox = self.process_permissions(installing);
         let proxy = json!({"proxy":{"enabled":true,"enableSocks5":false,"enableSocks5Udp":false,"allowUpstreamProxy":false,"dangerouslyAllowAllUnixSockets":false,"mode":"full","domains":self.domains,"unixSockets":{},"allowLocalBinding":true},"auditMetadata":{}});
         let task_folder = self.task_folder();
+        let home = self.runtime_home();
         let rpc = self.rpc.as_mut().unwrap();
         let process = format!("sprowt-{}", PROCESS.fetch_add(1, Ordering::Relaxed));
-        let mut environment = json!({"HOME":"/home/sprowt","PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1"});
+        let mut environment = json!({"HOME":home,"PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1"});
         if installing {
             environment["PATH"] = json!("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
             environment["DEBIAN_FRONTEND"] = json!("noninteractive");
@@ -803,10 +834,14 @@ impl Sandbox {
 
     pub fn export(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
         let snapshot = self.snapshot(&self.task_folder(), cancelled)?;
-        workspace::replace_source(&self.root, &snapshot)?;
         if !self.tasks.round.is_empty() {
             self.commit_source(self.tasks.active, &snapshot, cancelled)?;
+            self.save_draft(&snapshot)?;
             self.checkpoint_tasks(cancelled)?;
+            let review = self.review_source(cancelled)?;
+            workspace::replace_source(&self.root, &review)?;
+        } else {
+            workspace::replace_source(&self.root, &snapshot)?;
         }
         Ok(snapshot)
     }
@@ -1254,6 +1289,55 @@ mod tests {
                         .iter()
                         .any(|f| f.0 == Path::new("combined.txt") && f.1 == b"shared")
                 );
+                vm.prepare_tasks(&[7, 8], &flag)?;
+                vm.assign_task(7, 101, &flag)?;
+                assert_eq!(
+                    vm.run(
+                        &command(
+                            "printf seven > seven.txt; printf private > \"$HOME/runtime-proof\""
+                        ),
+                        &flag,
+                        30,
+                        8192
+                    )?
+                    .0,
+                    Some(0)
+                );
+                vm.checkpoint_task(7)?;
+                vm.assign_task(8, 102, &flag)?;
+                assert_eq!(
+                    vm.run(
+                        &command(
+                            "printf eight > eight.txt; ! touch /home/sprowt/workers/101/denied"
+                        ),
+                        &flag,
+                        30,
+                        8192
+                    )?
+                    .0,
+                    Some(0)
+                );
+                vm.checkpoint_task(8)?;
+                assert_eq!(fs::read_to_string(root.join("work/seven.txt"))?, "seven");
+                assert_eq!(fs::read_to_string(root.join("work/eight.txt"))?, "eight");
+                drop(vm);
+                delete(&root)?;
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.assign_task(7, 101, &flag)?;
+                assert_eq!(vm.run(&command("test \"$(cat seven.txt)\" = seven && test ! -e eight.txt && test ! -e \"$HOME/runtime-proof\""), &flag, 30, 8192)?.0, Some(0));
+                vm.assign_task(8, 102, &flag)?;
+                assert_eq!(
+                    vm.run(
+                        &command("test \"$(cat eight.txt)\" = eight && test ! -e seven.txt"),
+                        &flag,
+                        30,
+                        8192
+                    )?
+                    .0,
+                    Some(0)
+                );
+                assert_eq!(fs::read_to_string(root.join("work/seven.txt"))?, "seven");
+                assert_eq!(fs::read_to_string(root.join("work/eight.txt"))?, "eight");
                 drop(vm);
                 Ok(())
             },

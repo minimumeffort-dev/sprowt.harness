@@ -9,11 +9,11 @@ flowchart TB
     first --> context["Own description, plan and messages"]
     first --> worktree["Own Git branch and worktree"]
     worktree --> planner["Codex planner · read-only"]
-    planner --> executor["Codex executor · follows the plan"]
+    planner --> executor["Up to two Codex executors · independent tasks"]
     executor --> vm["Own Linux VM · source copy and runtime"]
 ```
 
-The current harness supports one planner and one executor per mod. Workers in different mods can run at the same time. Planners read the worktree initially and exported source for edit rounds; executors work on its source copy in Linux. Multiple executors per mod come later. See [Plan execution](execution.md).
+The current harness supports one planner and up to two executors per mod. Workers in different mods can run at the same time. Planners read the worktree initially and exported source for edit rounds; executors work on its source copy in Linux. See [Plan execution](execution.md).
 
 Publishing creates or updates a PR and keeps the VM for further edits. Closing saves a checkpoint and removes the VM; deletion discards local work. A review worker comes later.
 
@@ -44,7 +44,8 @@ Open **Ctrl+Q** to manage pending instructions:
 | `k` / `j` | Move up / down |
 | `d` | Remove |
 | Space | Mark or unmark |
-| `s` | Steer with marked instructions, or the selected one |
+| `t` | Choose a running worker or all workers for steering |
+| `s` | Steer the target with marked instructions, or the selected one |
 | Esc | Return to the composer |
 
 Editing preserves your composer draft. Removing the last item closes the queue dialog. An instruction awaiting delivery confirmation cannot be edited, removed or steered.
@@ -56,11 +57,11 @@ flowchart TB
     draft["Your draft"] -->|"Enter"| queue["Saved queue"]
     queue -->|"After current version passes checks"| next["Next edit plan + execution round"]
     queue -->|"s · selected or marked"| waiting["Saved steering request"]
-    waiting -->|"when a turn is running"| active["Active planner or executor turn"]
+    waiting -->|"when a turn is running"| active["Selected worker or all running workers"]
     next --> history["Conversation history"]
     active -->|"Codex accepts"| history
 ```
 
-Steering moves instructions out of the normal queue, preserving queue order. They stay saved until a worker accepts them into an active turn. Without an active turn, they wait until a plan task starts one.
+Steering moves instructions out of the normal queue, preserving queue order. In the queue, **t** cycles the target between all running workers and individual worker IDs; **s** sends. Broadcasts stay saved until every selected worker accepts. Each confirmed delivery appears in the conversation. If Codex rejects steering—for example, its turn has already finished—the instructions return to the normal queue once, for the next edit round. Unconfirmed delivery remains saved until it can be reconciled. Without an active turn, they wait until a plan task starts one.
 
-You can send messages while planning or execution runs. Steering reaches the active turn; normal edits wait for the next version. For connection and recovery behavior, see [Workers](workers.md).
+You can send messages while planning or execution runs. Steering reaches the selected active turns; normal edits wait for the next version. For connection and recovery behavior, see [Workers](workers.md).

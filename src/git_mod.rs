@@ -1492,6 +1492,9 @@ fn transfer(root: &Path, state: &GitMod, cancelled: &AtomicBool) -> io::Result<(
 }
 
 pub fn checkpoint(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
+    if root.join("checkpoint-error").exists() {
+        drop(crate::sandbox::Sandbox::prepare(root, cancelled, |_| {})?);
+    }
     let mut state = load(root)?;
     if !checkout(root).exists() {
         reopen(root, cancelled)?;

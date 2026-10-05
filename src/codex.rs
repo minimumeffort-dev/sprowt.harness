@@ -1,11 +1,11 @@
 use std::{
     collections::BTreeMap,
     env, fs, io,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, Command},
     sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, Weak,
+        atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
     thread::{self, JoinHandle},
@@ -69,6 +69,27 @@ pub enum Event {
     },
 }
 
+type SharedVm = Arc<Mutex<Sandbox>>;
+static VMS: Mutex<BTreeMap<PathBuf, Weak<Mutex<Sandbox>>>> = Mutex::new(BTreeMap::new());
+
+fn shared_vm(
+    root: &Path,
+    tasks: &[i64],
+    cancelled: &AtomicBool,
+    progress: impl Fn(&str),
+) -> io::Result<SharedVm> {
+    let mut registry = VMS.lock().unwrap();
+    registry.retain(|_, vm| vm.strong_count() > 0);
+    if let Some(vm) = registry.get(root).and_then(Weak::upgrade) {
+        return Ok(vm);
+    }
+    let mut vm = Sandbox::prepare(root, cancelled, progress)?;
+    vm.prepare_tasks(tasks, cancelled)?;
+    let vm = Arc::new(Mutex::new(vm));
+    registry.insert(root.to_owned(), Arc::downgrade(&vm));
+    Ok(vm)
+}
+
 pub struct Resume {
     pub id: String,
     pub restart_if_missing: bool,
@@ -81,7 +102,7 @@ struct Setup {
     selection: Option<Selection>,
     permissions: &'static str,
     cancelled: Arc<AtomicBool>,
-    vm: Option<Sandbox>,
+    vm: Option<Arc<Mutex<Sandbox>>>,
     context: Context,
 }
 
@@ -91,6 +112,8 @@ pub struct Client {
     child: Arc<Mutex<Option<Child>>>,
     task: Option<JoinHandle<()>>,
     closed: bool,
+    vm: Arc<Mutex<Option<SharedVm>>>,
+    active_task: Arc<AtomicI64>,
     cancelled: Arc<AtomicBool>,
 }
 
@@ -118,34 +141,40 @@ impl Client {
         let child = Arc::new(Mutex::new(None));
         let process = child.clone();
         let stopped = cancelled.clone();
+        let controller = Arc::new(Mutex::new(None));
+        let shared = controller.clone();
+        let active_task = Arc::new(AtomicI64::new(0));
+        let last_task = active_task.clone();
         let task = thread::spawn(move || {
             let result = (|| {
-                let mut vm = workspace
+                let vm = workspace
                     .as_ref()
                     .map(|path| {
-                        Sandbox::prepare(path.parent().unwrap(), &stopped, |label| {
+                        shared_vm(path.parent().unwrap(), &context.tasks, &stopped, |label| {
                             let _ = outgoing.send(Event::Preparing(label.into()));
                         })
                     })
                     .transpose()?;
-                if let Some(vm) = &mut vm {
-                    vm.prepare_tasks(&context.tasks, &stopped)?;
-                }
+                *shared.lock().unwrap() = vm.clone();
                 if stopped.load(Ordering::Relaxed) {
-                    return Ok(());
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        "Worker startup stopped. Ctrl+R retries.",
+                    ));
                 }
                 let permissions = if vm.is_some() {
                     "sprowt_vm"
                 } else {
                     "sprowt_readonly"
                 };
+                let host_home = vm
+                    .as_ref()
+                    .map(|vm| vm.lock().unwrap().worker_home(context.worker_id()))
+                    .transpose()?;
                 let mut command = Command::new("codex");
                 command
                     .args(["app-server", "--listen", "stdio://"])
-                    .current_dir(
-                        vm.as_ref()
-                            .map_or(cwd.as_path(), |vm| vm.home.parent().unwrap()),
-                    );
+                    .current_dir(host_home.as_deref().unwrap_or(&cwd));
                 command.env_clear().envs(
                     [
                         "PATH",
@@ -163,11 +192,12 @@ impl Client {
                     command.args(["-c", &option]);
                 }
                 if let Some(vm) = &vm {
-                    command.env("CODEX_HOME", &vm.home);
+                    let vm = vm.lock().unwrap();
+                    command.env("CODEX_HOME", host_home.as_ref().unwrap());
                     for option in vm
                         .configuration()
                         .into_iter()
-                        .chain(vm.task_configuration())
+                        .chain(vm.worker_configuration(context.worker_id()))
                     {
                         command.args(["-c", &option]);
                     }
@@ -186,7 +216,23 @@ impl Client {
                 };
                 serve(&mut rpc, &cwd, resume, setup, inbox, &outgoing)
             })();
-            if let Err(error) = result {
+            if let Some(child) = process.lock().unwrap().as_mut() {
+                rpc::terminate(child);
+            }
+            let checkpoint = (|| -> io::Result<()> {
+                if let Some(vm) = shared.lock().unwrap().as_ref() {
+                    let mut vm = vm.lock().unwrap();
+                    let id = last_task.load(Ordering::Relaxed);
+                    if id > 0
+                        && let Err(error) = vm.checkpoint_task(id)
+                    {
+                        fs::write(vm.root().join("checkpoint-error"), error.to_string())?;
+                        return Err(error);
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = result.and(checkpoint) {
                 let _ = outgoing.send(Event::Failed(error.to_string()));
             }
         });
@@ -196,11 +242,18 @@ impl Client {
             child,
             task: Some(task),
             closed: false,
+            vm: controller,
+            active_task,
             cancelled,
         })
     }
 
     pub fn send(&self, action: Action) -> io::Result<()> {
+        if let Action::Run { source, .. } | Action::Verify { source, .. } = &action
+            && let Ok(id) = crate::task_worktree::task_id(source)
+        {
+            self.active_task.store(id, Ordering::Relaxed);
+        }
         if matches!(
             action,
             Action::Run { .. } | Action::Verify { .. } | Action::Stop { .. }
@@ -229,7 +282,7 @@ impl Client {
         self.cancelled.store(true, Ordering::Relaxed);
         let (finished, receiver) = mpsc::channel();
         if self.actions.send(Action::Shutdown(finished)).is_ok() {
-            let _ = receiver.recv_timeout(Duration::from_secs(2));
+            let _ = receiver.recv_timeout(Duration::from_secs(60));
         }
         if let Some(child) = self.child.lock().unwrap().as_mut() {
             rpc::terminate(child);
@@ -237,6 +290,7 @@ impl Client {
         if let Some(task) = self.task.take() {
             let _ = task.join();
         }
+        self.vm.lock().unwrap().take();
     }
 }
 
@@ -314,10 +368,11 @@ fn configuration(project: &Path) -> io::Result<Vec<String>> {
 fn flush(
     rpc: &mut Rpc,
     outgoing: &Sender<Event>,
-    vm: &mut Option<Sandbox>,
+    vm: &mut Option<SharedVm>,
     thread: &str,
     cancelled: &AtomicBool,
     context: &Context,
+    task: Option<i64>,
 ) -> io::Result<()> {
     for message in std::mem::take(&mut rpc.buffered) {
         if message["method"] == "item/tool/call" && message.get("id").is_some() {
@@ -326,7 +381,11 @@ fn flush(
                 if params["threadId"] != thread || !params["namespace"].is_null() {
                     return Err(io::Error::other("This client tool is not available."));
                 }
-                Dispatcher::new(context, vm.as_mut(), cancelled)
+                let mut guard = vm.as_ref().map(|vm| vm.lock().unwrap());
+                if let Some(vm) = &mut guard {
+                    vm.tasks.active = task;
+                }
+                Dispatcher::new(context, guard.as_deref_mut(), cancelled)
                     .worker_call(
                         params["tool"].as_str().unwrap_or(""),
                         params["arguments"].clone(),
@@ -343,6 +402,8 @@ fn flush(
             && let Some(vm) = vm
         {
             stop_terminals(rpc, thread)?;
+            let mut vm = vm.lock().unwrap();
+            vm.tasks.active = task;
             vm.export(&AtomicBool::new(false))?;
         }
         let _ = outgoing.send(Event::Notification(message));
@@ -427,7 +488,7 @@ fn serve(
         );
         overrides.insert(
             "shell_environment_policy.set.HOME".into(),
-            json!("/home/sprowt"),
+            json!(crate::task_worktree::worker_home(context.worker_id())),
         );
     }
     let selection = selection
@@ -455,14 +516,15 @@ fn serve(
             json!(resume.accepted_instructions)
         ));
     }
-    // Old executor threads have no setup tool; keep their saved transcript and VM.
+    let marker = vm
+        .as_ref()
+        .map(|vm| vm.lock().unwrap().worker_home(context.worker_id()))
+        .transpose()?
+        .map(|home| home.join("system-packages-thread"));
     let resume = resume.filter(|resume| {
-        vm.as_ref().is_none_or(|vm| {
-            fs::read_to_string(vm.home.join("system-packages-thread"))
-                .ok()
-                .as_deref()
-                == Some(resume.id.as_str())
-        })
+        marker
+            .as_ref()
+            .is_none_or(|path| fs::read_to_string(path).ok().as_deref() == Some(resume.id.as_str()))
     });
     let result = if let Some(resume) = resume {
         let mut resume_params = params.clone();
@@ -490,8 +552,8 @@ fn serve(
         .as_str()
         .ok_or_else(|| io::Error::other("Codex returned no conversation ID."))?
         .to_owned();
-    if let Some(vm) = &vm {
-        fs::write(vm.home.join("system-packages-thread"), &thread)?;
+    if let Some(marker) = marker {
+        fs::write(marker, &thread)?;
     }
     let inventory = rpc.call("mcpServerStatus/list", json!({"threadId":thread}))?;
     if inventory["data"].as_array().is_none_or(|servers| {
@@ -522,21 +584,33 @@ fn serve(
             effort: effort.clone(),
         })
         .map_err(io::Error::other)?;
-    flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context)?;
+    let mut task = None;
+    flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context, task)?;
     let mut last_turn = None;
     loop {
         while let Ok(action) = actions.try_recv() {
             if let Action::Verify { source, checks } = &action {
+                task = crate::task_worktree::task_id(source).ok();
                 let (before, results) = vm
                     .as_mut()
                     .ok_or_else(|| io::Error::other("Verification requires the mod VM."))?
+                    .lock()
+                    .unwrap()
                     .verify_execution(source, checks, &cancelled)?;
+                if let Some(vm) = &vm {
+                    let vm = vm.lock().unwrap();
+                    if source.starts_with("final:")
+                        || task.is_some_and(|id| vm.tasks.integrated.contains(&id))
+                    {
+                        task = None;
+                    }
+                }
                 let _ = outgoing.send(Event::Checked {
                     source: source.clone(),
                     checks: results,
                     before,
                 });
-                flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context)?;
+                flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context, task)?;
                 continue;
             }
             let (method, source, params) = match action {
@@ -559,7 +633,9 @@ fn serve(
                         let id = crate::task_worktree::task_id(&source)?;
                         let _ = outgoing.send(Event::Preparing("preparing task worktree".into()));
                         stop_terminals(rpc, &thread)?;
-                        vm.activate_task(id, &cancelled)?;
+                        let mut vm = vm.lock().unwrap();
+                        vm.assign_task(id, context.worker_id(), &cancelled)?;
+                        task = Some(id);
                         params["permissions"] = json!(format!("sprowt_task_{id}"));
                         params["environments"] =
                             json!([{"environmentId":"vm","cwd":vm.task_folder()}]);
@@ -593,6 +669,8 @@ fn serve(
                     }
                     stop_terminals(rpc, &thread)?;
                     if let Some(vm) = &mut vm {
+                        let mut vm = vm.lock().unwrap();
+                        vm.tasks.active = task;
                         vm.export(&AtomicBool::new(false))?;
                     }
                     let _ = finished.send(());
@@ -621,12 +699,12 @@ fn serve(
                 Err(error) => return Err(error),
                 _ => {}
             }
-            flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context)?;
+            flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context, task)?;
         }
         match rpc.receiver.recv_timeout(Duration::from_millis(25)) {
             Ok(message) => {
                 rpc.receive(message?)?;
-                flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context)?;
+                flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context, task)?;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => return Err(io::Error::other(error)),
@@ -727,6 +805,119 @@ mod tests {
     use super::*;
     use crate::{store::test_support::TestData, workspace};
     use std::fs;
+
+    #[test]
+    #[ignore = "runs two concurrent Codex tasks in one temporary Apple Container VM"]
+    fn two_clients_share_a_vm_and_run_isolated_tasks_concurrently() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let parent = data.0.join("workspaces");
+        fs::create_dir(&parent).unwrap();
+        let root = parent.join(format!("parallel-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let mut m = store
+            .create_mod(project_id, "Create two markers concurrently")
+            .unwrap();
+        let plan = Plan::parse(&json!({"summary":"Two markers", "tasks":[
+            {"id":"a","title":"A","outcome":"A exists","files":["a.txt"],"depends_on":[],"worker":"codex","checks":["A exists"]},
+            {"id":"b","title":"B","outcome":"B exists","files":["b.txt"],"depends_on":[],"worker":"codex","checks":["B exists"]}
+        ]}).to_string()).unwrap();
+        store.create_execution(m.id, &root, &plan).unwrap();
+        m.execution = store.execution(m.id).unwrap();
+        let runs = &m.execution.as_ref().unwrap().tasks;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut clients = Vec::new();
+                let mut ids = Vec::new();
+                for slot in 0..2 {
+                    let record = store.worker_at(m.id, Role::Executor, slot).unwrap();
+                    ids.push(record.id);
+                    clients.push(Client::start(
+                        &project,
+                        None,
+                        Role::Executor,
+                        &m.description,
+                        Some(&plan),
+                        None,
+                        Context::worker(&m, record.id, Role::Executor),
+                    )?);
+                }
+                let mut accepted = [false; 2];
+                let mut completed = [false; 2];
+                let mut checked = [false; 2];
+                let deadline = std::time::Instant::now() + Duration::from_secs(240);
+                while std::time::Instant::now() < deadline && !checked.iter().all(|v| *v) {
+                    for i in 0..2 {
+                        let file = if i == 0 { "a.txt" } else { "b.txt" };
+                        let peer = if i == 0 { "b.txt" } else { "a.txt" };
+                        for event in clients[i].poll() {
+                            match event {
+                            Event::Ready { .. } => clients[i].send(Action::Run {
+                                source: runs[i].source.clone(),
+                                text: format!("Your working directory is /tasks/{}. Run one shell command that: checks pwd; checks HOME is /home/sprowt/workers/{}; checks you cannot write /workspace/denied, /tasks/{}/denied, /home/sprowt/workers/{}/denied or .git; writes ok to {file}; then waits up to 90 seconds for /tasks/{}/{peer} to contain ok. Another real worker must create that peer file; do not create or edit it yourself. Use a one-second polling loop, with an error if the peer never appears. Write no other source files and install nothing. Report completed only after the peer appears. Completion check: '{}', using /bin/sh -c and relative {file}.", runs[i].id, ids[i], runs[1-i].id, ids[1-i], runs[1-i].id, if i==0 {"A exists"} else {"B exists"}),
+                            })?,
+                            Event::Accepted { .. } => accepted[i] = true,
+                            Event::Notification(message) if message["method"] == "turn/completed" => {
+                                assert!(accepted.iter().all(|v| *v), "Both tasks must start before either finishes");
+                                assert_eq!(message["params"]["turn"]["status"], "completed");
+                                completed[i] = true;
+                                clients[i].send(Action::Verify { source: runs[i].source.clone(), checks: vec![Check {
+                                    task: Some(runs[i].id), check: "Marker exists".into(),
+                                    command: vec!["/bin/sh".into(), "-c".into(), format!("test \"$(cat {file})\" = ok && test \"$HOME\" = /home/sprowt/workers/{}", ids[i])],
+                                }] })?;
+                            }
+                            Event::Checked { checks, .. } => {
+                                assert_eq!(checks.len(),1);
+                                assert_eq!(checks[0].exit_code,Some(0), "{}",checks[0].output);
+                                checked[i] = true;
+                            }
+                            Event::Failed(error) | Event::Rejected { message:error, .. } => return Err(io::Error::other(error)),
+                            _ => {}
+                        }
+                        }
+                    }
+                    thread::sleep(Duration::from_millis(30));
+                }
+                assert!(
+                    completed.iter().all(|v| *v) && checked.iter().all(|v| *v),
+                    "Parallel tasks timed out"
+                );
+                let first = clients[0].vm.lock().unwrap().as_ref().unwrap().clone();
+                let second = clients[1].vm.lock().unwrap().as_ref().unwrap().clone();
+                assert!(Arc::ptr_eq(&first, &second));
+                clients[0].shutdown();
+                // Dropping one worker must leave the shared VM usable.
+                let flag = AtomicBool::new(false);
+                let check = Check {
+                    task: Some(runs[1].id),
+                    check: "Combined markers".into(),
+                    command: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "test -f a.txt && test -f b.txt".into(),
+                    ],
+                };
+                assert_eq!(
+                    second
+                        .lock()
+                        .unwrap()
+                        .verify_execution("final:1", &[check], &flag)?
+                        .1[0]
+                        .exit_code,
+                    Some(0)
+                );
+                clients[1].shutdown();
+                assert_eq!(fs::read_to_string(root.join("work/a.txt"))?.trim(), "ok");
+                assert_eq!(fs::read_to_string(root.join("work/b.txt"))?.trim(), "ok");
+                Ok(())
+            },
+        ));
+        crate::sandbox::delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
 
     #[test]
     #[ignore = "runs one short Codex task in a temporary Apple Container VM"]

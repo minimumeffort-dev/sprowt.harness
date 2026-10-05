@@ -5,7 +5,7 @@ The interface keeps the project and worker status at the top, the conversation l
 ```text
 [sprowt companion]  project + worker model + effort + activity
 
-<codemod/>  ◇ selected mod
+<codemod/>  ◇ selected mod    2 workers running
 
 > your message
 
@@ -13,7 +13,7 @@ The interface keeps the project and worker status at the top, the conversation l
 ctrl+o ▸ show plan details
 execution · numbered tasks
 
-◆ codex · executor · model · effort
+◆ codex · executor · w1 · model · effort
 reply
 
 queue / waiting steering, when present
@@ -22,9 +22,9 @@ queue / waiting steering, when present
 keyboard hints
 ```
 
-User messages have a `>` prefix and a subtle background. Agent messages show their provider, role, model and configured reasoning effort when reported by Codex. One blank row separates messages.
+User messages have a `>` prefix and a subtle background. Agent messages show their provider, role, worker ID, model and configured reasoning effort when reported by Codex. One blank row separates messages.
 
-The worker status uses a small dot spinner during connection, execution and verification. The running task uses the same spinner in the plan, including while its checks run. Completed tasks and replies stay still. `--no-motion` uses a static activity glyph.
+The worker status uses a small dot spinner during connection, execution and verification. Each running task shows its worker ID and uses the same spinner in the plan, including while its checks run. Completed tasks and replies stay still. `--no-motion` uses a static activity glyph.
 
 Codex’s configured effort is used when available. When unset, the harness reads the model’s default from Codex’s catalog and sends it explicitly with new turns. Replies save that effort for reopening. Older replies without recorded effort show **effort unknown**.
 

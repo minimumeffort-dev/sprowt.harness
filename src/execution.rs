@@ -16,6 +16,7 @@ pub struct Execution {
 
 #[derive(Clone)]
 pub struct TaskRun {
+    pub worker: Option<i64>,
     pub id: i64,
     pub task_id: String,
     pub status: String,
@@ -53,9 +54,10 @@ pub struct Report {
 }
 
 impl Execution {
-    pub fn next_task(&self, plan: &Plan) -> Option<&TaskRun> {
+    pub fn next_task(&self, plan: &Plan, worker: i64) -> Option<&TaskRun> {
         self.tasks.iter().find(|run| {
             run.status == "pending"
+                && run.worker.is_none_or(|id| id == worker)
                 && plan
                     .tasks
                     .iter()

@@ -132,6 +132,10 @@ impl Context {
         }
     }
 
+    pub fn worker_id(&self) -> i64 {
+        self.worker.map_or(0, |(id, _)| id)
+    }
+
     pub fn workspace(&self) -> Option<&Path> {
         self.worker
             .filter(|(_, role)| *role == Role::Executor)
