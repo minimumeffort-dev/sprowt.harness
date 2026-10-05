@@ -443,8 +443,10 @@ impl Sandbox {
             if !draft.exists() || !base.exists() {
                 continue;
             }
-            let base: Snapshot = serde_json::from_slice(&fs::read(base)?)?;
-            let draft: Snapshot = serde_json::from_slice(&fs::read(draft)?)?;
+            let mut base: Snapshot = serde_json::from_slice(&fs::read(base)?)?;
+            let mut draft: Snapshot = serde_json::from_slice(&fs::read(draft)?)?;
+            base.retain(|(path, _, _)| workspace::source_path(self.root(), path));
+            draft.retain(|(path, _, _)| workspace::source_path(self.root(), path));
             let base: BTreeMap<_, _> = base.into_iter().map(|(p, b, m)| (p, (b, m))).collect();
             let draft: BTreeMap<_, _> = draft.into_iter().map(|(p, b, m)| (p, (b, m))).collect();
             for path in base.keys().chain(draft.keys()).collect::<BTreeSet<_>>() {
@@ -519,7 +521,8 @@ impl Sandbox {
         source: &Snapshot,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        self.git(id, &["add", "--update"], cancelled)?;
+        // Checkpoints contain exact source; runtime files remain on disk.
+        self.git(id, &["read-tree", "--empty"], cancelled)?;
         let paths = self.root().join("task-paths");
         let mut bytes = Vec::new();
         for (path, _, _) in source {

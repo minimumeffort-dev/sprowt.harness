@@ -27,6 +27,20 @@ The host’s `work/` folder holds source exports for planning, review and checkp
 
 Each worker’s runtimes and download caches stay in the VM across edit rounds and publication. Task-local dependencies are removed with their completed task folders. Closing removes that VM; reopening creates a fresh one when execution starts. See [Local Linux sandbox](sandbox.md) and [Workers](workers.md).
 
+### Source and generated files
+
+Test caches (`.pytest_cache`, `.mypy_cache`, `.ruff_cache`), new `.egg-info` metadata and new local database files stay out of checkpoints and PR diffs. This includes DuckDB, SQLite and `.db` files with their WAL, shared-memory and journal sidecars. Files already tracked in the starting project remain source, so committed fixtures are preserved.
+
+Guest Git checkpoints contain the filtered source snapshot. Runtime files remain on the VM's disk. Reconnecting repairs older checkpoint indexes and saved drafts before retrying; the worker can verify scope without deleting runtime data. Newly created database files are treated as runtime data.
+
+```mermaid
+flowchart TB
+    files["Worker files"] --> source["Code + committed fixtures"]
+    files --> runtime["Generated caches + runtime databases"]
+    source --> checkpoint["Source checkpoint · checks · PR diff"]
+    runtime --> disk["Stay on VM disk"]
+```
+
 ## Tasks and checks
 
 Rust dispatches at most two ready tasks into `/tasks/<task-run-id>`. Each worktree has its own branch and index, sharing Git objects. New tasks start from the latest combined source. A retry keeps the same worker and task folder. The worker can write that folder, its own runtime home and temporary files; other task folders, combined source and Git metadata remain read-only.

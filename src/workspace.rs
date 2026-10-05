@@ -56,29 +56,27 @@ pub fn source_state(root: &Path) -> io::Result<Snapshot> {
 }
 
 pub fn project_state(project: &Path, root: &Path) -> io::Result<Snapshot> {
-    let mut command = trusted_git();
-    if project.join(".git").exists() {
-        command.arg("-C").arg(project);
-    } else {
-        command
-            .arg("--git-dir")
-            .arg(root.join("base.git"))
-            .arg("--work-tree")
-            .arg(project);
-    }
-    let output = command
-        .args([
-            "ls-files",
-            "-z",
-            "--cached",
-            "--others",
-            "--exclude-standard",
-        ])
-        .output()?;
-    checked(&output)?;
-    paths(&output.stdout)?
+    let list = |args: &[&str]| -> io::Result<BTreeSet<PathBuf>> {
+        let mut command = trusted_git();
+        if project.join(".git").exists() {
+            command.arg("-C").arg(project);
+        } else {
+            command
+                .arg("--git-dir")
+                .arg(root.join("base.git"))
+                .arg("--work-tree")
+                .arg(project);
+        }
+        let output = command.args(args).output()?;
+        checked(&output)?;
+        paths(&output.stdout)
+    };
+    let tracked = list(&["ls-files", "-z", "--cached"])?;
+    let mut files = tracked.clone();
+    files.extend(list(&["ls-files", "-z", "--others", "--exclude-standard"])?);
+    files
         .into_iter()
-        .filter(|path| !excluded(path))
+        .filter(|path| !excluded(path) && (tracked.contains(path) || !generated(path)))
         .filter_map(|path| match read_file(project, &path) {
             Ok(Some(file)) => Some(Ok((path, file.bytes, file.mode))),
             Ok(None) => None,
@@ -212,6 +210,8 @@ fn create_with(root: &Path, source: impl FnOnce(&Path) -> io::Result<Snapshot>) 
 
 pub fn review(root: &Path) -> io::Result<Review> {
     let files = walk(&root.join("work"))?.into_iter().collect::<Vec<_>>();
+    // Review indexes are private; discard stale generated entries before staging source.
+    run_git(root, &["read-tree", "HEAD"])?;
     run_git(root, &["add", "--update"])?;
     for chunk in files.chunks(128) {
         checked(
@@ -299,6 +299,29 @@ pub(crate) fn excluded(path: &Path) -> bool {
     })
 }
 
+fn generated(path: &Path) -> bool {
+    path.components().any(|part| {
+        let name = part.as_os_str().to_string_lossy();
+        matches!(
+            name.as_ref(),
+            ".pytest_cache" | ".mypy_cache" | ".ruff_cache"
+        ) || name.ends_with(".egg-info")
+    }) || path.file_name().is_some_and(|name| {
+        let name = name.to_string_lossy();
+        let name = ["-wal", "-shm", "-journal", ".wal"]
+            .iter()
+            .find_map(|suffix| name.strip_suffix(suffix))
+            .unwrap_or(&name);
+        [".db", ".sqlite", ".sqlite3", ".duckdb"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+    })
+}
+
+pub(crate) fn source_path(workspace: &Path, path: &Path) -> bool {
+    !excluded(path) && (!generated(path) || workspace.join("before").join(path).exists())
+}
+
 pub fn replace_source(root: &Path, snapshot: &Snapshot) -> io::Result<()> {
     let work = root.join("work");
     let staging = root.join("work-next");
@@ -357,7 +380,7 @@ fn walk(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
             let entry = entry?;
             let path = entry.path();
             let relative = path.strip_prefix(root).unwrap();
-            if excluded(relative) {
+            if !source_path(root.parent().unwrap_or(root), relative) {
                 continue;
             }
             let kind = entry.file_type()?;
@@ -609,6 +632,67 @@ mod tests {
         fs::write(first.join("work/cache.pyc"), "cache").unwrap();
         let review = review(&first).unwrap();
         assert!(review.patch.contains("created.txt") && !review.patch.contains("cache.pyc"));
+    }
+
+    #[test]
+    fn generated_files_do_not_expand_source_scope_and_tracked_fixtures_stay() {
+        let data = TestData::new();
+        let project = project(&data);
+        fs::write(project.join("fixture.sqlite"), "tracked fixture").unwrap();
+        fs::create_dir(project.join("tracked.egg-info")).unwrap();
+        fs::write(
+            project.join("tracked.egg-info/PKG-INFO"),
+            "tracked metadata",
+        )
+        .unwrap();
+        for args in [
+            vec!["init"],
+            vec!["add", "."],
+            vec!["commit", "-m", "Baseline"],
+        ] {
+            checked(
+                &trusted_git()
+                    .arg("-C")
+                    .arg(&project)
+                    .args(args)
+                    .output()
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(project.join("runtime.duckdb"), "runtime").unwrap();
+        let root = data.0.join("workspace");
+        create(&project, &root).unwrap();
+        assert!(root.join("before/fixture.sqlite").exists());
+        assert!(!root.join("before/runtime.duckdb").exists());
+        let before = source_state(&root.join("work")).unwrap();
+        assert!(
+            before
+                .iter()
+                .any(|(path, _, _)| path == Path::new("tracked.egg-info/PKG-INFO"))
+        );
+        fs::create_dir_all(root.join("work/.pytest_cache/v/cache")).unwrap();
+        fs::create_dir_all(root.join("work/generated.egg-info")).unwrap();
+        for path in [
+            ".pytest_cache/v/cache/nodeids",
+            "generated.egg-info/PKG-INFO",
+            "runtime.duckdb",
+            "runtime.duckdb.wal",
+            "runtime.db-wal",
+            "tracked.egg-info/new-generated.txt",
+        ] {
+            fs::write(root.join("work").join(path), "generated").unwrap();
+        }
+        assert_eq!(source_state(&root.join("work")).unwrap(), before);
+        // Simulate a review index left by an older harness version.
+        run_git(&root, &["add", "--force", "--all"]).unwrap();
+        fs::write(root.join("work/a.txt"), "requested edit").unwrap();
+        let review = review(&root).unwrap();
+        assert_eq!(review.paths().collect::<Vec<_>>(), [Path::new("a.txt")]);
+        assert_eq!(
+            fs::read_to_string(root.join("work/runtime.duckdb")).unwrap(),
+            "generated"
+        );
     }
 
     #[test]

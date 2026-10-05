@@ -61,6 +61,8 @@ The [tool dispatcher](tools.md) records call IDs, callers, duration and outcomes
 
 Apple Container manages each VM’s disk separately. Per-worker runtimes and download caches persist across publication and edit rounds. Task folders and their local dependencies are removed after successful final checks. Closing or deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
 
+Generated test caches and new runtime databases stay on the VM disk, outside source exports and Git checkpoints. Already committed database fixtures stay in source. Reconnection repairs older checkpoint indexes without deleting their runtime data. Closing or deleting the VM removes that data too. See [Source and generated files](execution.md#source-and-generated-files).
+
 The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
 
 Project synchronization uses a temporary Git index and locks the real index while fast-forwarding. Its checkpoint completes an interrupted index update on retry. Git hooks and project filters are disabled. Planning starts only after synchronization and worktree setup finish.

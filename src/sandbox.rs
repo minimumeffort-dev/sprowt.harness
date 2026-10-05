@@ -208,6 +208,10 @@ impl Sandbox {
         vm.restore_tasks(cancelled)?;
         vm.import_update(cancelled)?;
         let active = vm.tasks.active;
+        if !vm.tasks.round.is_empty() {
+            vm.tasks.active = None;
+            vm.export(cancelled)?;
+        }
         for id in vm.tasks.round.clone() {
             vm.checkpoint_task(id)?;
         }
@@ -831,7 +835,10 @@ impl Sandbox {
             &["/bin/rm", "-f", "/opt/sprowt-transfer/source.tar"],
             &AtomicBool::new(false),
         )?;
-        decode_source(&bytes)
+        Ok(decode_source(&bytes)?
+            .into_iter()
+            .filter(|(path, _, _)| workspace::source_path(&self.root, path))
+            .collect())
     }
 
     pub fn export(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
@@ -1122,6 +1129,43 @@ mod tests {
         header.set_cksum();
         archive.append_data(&mut header, "source", &[][..]).unwrap();
         assert!(decode_source(&archive.into_inner().unwrap()).is_err());
+    }
+
+    #[test]
+    #[ignore = "repairs generated files in legacy VM checkpoints without deleting runtime data"]
+    fn legacy_checkpoints_drop_generated_files_and_keep_vm_data() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("first.txt"), "before").unwrap();
+        let root = data.0.join(format!("artifacts-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let flag = AtomicBool::new(false);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.prepare_tasks(&[1], &flag)?;
+                vm.guest(&["/bin/sh", "-c", "set -eu; git=/opt/sprowt-git/repo; export GIT_DIR=$git GIT_WORK_TREE=/workspace; /usr/bin/git update-ref refs/heads/start integration; mkdir -p /workspace/.pytest_cache/v/cache /workspace/data; printf cache > /workspace/.pytest_cache/v/cache/nodeids; printf database > /workspace/data/todos.duckdb; printf wal > /workspace/data/todos.duckdb.wal; printf requested > /workspace/first.txt; /usr/bin/git add --force --all; /usr/bin/git -c user.name=Sprowt -c user.email=sprowt@localhost commit -m legacy; /usr/bin/git worktree add -b task/1 /tasks/1 integration"], &flag)?;
+                vm.tasks.active = Some(1);
+                fs::write(root.join("tasks.json"), serde_json::to_vec(&vm.tasks)?)?;
+                vm.checkpoint_tasks(&flag)?;
+                drop(vm);
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.guest(&["/bin/sh", "-c", "set -eu; export GIT_DIR=/opt/sprowt-git/repo GIT_WORK_TREE=/workspace; test \"$(git diff --name-only start integration)\" = first.txt; test \"$(git diff --name-only start task/1)\" = first.txt; test \"$(cat /workspace/data/todos.duckdb)\" = database; test \"$(cat /tasks/1/data/todos.duckdb)\" = database; test -f /workspace/.pytest_cache/v/cache/nodeids"], &flag)?;
+                let source = vm.export(&flag)?;
+                assert_eq!(
+                    source,
+                    vec![(PathBuf::from("first.txt"), b"requested".to_vec(), 0o644)]
+                );
+                assert_eq!(
+                    workspace::review(&root)?.paths().collect::<Vec<_>>(),
+                    [Path::new("first.txt")]
+                );
+                Ok(())
+            },
+        ));
+        delete(&root).unwrap();
+        result.unwrap().unwrap();
     }
 
     #[test]

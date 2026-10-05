@@ -56,6 +56,8 @@ Publishing keeps the VM and worktree for further edits. Closing saves source and
 
 Merge PRs one at a time on GitHub. The harness checks target branches every 30 seconds while open. Other codemods finish their current work, save a checkpoint and update in their existing VM. A worker resolves text conflicts and rechecks the combined code. Open PRs become drafts during the update; Publish updates the same PR and marks it ready again. Product decisions pause for your input; binary conflicts need manual resolution.
 
+Source checkpoints exclude generated test caches, package metadata and new runtime databases. Already committed fixtures remain source. Runtime data stays in the VM, separate from the PR.
+
 ## Get started
 
 You need [Rust](https://rustup.rs), [Codex CLI](https://github.com/openai/codex) **0.159.2**, Apple silicon and macOS 26+. This connection needs a file-backed ChatGPT login on the Mac:
