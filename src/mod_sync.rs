@@ -464,7 +464,7 @@ pub fn finish(root: &Path, fingerprint: &str, cancelled: &AtomicBool) -> io::Res
             )?;
         }
         workspace::replace_source(&resolution, &source)?;
-        let review = workspace::review(&resolution)?;
+        let review = workspace::review_snapshot(&resolution)?;
         git_mod::stage_index(root, &path, &review, Some(&index), cancelled)?;
         let tree = git_mod::git_index(root, &path, &["write-tree"], Some(&index), cancelled)?;
         let commit = git(
@@ -913,6 +913,74 @@ pub(crate) mod tests {
             commit
         );
         assert!(load(&root).unwrap().is_none());
+    }
+
+    #[test]
+    fn upstream_tracked_artifacts_survive_the_save_copy_and_merge() {
+        let (_data, repo, root, mut target, plan) = fixture();
+        let flag = AtomicBool::new(false);
+        git(&root, &repo, &["checkout", "remote-change"], &flag).unwrap();
+        let files = [
+            ".pytest_cache/v/cache/nodeids",
+            "fixture.sqlite",
+            "app.egg-info/PKG-INFO",
+        ];
+        for name in files {
+            fs::create_dir_all(repo.join(name).parent().unwrap()).unwrap();
+            fs::write(repo.join(name), "committed source\n").unwrap();
+            git(&root, &repo, &["add", "--force", "--", name], &flag).unwrap();
+        }
+        git(
+            &root,
+            &repo,
+            &["commit", "-m", "Add tracked fixtures"],
+            &flag,
+        )
+        .unwrap();
+        target.head = git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap();
+        fs::write(root.join("work/delete.txt"), "codemod version\n").unwrap();
+        prepare(&root, &target, &plan, &flag).unwrap();
+        let fingerprint = verified(&root);
+        let transfer = root.join("transfer");
+        let path = git_mod::checkout(&root);
+        workspace::create_snapshot(&workspace::source_state(&path).unwrap(), &transfer).unwrap();
+        workspace::replace_source(
+            &transfer,
+            &workspace::source_state(&root.join("work")).unwrap(),
+        )
+        .unwrap();
+        // Reuse a save copy whose older baseline incorrectly filtered upstream files.
+        assert_ne!(
+            workspace::review(&transfer).unwrap().fingerprint,
+            fingerprint
+        );
+        finish(&root, &fingerprint, &flag).unwrap();
+        for name in files {
+            assert_eq!(
+                fs::read_to_string(path.join(name)).unwrap(),
+                "committed source\n"
+            );
+            assert_eq!(
+                git(&root, &path, &["show", &format!("HEAD:{name}")], &flag).unwrap(),
+                "committed source"
+            );
+        }
+        assert_eq!(
+            git(
+                &root,
+                &path,
+                &["diff", "--name-only", &target.head, "HEAD"],
+                &flag
+            )
+            .unwrap(),
+            "delete.txt"
+        );
+        assert_eq!(
+            git(&root, &path, &["rev-parse", "HEAD^2"], &flag).unwrap(),
+            target.head
+        );
+        assert!(load(&root).unwrap().is_none());
+        assert!(!transfer.exists());
     }
 
     #[test]

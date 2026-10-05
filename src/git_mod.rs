@@ -1497,7 +1497,7 @@ pub(crate) fn transfer(root: &Path, state: &GitMod, cancelled: &AtomicBool) -> i
         workspace::replace_source(&staging, &source)?;
         fs::rename(staging, &export)?;
     }
-    let review = workspace::review(&export)?;
+    let review = workspace::review_snapshot(&export)?;
     if review.fingerprint != workspace::fingerprint(&source)? {
         return Err(io::Error::other(
             "Source changed during saving. Work is retained.",

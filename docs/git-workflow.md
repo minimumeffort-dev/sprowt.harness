@@ -69,7 +69,7 @@ The integration plan carries the codemod's checks and adds combined regression c
 
 Passing checks save a merge commit with both parents. Drafts, queues and history stay; the diff now compares B with the updated target. Worker runtimes remain, while completed task folders are replaced. **Publish** updates the same PR and marks it ready after confirmation. Publication checks the target again, so changes arriving during verification trigger another update.
 
-Interrupted updates retain a checkpoint and resume safely. **Ctrl+R** retries failures. Binary conflicts, rewritten target history, protected file changes or outside worktree edits pause for manual reconciliation. Both Git commits and saved work remain.
+Interrupted updates retain a checkpoint and resume safely. If saving fails after checks pass, **Ctrl+R** retries the save without repeating workers, provided the checked source is unchanged. Changed source needs verification again. Binary conflicts, rewritten target history, protected file changes or outside worktree edits pause for manual reconciliation. Both Git commits and saved work remain.
 
 This is branch synchronization, not a GitHub merge queue. The harness does not merge PRs or enforce their merge order; use GitHub branch protection or its merge queue to require current checks at merge time.
 

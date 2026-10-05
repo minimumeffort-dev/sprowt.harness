@@ -1611,6 +1611,9 @@ impl App {
             self.reopen_mod(active);
             return Ok(());
         }
+        if self.retry_verified_update(active)? {
+            return Ok(());
+        }
         if self.mods[active].execution.is_none()
             && self.mods[active].git_root.as_ref().is_some_and(|root| {
                 !root.join("work").exists() && !root.join("snapshot-ready").exists()
@@ -1728,6 +1731,59 @@ impl App {
             return Ok(());
         }
         self.start_worker(active, role)
+    }
+
+    fn retry_verified_update(&mut self, index: usize) -> Result<bool> {
+        let code_mod = &self.mods[index];
+        let Some(root) = code_mod.git_root.as_ref() else {
+            return Ok(false);
+        };
+        let Some(execution) = code_mod.execution.as_ref() else {
+            return Ok(false);
+        };
+        let Some(last) = execution.tasks.last() else {
+            return Ok(false);
+        };
+        if self.execution_busy()
+            || !matches!(execution.status.as_str(), "review" | "blocked")
+            || !matches!(last.status.as_str(), "done" | "blocked")
+            || execution.tasks[..execution.tasks.len() - 1]
+                .iter()
+                .any(|task| task.status != "done")
+            || execution.checks.is_empty()
+            || execution
+                .checks
+                .iter()
+                .any(|check| check.exit_code != Some(0))
+            || execution.fingerprint.is_none()
+        {
+            return Ok(false);
+        }
+        let checked = (|| -> io::Result<bool> {
+            let Some(update) = crate::mod_sync::load(root)? else {
+                return Ok(false);
+            };
+            Ok(update.prepared
+                && update.installed
+                && update.imported
+                && execution.fingerprint.as_ref()
+                    == Some(&workspace::fingerprint(&workspace::source_state(
+                        &root.join("work"),
+                    )?)?))
+        })()
+        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        if !checked {
+            return Ok(false);
+        }
+        // Older saves marked the last passed task blocked; retain its verified result.
+        let id = code_mod.id;
+        self.store.task_status(id, &last.source, "done", None)?;
+        self.store.execution_status(id, "review")?;
+        self.mods[index].execution = self.store.execution(id)?;
+        self.update_errors.remove(&id);
+        self.notice = None;
+        self.maintain_updates()?;
+        Ok(true)
     }
 
     fn start_execution(&mut self, index: usize) -> Result<()> {
@@ -2359,28 +2415,19 @@ impl App {
                         Some("updating from target branch" | "saving verified merge")
                     ) {
                         self.update_errors.insert(id);
-                        if label == Some("saving verified merge") {
-                            if let Some(task) = self.mods[index]
-                                .execution
-                                .as_ref()
-                                .and_then(|e| e.tasks.last())
-                            {
-                                self.store.task_status(id, &task.source, "blocked", None)?;
-                            }
-                            self.store.execution_status(id, "blocked")?;
-                            self.mods[index].execution = self.store.execution(id)?;
-                        }
                     }
                     if self.current_mod().is_some_and(|m| m.id == id) {
                         self.publish_after_review = false;
                     }
+                    let detail = error.to_string();
+                    let detail = detail.trim_end_matches(" Work is retained.");
                     self.notice = Some(if error.kind() == io::ErrorKind::Unsupported {
                         error.to_string()
                     } else if self.current_mod().is_some_and(|m| m.id == id) {
-                        format!("{error} Work is retained; Ctrl+R retries.")
+                        format!("{detail} Work is retained; Ctrl+R retries.")
                     } else {
                         format!(
-                            "{}: {error} Work is retained; select this mod with Ctrl+P to retry.",
+                            "{}: {detail} Work is retained; select this mod with Ctrl+P to retry.",
                             self.mods[index].name
                         )
                     });
@@ -2683,6 +2730,96 @@ mod tests {
         assert_eq!(app.mods[0].queue[0].body, "Later edit");
         assert!(app.workers.is_empty() && root.join("main-update.json").exists());
         assert!(matches!(app.view, View::Chat));
+    }
+
+    #[test]
+    fn failed_merge_saves_retry_verified_source_without_starting_workers() {
+        for legacy in [false, true] {
+            let (data, repo, root, target, plan) = crate::mod_sync::tests::fixture();
+            let flag = std::sync::atomic::AtomicBool::new(false);
+            std::fs::write(root.join("work/delete.txt"), "codemod version\n").unwrap();
+            crate::mod_sync::prepare(&root, &target, &plan, &flag).unwrap();
+            let mut update = crate::mod_sync::load(&root).unwrap().unwrap();
+            update.imported = true;
+            update.installed = true;
+            crate::mod_sync::save(&root, &update).unwrap();
+            let mut store = data.store();
+            let project = store.load_project(&repo).unwrap();
+            let code_mod = store.create_mod(project.id, "Improve deletion").unwrap();
+            let id = code_mod.id;
+            store.save_git_root(id, &root).unwrap();
+            store.install_update(id, &root, &update).unwrap();
+            let execution = store.execution(id).unwrap().unwrap();
+            let checks = update.plan.tasks[0]
+                .checks
+                .iter()
+                .map(|check| crate::execution::CheckResult {
+                    task: Some(execution.tasks[0].id),
+                    check: check.clone(),
+                    command: vec!["/usr/bin/true".into()],
+                    exit_code: Some(0),
+                    output: String::new(),
+                })
+                .collect::<Vec<_>>();
+            let source = execution.tasks[0].source.clone();
+            store
+                .finish_task(id, &source, "done", "Verified", &checks)
+                .unwrap();
+            let fingerprint = workspace::review(&root).unwrap().fingerprint;
+            store
+                .execution_checks(id, "review", &checks, Some(&fingerprint))
+                .unwrap();
+            store.save_draft(id, "Keep this draft").unwrap();
+            let mut app = App::load(repo.clone(), false, store).unwrap();
+            app.git_jobs.insert(
+                id,
+                Job::start("saving verified merge", |_| {
+                    Err(io::Error::other(
+                        "Source changed during saving. Work is retained.",
+                    ))
+                }),
+            );
+            wait_git(&mut app);
+            assert!(app.mods[0].execution.as_ref().unwrap().complete());
+            assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "review");
+            assert_eq!(
+                app.notice
+                    .as_ref()
+                    .unwrap()
+                    .matches("Work is retained")
+                    .count(),
+                1
+            );
+            assert!(app.git_retry_pending() && !app.can_publish());
+            if legacy {
+                app.store.task_status(id, &source, "blocked", None).unwrap();
+                app.store.execution_status(id, "blocked").unwrap();
+                drop(app);
+                app = App::load(repo, false, data.store()).unwrap();
+                std::fs::write(root.join("work/delete.txt"), "later edit\n").unwrap();
+                assert!(!app.retry_verified_update(0).unwrap());
+                assert!(app.git_jobs.is_empty() && app.workers.is_empty());
+                std::fs::write(root.join("work/delete.txt"), "codemod version\n").unwrap();
+            }
+            key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+            assert!(app.worker_error().is_none());
+            assert!(app.workers.is_empty() && !root.join("main-update.json").exists());
+            assert_eq!(
+                app.mods[0].execution.as_ref().unwrap().tasks[0].source,
+                source
+            );
+            assert_eq!(
+                app.mods[0]
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .fingerprint
+                    .as_deref(),
+                Some(fingerprint.as_str())
+            );
+            assert!(app.mods[0].execution.as_ref().unwrap().complete());
+            assert_eq!(app.input.lines(), ["Keep this draft"]);
+        }
     }
 
     #[test]

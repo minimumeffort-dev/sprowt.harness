@@ -23,6 +23,7 @@ pub struct Review {
     pub summary: String,
     pub fingerprint: String,
     changes: Vec<Change>,
+    snapshot: bool,
 }
 
 pub type Snapshot = Vec<(PathBuf, Vec<u8>, u32)>;
@@ -44,7 +45,11 @@ pub fn fingerprint(snapshot: &Snapshot) -> io::Result<String> {
 }
 
 pub fn source_state(root: &Path) -> io::Result<Snapshot> {
-    walk(root)?
+    read_state(root, false)
+}
+
+fn read_state(root: &Path, snapshot: bool) -> io::Result<Snapshot> {
+    walk(root, snapshot)?
         .into_iter()
         .map(|path| {
             let file = read_file(root, &path)?.ok_or_else(|| {
@@ -104,7 +109,7 @@ impl Review {
     }
 
     fn apply_inner(&self, project: &Path, workspace: &Path, resume: bool) -> io::Result<()> {
-        if fingerprint(&source_state(&workspace.join("work"))?)? != self.fingerprint {
+        if fingerprint(&read_state(&workspace.join("work"), self.snapshot)?)? != self.fingerprint {
             return Err(io::Error::other(
                 "The working folder changed after review. Reopen the diff.",
             ));
@@ -209,7 +214,18 @@ fn create_with(root: &Path, source: impl FnOnce(&Path) -> io::Result<Snapshot>) 
 }
 
 pub fn review(root: &Path) -> io::Result<Review> {
-    let files = walk(&root.join("work"))?.into_iter().collect::<Vec<_>>();
+    review_inner(root, false)
+}
+
+// Private save copies already contain admitted source; compare their exact contents.
+pub(crate) fn review_snapshot(root: &Path) -> io::Result<Review> {
+    review_inner(root, true)
+}
+
+fn review_inner(root: &Path, snapshot: bool) -> io::Result<Review> {
+    let files = walk(&root.join("work"), snapshot)?
+        .into_iter()
+        .collect::<Vec<_>>();
     // Review indexes are private; discard stale generated entries before staging source.
     run_git(root, &["read-tree", "HEAD"])?;
     run_git(root, &["add", "--update"])?;
@@ -273,7 +289,8 @@ pub fn review(root: &Path) -> io::Result<Review> {
         patch,
         summary,
         changes,
-        fingerprint: fingerprint(&source_state(&root.join("work"))?)?,
+        fingerprint: fingerprint(&read_state(&root.join("work"), snapshot)?)?,
+        snapshot,
     })
 }
 
@@ -374,13 +391,23 @@ fn paths(bytes: &[u8]) -> io::Result<BTreeSet<PathBuf>> {
         .collect()
 }
 
-fn walk(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
-    fn visit(root: &Path, dir: &Path, files: &mut BTreeSet<PathBuf>) -> io::Result<()> {
+fn walk(root: &Path, snapshot: bool) -> io::Result<BTreeSet<PathBuf>> {
+    fn visit(
+        root: &Path,
+        dir: &Path,
+        files: &mut BTreeSet<PathBuf>,
+        snapshot: bool,
+    ) -> io::Result<()> {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             let relative = path.strip_prefix(root).unwrap();
-            if !source_path(root.parent().unwrap_or(root), relative) {
+            let included = if snapshot {
+                !excluded(relative)
+            } else {
+                source_path(root.parent().unwrap_or(root), relative)
+            };
+            if !included {
                 continue;
             }
             let kind = entry.file_type()?;
@@ -391,7 +418,7 @@ fn walk(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
                 )));
             }
             if kind.is_dir() {
-                visit(root, &path, files)?;
+                visit(root, &path, files, snapshot)?;
             } else {
                 files.insert(relative.to_owned());
             }
@@ -399,7 +426,7 @@ fn walk(root: &Path) -> io::Result<BTreeSet<PathBuf>> {
         Ok(())
     }
     let mut files = BTreeSet::new();
-    visit(root, root, &mut files)?;
+    visit(root, root, &mut files, snapshot)?;
     Ok(files)
 }
 
@@ -693,6 +720,37 @@ mod tests {
             fs::read_to_string(root.join("work/runtime.duckdb")).unwrap(),
             "generated"
         );
+    }
+
+    #[test]
+    fn private_save_copies_preserve_admitted_files_and_reject_later_changes() {
+        let data = TestData::new();
+        let project = project(&data);
+        let root = data.0.join("save-copy");
+        create(&project, &root).unwrap();
+        let source = vec![
+            (PathBuf::from("a.txt"), b"edited".to_vec(), 0o644),
+            (PathBuf::from("fixture.sqlite"), b"admitted".to_vec(), 0o644),
+        ];
+        replace_source(&root, &source).unwrap();
+        fs::write(root.join("work/.env"), "private value").unwrap();
+        let saved = review_snapshot(&root).unwrap();
+        assert_eq!(saved.fingerprint, fingerprint(&source).unwrap());
+        assert_eq!(saved.count(), 2);
+        fs::write(root.join("work/fixture.sqlite"), "changed after review").unwrap();
+        assert!(saved.export(&project, &root).is_err());
+        assert_eq!(
+            fs::read_to_string(project.join("a.txt")).unwrap(),
+            "original"
+        );
+        assert!(!project.join("fixture.sqlite").exists());
+        replace_source(&root, &source).unwrap();
+        saved.export(&project, &root).unwrap();
+        assert_eq!(
+            fs::read_to_string(project.join("fixture.sqlite")).unwrap(),
+            "admitted"
+        );
+        assert!(!project.join(".env").exists());
     }
 
     #[test]

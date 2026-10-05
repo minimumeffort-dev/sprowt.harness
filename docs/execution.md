@@ -29,7 +29,9 @@ Each worker’s runtimes and download caches stay in the VM across edit rounds a
 
 ### Source and generated files
 
-Test caches (`.pytest_cache`, `.mypy_cache`, `.ruff_cache`), new `.egg-info` metadata and new local database files stay out of checkpoints and PR diffs. This includes DuckDB, SQLite and `.db` files with their WAL, shared-memory and journal sidecars. Files already tracked in the starting project remain source, so committed fixtures are preserved.
+New test caches (`.pytest_cache`, `.mypy_cache`, `.ruff_cache`), `.egg-info` metadata and local database files stay out of checkpoints and PR diffs. This includes DuckDB, SQLite and `.db` files with their WAL, shared-memory and journal sidecars. Files already tracked in the starting project or an updated target remain source, so committed fixtures are preserved.
+
+Private save copies preserve the checked files instead of filtering them against an older baseline. Saving checks their contents and permissions; changed source or outside worktree edits pause the save.
 
 Guest Git checkpoints contain the filtered source snapshot. Runtime files remain on the VM's disk. Reconnecting repairs older checkpoint indexes and saved drafts before retrying; the worker can verify scope without deleting runtime data. Newly created database files are treated as runtime data.
 

@@ -59,7 +59,7 @@ Merge PRs one at a time on GitHub. The harness syncs your project branch on star
 
 Other codemods finish their current work, save a checkpoint and update in their existing VM. A worker resolves text conflicts and rechecks the combined code. Open PRs become drafts during the update; Publish updates the same PR and marks it ready again. Product decisions pause for your input; binary conflicts need manual resolution.
 
-Source checkpoints exclude generated test caches, package metadata and new runtime databases. Already committed fixtures remain source. Runtime data stays in the VM, separate from the PR.
+New test caches, package metadata and runtime databases stay out of source checkpoints. Files already committed in the starting source or an updated target are preserved. Runtime data stays in the VM, separate from the PR.
 
 ## Get started
 
