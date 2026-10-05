@@ -27,19 +27,20 @@ Both VM connections use standard input/output. The harness reruns checks in the 
 
 ## Source files
 
-Files move in one direction: worktree, copy, review, PR. The VM gets source files; the original checkout and Git metadata stay on the Mac.
+The VM gets source files and creates its own local Git repository for tasks. Original project Git metadata, remote configuration and credentials stay on the Mac.
 
 ```mermaid
 flowchart TB
-    source["1. Mod worktree<br/>Mac · committed source on its own branch"]
-    workspace["2. /workspace<br/>Linux VM · code and dependencies"]
-    review["3. Diff and check results<br/>Mac · review with Ctrl+D"]
-    published["4. GitHub PR<br/>Commit and push reviewed source"]
-    cleaned["5. Cleanup<br/>Delete VM and worktree; retain branch and history"]
-    source -->|"Copy source into the VM"| workspace
-    workspace -->|"Export source only"| review
-    review -->|"Checks pass; p, then Enter"| published
-    published -->|"PR URL saved"| cleaned
+    source["Codemod worktree · Mac"]
+    combined["Integration branch · VM /workspace"]
+    task["Task branch + worktree · VM /tasks/id"]
+    review["Verified source export · Mac"]
+    pr["Confirm publication · GitHub PR"]
+    source -->|"Copy source"| combined
+    combined -->|"Start next task"| task
+    task -->|"Checks pass · combine changes"| combined
+    combined -->|"Final checks pass"| review
+    review --> pr
 ```
 
 ## Use it
@@ -54,7 +55,7 @@ codex -c 'cli_auth_credentials_store="file"' login
 
 Create a mod; its valid plan starts execution automatically. The first execution builds the shared development image; later runs reuse it. **Ctrl+D** opens the diff. New codemods publish PRs. Existing snapshot mods can be adopted into Git. See [Worktrees and PRs](git-workflow.md).
 
-The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Codex reads your manifests, installs a compatible runtime under `/home/sprowt`, then installs project dependencies under `/workspace`.
+The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Codex reads your manifests, installs a compatible runtime under `/home/sprowt`, then installs project dependencies in its task worktree. Git objects are shared inside the VM; task dependencies remain in their own folders until final verification succeeds.
 
 ## System packages
 
@@ -84,6 +85,7 @@ If a saved executor conversation lacks the setup tool, reconnecting opens a new 
 - Commands, edits and independent checks use the same VM. A disconnected guest stops work; it never falls back to host execution.
 - No host folders, login files, SSH agent, service sockets or ports are mounted or forwarded.
 - Codex’s guest sandbox keeps system files read-only for normal worker commands and forces network traffic through its domain proxy. The harness’s package installer uses a separate writable setup command in the VM. Direct connections and private network destinations are blocked. Guest loopback is available for local app checks.
+- Each task writes only its assigned worktree, shared runtimes and temporary files. The harness owns the combined source and guest Git metadata; task workers cannot commit or merge.
 - Source exports preserve regular files, modes and deletions. Dependency folders and common credential files are excluded. Links and special files are rejected. Exports are limited to 512 MiB, with 64 MiB per source file.
 
 The planner inspects the mod worktree through a read-only host OS sandbox. Legacy mods inspect the project. Host MCPs, apps, plugins and hooks stay disabled. VM execution needs a file-backed ChatGPT login; Keychain-only login is unsupported.
@@ -116,16 +118,17 @@ It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomain
 | Mod state | VM |
 | --- | --- |
 | Running | Running; reused across tasks |
-| Paused or awaiting review | Retained with its runtime and dependencies |
+| Paused | Retained with unfinished task folders and dependencies |
+| Awaiting review | Retained; completed task folders removed |
 | PR published or edits requested | Retained for further work |
 | Closed | Deleted after a local checkpoint; worktree and history stay |
 | Deleted | Deleted with the local workspace and history |
 
 Quitting stops VMs and retains unfinished mods’ disks. Reopening and **Ctrl+R** reconnect without losing dependencies. Reconnecting clears guest processes left by a crash. Shared images and the container service remain for reuse.
 
-Publication saves the PR URL and retains the VM and worktree. Edit rounds reuse the same VM, including runtimes and dependencies. Failed operations keep source and offer **Ctrl+R** to retry.
+Publication saves the PR URL and retains the VM and worktree. Edit rounds reuse the same VM and shared runtime/download caches. Completed task folders and their local dependencies are removed after the combined checks pass. Failed operations keep source and offer **Ctrl+R** to retry.
 
-Closing exports source, commits a local checkpoint and removes the VM; the worktree and history remain. Reopening creates a fresh VM when execution resumes. Deleting discards local source and history. Closed worktree retention removes only the host worktree, retaining the branch and exports. See [Worktrees and PRs](git-workflow.md).
+Closing exports source and task branches, commits a local checkpoint and removes the VM; the worktree and history remain. Reopening creates a fresh VM when execution resumes, restoring task branches from a local Git bundle. Runtime installations are not part of that bundle. Deleting discards local source and history. Closed worktree retention removes only the host worktree, retaining the branch and exports. See [Worktrees and PRs](git-workflow.md).
 
 Unfinished mods created before VM support keep their working files. Their first explicit run starts a fresh executor conversation and reruns tasks in Linux; old host check results are cleared. Previously completed snapshot work can be adopted into Git. A missing or altered VM blocks reconnection and preserves the last exported source for review.
 
@@ -139,6 +142,8 @@ The regular test suite covers permissions, input validation and publication reco
 cargo test tools::tests::package_calls -- --ignored --nocapture
 cargo test git_mod::tests::publishing_keeps_the_vm -- --ignored --nocapture
 cargo test sandbox::tests::persistent_vm_checks -- --ignored --nocapture
+cargo test sandbox::tests::task_worktrees -- --ignored --nocapture
+cargo test codex::tests::task_turn -- --ignored --nocapture
 ```
 
-These use temporary repositories and VMs, checking worker restrictions, tool ownership, source transfer and cleanup. GitHub publication uses a local fixture. Native VM tests require the pinned host and guest Codex versions; shared images remain for reuse.
+These use temporary repositories and VMs, checking worker restrictions, tool ownership, source transfer and cleanup. GitHub publication uses a local fixture. The Codex task test uses one short subscription-backed turn. Native VM tests require the pinned host and guest Codex versions; shared images remain for reuse.

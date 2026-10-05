@@ -77,6 +77,7 @@ impl Tool {
 }
 
 pub struct Context {
+    pub tasks: Vec<i64>,
     mod_id: i64,
     worker: Option<(i64, Role)>,
     root: Option<PathBuf>,
@@ -88,6 +89,10 @@ pub struct Context {
 impl Context {
     pub fn harness(project: &Path, code_mod: &CodeMod) -> Self {
         Self {
+            tasks: code_mod
+                .execution
+                .as_ref()
+                .map_or_else(Vec::new, |e| e.tasks.iter().map(|t| t.id).collect()),
             mod_id: code_mod.id,
             worker: None,
             root: code_mod
@@ -106,6 +111,10 @@ impl Context {
 
     pub fn worker(code_mod: &CodeMod, id: i64, role: Role) -> Self {
         Self {
+            tasks: code_mod
+                .execution
+                .as_ref()
+                .map_or_else(Vec::new, |e| e.tasks.iter().map(|t| t.id).collect()),
             mod_id: code_mod.id,
             worker: Some((id, role)),
             root: if role == Role::Executor {
@@ -464,6 +473,7 @@ mod tests {
 
     fn worker_context(context: &Context, role: Role) -> Context {
         Context {
+            tasks: Vec::new(),
             mod_id: context.mod_id,
             worker: Some((9, role)),
             root: context.root.clone(),
@@ -697,7 +707,7 @@ mod tests {
                     |label| eprintln!("{label}"),
                 )?;
                 assert!(output.message().contains("jq"));
-                let check = crate::execution::Check { check: "Package works; normal permissions remain restricted".into(),
+                let check = crate::execution::Check { task: None, check: "Package works; normal permissions remain restricted".into(),
                 command: vec!["/bin/sh".into(), "-c".into(), "/usr/bin/jq --version && test \"$(cat a.txt)\" = original && ! touch /usr/local/bin/sprowt-tool-canary".into()] };
                 assert_eq!(vm.verify(&[check], &flag)?.1[0].exit_code, Some(0));
                 drop(vm);

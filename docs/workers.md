@@ -10,7 +10,7 @@ flowchart TB
     codex -->|"planner reads · OS sandbox"| project["Mod worktree · source and docs"]
     codex <-->|"executor tools · stdio"| guest["Codex exec-server · Linux VM"]
     harness -->|"independent checks"| guest
-    guest <-->|"runtime setup / edits / tests"| work["/workspace · isolated project copy"]
+    guest <-->|"runtime setup / edits / tests"| work["/tasks/id · assigned task worktree"]
 ```
 
 ## Login
@@ -23,7 +23,7 @@ Codex handles authentication. The harness database stores conversation IDs and d
 
 Planner tools can read the project and required runtime files, with no tool networking. The host Codex credential directory and macOS Keychain directory are denied to these commands.
 
-Executor tools use only the mod’s Linux VM. Normal commands can write `/workspace`, `/home/sprowt` and guest temporary files; system files remain read-only. Project runtimes and dependencies use an enforced domain proxy. The [tool dispatcher](tools.md) exposes package installation to executors and checks their VM ownership. Git, GitHub and cleanup remain harness-only operations. No host executor is registered for that agent. See [Local Linux sandbox](sandbox.md) for package setup.
+Executor tools use only the mod’s Linux VM. Normal commands can write their assigned `/tasks/<id>` folder, `/home/sprowt` and guest temporary files; system files remain read-only. Project runtimes and dependencies use an enforced domain proxy. The [tool dispatcher](tools.md) exposes package installation to executors and checks their VM ownership. Git, GitHub and cleanup remain harness-only operations. Guest Git combines task branches; publication uses host Git and GitHub CLI. Each task turn selects its folder and named permission profile through [Codex’s environment API](https://learn.chatgpt.com/docs/app-server). No host executor is registered for that agent. See [Local Linux sandbox](sandbox.md) for package setup.
 
 Host MCP servers, apps, plugins, hooks, browser tools and Codex delegation are disabled for these workers. Startup checks the permission boundary and that MCP tools are disabled before a worker can run. A failed check stops startup.
 

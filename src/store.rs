@@ -724,7 +724,7 @@ impl Store {
                 .iter()
                 .find(|task| task.id == run.task_id)
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            vec![crate::execution::task_prompt(&plan, task)]
+            vec![crate::execution::task_prompt(&plan, task, run.id)]
         } else {
             return Err(rusqlite::Error::InvalidQuery);
         };
@@ -1396,6 +1396,10 @@ mod tests {
         assert_eq!(execution.tasks[0].status, "done");
         assert_eq!(execution.tasks[0].turn.as_deref(), Some("turn-one"));
         assert_ne!(execution.tasks[1].source, second.source);
+        assert_eq!(
+            crate::task_worktree::task_id(&execution.tasks[1].source).unwrap(),
+            crate::task_worktree::task_id(&second.source).unwrap()
+        );
         assert_eq!(execution.tasks[1].status, "pending");
         assert!(store.worker(code_mod.id).unwrap().pending.is_none());
         let next = store
@@ -1415,6 +1419,7 @@ mod tests {
                 code_mod.id,
                 "review",
                 &[crate::execution::CheckResult {
+                    task: None,
                     check: "tests pass".into(),
                     command: vec!["/usr/bin/true".into()],
                     exit_code: Some(0),

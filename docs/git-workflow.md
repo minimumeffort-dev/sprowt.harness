@@ -24,7 +24,7 @@ flowchart TB
     confirm --> pr["Commit + push · create or update PR"]
 ```
 
-Git metadata and credentials stay on the Mac. Workers edit `/workspace` inside the VM. Git and GitHub operations belong to the [harness tool dispatcher](tools.md).
+Original project Git metadata and credentials stay on the Mac. A separate Git repository inside the VM manages task worktrees under `/tasks/<id>` and combined source at `/workspace`. The harness owns guest Git operations; the [tool dispatcher](tools.md) handles host worktrees and GitHub publication. See [Plan execution](execution.md).
 
 ## Keep the starting source current
 

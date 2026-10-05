@@ -10,6 +10,7 @@ mod rpc;
 mod sandbox;
 mod sprout;
 mod store;
+mod task_worktree;
 mod tools;
 mod ui;
 mod worker;

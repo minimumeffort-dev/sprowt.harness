@@ -2327,6 +2327,7 @@ mod tests {
             .source
             .clone();
         let checks = vec![crate::execution::CheckResult {
+            task: None,
             check: "prints hello".into(),
             command: vec!["/usr/bin/true".into()],
             exit_code: Some(0),

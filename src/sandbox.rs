@@ -38,6 +38,7 @@ pub struct Sandbox {
     child: Option<Child>,
     rpc: Option<Rpc>,
     started: bool,
+    pub(crate) tasks: crate::task_worktree::TaskWorktrees,
 }
 
 impl Sandbox {
@@ -63,6 +64,7 @@ impl Sandbox {
             child: None,
             rpc: None,
             started: false,
+            tasks: Default::default(),
         };
         progress("preparing Linux VM");
         vm.login()?;
@@ -203,6 +205,7 @@ impl Sandbox {
         vm.rpc = Some(rpc);
         progress("checking Linux VM isolation");
         vm.boundary(cancelled)?;
+        vm.restore_tasks(cancelled)?;
         vm.export(cancelled)?;
         Ok(vm)
     }
@@ -373,40 +376,138 @@ impl Sandbox {
     }
 
     fn import(&self, cancelled: &AtomicBool) -> io::Result<()> {
+        self.replace_guest_source(
+            "/workspace",
+            &workspace::source_state(&self.root.join("work"))?,
+            cancelled,
+        )
+    }
+
+    pub(crate) fn replace_guest_source(
+        &self,
+        destination: &str,
+        source: &Snapshot,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
         let archive = self.root.join("source.tar");
         let mut builder = tar::Builder::new(fs::File::create(&archive)?);
-        for (path, bytes, mode) in workspace::source_state(&self.root.join("work"))? {
+        for (path, bytes, mode) in source {
             let mut header = tar::Header::new_gnu();
             header.set_size(bytes.len() as u64);
-            header.set_mode(mode);
+            header.set_mode(*mode);
             header.set_cksum();
             builder.append_data(&mut header, path, bytes.as_slice())?;
         }
         builder.finish()?;
         drop(builder);
-        self.control(
+        self.guest(&["/bin/mkdir", "-p", "/opt/sprowt-transfer"], cancelled)?;
+        self.copy_in(&archive, "/opt/sprowt-transfer/import.tar", cancelled)?;
+        // Destinations are harness-owned folders. Retain only their Git pointer.
+        self.guest(
             &[
-                "copy",
-                archive.to_str().unwrap(),
-                &format!("{}:/tmp/sprowt-source.tar", self.name),
+                "/usr/bin/find",
+                destination,
+                "-mindepth",
+                "1",
+                "-maxdepth",
+                "1",
+                "!",
+                "-name",
+                ".git",
+                "-exec",
+                "/bin/rm",
+                "-rf",
+                "--",
+                "{}",
+                ";",
             ],
             cancelled,
         )?;
-        self.control(&["exec", &self.name, "/bin/sh", "-c", "tar --no-same-owner --same-permissions -xf /tmp/sprowt-source.tar -C /workspace && rm /tmp/sprowt-source.tar"], cancelled)?;
+        self.guest(
+            &[
+                "/usr/bin/tar",
+                "--no-same-owner",
+                "--same-permissions",
+                "-xf",
+                "/opt/sprowt-transfer/import.tar",
+                "-C",
+                destination,
+            ],
+            cancelled,
+        )?;
+        self.guest(&["/bin/rm", "/opt/sprowt-transfer/import.tar"], cancelled)?;
         fs::remove_file(archive)
     }
 
-    pub fn configuration(&self) -> Vec<String> {
+    pub(crate) fn guest(&self, args: &[&str], cancelled: &AtomicBool) -> io::Result<()> {
+        let mut argv = vec!["exec", &self.name];
+        argv.extend_from_slice(args);
+        self.control(&argv, cancelled)
+    }
+
+    pub(crate) fn guest_exists(&self, path: &str) -> io::Result<bool> {
+        self.guest_status(&["/usr/bin/test", "-e", path])
+    }
+
+    pub(crate) fn guest_status(&self, args: &[&str]) -> io::Result<bool> {
+        let output = container().args(["exec", &self.name]).args(args).output()?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => {
+                checked(&output)?;
+                Ok(false)
+            }
+        }
+    }
+
+    pub(crate) fn copy_in(
+        &self,
+        path: &Path,
+        destination: &str,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.control(
+            &[
+                "copy",
+                path.to_str()
+                    .ok_or_else(|| io::Error::other("Invalid transfer path."))?,
+                &format!("{}:{destination}", self.name),
+            ],
+            cancelled,
+        )
+    }
+
+    pub(crate) fn copy_out(
+        &mut self,
+        source: &str,
+        path: &Path,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let bytes = self.read_guest(source, cancelled)?;
+        let next = path.with_extension("next");
+        fs::write(&next, bytes)?;
+        private(&next, 0o600)?;
+        fs::rename(next, path)
+    }
+
+    fn profile(&self, name: &str, cwd: &str) -> String {
         let domains = self
             .domains
             .iter()
             .map(|(domain, access)| format!("{}={}", json!(domain), json!(access)))
             .collect::<Vec<_>>()
             .join(",");
+        format!(
+            "permissions.{name}={{filesystem={{\"/\"=\"read\",{}=\"write\",{}=\"read\",\"/home/sprowt\"=\"write\",\"/tmp\"=\"write\"}},network={{enabled=true,domains={{{domains}}},allow_local_binding=true}}}}",
+            json!(cwd),
+            json!(format!("{cwd}/.git"))
+        )
+    }
+
+    pub fn configuration(&self) -> Vec<String> {
         vec![
-            format!(
-                "permissions.sprowt_vm={{filesystem={{\"/\"=\"read\",\"/workspace\"=\"write\",\"/home/sprowt\"=\"write\",\"/tmp\"=\"write\"}},network={{enabled=true,domains={{{domains}}},allow_local_binding=true}}}}"
-            ),
+            self.profile("sprowt_vm", "/workspace"),
             "default_permissions=\"sprowt_vm\"".into(),
             "features.network_proxy=true".into(),
             format!("shell_environment_policy.set.PATH={}", json!(GUEST_PATH)),
@@ -414,19 +515,34 @@ impl Sandbox {
         ]
     }
 
+    pub fn task_configuration(&self) -> Vec<String> {
+        self.tasks
+            .round
+            .iter()
+            .map(|id| {
+                self.profile(
+                    &format!("sprowt_task_{id}"),
+                    &crate::task_worktree::folder(*id),
+                )
+            })
+            .collect()
+    }
+
     fn permissions(&self) -> Value {
         self.process_permissions(false)
     }
 
     fn process_permissions(&self, installing: bool) -> Value {
-        let entries = [("/","read"),("/workspace","write"),("/home/sprowt","write"),("/tmp","write")].map(|(path,access)| json!({"path":{"type":"path","path":format!("file://{path}")},"access":access}));
+        let cwd = self.task_folder();
+        let git = format!("{cwd}/.git");
+        let entries = [("/","read"),(cwd.as_str(),"write"),(git.as_str(),"read"),("/home/sprowt","write"),("/tmp","write")].map(|(path,access)| json!({"path":{"type":"path","path":format!("file://{path}")},"access":access}));
         let filesystem = if installing {
             json!({"type":"unrestricted"})
         } else {
             json!({"type":"restricted","entries":entries})
         };
         json!({"permissions":{"type":"managed","file_system":filesystem,"network":"enabled"},
-            "cwd":"file:///workspace","workspaceRoots":["file:///workspace"],"windowsSandboxLevel":"disabled","useLegacyLandlock":false})
+            "cwd":format!("file://{cwd}"),"workspaceRoots":[format!("file://{cwd}")],"windowsSandboxLevel":"disabled","useLegacyLandlock":false})
     }
 
     fn run(
@@ -449,6 +565,7 @@ impl Sandbox {
     ) -> io::Result<(Option<i64>, Vec<u8>, Vec<u8>)> {
         let sandbox = self.process_permissions(installing);
         let proxy = json!({"proxy":{"enabled":true,"enableSocks5":false,"enableSocks5Udp":false,"allowUpstreamProxy":false,"dangerouslyAllowAllUnixSockets":false,"mode":"full","domains":self.domains,"unixSockets":{},"allowLocalBinding":true},"auditMetadata":{}});
+        let task_folder = self.task_folder();
         let rpc = self.rpc.as_mut().unwrap();
         let process = format!("sprowt-{}", PROCESS.fetch_add(1, Ordering::Relaxed));
         let mut environment = json!({"HOME":"/home/sprowt","PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1"});
@@ -460,9 +577,9 @@ impl Sandbox {
             environment["HOME"] = json!("/opt/sprowt-apt/home");
         }
         let cwd = if installing {
-            "file:///opt/sprowt-apt"
+            "file:///opt/sprowt-apt".into()
         } else {
-            "file:///workspace"
+            format!("file://{task_folder}")
         };
         let start = rpc.call("process/start", json!({"processId":process,"argv":argv,"cwd":cwd,"env":environment,"envPolicy":{"inherit":"none","ignoreDefaultExcludes":true,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"arg0":null,"sandbox":sandbox,"enforceManagedNetwork":true,"networkProxy":proxy}))?;
         if start["sandboxType"] != "linuxSeccomp" {
@@ -647,7 +764,7 @@ impl Sandbox {
         Ok(())
     }
 
-    pub fn export(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
+    pub(crate) fn snapshot(&mut self, path: &str, cancelled: &AtomicBool) -> io::Result<Snapshot> {
         let mut argv = vec![
             "exec",
             &self.name,
@@ -657,7 +774,7 @@ impl Sandbox {
             "/usr/bin/tar",
             "--format=gnu",
             "-C",
-            "/workspace",
+            path,
             "-cf",
             "/opt/sprowt-transfer/source.tar",
         ];
@@ -676,10 +793,32 @@ impl Sandbox {
         argv.push(".");
         // Use a protected transfer file: process/read retains only 1 MiB of output.
         self.control(&argv, cancelled)?;
+        let bytes = self.read_guest("/opt/sprowt-transfer/source.tar", cancelled)?;
+        self.guest(
+            &["/bin/rm", "-f", "/opt/sprowt-transfer/source.tar"],
+            &AtomicBool::new(false),
+        )?;
+        decode_source(&bytes)
+    }
+
+    pub fn export(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
+        let snapshot = self.snapshot(&self.task_folder(), cancelled)?;
+        workspace::replace_source(&self.root, &snapshot)?;
+        if !self.tasks.round.is_empty() {
+            self.commit_source(self.tasks.active, &snapshot, cancelled)?;
+            self.checkpoint_tasks(cancelled)?;
+        }
+        Ok(snapshot)
+    }
+
+    fn read_guest(&mut self, path: &str, cancelled: &AtomicBool) -> io::Result<Vec<u8>> {
         let permissions = self.permissions();
         let rpc = self.rpc.as_mut().unwrap();
         let handle = format!("export-{}", PROCESS.fetch_add(1, Ordering::Relaxed));
-        rpc.call("fs/open", json!({"handleId":handle,"path":"file:///opt/sprowt-transfer/source.tar","sandbox":permissions}))?;
+        rpc.call(
+            "fs/open",
+            json!({"handleId":handle,"path":format!("file://{path}"),"sandbox":permissions}),
+        )?;
         let result = (|| {
             let mut bytes = Vec::new();
             loop {
@@ -710,20 +849,7 @@ impl Sandbox {
             }
         })();
         rpc.call("fs/close", json!({"handleId":handle}))?;
-        self.control(
-            &[
-                "exec",
-                &self.name,
-                "/bin/rm",
-                "-f",
-                "/opt/sprowt-transfer/source.tar",
-            ],
-            &AtomicBool::new(false),
-        )?;
-        let bytes = result?;
-        let snapshot = decode_source(&bytes)?;
-        workspace::replace_source(&self.root, &snapshot)?;
-        Ok(snapshot)
+        result
     }
 
     pub fn verify(
@@ -731,7 +857,7 @@ impl Sandbox {
         checks: &[Check],
         cancelled: &AtomicBool,
     ) -> io::Result<(Snapshot, Vec<CheckResult>)> {
-        let before = self.export(cancelled)?;
+        let before = self.snapshot(&self.task_folder(), cancelled)?;
         let mut results = Vec::new();
         for check in checks {
             if cancelled.load(Ordering::Relaxed) {
@@ -749,6 +875,7 @@ impl Sandbox {
                 Err(error) => (None, error.to_string()),
             };
             results.push(CheckResult {
+                task: check.task,
                 check: check.check.clone(),
                 command: check.command.clone(),
                 exit_code,
@@ -795,6 +922,7 @@ pub fn delete(root: &Path) -> io::Result<()> {
         child: None,
         rpc: None,
         started: false,
+        tasks: Default::default(),
     };
     if let Some(inspect) = vm.inspect()? {
         let saved = fs::read(root.join("vm.json"))
@@ -960,6 +1088,181 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "checks task worktrees, recovery and cleanup in a temporary Apple Container VM"]
+    fn task_worktrees_isolate_combine_restore_and_clean() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("first.txt"), "before").unwrap();
+        let parent = data.0.join("workspaces");
+        fs::create_dir(&parent).unwrap();
+        let root = parent.join(format!("tasks-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let flag = AtomicBool::new(false);
+        let command = |script: &str| vec!["/bin/sh".into(), "-c".into(), script.into()];
+        let check = |task: i64, script: &str| Check {
+            task: Some(task),
+            check: "Source is correct".into(),
+            command: command(script),
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &flag, |label| eprintln!("{label}"))?;
+                vm.prepare_tasks(&[1, 2, 3], &flag)?;
+                vm.activate_task(1, &flag)?;
+                let (exit, _, stderr) = vm.run(&command("test \"$PWD\" = /tasks/1 && printf one > first.txt && ! touch /workspace/denied && ! touch /opt/sprowt-git/repo/config && ! sh -c 'echo bad > .git' && mkdir -p .venv && printf cached > .venv/proof"), &flag, 30, 8192)?;
+                assert_eq!(exit, Some(0), "{}", String::from_utf8_lossy(&stderr));
+                assert_eq!(vm.snapshot("/workspace", &flag)?[0].1, b"before");
+                let first = check(
+                    1,
+                    "test \"$(cat first.txt)\" = one && test \"$(cat .venv/proof)\" = cached",
+                );
+                let source = |id| format!("00000004-0001-4000-8000-{id:012x}");
+                assert_eq!(
+                    vm.verify_execution(&source(1), std::slice::from_ref(&first), &flag)?
+                        .1[0]
+                        .exit_code,
+                    Some(0)
+                );
+                assert_eq!(vm.snapshot("/workspace", &flag)?[0].1, b"one");
+                vm.activate_task(2, &flag)?;
+                assert_eq!(vm.run(&command("test \"$(cat first.txt)\" = one && printf draft > second.txt && ! touch /tasks/1/denied"), &flag, 30, 8192)?.0, Some(0));
+                vm.export(&flag)?;
+                drop(vm);
+                // Closing deletes the VM, retaining only sanitized source and Git objects.
+                delete(&root)?;
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                assert_eq!(vm.task_folder(), "/tasks/2");
+                assert_eq!(
+                    vm.run(
+                        &command("test \"$(cat second.txt)\" = draft && printf two > second.txt"),
+                        &flag,
+                        30,
+                        8192
+                    )?
+                    .0,
+                    Some(0)
+                );
+                let second = check(
+                    2,
+                    "test \"$(cat first.txt)\" = one && test \"$(cat second.txt)\" = two",
+                );
+                assert_eq!(
+                    vm.verify_execution(&source(2), std::slice::from_ref(&second), &flag)?
+                        .1[0]
+                        .exit_code,
+                    Some(0)
+                );
+                // The next task starts from both integrated changes.
+                vm.activate_task(3, &flag)?;
+                assert_eq!(vm.run(&command("test \"$(cat second.txt)\" = two && printf three > third.txt && printf secret > .env"), &flag, 30, 8192)?.0, Some(0));
+                let third = check(3, "test \"$(cat third.txt)\" = three");
+                vm.verify_execution(&source(3), std::slice::from_ref(&third), &flag)?;
+                let checks = [check(1, "test \"$(cat third.txt)\" = three"), second, third];
+                let (before, results) = vm.verify_execution("final:1", &checks, &flag)?;
+                assert_eq!(results.len(), 3);
+                assert!(
+                    results.iter().all(|r| r.exit_code == Some(0)),
+                    "Check failed"
+                );
+                assert_eq!(before, workspace::source_state(&root.join("work"))?);
+                assert_eq!(before.len(), 3);
+                assert!(
+                    !vm.guest_exists("/tasks/1")?
+                        && !vm.guest_exists("/tasks/2")?
+                        && !vm.guest_exists("/tasks/3")?
+                );
+                drop(vm);
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                assert!(!vm.guest_exists("/tasks/1")?);
+                // A new edit round retains combined source and removes old task branches.
+                vm.prepare_tasks(&[4], &flag)?;
+                vm.activate_task(4, &flag)?;
+                assert_eq!(
+                    vm.run(
+                        &command("test \"$(cat third.txt)\" = three"),
+                        &flag,
+                        30,
+                        8192
+                    )?
+                    .0,
+                    Some(0)
+                );
+                assert!(!vm.guest_exists("/opt/sprowt-git/repo/refs/heads/task/1")?);
+                // A changed check cannot complete a task.
+                let bad = check(4, "printf changed > third.txt");
+                let (before, _) = vm.verify_execution(&source(4), &[bad], &flag)?;
+                assert_ne!(before, workspace::source_state(&root.join("work"))?);
+                assert!(!vm.tasks.integrated.contains(&4));
+                // Keep both sides of a merge conflict, including across VM deletion.
+                vm.prepare_tasks(&[5, 6], &flag)?;
+                vm.activate_task(5, &flag)?;
+                vm.activate_task(6, &flag)?;
+                vm.run(
+                    &command("printf six > first.txt; printf shared > combined.txt"),
+                    &flag,
+                    30,
+                    8192,
+                )?;
+                let sixth = check(6, "test \"$(cat first.txt)\" = six");
+                vm.verify_execution(&source(6), &[sixth], &flag)?;
+                vm.activate_task(5, &flag)?;
+                vm.run(&command("printf five > first.txt"), &flag, 30, 8192)?;
+                let fifth = check(5, "test \"$(cat first.txt)\" = five");
+                assert!(
+                    vm.verify_execution(&source(5), &[fifth], &flag)
+                        .err()
+                        .unwrap()
+                        .to_string()
+                        .contains("conflict")
+                );
+                assert_eq!(
+                    vm.snapshot("/workspace", &flag)?
+                        .iter()
+                        .find(|f| f.0 == Path::new("first.txt"))
+                        .unwrap()
+                        .1,
+                    b"six"
+                );
+                vm.export(&flag)?;
+                drop(vm);
+                delete(&root)?;
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                assert_eq!(
+                    vm.snapshot("/workspace", &flag)?
+                        .iter()
+                        .find(|f| f.0 == Path::new("first.txt"))
+                        .unwrap()
+                        .1,
+                    b"six"
+                );
+                let draft = vm.snapshot("/tasks/5", &flag)?;
+                let conflict = String::from_utf8_lossy(
+                    &draft
+                        .iter()
+                        .find(|f| f.0 == Path::new("first.txt"))
+                        .unwrap()
+                        .1,
+                );
+                assert!(
+                    conflict.contains("<<<<<<<")
+                        && conflict.contains("five")
+                        && conflict.contains("six")
+                );
+                assert!(
+                    draft
+                        .iter()
+                        .any(|f| f.0 == Path::new("combined.txt") && f.1 == b"shared")
+                );
+                drop(vm);
+                Ok(())
+            },
+        ));
+        delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
+
+    #[test]
     #[ignore = "installs real Debian packages in a temporary Apple Container VM"]
     fn system_packages_persist_without_widening_worker_permissions() {
         let data = TestData::new();
@@ -1011,7 +1314,7 @@ mod tests {
                 vm.offline_install(&["/opt/sprowt-apt/network-test"], &cancelled)?;
                 vm.install_packages(&request, &cancelled)?;
                 vm.boundary(&cancelled)?;
-                let checks = vec![Check { check:"Package installed and source retained".into(),command:vec!["/bin/sh".into(),"-c".into(),"/usr/bin/jq --version && test \"$(cat keep.txt)\" = 'source stays' && ! touch /opt/sprowt-apt/worker-write".into()]}];
+                let checks = vec![Check { task: None, check:"Package installed and source retained".into(),command:vec!["/bin/sh".into(),"-c".into(),"/usr/bin/jq --version && test \"$(cat keep.txt)\" = 'source stays' && ! touch /opt/sprowt-apt/worker-write".into()]}];
                 assert_eq!(vm.verify(&checks, &cancelled)?.1[0].exit_code, Some(0));
                 drop(vm);
                 let mut vm = Sandbox::prepare(&root, &cancelled, |_| {})?;
@@ -1078,7 +1381,7 @@ mod tests {
             assert_eq!(fs::read_to_string(project.join("delete.txt"))?, "original");
             drop(vm);
             let mut vm = Sandbox::prepare(&root, &cancelled, |label| eprintln!("{label}"))?;
-            let checks = vec![Check { check: "runtime persisted".into(), command: vec!["/bin/sh".into(), "-c".into(), "test \"$(cat /home/sprowt/runtime-proof)\" = persistent && test \"$(cat result.txt)\" = edited".into()] }];
+            let checks = vec![Check { task: None, check: "runtime persisted".into(), command: vec!["/bin/sh".into(), "-c".into(), "test \"$(cat /home/sprowt/runtime-proof)\" = persistent && test \"$(cat result.txt)\" = edited".into()] }];
             let (before, results) = vm.verify(&checks, &cancelled)?;
             assert_eq!(results[0].exit_code, Some(0));
             assert_eq!(before, workspace::source_state(&root.join("work"))?);

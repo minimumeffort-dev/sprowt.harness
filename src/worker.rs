@@ -309,6 +309,7 @@ impl Worker {
                         .iter()
                         .flat_map(|run| &run.checks)
                         .map(|result| Check {
+                            task: result.task,
                             check: result.check.clone(),
                             command: result.command.clone(),
                         })
@@ -446,6 +447,7 @@ impl Worker {
                 }
             }
             Event::Accepted { source, turn } => {
+                self.preparing = None;
                 if let Some(input) = self.pending.take() {
                     if input.source != source {
                         return Err(rusqlite::Error::InvalidQuery);
@@ -969,7 +971,12 @@ impl Worker {
         Ok(())
     }
 
-    fn begin_checks(&mut self, source: String, checks: Vec<Check>) {
+    fn begin_checks(&mut self, source: String, mut checks: Vec<Check>) {
+        if let Ok(id) = crate::task_worktree::task_id(&source) {
+            for check in &mut checks {
+                check.task = Some(id);
+            }
+        }
         self.verify_before = None;
         self.verification = checks.clone();
         self.task_source = Some(source.clone());
@@ -1109,6 +1116,7 @@ mod tests {
         worker.status = Status::Checking;
         worker.task_source = Some(code_mod.execution.as_ref().unwrap().tasks[0].source.clone());
         worker.verification = vec![Check {
+            task: None,
             check: "Run greeting flag test".into(),
             command: vec!["/usr/bin/true".into()],
         }];
@@ -1136,6 +1144,7 @@ mod tests {
                 vec![]
             } else {
                 vec![crate::execution::CheckResult {
+                    task: None,
                     check: worker.verification[0].check.clone(),
                     command: worker.verification[0].command.clone(),
                     exit_code: Some(if case == "failure" { 1 } else { 0 }),
@@ -1171,6 +1180,7 @@ mod tests {
         code_mod.execution = store.execution(code_mod.id).unwrap();
         worker.task_source = Some(format!("final:{}", code_mod.id));
         let checks = vec![crate::execution::CheckResult {
+            task: None,
             check: worker.verification[0].check.clone(),
             command: worker.verification[0].command.clone(),
             exit_code: Some(0),

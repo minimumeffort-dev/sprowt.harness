@@ -33,6 +33,8 @@ Only package installation is advertised to Codex, using a JSON input schema. Unk
 
 Initial Git setup and the GitHub destination require confirmation. Setup checks the reviewed file snapshot; adoption preserves the saved baseline. Repository setup validates owner/name, checks history and records progress for retries. Publication requires confirmation and verified source. Closing saves source locally before VM deletion. Pruning checks the saved commit and refuses outside edits. Edit rounds check PR status and its published commit when present. Git checkpoints own recovery. Credentials remain in host adapters.
 
+The VM adapter also manages task Git worktrees, verification and integration internally. These operations use saved task identities and are not exposed as model tools. See [Plan execution](execution.md).
+
 ## Progress and activity
 
 Adapters report progress and return a typed result or an error. Existing cancellation and timeouts remain: Git/GitHub commands have a two-minute limit; managed package commands have a fifteen-minute limit.

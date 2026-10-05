@@ -27,6 +27,8 @@ pub struct TaskRun {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct CheckResult {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<i64>,
     pub check: String,
     pub command: Vec<String>,
     pub exit_code: Option<i64>,
@@ -36,6 +38,8 @@ pub struct CheckResult {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
+    #[serde(skip)]
+    pub task: Option<i64>,
     pub check: String,
     pub command: Vec<String>,
 }
@@ -101,9 +105,9 @@ impl Report {
     }
 }
 
-pub fn task_prompt(plan: &Plan, task: &Task) -> String {
+pub fn task_prompt(plan: &Plan, task: &Task, id: i64) -> String {
     format!(
-        "Execute only this task from the saved plan in the Linux VM at /workspace. Respect project rules and the declared file scope. Inspect project manifests, choose compatible runtimes and install needed dependencies using mise or the project's package manager. If OS dependencies are missing, call install_system_packages with required Debian package names and a short reason; the harness installs them in the VM and you continue. Run the completion checks; report blocked checks honestly. Return the required JSON report. For each check, provide its exact text and a repeatable command as an argument array, using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each has a 30-second limit. Commands must test the result and exit nonzero on failure, without changing source files. Keep the summary short.\nPlan: {}\nCurrent task: {}",
+        "Execute only this task from the saved plan in the Linux VM in your task worktree at /tasks/{id}. Resume saved edits and resolve any merge conflict markers. Respect project rules and the declared file scope. Inspect project manifests, choose compatible runtimes and install needed dependencies using mise or the project's package manager. If OS dependencies are missing, call install_system_packages with required Debian package names and a short reason; the harness installs them in the VM and you continue. Run the completion checks; report blocked checks honestly. Return the required JSON report. For each check, provide its exact text and a repeatable command as an argument array, using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each has a 30-second limit. Commands must test the result and exit nonzero on failure, without changing source files. Keep the summary short.\nPlan: {}\nCurrent task: {}",
         serde_json::to_string(plan).unwrap(),
         serde_json::to_string(task).unwrap()
     )
@@ -120,6 +124,23 @@ pub fn schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn saved_checks_keep_task_identity_and_read_legacy_results() {
+        let legacy = r#"{"check":"passes","command":["/bin/true"],"exit_code":0,"output":""}"#;
+        let mut result: CheckResult = serde_json::from_str(legacy).unwrap();
+        assert_eq!(result.task, None);
+        result.task = Some(42);
+        let restored: CheckResult =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert_eq!(restored.task, Some(42));
+        assert!(
+            serde_json::from_str::<Check>(
+                r#"{"task":42,"check":"passes","command":["/bin/true"]}"#
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn completion_requires_every_declared_check_and_absolute_commands() {

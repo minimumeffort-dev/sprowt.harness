@@ -2297,7 +2297,7 @@ esac
             || -> io::Result<()> {
                 let mut vm =
                     crate::sandbox::Sandbox::prepare(&root, &flag, |label| eprintln!("{label}"))?;
-                let check = crate::execution::Check {
+                let check = crate::execution::Check { task: None,
                 check: "Source copy and guest edits".into(),
                     command: vec!["/bin/sh".into(), "-c".into(), "test ! -f .git && test ! -e .git/HEAD && test ! -e .env && test \"$(cat a.txt)\" = original && printf 'VM edit\\n' > a.txt && printf 'VM new\\n' > guest.txt && rm delete.txt".into()],
             };
@@ -2320,7 +2320,7 @@ esac
                 finish_continuation(&root)?;
                 let mut vm =
                     crate::sandbox::Sandbox::prepare(&root, &flag, |label| eprintln!("{label}"))?;
-                let check = crate::execution::Check { check: "Fresh VM contains the published source".into(),
+                let check = crate::execution::Check { task: None, check: "Fresh VM contains the published source".into(),
                     command: vec!["/bin/sh".into(), "-c".into(), "test \"$(cat a.txt)\" = 'VM edit' && test -f guest.txt && test ! -f delete.txt && printf 'follow-up\\n' > a.txt".into()] };
                 let (_, checks) = vm.verify(&[check], &flag)?;
                 assert_eq!(checks[0].exit_code, Some(0), "{}", checks[0].output);

@@ -120,7 +120,7 @@ impl Client {
         let stopped = cancelled.clone();
         let task = thread::spawn(move || {
             let result = (|| {
-                let vm = workspace
+                let mut vm = workspace
                     .as_ref()
                     .map(|path| {
                         Sandbox::prepare(path.parent().unwrap(), &stopped, |label| {
@@ -128,6 +128,9 @@ impl Client {
                         })
                     })
                     .transpose()?;
+                if let Some(vm) = &mut vm {
+                    vm.prepare_tasks(&context.tasks, &stopped)?;
+                }
                 if stopped.load(Ordering::Relaxed) {
                     return Ok(());
                 }
@@ -161,7 +164,11 @@ impl Client {
                 }
                 if let Some(vm) = &vm {
                     command.env("CODEX_HOME", &vm.home);
-                    for option in vm.configuration() {
+                    for option in vm
+                        .configuration()
+                        .into_iter()
+                        .chain(vm.task_configuration())
+                    {
                         command.args(["-c", &option]);
                     }
                     command.args(["-c", "cli_auth_credentials_store=\"file\""]);
@@ -335,9 +342,27 @@ fn flush(
         if message["method"] == "turn/completed"
             && let Some(vm) = vm
         {
+            stop_terminals(rpc, thread)?;
             vm.export(&AtomicBool::new(false))?;
         }
         let _ = outgoing.send(Event::Notification(message));
+    }
+    Ok(())
+}
+
+fn stop_terminals(rpc: &mut Rpc, thread: &str) -> io::Result<()> {
+    let result = rpc.call(
+        "thread/backgroundTerminals/list",
+        json!({"threadId":thread}),
+    )?;
+    let terminals = result["data"]
+        .as_array()
+        .ok_or_else(|| io::Error::other("Codex returned no command inventory."))?;
+    for terminal in terminals {
+        rpc.call(
+            "thread/backgroundTerminals/terminate",
+            json!({"threadId":thread,"processId":terminal["processId"]}),
+        )?;
     }
     Ok(())
 }
@@ -505,7 +530,7 @@ fn serve(
                 let (before, results) = vm
                     .as_mut()
                     .ok_or_else(|| io::Error::other("Verification requires the mod VM."))?
-                    .verify(checks, &cancelled)?;
+                    .verify_execution(source, checks, &cancelled)?;
                 let _ = outgoing.send(Event::Checked {
                     source: source.clone(),
                     checks: results,
@@ -528,7 +553,21 @@ fn serve(
                         }
                     }
                     if source.starts_with("00000004-") {
+                        let vm = vm
+                            .as_mut()
+                            .ok_or_else(|| io::Error::other("Task execution requires a VM."))?;
+                        let id = crate::task_worktree::task_id(&source)?;
+                        let _ = outgoing.send(Event::Preparing("preparing task worktree".into()));
+                        stop_terminals(rpc, &thread)?;
+                        vm.activate_task(id, &cancelled)?;
+                        params["permissions"] = json!(format!("sprowt_task_{id}"));
+                        params["environments"] =
+                            json!([{"environmentId":"vm","cwd":vm.task_folder()}]);
                         params["outputSchema"] = crate::execution::schema();
+                    } else if vm.is_some() {
+                        return Err(io::Error::other(
+                            "Execution requires an assigned task worktree.",
+                        ));
                     }
                     ("turn/start", source, params)
                 }
@@ -552,18 +591,9 @@ fn serve(
                         let _ =
                             rpc.call("turn/interrupt", json!({"threadId":thread,"turnId":turn}));
                     }
-                    let terminals = rpc.call(
-                        "thread/backgroundTerminals/list",
-                        json!({"threadId":thread}),
-                    )?;
-                    let terminals = terminals["data"]
-                        .as_array()
-                        .ok_or_else(|| io::Error::other("Codex returned no command inventory."))?;
-                    for terminal in terminals {
-                        rpc.call(
-                            "thread/backgroundTerminals/terminate",
-                            json!({"threadId":thread,"processId":terminal["processId"]}),
-                        )?;
+                    stop_terminals(rpc, &thread)?;
+                    if let Some(vm) = &mut vm {
+                        vm.export(&AtomicBool::new(false))?;
                     }
                     let _ = finished.send(());
                     return Ok(());
@@ -690,4 +720,90 @@ fn check_boundary(rpc: &mut Rpc, project: &Path, permissions: &str) -> io::Resul
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{store::test_support::TestData, workspace};
+    use std::fs;
+
+    #[test]
+    #[ignore = "runs one short Codex task in a temporary Apple Container VM"]
+    fn task_turn_uses_its_worktree_and_permission_profile() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let parent = data.0.join("workspaces");
+        fs::create_dir(&parent).unwrap();
+        let root = parent.join(format!("agent-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let mut code_mod = store
+            .create_mod(project_id, "Create marker.txt containing ok")
+            .unwrap();
+        let plan = Plan::parse(&json!({"summary":"Create marker", "tasks":[{"id":"marker","title":"Create marker","outcome":"Marker exists","files":["marker.txt"],"depends_on":[],"worker":"codex","checks":["Marker contains ok"]}]}).to_string()).unwrap();
+        store.create_execution(code_mod.id, &root, &plan).unwrap();
+        code_mod.execution = store.execution(code_mod.id).unwrap();
+        let record = store.worker_for(code_mod.id, Role::Executor).unwrap();
+        let run = &code_mod.execution.as_ref().unwrap().tasks[0];
+        let flag = AtomicBool::new(false);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut client = Client::start(
+                    &project,
+                    None,
+                    Role::Executor,
+                    &code_mod.description,
+                    Some(&plan),
+                    None,
+                    Context::worker(&code_mod, record.id, Role::Executor),
+                )?;
+                let deadline = std::time::Instant::now() + Duration::from_secs(180);
+                let mut complete = false;
+                while std::time::Instant::now() < deadline && !complete {
+                    for event in client.poll() {
+                        match event {
+                        Event::Ready { .. } => client.send(Action::Run {
+                            source: run.source.clone(),
+                            text: format!("Your task worktree is /tasks/{}. Use the shell to confirm pwd is this path, confirm writes to /workspace/denied and .git are refused, then write exactly ok to marker.txt. Return completed only if those boundary checks pass. The sole completion check is 'Marker contains ok'; use /bin/sh -c with a relative marker.txt path. Do not install anything or modify other files.", run.id),
+                        })?,
+                        Event::Notification(message) if message["method"] == "turn/completed" => {
+                            assert_eq!(message["params"]["turn"]["status"], "completed");
+                            complete = true;
+                        }
+                        Event::Failed(error) | Event::Rejected { message: error, .. } => return Err(io::Error::other(error)),
+                        _ => {}
+                    }
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                assert!(complete, "Codex task did not finish within three minutes");
+                client.shutdown();
+                assert_eq!(fs::read_to_string(root.join("work/marker.txt"))?, "ok");
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                let check = Check {
+                    task: Some(run.id),
+                    check: "Marker contains ok".into(),
+                    command: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "test \"$(cat marker.txt)\" = ok && test ! -e /workspace/denied".into(),
+                    ],
+                };
+                let (_, results) =
+                    vm.verify_execution(&run.source, std::slice::from_ref(&check), &flag)?;
+                assert_eq!(results[0].exit_code, Some(0));
+                assert_eq!(
+                    vm.verify_execution("final:1", &[check], &flag)?.1[0].exit_code,
+                    Some(0)
+                );
+                drop(vm);
+                Ok(())
+            },
+        ));
+        crate::sandbox::delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
 }
