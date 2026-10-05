@@ -23,6 +23,7 @@
 - Keep comments sparse and concise. Explain non-obvious decisions, not obvious code.
 - Keep explanations concise too.
 - Structure explanations and documentation with clear headings, short paragraphs and lists where useful.
+- Keep real credentials, local environment values and session data out of Git. Use placeholders in examples.
 
 ## Keep docs current
 

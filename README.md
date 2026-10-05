@@ -124,6 +124,8 @@ Mods, plans, task progress, check results, conversations, queues and drafts save
 
 Reopen from the same project root to restore them. Credentials stay with Codex. See [Local state](docs/local-state.md) for storage and [Workers](docs/workers.md) for credential isolation.
 
+Git ignores local environment files, credentials, logs and databases. Use placeholders in `.env.example` or `.env.sample`.
+
 ## What’s next
 
 Task worktrees inside each VM, then multiple Codex/Muse executors and a review worker per mod. Shared context, memory, MCPs and skills follow in small batches.

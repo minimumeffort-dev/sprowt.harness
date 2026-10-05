@@ -1,1 +1,29 @@
 /target/
+
+# Local credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+.envrc
+auth.json
+credentials.json
+.credentials.json
+.git-credentials
+.npmrc
+.netrc
+.pypirc
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+
+# Local state
+.serena/
+*.db
+*.db-*
+*.sqlite*
+*.log
+.DS_Store
