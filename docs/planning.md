@@ -1,49 +1,55 @@
-# Planning and Laya
+# Planning and routing
 
-Creating a codemod starts planning from its description. Git setup is confirmed first when needed. The [project branch is checked and safely updated](git-workflow.md#keep-the-starting-source-current) before creating its worktree; Laya and the planner inspect that committed source.
+Creating a codemod starts a read-only Codex planner at **Astra xhigh**. Git setup and [starting-source synchronization](git-workflow.md#keep-the-starting-source-current) finish first. Edits plan against the latest source export.
 
 ```mermaid
 flowchart TB
-    goal["Codemod description"] --> route["Local Laya · estimate complexity"]
-    route --> config["Rust · choose model and reasoning"]
-    config --> planner["Codex planner · inspect source and docs"]
-    planner --> validate["Rust · validate the structured plan"]
-    validate --> saved["SQLite · saved plan and configuration"]
-    saved --> executor["Executor context · goal plus plan"]
+    goal["Request + project brief"] --> planner["Astra xhigh · inspect source and define contracts"]
+    planner --> validate["Rust · validate tasks, scopes and dependencies"]
+    validate --> schedule["Rust · assign up to two independent tasks"]
+    schedule --> route["Jev + Rust policy · model and effort per task"]
+    route --> execute["Codex executors · task worktrees inside the VM"]
+    execute --> checks["Rust · combine changes and rerun checks"]
 ```
 
-## Two roles
+## Planning
 
-| Role | Job today |
-| --- | --- |
-| Planner | Inspect the project and produce a task plan |
-| Executor | Implement and verify plan tasks |
+The planner inspects relevant source, manifests, tests, docs and project rules. Its starting brief includes up to 120 file paths across three levels, short root rules and manifest excerpts, and up to three documentation excerpts. Dependencies, hidden files and external symlinks are excluded from that brief. The brief guides inspection; the planner still reads the source.
 
-They have separate Codex conversations. The planner is read-only. A valid plan starts the executor automatically in the mod’s Linux VM; Rust dispatches tasks in dependency order. See [Plan execution](execution.md).
+Shared contracts define interfaces, data shapes and error behavior before work is split. Material assumptions and non-goals stay explicit. Separate file ownership allows concurrent work against those contracts; real prerequisites and shared files require dependencies.
 
-## Local model routing
+## Jev task routing
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run `sprowt-harness setup`. Setup installs Python 3.13, `laya==0.3.20` and the multilingual checkpoint under the [local data directory](local-state.md).
+[Jev](https://docs.typesafe.ai/introduction) is a hosted decision model. It evaluates four independent questions: difficulty, uncertainty, cross-component impact and security or data-integrity risk. Rust maps those answers to profiles:
 
-Laya runs locally in a separate Python process. It receives the description, a top-level file listing and short excerpts from README.md and AGENTS.md. Codex then inspects the project itself to plan the work.
-
-| Laya result | Planner model | Reasoning |
+| Task | Model | Effort |
 | --- | --- | --- |
-| Simple | `gpt-6.1-sol` | medium |
-| Complex | `gpt-6.1-sol` | high |
-| Demanding | `gpt-6-astra` | high |
-| Uncertain, unavailable or timed out | `gpt-6.1-sol` | high |
+| Routine, clear, isolated | `gpt-6.1-sol` | medium |
+| Involved or cross-component | `gpt-6.1-sol` | high |
+| Hard, uncertain or high risk | `gpt-6.1-sol` | xhigh |
+| Missing configuration, timeout or invalid response | `gpt-6.1-sol` | xhigh |
 
-The score threshold is 0.70; routing times out after 30 seconds. This is an experimental heuristic. The stock checkpoint was uncertain or wrong in our small test. Laya recommends configuration; Codex generates the plan.
+Each task routes before its turn starts, using the project brief, saved plan, contracts, assigned scope and checks. Steering stays in the current turn. Planning is pinned to `gpt-6-astra` xhigh, so it needs no routing call.
 
-Rust checks the selected model and reasoning level against Codex’s catalog. Missing models fall back to Sol or the catalog default. Account access is checked only when inference runs. The expanded plan details show the chosen configuration and routing reason.
+Requests time out after eight seconds. The initial confidence floor is **0.80 for every question**. Rust validates options, probabilities and confidence before lowering effort. These thresholds are experimental; confidence measures distribution concentration, not guaranteed correctness. Test them on real codemods before changing them. See [Jev confidence](https://docs.typesafe.ai/confidence).
+
+Codex's model catalog validates the chosen model and effort. An unavailable model falls back to Sol 6.1 or the catalog default, preferring xhigh, then high, then medium. Actual account access is established by inference. A rejected turn remains retryable.
+
+Each task stores its resolved model, effort and routing reason beside its checks. Jev calls also record the policy version, routing input and request duration, plus the revision and answers when available. **Ctrl+O** shows model choices and reasons; the full evidence stays in SQLite. Retries replace the current decision; this is diagnostic data, not a calibrated benchmark or automatic architecture repair.
+
+## Configure Jev
+
+Copy `.env.example` to `.env.local` in the harness repository and add `TYPESAFE_API_KEY`. Then run `sprowt-harness setup` from that folder. Setup copies only that key into `router.env` in the [private local data directory](local-state.md), with owner-only file permissions. Installed harnesses use this configuration from any project.
+
+`.env.local` is ignored by Git. The key is never loaded into the process environment, model prompts or worker configuration. Codex commands cannot read the local key file or `router.env`; executor tools stay inside the VM. Host Rust calls only TypeSafe's fixed HTTPS endpoint, with redirects and environment proxies disabled. Routing sends relevant project context to TypeSafe and uses separate API billing.
 
 ## What a plan contains
 
-A summary and tasks with IDs, titles, outcomes, file scopes, dependencies, worker assignments and completion checks.
+A summary, shared contracts, material assumptions, non-goals and tasks with IDs, titles, outcomes, file scopes, dependencies, worker assignments and completion checks. Existing saved plans without the new context fields still load.
 
 Rust checks that:
 
+- Context notes are bounded and nonempty when supplied.
 - There are 1–32 tasks with unique IDs and nonempty outcomes and checks.
 - Dependencies exist and contain no cycles.
 - File scopes use exact project-relative paths, with no globs or parent traversal.
@@ -56,7 +62,7 @@ These checks validate structure and declared scopes. They do not prove the plan 
 
 The conversation shows a numbered outline: task titles, outcomes and dependencies such as **after task 1**. The numbering matches the displayed order, even when the saved task IDs are words.
 
-Press **Ctrl+O** for file scopes, individual completion checks and model details. Press it again to collapse them. The full plan remains saved; changing its display does not change the plan or start a worker.
+Press **Ctrl+O** for contracts, assumptions, file scopes, completion checks and model details. Press it again to collapse them. The full plan remains saved; changing its display does not change the plan or start a worker.
 
 Once a valid plan is saved, execution begins automatically. **Ctrl+R** stops work or retries; **Ctrl+D** reviews source when workers are idle.
 

@@ -43,7 +43,7 @@ Git setup shows the starting file list. GitHub setup uses Tab to choose connect 
 | Command | Action |
 | --- | --- |
 | `sprowt-harness` | Open the current project |
-| `sprowt-harness setup` | Install the local Laya runtime and model |
+| `sprowt-harness setup` | Configure Jev from the harness’s `.env.local` |
 | `sprowt-harness --closed-worktree-days 0` | Keep closed worktrees indefinitely |
 | `sprowt-harness --no-motion` | Open with animations disabled |
 | `sprowt-harness --help` | Show available options |

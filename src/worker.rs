@@ -1,9 +1,4 @@
-use std::{
-    io,
-    path::Path,
-    sync::mpsc::{Receiver, TryRecvError},
-    time::{Duration, Instant},
-};
+use std::{io, path::Path};
 
 use serde_json::Value;
 
@@ -41,7 +36,6 @@ pub struct Worker {
     pub error: Option<String>,
     pub enabled: bool,
     client: Option<Client>,
-    routing: Option<(Receiver<Selection>, Instant)>,
     thread_id: Option<String>,
     final_plan: Option<String>,
     turn: Option<String>,
@@ -62,7 +56,7 @@ impl Worker {
         code_mod: &CodeMod,
         record: WorkerRecord,
         role: Role,
-        routing: Option<Receiver<Selection>>,
+        selection: Option<Selection>,
     ) -> io::Result<Self> {
         let workspace = code_mod
             .execution
@@ -102,7 +96,7 @@ impl Worker {
             id: record.id,
             mod_id: code_mod.id,
             role,
-            selection: None,
+            selection,
             model: None,
             effort: None,
             status: if role == Role::Planner {
@@ -113,7 +107,6 @@ impl Worker {
             error: None,
             enabled: true,
             client,
-            routing: routing.map(|receiver| (receiver, Instant::now())),
             thread_id: record.thread_id,
             final_plan: None,
             turn: None,
@@ -221,28 +214,10 @@ impl Worker {
             if !self.enabled {
                 return Ok(());
             }
-            let selection = self
-                .routing
-                .as_ref()
-                .map(|(receiver, started)| match receiver.try_recv() {
-                    Ok(selection) => Some(selection),
-                    Err(TryRecvError::Empty) if started.elapsed() < Duration::from_secs(30) => None,
-                    Err(_) => Some(Selection::fallback(
-                        "Laya unavailable or timed out · Sol high fallback",
-                    )),
-                })
-                .unwrap_or_else(|| {
-                    Some(Selection::fallback(
-                        "Laya not installed · Sol high fallback; run sprowt-harness setup",
-                    ))
-                });
-            let Some(selection) = selection else {
-                return Ok(());
-            };
+            let selection = self.selection.clone().unwrap_or_else(Selection::planner);
             store.planning_model(self.mod_id, &selection)?;
             code_mod.planning = store.planning(self.mod_id)?;
             self.selection = Some(selection.clone());
-            self.routing = None;
             match Client::start(
                 project,
                 self.thread_id.clone().map(|id| Resume {
@@ -364,6 +339,7 @@ impl Worker {
                 Action::Run {
                     source: input.source.clone(),
                     text: input.texts.join("\n\n"),
+                    routing: self.task_context(code_mod, &input.source),
                 }
             };
             if !steering {
@@ -381,6 +357,20 @@ impl Worker {
         Ok(())
     }
 
+    fn task_context(&self, code_mod: &CodeMod, source: &str) -> Option<Value> {
+        let execution = code_mod.execution.as_ref()?;
+        let run = execution.tasks.iter().find(|run| run.source == source)?;
+        let plan = code_mod.planning.as_ref()?.plan.as_ref()?;
+        let task = plan.tasks.iter().find(|task| task.id == run.task_id)?;
+        let mut state =
+            crate::router::context(&execution.workspace.join("work"), &code_mod.description);
+        state["source"] = serde_json::json!(source);
+        state["plan"] = serde_json::json!(plan);
+        state["task"] = serde_json::json!(task);
+        state["previous_result"] = serde_json::json!({"summary":run.summary,"checks":run.checks});
+        Some(state)
+    }
+
     fn receive(
         &mut self,
         event: Event,
@@ -394,6 +384,13 @@ impl Worker {
                 code_mod.planning = store.planning(self.mod_id)?;
                 self.selection = Some(selection);
             }
+            Event::TaskConfigured { source, selection } => {
+                store.task_model(self.mod_id, self.id, &source, &selection)?;
+                code_mod.execution = store.execution(self.mod_id)?;
+                self.model = Some(selection.model.clone());
+                self.effort = Some(selection.effort.clone());
+                self.selection = Some(selection);
+            }
             Event::Ready {
                 thread,
                 model,
@@ -405,6 +402,20 @@ impl Worker {
                 store.save_thread(self.id, thread["id"].as_str().unwrap())?;
                 if self.role == Role::Executor {
                     self.recover_task(store, code_mod, &thread)?;
+                    if let Some(selection) = code_mod.execution.as_ref().and_then(|execution| {
+                        execution
+                            .tasks
+                            .iter()
+                            .find(|run| {
+                                run.worker == Some(self.id)
+                                    && ["sending", "running", "checking"]
+                                        .contains(&run.status.as_str())
+                            })
+                            .and_then(|run| run.selection.as_ref())
+                    }) {
+                        self.model = Some(selection.model.clone());
+                        self.effort = Some(selection.effort.clone());
+                    }
                 }
                 if let Some(turns) = thread["turns"].as_array() {
                     for turn in turns {
@@ -1158,6 +1169,68 @@ mod tests {
                 code_mod,
             )
             .unwrap();
+    }
+
+    #[test]
+    fn task_routing_saves_scoped_choices_and_updates_live_reply_labels() {
+        let (data, mut store, mut code_mod, mut worker) = executor();
+        worker.status = Status::Ready;
+        let plan = code_mod.planning.as_ref().unwrap().plan.as_ref().unwrap();
+        store
+            .planning_model(code_mod.id, &Selection::planner())
+            .unwrap();
+        let input = store
+            .task_input(code_mod.id, worker.id, plan)
+            .unwrap()
+            .unwrap();
+        code_mod.execution = store.execution(code_mod.id).unwrap();
+        let state = worker.task_context(&code_mod, &input.source).unwrap();
+        assert_eq!(state["task"]["id"], plan.tasks[0].id);
+        assert!(!state["task"]["checks"].as_array().unwrap().is_empty());
+        let mut selection = Selection::fallback("Jev uncertain");
+        selection.evidence = Some(serde_json::json!({"policy":"test","state":state}));
+        assert!(
+            store
+                .task_model(code_mod.id, worker.id + 1, &input.source, &selection)
+                .is_err()
+        );
+        worker
+            .receive(
+                Event::TaskConfigured {
+                    source: input.source,
+                    selection,
+                },
+                &mut store,
+                &mut code_mod,
+            )
+            .unwrap();
+        assert!(worker.label(None).contains("gpt-6.1-sol · xhigh"));
+        assert_eq!(
+            store
+                .planning(code_mod.id)
+                .unwrap()
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("gpt-6-astra")
+        );
+        worker.item(&store, &mut code_mod, &serde_json::json!({"type":"agentMessage","phase":"commentary","id":"routed-reply","text":"Task implemented"}),false).unwrap();
+        drop(store);
+        let reopened = data.store();
+        let execution = reopened.execution(code_mod.id).unwrap().unwrap();
+        let saved = execution.tasks[0].selection.as_ref().unwrap();
+        assert_eq!(saved.effort, "xhigh");
+        assert_eq!(saved.evidence.as_ref().unwrap()["policy"], "test");
+        let state = reopened
+            .load_project(Path::new("/planner-project"))
+            .unwrap();
+        let reply = state.mods[0]
+            .messages
+            .iter()
+            .find(|message| message.item_id.as_deref() == Some("routed-reply"))
+            .unwrap();
+        assert_eq!(reply.model.as_deref(), Some("gpt-6.1-sol"));
+        assert_eq!(reply.effort.as_deref(), Some("xhigh"));
     }
 
     fn executor() -> (TestData, Store, CodeMod, Worker) {

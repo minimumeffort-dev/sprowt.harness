@@ -16,6 +16,7 @@ pub struct Execution {
 
 #[derive(Clone)]
 pub struct TaskRun {
+    pub selection: Option<crate::router::Selection>,
     pub worker: Option<i64>,
     pub id: i64,
     pub task_id: String,

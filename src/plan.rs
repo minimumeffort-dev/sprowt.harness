@@ -21,10 +21,16 @@ impl Role {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
     pub summary: String,
+    #[serde(default)]
+    pub contracts: Vec<String>,
+    #[serde(default)]
+    pub assumptions: Vec<String>,
+    #[serde(default)]
+    pub non_goals: Vec<String>,
     pub tasks: Vec<Task>,
 }
 
@@ -58,6 +64,17 @@ impl Plan {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        for notes in [&self.contracts, &self.assumptions, &self.non_goals] {
+            if notes.len() > 12
+                || notes
+                    .iter()
+                    .any(|note| note.trim().is_empty() || note.len() > 4000)
+            {
+                return Err(
+                    "Plan contracts, assumptions and exclusions must be brief and nonempty.".into(),
+                );
+            }
+        }
         if self.summary.trim().is_empty() || self.tasks.is_empty() || self.tasks.len() > 32 {
             return Err("A plan needs a summary and 1–32 tasks.".into());
         }
@@ -175,13 +192,13 @@ impl Plan {
 pub fn schema() -> Value {
     let strings = json!({"type":"array", "items":{"type":"string"}});
     json!({"type":"object", "additionalProperties":false,
-        "properties":{"summary":{"type":"string"}, "tasks":{"type":"array", "items":{
+        "properties":{"summary":{"type":"string"}, "contracts":strings, "assumptions":strings, "non_goals":strings, "tasks":{"type":"array", "items":{
             "type":"object", "additionalProperties":false,
             "properties":{"id":{"type":"string"}, "title":{"type":"string"},
                 "outcome":{"type":"string"}, "files":strings, "depends_on":strings,
                 "worker":{"type":"string", "enum":["codex"]}, "checks":strings},
             "required":["id","title","outcome","files","depends_on","worker","checks"]}}},
-        "required":["summary","tasks"]})
+        "required":["summary","contracts","assumptions","non_goals","tasks"]})
 }
 
 pub fn instructions(role: Role, description: &str, plan: Option<&Plan>, writable: bool) -> String {
@@ -192,7 +209,7 @@ pub fn instructions(role: Role, description: &str, plan: Option<&Plan>, writable
     };
     match role {
         Role::Planner => format!(
-            "{boundary} Your role is planner. Inspect relevant source, docs and project rules before planning. The codemod description is the user's request. Produce a concise task plan matching the output schema. Give tasks short outcomes, exact project-relative file or directory paths (no globs), dependencies and 1–3 brief completion checks. Only Codex is connected; assign every task to codex. Up to two independent tasks run in parallel. Add dependencies where work genuinely requires them; do not split small tasks just to use both workers. Tasks sharing files must depend on each other. Include only requested work. Keep the plan small. Do not implement it. Codemod: {description}"
+            "{boundary} Your role is planner. Inspect relevant source, manifests, docs, tests and project rules before planning. The codemod description is the user's request. Produce a concise task plan matching the output schema. Define shared contracts (interfaces, data shapes and error behavior) before dividing work. Record only material assumptions and explicit non-goals; use empty arrays when unnecessary. Give tasks short outcomes, exact project-relative file or directory paths (no globs), dependencies and 1–3 brief completion checks. Only Codex is connected; assign every task to codex. Up to two independent tasks run in parallel. Separate tasks with disjoint ownership can build against a defined contract concurrently; add dependencies only for genuine implementation prerequisites or shared files. Do not split small tasks just to use both workers. Add combined regression verification when independently changed components interact. Include only requested work. Keep the plan small. Do not implement it. Codemod: {description}"
         ),
         Role::Executor => format!(
             "{boundary} Your role is executor. Execute the task the harness assigns, or answer a queued instruction. Keep commentary short. Use the codemod goal and saved plan as context. Codemod: {description}\nPlan: {}",
@@ -220,6 +237,7 @@ mod tests {
                 worker: "codex".into(),
                 checks: vec!["Run chart tests".into()],
             }],
+            ..Plan::default()
         }
     }
 

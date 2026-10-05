@@ -21,7 +21,7 @@ Codex handles authentication. The harness database stores conversation IDs and d
 
 ## Permissions today
 
-Planner tools can read the project and required runtime files, with no tool networking. The host Codex credential directory and macOS Keychain directory are denied to these commands.
+Planner tools can read the project and required runtime files, with no tool networking. The host Codex credential directory, macOS Keychain directory, project `.env.local` and harness `router.env` are denied to these commands.
 
 Executor tools use only the mod’s Linux VM. Normal commands can write their assigned `/tasks/<id>` folder, its own `/home/sprowt/workers/<worker-id>` and guest temporary files; system files remain read-only. Project runtimes and dependencies use an enforced domain proxy. The [tool dispatcher](tools.md) exposes package installation to executors and checks their VM ownership. Git, GitHub and cleanup remain harness-only operations. Guest Git combines task branches; publication uses host Git and GitHub CLI. Each task turn selects its folder and named permission profile through [Codex’s environment API](https://learn.chatgpt.com/docs/app-server). No host executor is registered for that agent. See [Local Linux sandbox](sandbox.md) for package setup.
 
@@ -37,15 +37,15 @@ Workers install user runtimes in their own HOME. Other workers’ runtime folder
 
 ## Run, pause, resume
 
-Worker labels show their ID, model and reasoning effort. Each active task shows its worker ID and spinner; the codemod header shows how many workers are active. An unset effort uses Codex’s model catalog default, sent explicitly with each new turn. Saved replies keep their own labels; missing historical effort is shown as unknown.
+Worker labels show their ID, model and reasoning effort. Each active task shows its worker ID and spinner; the codemod header shows how many workers are active. Task model and effort are selected explicitly before each turn and checked against Codex’s catalog. Saved replies keep their own labels; missing historical effort is shown as unknown.
 
-- A new codemod confirms Git setup if needed, creates its branch and worktree, then starts its planner automatically. The planner and Laya read that committed source initially and the latest exported source for edits.
+- A new codemod confirms Git setup if needed, creates its branch and worktree, then starts its planner automatically. The Astra xhigh planner reads that committed source initially and the latest exported source for edits.
 - A valid plan starts execution automatically. Rust assigns up to two independent tasks at once; ordinary queued messages wait for a verified version, then start the next edit plan. **Ctrl+R** stops or retries. See [Plan execution](execution.md) for verification and publication.
 - Reopening restores saved state. **Ctrl+R** reconnects a worker to its saved Codex conversation.
 - A finished version updates automatically when another PR changes its target branch. Current workers finish first; a fresh integration conversation resolves text conflicts and verifies combined behavior in the retained VM. Product decisions pause for your input. **Ctrl+U** checks immediately.
 - Publishing retains the VM and worktree. Each edit plan starts fresh worker conversations and keeps the transcript. Closing stops workers, saves a checkpoint and removes the VM; deletion discards local data. Reopening a closed mod starts fresh conversations when work resumes. Quitting stops processes and active VMs but keeps their disks. Failed operations remain retryable with Ctrl+R.
 
-The live status shows the model and configured reasoning effort reported by Codex and spins while work is in progress. Replies keep both labels when reopened. Laya still routes only the planner; the executor uses Codex’s resolved conversation settings. Unreported values stay omitted.
+The live status shows the model and configured reasoning effort reported by Codex and spins while work is in progress. Replies keep both labels when reopened. Jev routes each assigned task to Sol 6.1 medium, high or xhigh; model and effort overrides are sent with the task turn. Plan details show the current task’s saved routing reason. See [Planning and routing](planning.md) for setup and fallbacks.
 
 ## Delivery and recovery
 

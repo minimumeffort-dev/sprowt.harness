@@ -326,6 +326,7 @@ pub fn prepare(
                 worker: "codex".into(),
                 checks,
             }],
+            ..plan.clone()
         };
         update_plan.validate().map_err(io::Error::other)?;
         let context = format!(
@@ -692,6 +693,7 @@ pub(crate) mod tests {
                 worker: "codex".into(),
                 checks: vec!["Deletion check passes".into()],
             }],
+            ..Plan::default()
         };
         (data, repo, root, target, plan)
     }
@@ -1115,6 +1117,7 @@ pub(crate) mod tests {
                 worker: "codex".into(),
                 checks: vec!["Deletion works".into()],
             }],
+            ..Plan::default()
         };
         prepare(&root, &target, &plan, &flag).unwrap();
         let fingerprint = verified(&root);

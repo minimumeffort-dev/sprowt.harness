@@ -6,8 +6,9 @@ Creating a codemod starts planning and execution automatically. Up to two Codex 
 flowchart TB
     plan["Valid saved plan"] --> vm["Create or reconnect the codemod VM"]
     vm --> task["Scheduler · choose independent ready tasks"]
-    task --> first["Worker 1 · own task worktree + runtime"]
-    task --> second["Worker 2 · own task worktree + runtime"]
+    task --> route["Jev + Rust · choose model and effort for each task"]
+    route --> first["Worker 1 · own task worktree + runtime"]
+    route --> second["Worker 2 · own task worktree + runtime"]
     first --> checks["Controller · rerun task checks"]
     second --> checks
     checks --> merge["Combine verified changes · one at a time"]

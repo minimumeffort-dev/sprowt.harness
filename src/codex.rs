@@ -28,6 +28,7 @@ pub enum Action {
     Run {
         source: String,
         text: String,
+        routing: Option<Value>,
     },
     Verify {
         source: String,
@@ -47,6 +48,10 @@ pub enum Action {
 pub enum Event {
     Preparing(String),
     Configured(Selection),
+    TaskConfigured {
+        source: String,
+        selection: Selection,
+    },
     Ready {
         thread: Value,
         model: Option<String>,
@@ -136,7 +141,13 @@ impl Client {
         let project = project.to_owned();
         let (actions, inbox) = mpsc::channel();
         let (outgoing, events) = mpsc::channel();
-        let instructions = plan::instructions(role, description, plan, workspace.is_some());
+        let mut instructions = plan::instructions(role, description, plan, workspace.is_some());
+        if role == Role::Planner {
+            instructions.push_str(&format!(
+                "\nProject brief (verify against source): {}",
+                crate::router::context(&cwd, description)
+            ));
+        }
         let cancelled = Arc::new(AtomicBool::new(false));
         let child = Arc::new(Mutex::new(None));
         let process = child.clone();
@@ -318,6 +329,17 @@ fn configuration(project: &Path) -> io::Result<Vec<String>> {
             "deny",
         ),
     ]);
+    filesystem.insert(
+        crate::router::directory()?
+            .join("router.env")
+            .to_string_lossy()
+            .into_owned(),
+        "deny",
+    );
+    filesystem.insert(
+        project.join(".env.local").to_string_lossy().into_owned(),
+        "deny",
+    );
     let binary = env::split_paths(&env::var_os("PATH").unwrap_or_default())
         .map(|dir| dir.join("codex"))
         .find(|path| path.is_file())
@@ -491,8 +513,9 @@ fn serve(
             json!(crate::task_worktree::worker_home(context.worker_id())),
         );
     }
+    let catalog = model_catalog(rpc)?;
     let selection = selection
-        .map(|selection| select_model(rpc, selection))
+        .map(|selection| resolve_model(&catalog, selection))
         .transpose()?;
     if let Some(selection) = &selection {
         overrides.insert("model_reasoning_effort".into(), json!(selection.effort));
@@ -568,10 +591,12 @@ fn serve(
             "External MCP tools are enabled; this worker cannot start.",
         ));
     }
-    let effort = if let Some(effort) = result["reasoningEffort"].as_str() {
+    let effort = if let Some(selection) = &selection {
+        Some(selection.effort.clone())
+    } else if let Some(effort) = result["reasoningEffort"].as_str() {
         Some(effort.to_owned())
     } else {
-        model_catalog(rpc)?
+        catalog
             .iter()
             .find(|model| model["model"] == result["model"])
             .and_then(|model| model["defaultReasoningEffort"].as_str())
@@ -584,6 +609,7 @@ fn serve(
             effort: effort.clone(),
         })
         .map_err(io::Error::other)?;
+    let router = (role == Role::Executor).then(crate::router::Router::start);
     let mut task = None;
     flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context, task)?;
     let mut last_turn = None;
@@ -614,7 +640,11 @@ fn serve(
                 continue;
             }
             let (method, source, params) = match action {
-                Action::Run { source, text } => {
+                Action::Run {
+                    source,
+                    text,
+                    routing,
+                } => {
                     let mut params = json!({"threadId":thread,"clientUserMessageId":source,"input":[{"type":"text","text":text}],"permissions":permissions,"approvalPolicy":"never"});
                     if let Some(effort) = &effort {
                         params["effort"] = json!(effort);
@@ -627,6 +657,25 @@ fn serve(
                         }
                     }
                     if source.starts_with("00000004-") {
+                        let _ = outgoing.send(Event::Preparing("choosing task model".into()));
+                        let chosen = match (&router, routing) {
+                            (Some(Ok(router)), Some(state)) => router.route(state),
+                            (Some(Err(error)), _) => Selection::fallback(&error.to_string()),
+                            _ => Selection::fallback("Task routing context unavailable"),
+                        };
+                        let chosen = resolve_model(&catalog, chosen)?;
+                        if cancelled.load(Ordering::Relaxed) {
+                            return Err(io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "Task routing stopped.",
+                            ));
+                        }
+                        params["model"] = json!(chosen.model);
+                        params["effort"] = json!(chosen.effort);
+                        let _ = outgoing.send(Event::TaskConfigured {
+                            source: source.clone(),
+                            selection: chosen,
+                        });
                         let vm = vm
                             .as_mut()
                             .ok_or_else(|| io::Error::other("Task execution requires a VM."))?;
@@ -735,8 +784,7 @@ fn model_catalog(rpc: &mut Rpc) -> io::Result<Vec<Value>> {
     Ok(models)
 }
 
-fn select_model(rpc: &mut Rpc, mut selection: Selection) -> io::Result<Selection> {
-    let models = model_catalog(rpc)?;
+fn resolve_model(models: &[Value], mut selection: Selection) -> io::Result<Selection> {
     let available = |model: &Value| model["model"] == selection.model;
     let model = if let Some(model) = models.iter().find(|model| available(model)) {
         model
@@ -745,7 +793,7 @@ fn select_model(rpc: &mut Rpc, mut selection: Selection) -> io::Result<Selection
             .iter()
             .find(|model| model["model"] == "gpt-6.1-sol")
             .or_else(|| models.iter().find(|model| model["isDefault"] == true))
-            .ok_or_else(|| io::Error::other("No supported planning model is listed by Codex."))?;
+            .ok_or_else(|| io::Error::other("No supported model is listed by Codex."))?;
         selection
             .reason
             .push_str(" · selected model unavailable; catalog fallback");
@@ -753,7 +801,7 @@ fn select_model(rpc: &mut Rpc, mut selection: Selection) -> io::Result<Selection
             .as_str()
             .ok_or_else(|| io::Error::other("Invalid model catalog."))?
             .into();
-        selection.effort = "high".into();
+        selection.effort = "xhigh".into();
         model
     };
     if !model["supportedReasoningEfforts"]
@@ -764,11 +812,21 @@ fn select_model(rpc: &mut Rpc, mut selection: Selection) -> io::Result<Selection
                 .any(|level| level["reasoningEffort"] == selection.effort)
         })
     {
-        selection.effort = model["defaultReasoningEffort"]
-            .as_str()
-            .ok_or_else(|| io::Error::other("No supported planner reasoning level."))?
+        selection.effort = ["xhigh", "high", "medium"]
+            .into_iter()
+            .find(|effort| {
+                model["supportedReasoningEfforts"]
+                    .as_array()
+                    .is_some_and(|levels| {
+                        levels
+                            .iter()
+                            .any(|level| level["reasoningEffort"] == *effort)
+                    })
+            })
+            .or_else(|| model["defaultReasoningEffort"].as_str())
+            .ok_or_else(|| io::Error::other("No supported reasoning level."))?
             .into();
-        selection.reason.push_str(" · default reasoning fallback");
+        selection.reason.push_str(" · supported reasoning fallback");
     }
     Ok(selection)
 }
@@ -786,11 +844,11 @@ fn check_boundary(rpc: &mut Rpc, project: &Path, permissions: &str) -> io::Resul
         .open(&canary)?;
     drop(file);
     let script = if cfg!(target_os = "macos") {
-        "test -r \"$1\" && ! test -r \"$2\" && ! (printf x >\"$2\") && ! /usr/bin/security list-keychains >/dev/null 2>&1"
+        "test -r \"$1\" && ! test -r \"$2\" && ! (printf x >\"$2\") && ! test -r \"$3\" && ! test -r \"$4\" && ! /usr/bin/security list-keychains >/dev/null 2>&1"
     } else {
-        "test -r \"$1\" && ! test -r \"$2\" && ! (printf x >\"$2\")"
+        "test -r \"$1\" && ! test -r \"$2\" && ! (printf x >\"$2\") && ! test -r \"$3\" && ! test -r \"$4\""
     };
-    let result = rpc.call("command/exec", json!({"command":["/bin/sh","-c",script,"sprowt-check",project,canary],"cwd":project,"permissionProfile":permissions,"timeoutMs":5000}));
+    let result = rpc.call("command/exec", json!({"command":["/bin/sh","-c",script,"sprowt-check",project,canary,crate::router::directory()?.join("router.env"),project.join(".env.local")],"cwd":project,"permissionProfile":permissions,"timeoutMs":5000}));
     let _ = fs::remove_file(&canary);
     if result?["exitCode"] != 0 {
         return Err(io::Error::other(
@@ -803,6 +861,126 @@ fn check_boundary(rpc: &mut Rpc, project: &Path, permissions: &str) -> io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "runs one Astra xhigh planning turn with the host ChatGPT subscription"]
+    fn astra_xhigh_planner_returns_contracts_without_changing_source() {
+        use crate::store::test_support::TestData;
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("README.md"),
+            "A greeting program. Keep changes focused.",
+        )
+        .unwrap();
+        fs::write(project.join("hello.py"), "print('hello')\n").unwrap();
+        fs::write(
+            project.join(".env.local"),
+            "TYPESAFE_API_KEY=test-only-canary",
+        )
+        .unwrap();
+        let before = crate::workspace::source_state(&project).unwrap();
+        let mut store = data.store();
+        let id = store.load_project(&project).unwrap().id;
+        let goal = "Plan two independent changes: update hello.py to print hello sprowt, and document running it in README.md. No other changes. Define any shared contract first.";
+        let m = store.create_mod(id, goal).unwrap();
+        let record = store.worker_for(m.id, Role::Planner).unwrap();
+        let mut client = Client::start(
+            &project,
+            None,
+            Role::Planner,
+            goal,
+            None,
+            Some(Selection::planner()),
+            Context::worker(&m, record.id, Role::Planner),
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(180);
+        let mut final_plan = None;
+        let mut completed = false;
+        while std::time::Instant::now() < deadline && !completed {
+            for event in client.poll() {
+                match event {
+                    Event::Ready { model, effort, .. } => {
+                        assert_eq!(model.as_deref(), Some("gpt-6-astra"));
+                        assert_eq!(effort.as_deref(), Some("xhigh"));
+                        client
+                            .send(Action::Run {
+                                source: m.planning.as_ref().unwrap().source.clone(),
+                                text: goal.into(),
+                                routing: None,
+                            })
+                            .unwrap();
+                    }
+                    Event::Notification(message) if message["method"] == "item/completed" => {
+                        let item = &message["params"]["item"];
+                        if item["type"] == "agentMessage" && item["phase"] != "commentary" {
+                            final_plan = item["text"].as_str().map(str::to_owned);
+                        }
+                    }
+                    Event::Notification(message) if message["method"] == "turn/completed" => {
+                        assert_eq!(message["params"]["turn"]["status"], "completed");
+                        completed = true;
+                    }
+                    Event::Failed(error) | Event::Rejected { message: error, .. } => {
+                        panic!("{error}")
+                    }
+                    _ => {}
+                }
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
+        client.shutdown();
+        assert!(completed, "Planner turn timed out");
+        let text = final_plan.unwrap();
+        let plan = Plan::parse(&text).unwrap();
+        let output: Value = serde_json::from_str(&text).unwrap();
+        for field in ["contracts", "assumptions", "non_goals"] {
+            assert!(output[field].is_array());
+        }
+        let owned_files = plan
+            .tasks
+            .iter()
+            .flat_map(|task| &task.files)
+            .collect::<Vec<_>>();
+        assert!(
+            owned_files
+                .iter()
+                .all(|file| ["hello.py", "README.md"].contains(&file.as_str()))
+        );
+        assert!(
+            owned_files.iter().any(|file| file.as_str() == "hello.py")
+                && owned_files.iter().any(|file| file.as_str() == "README.md")
+        );
+        assert!(before == crate::workspace::source_state(&project).unwrap());
+    }
+
+    #[test]
+    fn catalog_validation_preserves_xhigh_and_falls_back_to_supported_profiles() {
+        let model = |name, efforts: &[&str], default| {
+            json!({"model":name,
+            "supportedReasoningEfforts":efforts.iter().map(|effort| json!({"reasoningEffort":effort})).collect::<Vec<_>>(),
+            "defaultReasoningEffort":default,"isDefault":name=="gpt-6.1-sol"})
+        };
+        let catalog = vec![
+            model("gpt-6-astra", &["high", "xhigh"], "high"),
+            model("gpt-6.1-sol", &["medium", "high", "xhigh"], "medium"),
+        ];
+        let selection = resolve_model(&catalog, Selection::planner()).unwrap();
+        assert_eq!(
+            (selection.model.as_str(), selection.effort.as_str()),
+            ("gpt-6-astra", "xhigh")
+        );
+        let limited = vec![model("gpt-6.1-sol", &["medium", "high"], "medium")];
+        let fallback = resolve_model(&limited, Selection::planner()).unwrap();
+        assert_eq!(
+            (fallback.model.as_str(), fallback.effort.as_str()),
+            ("gpt-6.1-sol", "high")
+        );
+        assert!(fallback.reason.contains("catalog fallback"));
+        assert!(resolve_model(&[], Selection::planner()).is_err());
+    }
     use crate::{store::test_support::TestData, workspace};
     use std::fs;
 
@@ -876,6 +1054,7 @@ mod tests {
                         match event {
                             Event::Ready { .. } => client.send(Action::Run {
                                 source: runs[0].source.clone(),
+                                routing: None,
                                 text: format!("Run exactly {} in your task folder. It checks Chromium startup, local Unix sockets, network restrictions and peer write boundaries. It starts and stops its own local app. Only if it exits 0, write exactly ok to marker.txt and report completed. Do not modify browser_check.py, install anything or write other source files. The completion check is 'Browser and boundaries pass'; use that same Python command.", command.join(" ")),
                             })?,
                             Event::Notification(message) if message["method"] == "turn/completed" => {
@@ -950,6 +1129,7 @@ mod tests {
                             match event {
                             Event::Ready { .. } => clients[i].send(Action::Run {
                                 source: runs[i].source.clone(),
+                                routing: None,
                                 text: format!("Your working directory is /tasks/{}. Run one shell command that: checks pwd; checks HOME is /home/sprowt/workers/{}; checks you cannot write /workspace/denied, /tasks/{}/denied, /home/sprowt/workers/{}/denied or .git; writes ok to {file}; then waits up to 90 seconds for /tasks/{}/{peer} to contain ok. Another real worker must create that peer file; do not create or edit it yourself. Use a one-second polling loop, with an error if the peer never appears. Write no other source files and install nothing. Report completed only after the peer appears. Completion check: '{}', using /bin/sh -c and relative {file}.", runs[i].id, ids[i], runs[1-i].id, ids[1-i], runs[1-i].id, if i==0 {"A exists"} else {"B exists"}),
                             })?,
                             Event::Accepted { .. } => accepted[i] = true,
@@ -1051,6 +1231,7 @@ mod tests {
                         match event {
                         Event::Ready { .. } => client.send(Action::Run {
                             source: run.source.clone(),
+                            routing: None,
                             text: format!("Your task worktree is /tasks/{}. Use the shell to confirm pwd is this path, confirm writes to /workspace/denied and .git are refused, then write exactly ok to marker.txt. Return completed only if those boundary checks pass. The sole completion check is 'Marker contains ok'; use /bin/sh -c with a relative marker.txt path. Do not install anything or modify other files.", run.id),
                         })?,
                         Event::Notification(message) if message["method"] == "turn/completed" => {

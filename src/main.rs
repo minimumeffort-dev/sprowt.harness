@@ -42,7 +42,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install the local Laya router and download its model.
+    /// Configure host-only Jev routing from .env.local.
     Setup,
 }
 

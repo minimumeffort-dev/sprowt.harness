@@ -1019,6 +1019,18 @@ fn plan_lines(
         .fg(ACCENT)
         .bold(),
     ];
+    if details {
+        for (label, notes) in [
+            ("contracts", &plan.contracts),
+            ("assumptions", &plan.assumptions),
+            ("outside scope", &plan.non_goals),
+        ] {
+            if !notes.is_empty() {
+                lines.push(Line::from(label).fg(KEY_HINT));
+                lines.extend(notes.iter().map(|note| Line::from(format!("   · {note}"))));
+            }
+        }
+    }
     for (index, task) in plan.tasks.iter().enumerate() {
         let run = execution
             .and_then(|execution| execution.tasks.iter().find(|run| run.task_id == task.id));
@@ -1073,6 +1085,16 @@ fn plan_lines(
             );
         }
         if details {
+            if let Some(selection) = run.and_then(|run| run.selection.as_ref()) {
+                lines.push(
+                    Line::from(format!(
+                        "   model · {} · {}",
+                        selection.model, selection.effort
+                    ))
+                    .fg(KEY_HINT),
+                );
+                lines.push(Line::from(format!("   {}", selection.reason)).fg(MUTED));
+            }
             if !task.files.is_empty() {
                 lines
                     .push(Line::from(format!("   files · {}", task.files.join(", "))).fg(KEY_HINT));

@@ -16,7 +16,6 @@ use tachyonfx::Effect;
 use crate::{
     git_mod::{self, GitMod, Job},
     plan::Role,
-    router::Router,
     sprout,
     store::{CodeMod, Store, source_id},
     tools::{Context, Dispatcher, Request},
@@ -69,7 +68,6 @@ pub struct App {
     targets: BTreeMap<i64, crate::mod_sync::Target>,
     target_checks: BTreeMap<i64, Instant>,
     update_errors: BTreeSet<i64>,
-    router: Option<Router>,
     notice: Option<String>,
     store: Store,
     project_id: i64,
@@ -172,7 +170,6 @@ impl App {
             targets: BTreeMap::new(),
             target_checks: BTreeMap::new(),
             update_errors: BTreeSet::new(),
-            router: None,
             notice: None,
             store,
             project_id: state.id,
@@ -1868,7 +1865,7 @@ impl App {
         let mod_id = self.mods[index].id;
         let record = self.store.worker_at(mod_id, role, slot)?;
         self.workers.remove(&record.id);
-        let routing = if role == Role::Planner {
+        let selection = if role == Role::Planner {
             if record.pending.is_none()
                 && self.mods[index]
                     .planning
@@ -1878,19 +1875,11 @@ impl App {
                 self.store.retry_plan(mod_id)?;
                 self.mods[index].planning = self.store.planning(mod_id)?;
             }
-            if self.router.is_none() {
-                self.router = Router::start().ok();
-            }
-            self.router.as_ref().map(|router| {
-                router.request(crate::router::context(
-                    &project,
-                    &self.mods[index].description,
-                ))
-            })
+            Some(crate::router::Selection::planner())
         } else {
             None
         };
-        match Worker::start(&project, &self.mods[index], record, role, routing) {
+        match Worker::start(&project, &self.mods[index], record, role, selection) {
             Ok(worker) => {
                 self.workers.insert(worker.id, worker);
                 if role == Role::Planner {
@@ -3832,10 +3821,7 @@ mod tests {
             {"id":"interface","title":"Build the page","outcome":"Add and remove tasks in the browser.","files":["app/static/index.html"],"depends_on":["backend"],"worker":"codex","checks":["Reload keeps saved tasks."]}
         ]}"#).unwrap();
         store
-            .planning_model(
-                code_mod.id,
-                &Selection::fallback("Laya uncertain · Sol high fallback"),
-            )
+            .planning_model(code_mod.id, &Selection::planner())
             .unwrap();
         store.save_plan(code_mod.id, &source, &plan).unwrap();
         let mut app = App::load(project.clone(), false, store).unwrap();
@@ -3846,7 +3832,7 @@ mod tests {
         let compact = rows(&screen(&mut app, 100, 42)).join("\n");
         assert!(compact.contains("1. Build the API") && compact.contains("after task 1"));
         assert!(compact.contains("1. Build the API"));
-        assert!(!compact.contains("app/main.py") && !compact.contains("gpt-6.1-sol"));
+        assert!(!compact.contains("app/main.py") && !compact.contains("gpt-6-astra"));
         assert!(!compact.contains("I'll inspect"));
         assert!(compact.contains("ctrl+q manage"));
 
@@ -3855,7 +3841,7 @@ mod tests {
         assert!(
             expanded.contains("app/main.py") && expanded.contains("Adding and deleting works.")
         );
-        assert!(expanded.contains("gpt-6.1-sol · high") && expanded.contains("Laya uncertain"));
+        assert!(expanded.contains("gpt-6-astra · xhigh") && expanded.contains("quality first"));
         assert_eq!(app.input.lines(), ["keep this draft", "second line"]);
         assert_eq!(queued(&app), ["queued question"]);
         assert_eq!(app.current_mod().unwrap().messages.len(), 3);

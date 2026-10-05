@@ -11,7 +11,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 ## What works today
 
 - [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
-- [Planning and Laya](docs/planning.md): turn a mod’s description into a saved task plan with file scopes, dependencies and checks.
+- [Planning and routing](docs/planning.md): Astra xhigh prepares the plan; Jev routes each task to Sol 6.1 medium, high or xhigh.
 - [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
 - [Plan execution](docs/execution.md): up to two Codex executors work in parallel, with separate task folders and combined verification.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod, with local sockets for browser checks. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
@@ -28,16 +28,17 @@ Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per proje
 
 ## Architecture today
 
-Rust owns the interface, scheduling, workers and saved state. A shared tool dispatcher validates harness-owned operations and routes them to host or VM adapters. A small Python helper runs Laya locally; Codex plans and edits.
+Rust owns the interface, scheduling, workers and saved state. A shared tool dispatcher validates harness-owned operations and routes them to host or VM adapters. Codex plans and edits. Jev evaluates task difficulty and risk through a host-only API adapter.
 
 ```mermaid
 flowchart TB
     goal["Describe a codemod"] --> sync["Check remote · safely update project branch"]
     sync --> setup["Git branch + worktree"]
-    setup --> planner["Laya routes · Codex plans"]
+    setup --> planner["Astra xhigh · inspect source and plan"]
     planner --> schedule["Rust scheduler · ready tasks"]
-    schedule --> first["Codex worker 1 · own task worktree"]
-    schedule --> second["Codex worker 2 · own task worktree"]
+    schedule --> route["Jev + Rust · route each task"]
+    route --> first["Codex worker 1 · own task worktree"]
+    route --> second["Codex worker 2 · own task worktree"]
     first --> combine["Combine one result at a time · verify together"]
     second --> combine
     combine --> ready["Version ready"]
@@ -51,7 +52,7 @@ flowchart TB
     verify --> ready
 ```
 
-Laya recommends the planner configuration. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse follows later.
+Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse follows later.
 
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
@@ -100,15 +101,15 @@ Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth lo
 
 Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. A review worker comes later.
 
-### Local model routing
+### Jev routing
 
-Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run:
+Copy `.env.example` to `.env.local` and paste your TypeSafe API key. From the harness repository, run:
 
 ```sh
 sprowt-harness setup
 ```
 
-This downloads [Laya](https://huggingface.co/convaiinnovations/laya) locally to recommend a planner model and reasoning level. Routing is experimental; uncertain results or missing Laya use Sol high. See [Planning and Laya](docs/planning.md) for model choices and limitations.
+Setup saves the key in private local configuration, so the installed harness can route tasks from any project. `.env.local` stays out of Git. Jev uses its own API billing and receives relevant project context; its key stays on the host. Without setup, workers use Sol 6.1 xhigh. See [Planning and routing](docs/planning.md).
 
 ## Controls
 

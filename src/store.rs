@@ -253,6 +253,20 @@ impl Store {
                 .execute_batch("ALTER TABLE task_runs ADD COLUMN worker_id INTEGER")
                 .map_err(io::Error::other)?;
         }
+        let has_routing = connection
+            .prepare("PRAGMA table_info(task_runs)")
+            .map_err(io::Error::other)?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(io::Error::other)?
+            .collect::<Result<Vec<_>>>()
+            .map_err(io::Error::other)?
+            .iter()
+            .any(|name| name == "routing");
+        if !has_routing {
+            connection
+                .execute_batch("ALTER TABLE task_runs ADD COLUMN routing TEXT")
+                .map_err(io::Error::other)?;
+        }
         connection
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS steering_deliveries (
@@ -1184,11 +1198,17 @@ impl Store {
         let Some((workspace, status, checks, fingerprint, backend)) = result else {
             return Ok(None);
         };
-        let mut statement = self.0.prepare("SELECT id,task_id,status,source,turn_id,summary,checks,worker_id FROM task_runs WHERE mod_id=?1 ORDER BY id")?;
+        let mut statement = self.0.prepare("SELECT id,task_id,status,source,turn_id,summary,checks,worker_id,routing FROM task_runs WHERE mod_id=?1 ORDER BY id")?;
         let tasks = statement
             .query_map([mod_id], |row| {
                 let checks: String = row.get(6)?;
                 Ok(TaskRun {
+                    selection: row
+                        .get::<_, Option<String>>(8)?
+                        .map(|text| {
+                            serde_json::from_str(&text).map_err(|_| rusqlite::Error::InvalidQuery)
+                        })
+                        .transpose()?,
                     worker: row.get(7)?,
                     id: row.get(0)?,
                     task_id: row.get(1)?,
@@ -1214,6 +1234,23 @@ impl Store {
             checks: serde_json::from_str(&checks).map_err(|_| rusqlite::Error::InvalidQuery)?,
             fingerprint,
         }))
+    }
+
+    pub fn task_model(
+        &self,
+        mod_id: i64,
+        worker: i64,
+        source: &str,
+        selection: &Selection,
+    ) -> Result<()> {
+        let changed = self.0.execute(
+            "UPDATE task_runs SET routing=?4 WHERE mod_id=?1 AND source=?2 AND worker_id=?3 AND status='sending'",
+            params![mod_id, source, worker, serde_json::to_string(selection).unwrap()],
+        )?;
+        if changed != 1 {
+            return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        Ok(())
     }
 
     pub fn task_input(
@@ -1821,7 +1858,7 @@ mod tests {
         store.pending(planner.id, Some(&input.source)).unwrap();
         store.acknowledge(planner.id, &input).unwrap();
         store
-            .planning_model(code_mod.id, &Selection::fallback("Laya uncertain"))
+            .planning_model(code_mod.id, &Selection::planner())
             .unwrap();
         let plan = Plan::parse(
             &json!({"summary":"Greeting","tasks":[{
@@ -1853,7 +1890,7 @@ mod tests {
         assert_eq!(state.mods[0].planning.as_ref().unwrap().status, "ready");
         assert_eq!(
             state.mods[0].planning.as_ref().unwrap().model.as_deref(),
-            Some("gpt-6.1-sol")
+            Some("gpt-6-astra")
         );
         assert_eq!(
             store

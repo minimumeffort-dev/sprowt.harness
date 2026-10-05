@@ -22,8 +22,7 @@ flowchart TB
 ├── state.db-wal      SQLite write-ahead log, when present
 ├── state.db-shm      SQLite shared memory, when present
 ├── network.json      guest download allowlist
-├── laya-runtime/     Python runtime installed by setup
-├── laya-models/      downloaded model cache
+├── router.env        host-only Jev API key; owner-only permissions
 ├── projects/         project sync state, independent of codemods
 │   └── <project>/
 │       ├── sync-project.json pending fast-forward; removed when complete
@@ -61,7 +60,7 @@ flowchart TB
 
 Before Git setup is confirmed, its file preview uses a temporary workspace. Cancelling or exiting removes that preview. Confirmed setup records a codemod workspace so interruption can recover. Adopting a snapshot keeps its existing workspace and project identity.
 
-State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Replies save model and effort; plans save routing. Execution saves task ownership, attempts, checks and the verified source fingerprint. SQLite stores each Git mod’s folder; `git-mod.json` records its branch, base, exported fingerprint, commit, PR URL and publication, close, edit or removal intent. Closing also saves a timestamp for retention.
+State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Replies save model and effort; plans save routing. Execution saves task ownership, attempts, checks, the current routing decision and evidence, and the verified source fingerprint. Routing inputs are stored as plain text; they exclude env files and the API key. SQLite stores each Git mod’s folder; `git-mod.json` records its branch, base, exported fingerprint, commit, PR URL and publication, close, edit or removal intent. Closing also saves a timestamp for retention.
 
 The [tool dispatcher](tools.md) records call IDs, callers, duration and outcomes in `tools.jsonl`. Inputs and outputs are omitted. Tool logs stay on the Mac and are removed with the mod; recovery uses saved execution state and Git checkpoints.
 
