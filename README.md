@@ -19,7 +19,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Workers within and across mods can run in parallel.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
-- [Terminal and companion](docs/terminal.md): readable plans, worker model and effort, task spinners and a Sprowt pet that reacts to planning, work and results.
+- [Terminal and companion](docs/terminal.md): compact results, separate plan details and worker history, task spinners and a Sprowt pet that reacts to work.
 
 ### Current limits
 
@@ -58,7 +58,7 @@ Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 tas
 
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
-You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows coordination alongside plan details. Small changes can stay with one worker.
+You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows plan details; **Ctrl+T** opens worker history. Finished versions show tasks, check counts and the publish action. Small changes can stay with one worker.
 
 Merge PRs one at a time on GitHub. The harness syncs your project branch on startup and every 30 seconds while open, even with no codemods. Local edits and staging stay; unsafe updates pause. **Ctrl+U** checks immediately.
 
@@ -126,7 +126,8 @@ Setup saves the key in private local configuration, so the installed harness can
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
 | Ctrl+U | Sync the project branch and check the codemod's target |
-| Ctrl+O | Show or hide plan details and worker messages |
+| Ctrl+O | Show or hide plan details |
+| Ctrl+T | Open worker history; Esc returns |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
 | Esc | Back, or quit from the conversation |

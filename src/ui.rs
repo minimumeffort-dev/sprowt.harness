@@ -299,6 +299,16 @@ pub fn draw(
                 ..dialog_area
             },
         );
+    } else if let View::History(scroll) = app.view {
+        draw_history(
+            frame,
+            app,
+            scroll,
+            Rect {
+                width: area.width,
+                ..dialog_area
+            },
+        );
     } else if matches!(app.view, View::Publish) {
         let count = app.review.as_ref().map_or(0, |review| review.count());
         let text = Paragraph::new(format!(
@@ -700,6 +710,46 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     );
 }
 
+fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
+    let Some(code_mod) = app.current_mod() else {
+        return;
+    };
+    let [panel, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(MUTED))
+        .padding(Padding::horizontal(1))
+        .title(Line::from(" worker history ").fg(KEY_HINT).bold());
+    let inner = block.inner(panel);
+    let mut rows = Vec::new();
+    let mut total: usize = 0;
+    for item in conversation_blocks(code_mod, false, true, inner.width, None, false) {
+        let paragraph = Paragraph::new(item.text).wrap(Wrap { trim: false });
+        let height =
+            paragraph.line_count(inner.width.saturating_sub(if item.user { 2 } else { 0 }));
+        rows.push((total, height, item.user, paragraph));
+        total += height + 1;
+    }
+    let max_scroll = total
+        .saturating_sub(1)
+        .saturating_sub(inner.height as usize)
+        .min(u16::MAX as usize) as u16;
+    let scroll = scroll.min(max_scroll);
+    frame.render_widget(block, panel);
+    draw_message_rows(frame, rows, inner, scroll as usize);
+    app.page_size = inner.height.max(1);
+    app.view = View::History(scroll);
+    frame.render_widget(
+        Line::from(if cfg!(target_os = "macos") {
+            "↑↓ scroll  fn+↑/↓ page  esc back"
+        } else {
+            "↑↓ scroll  pgup/pgdn page  esc back"
+        })
+        .fg(KEY_HINT),
+        footer,
+    );
+}
+
 fn draw_project_setup(frame: &mut Frame, app: &mut App, saved: bool, scroll: u16, area: Rect) {
     let mut lines = vec![
         Line::from(if saved {
@@ -856,7 +906,7 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     };
     let ctrl = if width < 60 { "^" } else { "ctrl+" };
     let mut options = Vec::new();
-    if app.version_ready() {
+    if app.version_ready() && app.plan_details {
         options.push(format!("{ctrl}s publish PR"));
     }
     if app
@@ -875,6 +925,7 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
         .current_mod()
         .is_some_and(|m| m.execution.is_some() && !m.closed)
         && !app.execution_busy()
+        && (!app.version_ready() || app.plan_details)
     {
         options.push(format!("{ctrl}d changes"));
     }
@@ -988,8 +1039,11 @@ fn plan_lines(
     details: bool,
     width: u16,
     activity: Option<&'static str>,
-    git_mod: bool,
+    published: bool,
 ) -> Vec<Line<'static>> {
+    let completed = execution
+        .is_some_and(|e| e.complete() && matches!(e.status.as_str(), "review" | "applied"));
+    let compact = completed && !details;
     let mut lines = vec![
         Line::from(if planning.source.starts_with("upstream:") {
             "▤ integration plan"
@@ -1011,8 +1065,8 @@ fn plan_lines(
             format!(
                 "{} · {}/{} tasks done",
                 match execution.status.as_str() {
+                    "review" | "applied" if published => "PR published",
                     "review" => "changes ready",
-                    "applied" if git_mod => "PR published",
                     "applied" => "saved version",
                     "blocked" if execution.tasks.iter().any(|run| run.status == "waiting") =>
                         "waiting for reply",
@@ -1041,6 +1095,26 @@ fn plan_lines(
         .fg(ACCENT)
         .bold(),
     ];
+    if completed && let Some(execution) = execution {
+        lines.push(
+            Line::from(format!(
+                "✓ {}/{} checks passed",
+                execution
+                    .checks
+                    .iter()
+                    .filter(|c| c.exit_code == Some(0))
+                    .count(),
+                plan.tasks
+                    .iter()
+                    .map(|task| task.checks.len())
+                    .sum::<usize>()
+            ))
+            .fg(ACCENT),
+        );
+        if compact {
+            lines.push(Line::default());
+        }
+    }
     if details {
         for (label, notes) in [
             ("contracts", &plan.contracts),
@@ -1070,12 +1144,22 @@ fn plan_lines(
         } else {
             format!("{marker} {}. ", index + 1)
         };
-        lines.push(Line::default());
+        if !compact {
+            lines.push(Line::default());
+        }
+        let title = if compact {
+            fit_name(
+                &task.title,
+                width.saturating_sub(Span::raw(&prefix).width() as u16),
+            )
+        } else {
+            task.title.clone()
+        };
         lines.push(Line::from(vec![
             prefix
                 .fg(if marker == "!" { Color::Red } else { ACCENT })
                 .bold(),
-            task.title.clone().bold(),
+            title.bold(),
             run.and_then(|r| r.worker)
                 .filter(|_| {
                     matches!(
@@ -1086,14 +1170,16 @@ fn plan_lines(
                 .map_or(String::new(), |id| format!(" · w{id}"))
                 .fg(KEY_HINT),
         ]));
-        lines.push(Line::from(format!("   {}", task.outcome)));
+        if !compact {
+            lines.push(Line::from(format!("   {}", task.outcome)));
+        }
         let dependencies: Vec<_> = task
             .depends_on
             .iter()
             .filter_map(|id| plan.tasks.iter().position(|task| &task.id == id))
             .map(|index| (index + 1).to_string())
             .collect();
-        if !dependencies.is_empty() {
+        if !compact && !dependencies.is_empty() {
             lines.push(
                 Line::from(format!(
                     "   after {} {}",
@@ -1116,7 +1202,7 @@ fn plan_lines(
                     ))
                     .fg(KEY_HINT),
                 );
-                lines.push(Line::from(format!("   {}", selection.reason)).fg(MUTED));
+                lines.push(Line::from(format!("   {}", selection.display_reason())).fg(MUTED));
             }
             if !task.files.is_empty() {
                 lines
@@ -1168,21 +1254,23 @@ fn plan_lines(
         if let Some(execution) = execution
             && !execution.checks.is_empty()
         {
-            lines.push(
-                Line::from(format!(
-                    "final checks · {} / {} passed",
-                    execution
-                        .checks
-                        .iter()
-                        .filter(|check| check.exit_code == Some(0))
-                        .count(),
-                    plan.tasks
-                        .iter()
-                        .map(|task| task.checks.len())
-                        .sum::<usize>()
-                ))
-                .fg(KEY_HINT),
-            );
+            if !completed {
+                lines.push(
+                    Line::from(format!(
+                        "final checks · {} / {} passed",
+                        execution
+                            .checks
+                            .iter()
+                            .filter(|check| check.exit_code == Some(0))
+                            .count(),
+                        plan.tasks
+                            .iter()
+                            .map(|task| task.checks.len())
+                            .sum::<usize>()
+                    ))
+                    .fg(KEY_HINT),
+                );
+            }
             for check in execution
                 .checks
                 .iter()
@@ -1223,8 +1311,10 @@ struct ConversationBlock<'a> {
 fn conversation_blocks<'a>(
     code_mod: &'a CodeMod,
     details: bool,
+    history: bool,
     width: u16,
     activity: Option<&'static str>,
+    published: bool,
 ) -> Vec<ConversationBlock<'a>> {
     let saved = code_mod
         .planning
@@ -1237,6 +1327,14 @@ fn conversation_blocks<'a>(
         .iter()
         .filter_map(|message| {
             let is_plan = plan_id.is_some() && message.item_id == plan_id;
+            if history
+                && message
+                    .item_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with("plan:"))
+            {
+                return None;
+            }
             if let Some((planning, plan)) = saved
                 && is_plan
             {
@@ -1248,14 +1346,18 @@ fn conversation_blocks<'a>(
                         details,
                         width,
                         activity,
-                        code_mod.git_root.is_some(),
+                        published,
                     )
                     .into(),
                     user: false,
                     plan: true,
                 });
             }
-            if saved.is_some() && message.role == "planner" {
+            if !history
+                && (message.role == "codex"
+                    || message.role.starts_with("codex:")
+                    || saved.is_some() && message.role == "planner")
+            {
                 return None;
             }
             let user = message.role == "user";
@@ -1298,7 +1400,7 @@ fn conversation_blocks<'a>(
         .collect();
     for message in &code_mod.coordination {
         let question = code_mod.needs_answer(message);
-        if !question && !details {
+        if !question && !history {
             continue;
         }
         let state = if message.answered {
@@ -1371,12 +1473,54 @@ fn draw_conversation(
         })
         .map(|_| activity_glyph(elapsed));
     let blocks = app.current_mod().map_or_else(Vec::new, |m| {
-        conversation_blocks(m, app.plan_details, area.width, activity)
+        conversation_blocks(
+            m,
+            app.plan_details,
+            false,
+            area.width,
+            activity,
+            app.published(),
+        )
     });
     let mut rows = Vec::new();
     let mut total = 0;
     let mut plan_top = 0;
-    for block in blocks {
+    let has_history = app.current_mod().is_some_and(CodeMod::has_worker_history);
+    let mut has_plan = false;
+    for mut block in blocks {
+        if block.plan {
+            has_plan = true;
+            if has_history {
+                let control = history_control();
+                let heading = &mut block.text.lines[1];
+                if heading.width() + control.width() + 2 <= area.width as usize {
+                    heading.spans.push(Span::raw("  "));
+                    heading.spans.extend(control.spans);
+                } else {
+                    let ctrl = if area.width < 40 { "^" } else { "ctrl+" };
+                    *heading = Line::from(vec![
+                        format!("{ctrl}o ").fg(ACCENT),
+                        if app.plan_details {
+                            "▾ details"
+                        } else {
+                            "▸ details"
+                        }
+                        .fg(KEY_HINT),
+                        format!("  {ctrl}t ").fg(ACCENT),
+                        "▸ history".fg(KEY_HINT),
+                    ]);
+                }
+            }
+        }
+        if block.plan && app.version_ready() && !app.plan_details {
+            block.text.lines.push(Line::default());
+            block.text.lines.push(Line::from(vec![
+                "ctrl+s ".fg(ACCENT),
+                "publish PR".fg(KEY_HINT),
+                "  ctrl+d ".fg(ACCENT),
+                "review changes".fg(KEY_HINT),
+            ]));
+        }
         let width = area.width.saturating_sub(if block.user { 2 } else { 0 });
         let paragraph = Paragraph::new(block.text).wrap(Wrap { trim: false });
         let height = paragraph.line_count(width);
@@ -1384,6 +1528,12 @@ fn draw_conversation(
             plan_top = total;
         }
         rows.push((total, height, block.user, paragraph));
+        total += height + 1;
+    }
+    if has_history && !has_plan {
+        let paragraph = Paragraph::new(history_control()).wrap(Wrap { trim: false });
+        let height = paragraph.line_count(area.width);
+        rows.push((total, height, false, paragraph));
         total += height + 1;
     }
     let max_scroll = total.saturating_sub(1).saturating_sub(area.height as usize);
@@ -1394,6 +1544,22 @@ fn draw_conversation(
             .min(max_scroll.min(u16::MAX as usize) as u16)
     };
     let scroll = max_scroll - history_offset as usize;
+    draw_message_rows(frame, rows, area, scroll);
+    app.history_offset = history_offset;
+    app.focus_plan = false;
+    max_scroll > 0
+}
+
+fn history_control() -> Line<'static> {
+    Line::from(vec!["ctrl+t ".fg(ACCENT), "▸ worker history".fg(KEY_HINT)])
+}
+
+fn draw_message_rows(
+    frame: &mut Frame,
+    rows: Vec<(usize, usize, bool, Paragraph<'_>)>,
+    area: Rect,
+    scroll: usize,
+) {
     for (top, height, user, paragraph) in rows {
         let visible_start = top.max(scroll);
         let visible_end = (top + height).min(scroll + area.height as usize);
@@ -1425,7 +1591,4 @@ fn draw_conversation(
         };
         frame.render_widget(paragraph.scroll(((visible_start - top) as u16, 0)), body);
     }
-    app.history_offset = history_offset;
-    app.focus_plan = false;
-    max_scroll > 0
 }

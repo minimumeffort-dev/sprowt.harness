@@ -49,7 +49,9 @@ Requests time out after eight seconds. The initial confidence floor is **0.80 fo
 
 Codex's model catalog validates the chosen model and effort. An unavailable model falls back to Sol 6.1 or the catalog default, preferring xhigh, then high, then medium. Actual account access is established by inference. A rejected turn remains retryable.
 
-Each task stores its resolved model, effort and routing reason beside its checks. Jev calls also record the policy version, routing input and request duration, plus the revision and answers when available. **Ctrl+O** shows model choices and reasons; the full evidence stays in SQLite. Retries replace the current decision; this is diagnostic data, not a calibrated benchmark or automatic architecture repair.
+Each task stores its resolved model, effort and routing reason beside its checks. **Ctrl+O** names the decision that triggered a fallback, for example **risk confidence 0.47 < 0.80**. Older saved decisions use their recorded evidence for the same explanation when available; the policy stays unchanged.
+
+Jev calls also record the policy version, routing input and request duration, plus the revision and answers when available. The full evidence stays in SQLite. Retries replace the current decision; this is diagnostic data, not a calibrated benchmark or automatic architecture repair.
 
 ## Configure Jev
 
@@ -75,9 +77,9 @@ These checks validate structure and declared scopes. They do not prove the plan 
 
 ## Review the plan
 
-The conversation shows a numbered outline: task titles, outcomes and dependencies such as **after task 1**. The numbering matches the displayed order, even when the saved task IDs are words.
+While work runs, the conversation shows a numbered outline: task titles, outcomes and dependencies such as **after task 1**. Finished versions show compact task rows and the final check count. The numbering matches the displayed order, even when the saved task IDs are words.
 
-Press **Ctrl+O** for contracts, assumptions, file scopes, peer topics, completion checks and model details. Press it again to collapse them. The full plan remains saved; changing its display does not change the plan or start a worker.
+Press **Ctrl+O** for outcomes, dependencies, contracts, assumptions, file scopes, peer topics, completion checks and model details. Press it again to collapse them. **Ctrl+T** opens worker history separately. Display controls preserve the plan, draft and queue.
 
 Once a valid plan is saved, execution begins automatically. **Ctrl+R** stops work or retries; **Ctrl+D** reviews source when workers are idle.
 

@@ -25,6 +25,18 @@ pub struct CodeMod {
 }
 
 impl CodeMod {
+    pub fn has_worker_history(&self) -> bool {
+        self.messages.iter().any(|m| {
+            m.role == "codex"
+                || m.role.starts_with("codex:")
+                || m.role == "planner"
+                    && !m
+                        .item_id
+                        .as_deref()
+                        .is_some_and(|id| id.starts_with("plan:"))
+        }) || !self.coordination.is_empty()
+    }
+
     pub fn question(&self) -> Option<&crate::mailbox::Envelope> {
         self.coordination.iter().find(|m| self.needs_answer(m))
     }

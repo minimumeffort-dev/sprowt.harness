@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 const ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
 const POLICY: &str = "jev-routing-1";
+const CONFIDENCE_FLOOR: f64 = 0.80;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Selection {
@@ -40,6 +41,23 @@ impl Selection {
         }
     }
 
+    pub fn display_reason(&self) -> String {
+        if self.reason.starts_with("Jev uncertain")
+            && let Some(answers) = self.evidence.as_ref().and_then(|e| e.get("answers"))
+            && let Some((name, confidence)) = ["complexity", "uncertainty", "impact", "risk"]
+                .into_iter()
+                .find_map(|name| {
+                    let confidence = answers[name]["confidence"].as_f64()?;
+                    (0.0..CONFIDENCE_FLOOR)
+                        .contains(&confidence)
+                        .then_some((name, confidence))
+                })
+        {
+            return Self::fallback(&confidence_reason(name, confidence)).reason;
+        }
+        self.reason.clone()
+    }
+
     fn from_response(response: &Value) -> Self {
         let choices = [
             ("complexity", ["routine", "involved", "hard"].as_slice()),
@@ -51,11 +69,12 @@ impl Selection {
         for (name, options) in choices {
             let answer = &response["answers"][name];
             let Some(choice) = validated_choice(answer, options) else {
-                return Self::fallback("Jev returned an invalid decision");
+                return Self::fallback(&format!("Jev returned an invalid {name} decision"));
             };
             // Test this conservative threshold on harness tasks before lowering it.
-            if answer["confidence"].as_f64().unwrap() < 0.80 {
-                return Self::fallback("Jev uncertain");
+            let confidence = answer["confidence"].as_f64().unwrap();
+            if confidence < CONFIDENCE_FLOOR {
+                return Self::fallback(&confidence_reason(name, confidence));
             }
             answers.push(choice);
         }
@@ -91,6 +110,10 @@ impl Selection {
             evidence: None,
         }
     }
+}
+
+fn confidence_reason(name: &str, confidence: f64) -> String {
+    format!("Jev · {name} confidence {confidence:.2} < {CONFIDENCE_FLOOR:.2}")
 }
 
 fn validated_choice<'a>(answer: &'a Value, options: &[&str]) -> Option<&'a str> {
@@ -418,6 +441,39 @@ mod tests {
                 .contains("invalid")
         );
         assert_eq!(Selection::from_response(&json!({})).effort, "xhigh");
+    }
+
+    #[test]
+    fn fallback_explains_the_decision_and_saved_legacy_evidence() {
+        let mut decision = response("involved", "low");
+        decision["answers"]["risk"]["probabilities"] = json!({"low":0.735,"high":0.265});
+        decision["answers"]["risk"]["confidence"] = json!(0.47);
+        let current = Selection::from_response(&decision);
+        assert_eq!(current.effort, "xhigh");
+        assert_eq!(
+            current.reason,
+            "Jev · risk confidence 0.47 < 0.80 · Sol 6.1 xhigh fallback"
+        );
+        let mut saved = Selection::fallback("Jev uncertain");
+        saved.evidence = Some(json!({"answers":decision["answers"]}));
+        let saved_json = serde_json::to_string(&saved).unwrap();
+        let loaded: Selection = serde_json::from_str(&saved_json).unwrap();
+        assert_eq!(loaded.display_reason(), current.reason);
+        assert_eq!(serde_json::to_string(&loaded).unwrap(), saved_json);
+        assert_eq!(
+            Selection::fallback("Jev HTTP 429").display_reason(),
+            "Jev HTTP 429 · Sol 6.1 xhigh fallback"
+        );
+        assert_eq!(
+            Selection::fallback("Jev uncertain").display_reason(),
+            "Jev uncertain · Sol 6.1 xhigh fallback"
+        );
+        decision["answers"]["risk"]["choice"] = json!("unknown");
+        assert!(
+            Selection::from_response(&decision)
+                .reason
+                .contains("invalid risk decision")
+        );
     }
 
     #[test]

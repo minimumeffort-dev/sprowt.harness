@@ -34,6 +34,7 @@ pub enum View {
     Queue(usize),
     EditQueue(usize),
     Review(u16),
+    History(u16),
     Publish,
     ProjectSetup(bool, u16),
     Repository(bool),
@@ -287,6 +288,7 @@ impl App {
                 | View::CloseMod(_)
                 | View::Queue(_)
                 | View::Review(_)
+                | View::History(_)
                 | View::Publish
                 | View::ProjectSetup(_, _)
                 | View::ConfirmRepository(_) => {}
@@ -358,6 +360,19 @@ impl App {
                         }
                         KeyCode::Char('p') if key.modifiers.is_empty() && self.can_publish() => {
                             self.open_publication()?
+                        }
+                        _ => {}
+                    },
+                    View::History(scroll) => match key.code {
+                        KeyCode::Esc => self.view = View::Chat,
+                        KeyCode::Char('t') if ctrl => self.view = View::Chat,
+                        KeyCode::Down => self.view = View::History(scroll.saturating_add(1)),
+                        KeyCode::Up => self.view = View::History(scroll.saturating_sub(1)),
+                        KeyCode::PageDown => {
+                            self.view = View::History(scroll.saturating_add(self.page_size))
+                        }
+                        KeyCode::PageUp => {
+                            self.view = View::History(scroll.saturating_sub(self.page_size))
                         }
                         _ => {}
                     },
@@ -512,6 +527,11 @@ impl App {
                 {
                     self.plan_details = !self.plan_details;
                     self.focus_plan = true;
+                }
+            }
+            KeyCode::Char('t') if ctrl => {
+                if self.current_mod().is_some_and(CodeMod::has_worker_history) {
+                    self.view = View::History(0);
                 }
             }
             KeyCode::Char('j') if ctrl => self.input.insert_newline(),
@@ -3009,7 +3029,7 @@ mod tests {
     }
 
     #[test]
-    fn worker_questions_use_the_composer_and_routine_messages_stay_in_details() {
+    fn worker_questions_use_the_composer_and_routine_messages_stay_in_history() {
         let (data, mut store, m, workers, _) = crate::mailbox::tests::fixture();
         crate::mailbox::tests::send(
             &mut store, m.id, workers[0], "b", "update", None, "contract",
@@ -3035,8 +3055,15 @@ mod tests {
         assert!(!compact.contains("Message contract"));
         assert_eq!(app.input.lines(), ["Keep the current behavior"]);
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        assert!(
+            !rows(&screen(&mut app, 110, 50))
+                .join("\n")
+                .contains("Message contract")
+        );
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
         let expanded = rows(&screen(&mut app, 110, 50)).join("\n");
         assert!(expanded.contains("Message contract"));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(queued(&app).is_empty());
         assert!(app.input.lines().join("").is_empty());
@@ -3256,6 +3283,9 @@ mod tests {
         let mut app = App::load(project.clone(), false, data.store()).unwrap();
         let display = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(display.contains("PR published") && display.contains("request edits"));
+        assert!(
+            display.contains("PR published · 1/1 tasks done") && !display.contains("changes ready")
+        );
         assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "review");
         assert!(!app.read_only() && git_mod::checkout(&root).exists());
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -3664,7 +3694,7 @@ mod tests {
             assert!(screen.contains(&format!(
                 "{glyph} codex · executor · w{id} · current-model · high · running"
             )));
-            assert!(screen.contains("◆ codex · executor · previous-model · low"));
+            assert!(!screen.contains("Previous reply."));
             assert!(screen.contains(&format!("{glyph} 1. Greeting")));
         }
         let still = rows(&screen(&mut app, 116, 40)).join("\n");
@@ -3694,6 +3724,11 @@ mod tests {
             "◆ codex · executor · w{id} · current-model · high · ready"
         )));
         assert!(!idle.contains('⠙'));
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        let history = rows(&screen(&mut app, 116, 40)).join("\n");
+        assert!(history.contains("◆ codex · executor · previous-model · low"));
+        assert!(history.contains("Previous reply."));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         app.workers.values_mut().next().unwrap().role = Role::Planner;
         let planner = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(planner.contains("▤ codex · planner · current-model · high · ready"));
@@ -3815,8 +3850,105 @@ mod tests {
             model: Some("gpt-6.1-sol".into()),
             effort: None,
         });
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
         let screen = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(screen.contains("◆ codex · executor · gpt-6.1-sol · effort unknown"));
+    }
+
+    #[test]
+    fn completed_versions_separate_results_details_and_history() {
+        let (data, mut app, root) = execution_app();
+        let id = app.mods[0].id;
+        let message = crate::store::Message {
+            item_id: Some("saved-worker-reply".into()),
+            role: "codex:45".into(),
+            body: "I will inspect the saved edits.".into(),
+            model: Some("gpt-6.1-sol".into()),
+            effort: Some("xhigh".into()),
+        };
+        app.store.save_message(id, &message).unwrap();
+        app.mods[0].messages.push(message);
+        let plan = app.mods[0]
+            .planning
+            .as_mut()
+            .unwrap()
+            .plan
+            .as_mut()
+            .unwrap();
+        plan.contracts.push("Keep task order unchanged.".into());
+        for (id, title) in [("two", "Build the interface"), ("three", "Verify together")] {
+            let mut task = plan.tasks[0].clone();
+            task.id = id.into();
+            task.title = title.into();
+            plan.tasks.push(task);
+        }
+        let execution = app.mods[0].execution.as_mut().unwrap();
+        for id in ["two", "three"] {
+            let mut run = execution.tasks[0].clone();
+            run.task_id = id.into();
+            execution.tasks.push(run);
+            execution.checks.push(execution.checks[0].clone());
+        }
+        let mut selection = crate::router::Selection::fallback("Jev uncertain");
+        selection.evidence = Some(serde_json::json!({"answers":{"risk":{"confidence":0.47}}}));
+        execution.tasks[0].selection = Some(selection);
+        for width in [48, 116] {
+            let compact = rows(&screen(&mut app, width, 40));
+            let text = compact.join("\n");
+            assert!(text.contains("changes ready · 3/3 tasks done"));
+            assert!(text.contains("✓ 3/3 checks passed") && text.contains("ctrl+s publish PR"));
+            let first = compact
+                .iter()
+                .position(|r| r.contains("✓ 1. Greeting"))
+                .unwrap();
+            assert!(compact[first + 1].contains("✓ 2. Build the interface"));
+            assert!(compact[first + 2].contains("✓ 3. Verify together"));
+            assert!(!text.contains("Print hello") && !text.contains("I will inspect"));
+            assert!(!text.contains("Keep task order") && !text.contains("/usr/bin/true"));
+            assert!(text.contains(if width < 80 {
+                "ctrl+t ▸ history"
+            } else {
+                "ctrl+t ▸ worker history"
+            }));
+        }
+        let instruction = app.store.enqueue(id, "Keep the current icons").unwrap();
+        app.mods[0].queue.push(instruction);
+        app.store.save_draft(id, "keep this draft").unwrap();
+        key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        let details = rows(&screen(&mut app, 116, 50)).join("\n");
+        assert!(
+            details.contains("Keep task order unchanged.") && details.contains("/usr/bin/true")
+        );
+        assert!(details.contains("risk confidence 0.47 < 0.80"));
+        assert!(!details.contains("I will inspect"));
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        let history = rows(&screen(&mut app, 116, 40)).join("\n");
+        assert!(
+            history.contains("worker history")
+                && history.contains("I will inspect the saved edits.")
+        );
+        assert!(history.contains("w45 · gpt-6.1-sol · xhigh"));
+        assert!(!history.contains("/usr/bin/true") && !history.contains("Keep task order"));
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Chat) && app.plan_details);
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert_eq!(queued(&app), ["Keep the current icons"]);
+        assert_eq!(
+            std::fs::read_to_string(root.join("work/hello.sh")).unwrap(),
+            "new\n"
+        );
+        let reopened = App::load(app.project.clone(), false, data.store()).unwrap();
+        assert!(!reopened.plan_details && matches!(reopened.view, View::Chat));
+        assert_eq!(reopened.input.lines(), ["keep this draft"]);
+        assert_eq!(queued(&reopened), ["Keep the current icons"]);
+        assert!(
+            reopened.mods[0]
+                .messages
+                .iter()
+                .any(|m| m.item_id.as_deref() == Some("saved-worker-reply"))
+        );
     }
 
     #[test]
@@ -3918,7 +4050,10 @@ mod tests {
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         let narrow = rows(&screen(&mut app, 48, 24)).join("\n");
-        assert!(narrow.contains("▤ codex · planner") && narrow.contains("1. Build the API"));
+        assert!(
+            narrow.contains("▤ codex · planner") && narrow.contains("1. Build the API"),
+            "{narrow}"
+        );
         key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
         screen(&mut app, 48, 24);
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
@@ -3961,8 +4096,11 @@ mod tests {
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         assert!(!app.plan_details);
         assert_eq!(app.input.lines(), ["draft stays"]);
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert!(matches!(app.view, View::History(_)));
+        assert_eq!(app.input.lines(), ["draft stays"]);
         for width in [36, 60, 100] {
-            app.history_offset = u16::MAX;
+            app.view = View::History(0);
             let buffer = screen(&mut app, width, 40);
             let rows = rows(&buffer);
             let first = rows.iter().position(|row| row.contains("> café")).unwrap() as u16;
@@ -3974,21 +4112,30 @@ mod tests {
                 .iter()
                 .position(|row| row.contains("◆ codex · executor"))
                 .unwrap() as u16;
-            let background = buffer[(2, first)].bg;
+            let background = buffer[(4, first)].bg;
             assert_ne!(background, ratatui::style::Color::Reset);
-            assert_eq!(buffer[(4, first)].fg, ratatui::style::Color::White);
+            assert_eq!(buffer[(6, first)].fg, ratatui::style::Color::White);
             assert!(
-                !buffer[(4, first)]
+                !buffer[(6, first)]
                     .modifier
                     .contains(ratatui::style::Modifier::BOLD)
             );
             for y in first..next - 1 {
-                assert_eq!(buffer[(2, y)].symbol(), if y == first { ">" } else { " " });
-                assert_eq!(buffer[(width - 3, y)].bg, background);
+                assert_eq!(buffer[(4, y)].symbol(), if y == first { ">" } else { " " });
+                assert_eq!(buffer[(width - 5, y)].bg, background);
             }
-            assert!(rows[(next - 1) as usize].trim().is_empty());
-            assert!(rows[(agent - 1) as usize].trim().is_empty());
-            assert_ne!(buffer[(2, agent)].bg, background);
+            for y in [next - 1, agent - 1] {
+                assert!(
+                    rows[y as usize]
+                        .chars()
+                        .skip(4)
+                        .take((width - 8) as usize)
+                        .collect::<String>()
+                        .trim()
+                        .is_empty()
+                );
+            }
+            assert_ne!(buffer[(4, agent)].bg, background);
             assert!(rows[(agent + 1) as usize].contains("an executor reply"));
         }
     }
