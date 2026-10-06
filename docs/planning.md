@@ -16,7 +16,21 @@ flowchart TB
 
 The planner inspects relevant source, manifests, tests, docs and project rules. Its starting brief includes up to 120 file paths across three levels, short root rules and manifest excerpts, and up to three documentation excerpts. Dependencies, hidden files and external symlinks are excluded from that brief. The brief guides inspection; the planner still reads the source.
 
-Shared contracts define interfaces, data shapes and error behavior before work is split. Material assumptions and non-goals stay explicit. Separate file ownership allows concurrent work against those contracts; real prerequisites and shared files require dependencies.
+Describe the outcome in ordinary language. The planner chooses task splits, useful concurrency and coordination. Small changes can stay in one task.
+
+Shared contracts define interfaces, data shapes and error behavior before work is split. Separate file ownership allows concurrent work against those contracts. An interface consumer can check its component with a stub; a dependent task then checks the real integration. Shared files and genuine implementation prerequisites require dependencies.
+
+Each task can link peers around a concrete interface, assumption or handoff. Rust exposes links in both directions with peer ownership and live assignments. These links do not block scheduling. Unrelated tasks need no link or messages. Material assumptions and non-goals stay explicit.
+
+```mermaid
+flowchart TB
+    request["Ordinary feature request"] --> contract["Planner · define shared behavior"]
+    contract --> api["API task · independent checks"]
+    contract --> ui["Interface task · independent checks"]
+    api <-->|"Relevant updates or questions"| ui
+    api --> together["Integration task · verify both together"]
+    ui --> together
+```
 
 ## Jev task routing
 
@@ -45,13 +59,14 @@ Copy `.env.example` to `.env.local` in the harness repository and add `TYPESAFE_
 
 ## What a plan contains
 
-A summary, shared contracts, material assumptions, non-goals and tasks with IDs, titles, outcomes, file scopes, dependencies, worker assignments and completion checks. Existing saved plans without the new context fields still load.
+A summary, shared contracts, material assumptions, non-goals and tasks with IDs, titles, outcomes, file scopes, dependencies, coordination topics, worker assignments and completion checks. Existing saved plans without context or coordination fields still load.
 
 Rust checks that:
 
 - Context notes are bounded and nonempty when supplied.
 - There are 1–32 tasks with unique IDs and nonempty outcomes and checks.
 - Dependencies exist and contain no cycles.
+- Coordination links name existing peers, exclude the task itself and duplicate peers, and carry brief topics.
 - File scopes use exact project-relative paths, with no globs or parent traversal.
 - Tasks sharing file or directory scopes have a dependency between them.
 - Every task uses the connected provider: Codex.
@@ -62,7 +77,7 @@ These checks validate structure and declared scopes. They do not prove the plan 
 
 The conversation shows a numbered outline: task titles, outcomes and dependencies such as **after task 1**. The numbering matches the displayed order, even when the saved task IDs are words.
 
-Press **Ctrl+O** for contracts, assumptions, file scopes, completion checks and model details. Press it again to collapse them. The full plan remains saved; changing its display does not change the plan or start a worker.
+Press **Ctrl+O** for contracts, assumptions, file scopes, peer topics, completion checks and model details. Press it again to collapse them. The full plan remains saved; changing its display does not change the plan or start a worker.
 
 Once a valid plan is saved, execution begins automatically. **Ctrl+R** stops work or retries; **Ctrl+D** reviews source when workers are idle.
 

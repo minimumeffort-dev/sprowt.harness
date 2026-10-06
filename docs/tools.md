@@ -35,7 +35,7 @@ flowchart TB
 | `cleanup_mod` | Harness | VM deletion and Git worktree cleanup |
 | `install_system_packages` | Executor | Package setup inside its own Linux VM |
 | `send_worker_message` | Executor | Save an ask, reply or update in its codemod |
-| `read_worker_messages` | Executor | Read its assigned task's mailbox and peer assignments |
+| `read_worker_messages` | Executor | Read its mailbox, live assignments and relevant peer scopes and topics |
 | `ack_worker_messages` | Executor | Acknowledge its inbox messages |
 
 Package installation and [worker messaging](coordination.md) are advertised to Codex executors using JSON input schemas. Unknown tools, host Git operations requested by workers and these tools requested by planners are rejected. Package names and reasons use the same validation for JSON and typed Rust calls. The connected VM must match the workspace bound to that worker. Mailboxes use its host-bound database, codemod and current task assignment; arguments cannot choose them.

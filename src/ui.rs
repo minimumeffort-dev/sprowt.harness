@@ -1122,6 +1122,16 @@ fn plan_lines(
                 lines
                     .push(Line::from(format!("   files · {}", task.files.join(", "))).fg(KEY_HINT));
             }
+            for peer in plan.peers(task) {
+                let number = plan.tasks.iter().position(|t| t.id == peer.task).unwrap() + 1;
+                lines.push(
+                    Line::from(format!(
+                        "   with task {number} · {}",
+                        peer.topics.join("; ")
+                    ))
+                    .fg(KEY_HINT),
+                );
+            }
             lines.push(Line::from("   checks").fg(KEY_HINT));
             for check in &task.checks {
                 let result =

@@ -20,6 +20,7 @@
 
 - Write short, clear code. Prefer readability over clever compression.
 - Build only features the user requested or explicitly approved in a batch; avoid speculative abstractions and dependencies.
+- Users describe outcomes. The harness chooses useful task splits, parallel work and necessary worker coordination.
 - Keep comments sparse and concise. Explain non-obvious decisions, not obvious code.
 - Keep explanations concise too.
 - Structure explanations and documentation with clear headings, short paragraphs and lists where useful.

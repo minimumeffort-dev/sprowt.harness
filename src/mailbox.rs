@@ -132,7 +132,7 @@ pub fn tools() -> Vec<Value> {
         ),
         tool(
             READ,
-            "Read your task's saved inbox, sent messages and current peer assignments. Read at task start and useful checkpoints; do not poll in a busy loop.",
+            "Read your task's saved inbox, sent messages, current assignments and relevant peers with their file scopes and coordination topics. Read at task start and useful checkpoints; do not poll in a busy loop.",
             json!({}),
             json!([]),
         ),
@@ -204,7 +204,7 @@ impl Store {
     }
 
     pub fn mailbox_call(&mut self, mod_id: i64, worker: i64, request: Request) -> Result<Value> {
-        let (task, _) = self
+        let (task, task_id) = self
             .actor(mod_id, worker)
             .map_err(|_| invalid("Messaging needs your assigned task in this open codemod."))?;
         match request {
@@ -223,7 +223,23 @@ impl Store {
                     .query_map([mod_id], |r| Ok(json!({"task":r.get::<_,String>(0)?,
                         "worker":r.get::<_,Option<i64>>(1)?,"status":r.get::<_,String>(2)?})))?
                     .collect::<Result<Vec<_>>>()?;
-                Ok(json!({"messages":messages,"peers":peers}))
+                let plan = self.planning(mod_id)?.and_then(|planning| planning.plan);
+                let mut relevant = plan
+                    .as_ref()
+                    .and_then(|plan| {
+                        plan.tasks
+                            .iter()
+                            .find(|task| task.id == task_id)
+                            .map(|task| serde_json::to_value(plan.peers(task)).unwrap())
+                    })
+                    .unwrap_or_else(|| json!([]));
+                for peer in relevant.as_array_mut().unwrap() {
+                    if let Some(assignment) = peers.iter().find(|p| p["task"] == peer["task"]) {
+                        peer["worker"] = assignment["worker"].clone();
+                        peer["status"] = assignment["status"].clone();
+                    }
+                }
+                Ok(json!({"messages":messages,"peers":peers,"relevant_peers":relevant}))
             }
             Request::Ack(ids) => {
                 if ids.is_empty() || ids.len() > 32 {
@@ -535,6 +551,32 @@ pub(crate) mod tests {
             .unwrap()["id"]
             .as_i64()
             .unwrap()
+    }
+
+    #[test]
+    fn workers_receive_saved_peer_scope_topics_and_live_assignments() {
+        let (data, mut store, m, workers, mut plan) = fixture();
+        plan.tasks[0].coordination.push(crate::plan::Coordination {
+            task: "b".into(),
+            topic: "Label format and readiness".into(),
+        });
+        store
+            .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
+            .unwrap();
+        drop(store);
+        let mut store = data.store();
+        let read = store.mailbox_call(m.id, workers[1], Request::Read).unwrap();
+        assert_eq!(read["relevant_peers"][0]["task"], "a");
+        assert_eq!(read["relevant_peers"][0]["worker"], workers[0]);
+        assert_eq!(read["relevant_peers"][0]["status"], "running");
+        assert_eq!(read["relevant_peers"][0]["files"], json!(["a.txt"]));
+        assert_eq!(
+            read["relevant_peers"][0]["topics"],
+            json!(["Label format and readiness"])
+        );
+        let prompt = crate::execution::task_prompt(&plan, &plan.tasks[1], 42);
+        assert!(prompt.contains("Relevant peers"));
+        assert!(prompt.contains("Label format and readiness"));
     }
 
     #[test]

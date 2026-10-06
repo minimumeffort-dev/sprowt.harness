@@ -323,6 +323,7 @@ pub fn prepare(
                     .into_iter()
                     .collect(),
                 depends_on: vec![],
+                coordination: vec![],
                 worker: "codex".into(),
                 checks,
             }],
@@ -690,6 +691,7 @@ pub(crate) mod tests {
                 outcome: "Deletion works".into(),
                 files: vec!["delete.txt".into()],
                 depends_on: vec![],
+                coordination: vec![],
                 worker: "codex".into(),
                 checks: vec!["Deletion check passes".into()],
             }],
@@ -1114,6 +1116,7 @@ pub(crate) mod tests {
                 outcome: "Deletion works".into(),
                 files: vec!["delete.txt".into()],
                 depends_on: vec![],
+                coordination: vec![],
                 worker: "codex".into(),
                 checks: vec!["Deletion works".into()],
             }],

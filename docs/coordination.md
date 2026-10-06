@@ -2,6 +2,10 @@
 
 Workers in one codemod share saved task mailboxes. They can ask questions, reply and send updates while keeping separate file ownership. Rust routes messages to the worker currently assigned to the recipient task.
 
+You do not need to request messages or prescribe a task split. The planner links tasks around shared interfaces, assumptions and handoffs. Each worker gets relevant peers, their scope and coordination topics. A link added by either task appears to both; it is separate from a scheduling dependency.
+
+Workers follow the agreed contract and send material changes, blockers or completed handoffs to relevant peers. They ask only when information is genuinely missing. Independent work needs no conversation for its own sake.
+
 ```mermaid
 sequenceDiagram
     participant A as Worker A · task A
@@ -22,7 +26,7 @@ sequenceDiagram
 
 ## What you see
 
-Routine messages stay behind **Ctrl+O**. Questions for you stay visible, with the sender and message ID. The composer changes to **answer #ID**; Enter answers that question instead of queueing an edit. If several workers ask, answer them in order. Your draft stays intact when a question arrives.
+Peer topics and routine messages stay behind **Ctrl+O**. Questions for you stay visible, with the sender and message ID. The composer changes to **answer #ID**; Enter answers that question instead of queueing an edit. If several workers ask, answer them in order. Your draft stays intact when a question arrives.
 
 An executor can finish independent work before pausing for a reply. Unanswered asks prevent task completion. After its questions are answered, Rust resumes a waiting task in its existing folder. Other independent tasks keep running. Reopened projects wait for **Ctrl+R** to reconnect workers.
 
@@ -31,7 +35,7 @@ An executor can finish independent work before pausing for a reply. Unanswered a
 | Tool | Purpose |
 | --- | --- |
 | `send_worker_message` | Send an `ask`, `reply` or `update` to a plan task ID; asks can target `user` |
-| `read_worker_messages` | Read the assigned task's inbox, sent messages and peer assignments |
+| `read_worker_messages` | Read inbox, sent messages, live assignments and relevant peers with scopes and topics |
 | `ack_worker_messages` | Confirm receipt of specific inbox message IDs |
 
 Replies reference the original ask. Stable keys make repeated sends idempotent. Rust binds codemod and worker identity; model arguments cannot impersonate another worker. Messages carry context and cannot change file scope, permissions or the user's goal.

@@ -1536,7 +1536,7 @@ mod tests {
         let project = store.load_project(Path::new("/parallel")).unwrap();
         let m = store.create_mod(project.id, "Build two parts").unwrap();
         let plan = Plan::parse(&serde_json::json!({"summary":"Two parts", "tasks":[
-            {"id":"a","title":"A","outcome":"A ready","files":["a.txt"],"depends_on":[],"worker":"codex","checks":["A works"]},
+            {"id":"a","title":"A","outcome":"A ready","files":["a.txt"],"depends_on":[],"coordination":[{"task":"b","topic":"Shared behavior and readiness"}],"worker":"codex","checks":["A works"]},
             {"id":"b","title":"B","outcome":"B ready","files":["b.txt"],"depends_on":[],"worker":"codex","checks":["B works"]},
             {"id":"c","title":"Combine","outcome":"Combined","files":["c.txt"],"depends_on":["a","b"],"worker":"codex","checks":["Both work"]}
         ]}).to_string()).unwrap();

@@ -1241,6 +1241,177 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "runs a natural to-do request from SPROWT_TEST_PROJECT with Astra and two VM workers"]
+    fn natural_request_plans_parallel_work_and_coordinates_without_user_instructions() {
+        use crate::store::test_support::TestData;
+        use std::{
+            fs,
+            time::{Duration, Instant},
+        };
+
+        let source = std::path::PathBuf::from(
+            std::env::var("SPROWT_TEST_PROJECT").expect("Set SPROWT_TEST_PROJECT to the to-do app"),
+        );
+        assert!(source.join("app/main.py").is_file());
+        let data = TestData::new();
+        let project = data.0.join("project");
+        let root = data.0.join("workspace");
+        let source_before = workspace::source_state(&source).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        for (path, bytes, _) in &source_before {
+            let target = project.join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(target, bytes).unwrap();
+        }
+        let before = workspace::source_state(&project).unwrap();
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let goal = "let me mark tasks as done and undo that later. keep completed tasks visible, and remember their state after reloading.";
+        let mut m = store.create_mod(project_id, goal).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut planner = Worker::start(
+                &project,
+                &m,
+                store.worker_for(m.id, Role::Planner).unwrap(),
+                Role::Planner,
+                None,
+            )
+            .unwrap();
+            let deadline = Instant::now() + Duration::from_secs(240);
+            while Instant::now() < deadline && m.planning.as_ref().unwrap().plan.is_none() {
+                planner.poll(&mut store, &mut m, true, &project).unwrap();
+                assert!(
+                    planner.error.is_none(),
+                    "{}",
+                    planner.error.as_deref().unwrap_or("")
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            drop(planner);
+            let plan = m
+                .planning
+                .as_ref()
+                .unwrap()
+                .plan
+                .clone()
+                .expect("Planner timed out");
+            assert!(
+                before == workspace::source_state(&project).unwrap(),
+                "Planning changed source"
+            );
+            let ready: Vec<_> = plan
+                .tasks
+                .iter()
+                .filter(|task| task.depends_on.is_empty())
+                .collect();
+            assert!(
+                ready.len() >= 2,
+                "No concurrent tasks: {}",
+                serde_json::to_string(&plan).unwrap()
+            );
+            assert!(
+                ready.iter().any(|task| !plan.peers(task).is_empty()),
+                "Related components lack coordination context"
+            );
+            for task in &plan.tasks {
+                eprintln!(
+                    "Plan: {} · {} · after {:?} · {} peer links",
+                    task.id,
+                    task.title,
+                    task.depends_on,
+                    plan.peers(task).len()
+                );
+            }
+            workspace::create(&project, &root).unwrap();
+            store.create_execution(m.id, &root, &plan).unwrap();
+            m.execution = store.execution(m.id).unwrap();
+            let mut workers: Vec<_> = (0..2)
+                .map(|slot| {
+                    Worker::start(
+                        &project,
+                        &m,
+                        store.worker_at(m.id, Role::Executor, slot).unwrap(),
+                        Role::Executor,
+                        None,
+                    )
+                    .unwrap()
+                })
+                .collect();
+            let deadline = Instant::now() + Duration::from_secs(1800);
+            let mut overlap = false;
+            let mut previous = String::new();
+            while Instant::now() < deadline && m.execution.as_ref().unwrap().status != "review" {
+                for worker in &mut workers {
+                    worker.poll(&mut store, &mut m, true, &project).unwrap();
+                    assert!(
+                        worker.error.is_none(),
+                        "{}",
+                        worker.error.as_deref().unwrap_or("")
+                    );
+                }
+                let execution = m.execution.as_ref().unwrap();
+                overlap |= execution
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == "running")
+                    .count()
+                    >= 2;
+                let state = execution
+                    .tasks
+                    .iter()
+                    .map(|t| format!("{}: {}", t.task_id, t.status))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                let state = format!("{state}; {} messages", store.mailbox(m.id).unwrap().len());
+                if state != previous {
+                    eprintln!("Execution: {state}");
+                    previous = state;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let execution = m.execution.as_ref().unwrap();
+            assert_eq!(
+                execution.status,
+                "review",
+                "{}",
+                execution
+                    .tasks
+                    .iter()
+                    .map(|t| format!("{}: {} · {}", t.task_id, t.status, t.summary))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+            assert!(overlap, "Implementation never overlapped");
+            let messages = store.mailbox(m.id).unwrap();
+            assert!(
+                messages
+                    .iter()
+                    .any(|m| m.to_task != "user" && m.acknowledged.is_some()),
+                "No acknowledged peer communication"
+            );
+            assert!(
+                !messages.iter().any(|m| m.needs_user()),
+                "The request needed artificial clarification"
+            );
+            for message in &messages {
+                eprintln!(
+                    "Peer {} → {} · {} · {}",
+                    message.from_task, message.to_task, message.kind, message.body
+                );
+            }
+            for task in &execution.tasks {
+                eprintln!("Result: {} · {}", task.task_id, task.summary);
+            }
+            assert!(
+                source_before == workspace::source_state(&source).unwrap(),
+                "Live project changed"
+            );
+        }));
+        crate::sandbox::delete(&root).unwrap();
+        result.unwrap();
+    }
+
+    #[test]
     #[ignore = "runs two cooperating Codex workers in one temporary Apple Container VM"]
     fn codex_workers_exchange_messages_and_resume_waiting_work() {
         use std::{
