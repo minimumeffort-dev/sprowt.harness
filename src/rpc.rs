@@ -14,6 +14,7 @@ pub struct Rpc {
     next_id: u64,
     pub buffered: Vec<Value>,
     pub client_tools: bool,
+    pub versioned: bool,
 }
 
 impl Rpc {
@@ -48,11 +49,15 @@ impl Rpc {
                 next_id: 0,
                 buffered: Vec::new(),
                 client_tools: false,
+                versioned: false,
             },
         ))
     }
 
-    pub fn write(&mut self, value: Value) -> io::Result<()> {
+    pub fn write(&mut self, mut value: Value) -> io::Result<()> {
+        if self.versioned {
+            value["jsonrpc"] = json!("2.0");
+        }
         serde_json::to_writer(&mut self.stdin, &value)?;
         self.stdin.write_all(b"\n")?;
         self.stdin.flush()
@@ -111,6 +116,27 @@ pub fn terminate(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versioned_envelopes_are_opt_in() {
+        let (mut child, mut rpc) = Rpc::start(&mut Command::new("/bin/cat")).unwrap();
+        for versioned in [false, true] {
+            rpc.versioned = versioned;
+            rpc.write(json!({"id":1,"method":"initialize","params":{}}))
+                .unwrap();
+            let message = rpc
+                .receiver
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                message.get("jsonrpc"),
+                versioned.then(|| json!("2.0")).as_ref()
+            );
+            assert_eq!(message["method"], "initialize");
+        }
+        terminate(&mut child);
+    }
 
     #[test]
     fn only_enabled_client_tools_are_deferred_and_permissions_stay_denied() {

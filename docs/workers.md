@@ -57,4 +57,38 @@ On reconnect, Codex’s conversation records are checked for that ID. If deliver
 
 Worker messages use stable delivery IDs too, with separate receipt acknowledgements. Rejected injections remain in the saved inbox. Conversations created without the current worker tools start fresh when reconnected; saved source and history remain. Uncertain delivery still pauses for recovery.
 
-Currently verified on macOS with Codex CLI **0.159.2**. Two Codex executors can share a mod VM and exchange messages. Muse is future work.
+Currently verified on macOS with Codex CLI **0.159.2**. Two Codex executors can share a mod VM and exchange messages.
+
+## Muse compatibility probe
+
+Muse **1.4.1** exposes `muse serve`, a JSON-RPC session protocol. Our [standalone probe](../examples/muse_probe.rs) verifies account login, streamed completion, a session MCP call and steering into the active turn.
+
+```mermaid
+flowchart TB
+    probe["Rust compatibility probe"] -->|"Session requests and steering"| muse["Muse serve · Mac"]
+    login["Existing Muse account login"] --> muse
+    muse -->|"Approved once"| ping["Test MCP tool · returns pong"]
+    muse -->|"Native read_file attempt"| fixture["Synthetic host file · explicitly denied"]
+    fixture -->|"Contents returned"| gate["Isolation check fails"]
+    gate --> stop["Stop before VM or project work"]
+```
+
+### Try it
+
+Sign in with `muse login`, then run from the harness repository:
+
+```sh
+cargo run --example muse_probe --locked
+```
+
+The probe creates private temporary configuration and session data, links the existing host login and strips inherited API keys from the child environment. It disables native shell and write tools, configures a named profile to deny host reads and approves only the test MCP tool, once per call. Saved Muse settings stay untouched. Processes and temporary files are removed on normal completion or a returned error.
+
+### Current result
+
+- Account login, streamed completion, MCP ping and accepted steering observed in the reply: passed.
+- Native write: no file created.
+- Native host read: **failed**. `read_file` returned the synthetic fixture despite the explicit file denial, without asking for approval. No real credential contents were requested.
+
+The probe exits with `BLOCKED` for that result. It starts no VM and cannot enable a Muse worker. Mixed Codex–Muse execution, combined verification and VM cleanup remain unverified until this boundary is enforced.
+
+In this version, memory-only `serve` acknowledged turns but produced no completion during the probe timeout. The working test uses session files confined to its temporary data directory. The exported protocol has no Codex-style remote executor; a future Muse VM connection would use a harness-owned MCP bridge.
