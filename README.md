@@ -27,7 +27,7 @@ The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publica
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
-The [Muse compatibility probe](docs/workers.md#muse-compatibility-probe) confirms subscription login, streaming, MCP calls and steering. Muse **1.4.1** allows native host reads when a guard hook fails. Its managed deny policy validates but does not activate beside private settings, so Muse is not connected to the scheduler yet.
+The experimental [Muse VM probe](docs/workers.md#muse-in-a-vm) runs the genuine CLI in Linux, with its account login kept on the Mac behind a scoped broker. Edits, execution, steering and filesystem isolation pass. Subscription metering and production integration remain unverified; Muse is not connected to the scheduler yet.
 
 ## Architecture today
 

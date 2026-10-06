@@ -113,8 +113,40 @@ cargo run --example muse_probe --locked -- --no-native-tools
 
 The validator's `state=active` describes a supported document member; it does not prove the policy was loaded. Muse documents [managed policy validation](https://dev.meta.ai/docs/muse-code/configuration) and [per-tool denial](https://dev.meta.ai/docs/muse-code/changelog), but this binary exposes no policy-file option for `serve`. Its exported session configuration recognizes MCP servers, not native tool policy. The tested MCP tool identities are also rejected in `execution.tool_rules`. We have not found a supported per-worker activation route. No machine-wide configuration was changed.
 
-A VM bridge needs an enforced native-tool denial with explicit MCP permission and observable startup evidence. Hook-free and failed-hook tests under that policy remain pending because it could not be activated.
+This host probe starts no VM. Keeping Muse on the Mac would need a supported tool boundary that survives failed hooks. The separate experiment below moves the whole CLI into Linux instead.
 
-The probe starts no VM. Muse scheduling, mixed Codex–Muse execution, combined verification and VM cleanup remain unverified until the tool boundary holds under failure too.
+### Muse in a VM
 
-In this version, memory-only `serve` acknowledged turns but produced no completion during the probe timeout. The working test uses session files confined to its temporary data directory. The exported protocol has no Codex-style remote executor; a future Muse VM connection would use a harness-owned MCP bridge.
+The [VM broker probe](../examples/muse_vm_probe.py) runs the genuine Linux CLI with its account credential kept on the Mac. It is a disposable experiment, separate from the scheduler.
+
+```mermaid
+flowchart TB
+    login["Mac · Muse account login"] --> broker["Mac · temporary credential broker"]
+    broker <-->|"Authenticated model requests and responses"| meta["Meta model service"]
+    subgraph VM["Disposable Linux VM"]
+        muse["Muse CLI · isolated worker"] -->|"Edit and run"| files["Worker's own task folder"]
+    end
+    muse <-->|"Model requests through stdio · temporary access"| broker
+```
+
+Sign in with Muse on the Mac. The harness sandbox image must already be built. Run:
+
+```sh
+python3 examples/muse_vm_probe.py
+```
+
+The probe downloads the pinned **1.4.1-R4503.1** Linux binary and verifies its checksum. A host CLI resolves the existing Keychain login through a local test endpoint; authentication stays in host memory. The guest gets a random broker token, with at most eight requests, three minutes of access and a 2,048-token output limit per request. No additional Meta API key is created or used.
+
+Only the model catalog and responses endpoint are forwarded to fixed Meta URLs. Redirects, other models and account routes are blocked. Provider credentials and response headers are filtered from guest responses.
+
+Bubblewrap confines the whole CLI and its child commands to their task folder, private home and read-only system files. Process and network namespaces are separate; the worker runs as UID 1000 with dropped capabilities and further user namespaces disabled. Muse's internal shell sandbox is disabled inside this boundary. There are no host mounts or published ports. The probe clears the VM runtime's proc masks so Bubblewrap can create a private `/proc`; production VM settings are unchanged.
+
+The test asks Muse to create and run a greeting, attempt a forbidden sibling read and accept steering. Rust scheduling, mixed workers, shared-VM coordination and login refresh remain separate work. Subscription metering is not independently exposed by this CLI, so an authenticated completion alone is not billing confirmation.
+
+**Verified:** Linux startup, native edits and execution, independent output check, forbidden sibling read, steering, no provider credential in exported guest files, broker revocation and VM deletion. Three model requests used the existing account authentication.
+
+Completion, errors and Ctrl+C revoke broker access and delete the probe VM and temporary files. A forced process kill can interrupt cleanup. To repeat policy checks without a VM or model call:
+
+```sh
+python3 -m unittest discover -s examples -p 'test_muse_vm_probe.py'
+```

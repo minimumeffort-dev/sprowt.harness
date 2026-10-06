@@ -21,6 +21,7 @@ id_rsa
 id_ed25519
 
 # Local state
+__pycache__/
 .serena/
 *.db
 *.db-*
