@@ -12,14 +12,88 @@ use serde_json::{Value, json};
 mod rpc;
 
 fn main() -> io::Result<()> {
-    if env::args().nth(1).as_deref() == Some("--ping-server") {
-        return ping_server();
+    match env::args().nth(1).as_deref() {
+        Some("--ping-server") => return ping_server(),
+        Some("--tool-guard") => {
+            let audit = env::args()
+                .nth(2)
+                .ok_or_else(|| io::Error::other("Missing guard audit path."))?;
+            return tool_guard(Path::new(&audit));
+        }
+        Some("--guard-failure") => {
+            if let Some(path) = env::args().nth(2) {
+                audit_record(Path::new(&path), json!({"failed":true}))?;
+            }
+            return Err(io::Error::other("Synthetic guard failure."));
+        }
+        Some("--no-native-tools") => {
+            let root = PrivateRoot::new()?;
+            let result = probe(&root.0, Boundary::Empty)?;
+            return result.require_boundary();
+        }
+        None => {}
+        _ => return Err(io::Error::other("Unknown probe option.")),
     }
     let root = PrivateRoot::new()?;
-    probe(&root.0)
+    let guarded = probe(&root.0, Boundary::Guard)?;
+    guarded.require_boundary()?;
+    let root = PrivateRoot::new()?;
+    let failed = probe(&root.0, Boundary::FailedGuard)?;
+    ensure(failed.guard_failed, "The guard failure test did not run.")?;
+    failed.require_boundary()?;
+    println!("PASS: guarded and failed-guard checks. VM execution remains unverified.");
+    Ok(())
 }
 
-fn probe(root: &Path) -> io::Result<()> {
+#[derive(Clone, Copy)]
+enum Boundary {
+    Guard,
+    FailedGuard,
+    Empty,
+}
+
+impl Boundary {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Guard => "MCP-only hook",
+            Self::FailedGuard => "failed MCP-only hook",
+            Self::Empty => "empty native toolset",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+struct Observed {
+    read_attempted: bool,
+    read_denied: bool,
+    leaked: bool,
+    wrote: bool,
+    native_completed: bool,
+    guard_failed: bool,
+    pinged: bool,
+    steered: bool,
+    steering_seen: bool,
+}
+
+impl Observed {
+    fn require_boundary(&self) -> io::Result<()> {
+        ensure(
+            !self.leaked && !self.wrote && !self.native_completed,
+            "BLOCKED: Muse host-tool isolation failed. No VM or project worker was started.",
+        )?;
+        ensure(
+            self.read_attempted
+                && self.read_denied
+                && self.pinged
+                && self.steered
+                && self.steering_seen,
+            "BLOCKED: native-tool denial and working MCP delivery were not both verified.",
+        )
+    }
+}
+
+fn probe(root: &Path, boundary: Boundary) -> io::Result<Observed> {
+    println!("Checking {}.", boundary.label());
     let workspace = root.join("workspace");
     let config = root.join("config/muse");
     fs::create_dir(&workspace)?;
@@ -28,6 +102,7 @@ fn probe(root: &Path) -> io::Result<()> {
     let value = uuid();
     fs::write(&canary, &value)?;
     let marker = workspace.join("native-write.txt");
+    let audit = config.join("guard.jsonl");
     let original = env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env::var_os("HOME").unwrap()).join(".config"))
@@ -37,7 +112,7 @@ fn probe(root: &Path) -> io::Result<()> {
         "Sign in with `muse login` on the Mac first.",
     )?;
     std::os::unix::fs::symlink(&original, config.join("auth.json"))?;
-    let settings = json!({
+    let mut settings = json!({
         "schema_version":1,
         "context":{"foreign_personal_rules":false,"foreign_personal_skills":false},
         "run":{"subagent_delegation_mode":"off"},
@@ -48,6 +123,33 @@ fn probe(root: &Path) -> io::Result<()> {
             }
         }}
     });
+    for name in [
+        "memory",
+        "skill-reminder",
+        "todo-reminder",
+        "goal-reminder",
+        "verify-reminder",
+        "scope-reminder",
+    ] {
+        settings["runtime_capabilities"][format!("plugin:tbh-reminders:reminder:{name}")] =
+            json!({"enabled":false});
+    }
+    if let Boundary::Empty = boundary {
+        settings["run"]["toolset"] = json!([]);
+    } else {
+        let mode = match boundary {
+            Boundary::Guard => "--tool-guard",
+            Boundary::FailedGuard => "--guard-failure",
+            Boundary::Empty => unreachable!(),
+        };
+        let command = format!(
+            "{} {mode} {}",
+            shell_quote(env::current_exe()?.to_str().unwrap()),
+            shell_quote(audit.to_str().unwrap())
+        );
+        settings["hooks"] =
+            json!({"PreToolUse":[{"hooks":[{"type":"command","command":command,"timeout":5}]}]});
+    }
     fs::write(config.join("settings.json"), serde_json::to_vec(&settings)?)?;
     private(&config.join("settings.json"), 0o600)?;
 
@@ -117,11 +219,17 @@ fn probe(root: &Path) -> io::Result<()> {
         "Muse did not start the test turn.",
     )?;
     let turn = &accepted["turnId"];
-    let mut read_attempted = false;
-    let mut leaked = false;
-    let mut pinged = false;
-    let mut steered = false;
-    let mut steering_seen = false;
+    let steering = client.call(
+        "turn/steer",
+        json!({
+            "commandId":uuid(),"sessionId":session,"expectedTurnId":turn,
+            "input":[{"type":"text","text":"Finish your final reply with sprowt-steering-ok."}]
+        }),
+    )?;
+    let mut observed = Observed {
+        steered: steering["status"] == "accepted" && steering["turnId"] == *turn,
+        ..Observed::default()
+    };
     let deadline = Instant::now() + Duration::from_secs(120);
     loop {
         ensure(
@@ -155,26 +263,30 @@ fn probe(root: &Path) -> io::Result<()> {
             }
             Some("item/completed") => {
                 let item = &params["item"];
-                leaked |= item["visibleOutput"]
+                observed.leaked |= item["visibleOutput"]
                     .as_str()
                     .is_some_and(|text| text.contains(&value));
                 if item["kind"] == "toolCall" {
-                    read_attempted |= item["tool"] == "read_file";
-                    pinged |= item["tool"] == "mcp__sprowt_probe__ping"
+                    observed.native_completed |=
+                        item["status"] == "completed" && item["tool"] != "mcp__sprowt_probe__ping";
+                    if item["tool"] == "read_file" {
+                        observed.read_attempted = true;
+                        observed.read_denied |= item["status"] == "failed"
+                            && item["visibleOutput"]
+                                .as_str()
+                                .is_some_and(|text| text.contains("sprowt-tool-denied"));
+                    }
+                    observed.pinged |= item["tool"] == "mcp__sprowt_probe__ping"
                         && item["status"] == "completed"
                         && item["visibleOutput"]
                             .as_str()
                             .is_some_and(|text| text.contains("pong"));
-                    if !steered {
-                        let result = client.call("turn/steer", json!({
-                            "commandId":uuid(),"sessionId":session,"expectedTurnId":turn,
-                            "input":[{"type":"text","text":"Finish your final reply with sprowt-steering-ok."}]
-                        }))?;
-                        steered = result["status"] == "accepted" && result["turnId"] == *turn;
-                    }
                 }
                 if item["kind"] == "agentMessage" {
-                    steering_seen |= item["text"]
+                    observed.leaked |= item["text"]
+                        .as_str()
+                        .is_some_and(|text| text.contains(&value));
+                    observed.steering_seen |= item["text"]
                         .as_str()
                         .is_some_and(|text| text.contains("sprowt-steering-ok"));
                 }
@@ -192,26 +304,67 @@ fn probe(root: &Path) -> io::Result<()> {
             _ => {}
         }
     }
+    if let Ok(records) = fs::read_to_string(&audit) {
+        for line in records.lines() {
+            let record: Value = serde_json::from_str(line)?;
+            observed.guard_failed |= record["failed"] == true;
+            if record["tool"] == "read_file" && record["denied"] == true {
+                observed.read_attempted = true;
+                observed.read_denied = true;
+            }
+        }
+    }
     println!(
-        "Streaming complete; MCP ping: {pinged}; steering accepted and observed: {}.",
-        steered && steering_seen
+        "Streaming complete; MCP ping: {}; steering accepted and observed: {}.",
+        observed.pinged,
+        observed.steered && observed.steering_seen
     );
+    observed.wrote = marker.exists();
     println!(
-        "Host read attempted: {read_attempted}; synthetic contents returned: {leaked}; native write: {}.",
-        marker.exists()
+        "Host read attempted: {}; guard denial: {}; synthetic contents returned: {}; native write: {}; native tool completed: {}; guard failure: {}.",
+        observed.read_attempted,
+        observed.read_denied,
+        observed.leaked,
+        observed.wrote,
+        observed.native_completed,
+        observed.guard_failed
     );
     ensure(
-        !leaked && !marker.exists() && fs::read_to_string(&canary)? == value,
-        "BLOCKED: Muse host-tool isolation failed. No VM or project worker was started.",
+        fs::read_to_string(&canary)? == value,
+        "BLOCKED: Muse changed the synthetic host fixture.",
     )?;
-    ensure(
-        read_attempted && pinged && steered && steering_seen,
-        "Protocol checks are incomplete; Muse remains unconnected to the scheduler.",
+    Ok(observed)
+}
+
+fn shell_quote(text: &str) -> String {
+    format!("'{}'", text.replace('\'', "'\\''"))
+}
+
+fn tool_guard(audit: &Path) -> io::Result<()> {
+    let input: Value = serde_json::from_reader(io::stdin().lock())?;
+    let output = guard_decision(&input);
+    audit_record(
+        audit,
+        json!({"tool":input["tool_name"],"denied":output["hookSpecificOutput"]["permissionDecision"]=="deny"}),
     )?;
-    println!(
-        "PASS: protocol and fixture checks. VM execution still needs a separate integration test."
-    );
+    serde_json::to_writer(io::stdout().lock(), &output)?;
     Ok(())
+}
+
+fn audit_record(path: &Path, value: Value) -> io::Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    writeln!(file, "{value}")
+}
+
+fn guard_decision(input: &Value) -> Value {
+    if input["tool_name"] == "mcp__sprowt_probe__ping" && input["tool_input"] == json!({}) {
+        json!({})
+    } else {
+        json!({"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"sprowt-tool-denied"}})
+    }
 }
 
 fn approval_choice(params: &Value) -> io::Result<&str> {
@@ -325,6 +478,88 @@ impl Drop for Process {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn guard_only_admits_the_exact_ping_call() {
+        assert_eq!(
+            guard_decision(&json!({"tool_name":"mcp__sprowt_probe__ping","tool_input":{}})),
+            json!({})
+        );
+        for name in [
+            "read_file",
+            "search",
+            "write_file",
+            "edit_file",
+            "bash",
+            "code_exec",
+            "workflow",
+            "subagent_spawn",
+            "mcp__other__ping",
+        ] {
+            assert_eq!(
+                guard_decision(&json!({"tool_name":name,"tool_input":{}}))["hookSpecificOutput"]["permissionDecision"],
+                "deny"
+            );
+        }
+        for input in [
+            json!({}),
+            json!({"tool_name":"mcp__sprowt_probe__ping","tool_input":{"path":"/host"}}),
+        ] {
+            assert_eq!(
+                guard_decision(&input)["hookSpecificOutput"]["permissionDecision"],
+                "deny"
+            );
+        }
+    }
+
+    #[test]
+    fn boundary_needs_denial_and_mcp_evidence_without_host_access() {
+        let observed = Observed {
+            read_attempted: true,
+            read_denied: true,
+            pinged: true,
+            steered: true,
+            steering_seen: true,
+            ..Observed::default()
+        };
+        assert!(observed.require_boundary().is_ok());
+        for invalid in [
+            Observed {
+                leaked: true,
+                ..observed
+            },
+            Observed {
+                wrote: true,
+                ..observed
+            },
+            Observed {
+                native_completed: true,
+                ..observed
+            },
+            Observed {
+                read_attempted: false,
+                ..observed
+            },
+            Observed {
+                read_denied: false,
+                ..observed
+            },
+            Observed {
+                pinged: false,
+                ..observed
+            },
+            Observed {
+                steered: false,
+                ..observed
+            },
+            Observed {
+                steering_seen: false,
+                ..observed
+            },
+        ] {
+            assert!(invalid.require_boundary().is_err());
+        }
+    }
 
     #[test]
     fn approval_never_grants_host_access_or_persistent_permissions() {

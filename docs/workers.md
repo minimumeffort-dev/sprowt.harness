@@ -61,16 +61,15 @@ Currently verified on macOS with Codex CLI **0.159.2**. Two Codex executors can 
 
 ## Muse compatibility probe
 
-Muse **1.4.1** exposes `muse serve`, a JSON-RPC session protocol. Our [standalone probe](../examples/muse_probe.rs) verifies account login, streamed completion, a session MCP call and steering into the active turn.
+Muse **1.4.1** exposes `muse serve`, a JSON-RPC session protocol. Our [standalone probe](../examples/muse_probe.rs) checks account login, streamed completion, MCP calls, steering and host file isolation. It is not a scheduler worker.
 
 ```mermaid
 flowchart TB
-    probe["Rust compatibility probe"] -->|"Session requests and steering"| muse["Muse serve · Mac"]
-    login["Existing Muse account login"] --> muse
-    muse -->|"Approved once"| ping["Test MCP tool · returns pong"]
-    muse -->|"Native read_file attempt"| fixture["Synthetic host file · explicitly denied"]
-    fixture -->|"Contents returned"| gate["Isolation check fails"]
-    gate --> stop["Stop before VM or project work"]
+    probe["Rust probe · temporary settings"] --> muse["Muse serve · host login"]
+    muse --> guard["Hook permits only MCP ping"]
+    guard -->|"Hook works"| denied["Native read blocked · MCP works"]
+    guard -->|"Hook helper fails"| read["Synthetic host file returned"]
+    read --> stop["Isolation check fails · Muse stays disconnected"]
 ```
 
 ### Try it
@@ -81,14 +80,31 @@ Sign in with `muse login`, then run from the harness repository:
 cargo run --example muse_probe --locked
 ```
 
-The probe creates private temporary configuration and session data, links the existing host login and strips inherited API keys from the child environment. It disables native shell and write tools, configures a named profile to deny host reads and approves only the test MCP tool, once per call. Saved Muse settings stay untouched. Processes and temporary files are removed on normal completion or a returned error.
+The probe runs a working guard, then deliberately fails its helper. Both must block native tools while keeping MCP and steering available to pass. **A `BLOCKED` exit is the current expected result.**
+
+The probe creates private temporary settings, fixtures, guard audit and session data. It links the existing host login, strips inherited API keys, disables native shell and writes, and turns off delegation and background reminders. The only approved tool is MCP ping, once per call. The model is asked to read a synthetic file, never real credentials. Saved Muse settings stay untouched. Processes and temporary files are removed on normal completion or a returned error.
 
 ### Current result
 
-- Account login, streamed completion, MCP ping and accepted steering observed in the reply: passed.
-- Native write: no file created.
-- Native host read: **failed**. `read_file` returned the synthetic fixture despite the explicit file denial, without asking for approval. No real credential contents were requested.
+| Check | Observed result |
+| --- | --- |
+| Subscription, streaming, MCP ping and steering | Passed with both guard configurations |
+| Working `PreToolUse` guard | Native read blocked; MCP ping allowed |
+| Failed guard helper | Native read returned the denied synthetic file; isolation failed |
+| Native writes disabled | No file created |
+| Empty `run.toolset` | Native tools absent, but MCP also unavailable |
+| MCP name in `run.toolset` | Startup rejects it as an unknown tool, including with the MCP server configured |
 
-The probe exits with `BLOCKED` for that result. It starts no VM and cannot enable a Muse worker. Mixed Codex–Muse execution, combined verification and VM cleanup remain unverified until this boundary is enforced.
+Muse's [permission guide](https://dev.meta.ai/docs/muse-code/permissions) says approval modes still admit file reads. Its [hook contract](https://meta-models.github.io/muse-code-sdk/next/guides/extend/hooks/) says failed hooks are ignored. A working hook therefore cannot be our isolation boundary. The probe rejects returned fixture contents, completed native tools, missing denial evidence or missing MCP/steering evidence.
+
+To repeat the empty-toolset check:
+
+```sh
+cargo run --example muse_probe --locked -- --no-native-tools
+```
+
+Managed tool-deny policy documents validate in this binary, but placing one beside temporary user settings did not activate it. We have not verified a per-worker managed-policy configuration. No supported MCP-only setup has passed this probe yet.
+
+The probe starts no VM. Muse scheduling, mixed Codex–Muse execution, combined verification and VM cleanup remain unverified until the tool boundary holds under failure too.
 
 In this version, memory-only `serve` acknowledged turns but produced no completion during the probe timeout. The working test uses session files confined to its temporary data directory. The exported protocol has no Codex-style remote executor; a future Muse VM connection would use a harness-owned MCP bridge.
