@@ -79,7 +79,7 @@ class Rpc:
     def next(self, timeout=45):
         value = self.incoming.get(timeout=timeout)
         if value is None:
-            raise RuntimeError("Muse process ended before responding.")
+            raise RuntimeError("CLI process ended before responding.")
         return value
 
     def call(self, method, params):
@@ -91,7 +91,7 @@ class Rpc:
                 if "error" in value:
                     code = value["error"].get("code")
                     code = code if isinstance(code, int) else "unknown"
-                    raise RuntimeError(f"Muse rejected {method} ({code}); details withheld.")
+                    raise RuntimeError(f"CLI rejected {method} ({code}); details withheld.")
                 return value["result"]
             if "id" in value and "method" in value:
                 self.write({"id": value["id"], "error": {"code": -32601,
@@ -103,6 +103,10 @@ class Rpc:
         if self.process.poll() is None:
             os.killpg(self.process.pid, signal.SIGKILL)
         self.process.wait()
+        try:
+            self.process.stdin.close()
+        except OSError:
+            pass
 
 
 def host_login(root):
@@ -304,13 +308,13 @@ def artifact(root):
     return path
 
 
-def boundary():
+def boundary(directory="/opt/muse"):
     return ["bwrap", "--unshare-all", "--unshare-user", "--disable-userns",
             "--die-with-parent", "--new-session", "--cap-drop", "ALL",
             "--ro-bind", "/usr", "/usr", "--ro-bind", "/lib", "/lib",
             "--ro-bind", "/etc", "/etc", "--symlink", "usr/bin", "/bin",
             "--symlink", "usr/sbin", "/sbin", "--proc", "/proc", "--dev", "/dev",
-            "--tmpfs", "/tmp", "--ro-bind", "/opt/muse", "/opt/muse",
+            "--tmpfs", "/tmp", "--ro-bind", directory, directory,
             "--bind", "/tasks/1", "/tasks/1", "--bind", "/home/worker", "/home/worker",
             "--chdir", "/tasks/1", "--clearenv", "--setenv", "HOME", "/home/worker",
             "--setenv", "PATH", "/usr/local/bin:/usr/bin:/bin", "--setenv", "LANG", "C.UTF-8"]
@@ -349,8 +353,18 @@ class VmRpc(Rpc):
             self.incoming.put(None)
 
 
-def guest():
-    """A credential-free HTTP tunnel and Muse share the isolated network namespace."""
+def muse_client(base):
+    config = Path.home() / ".config/muse"
+    value = settings(base)
+    value["run"].pop("toolset")
+    private_json(config / "settings.json", value)
+    return subprocess.Popen(["/opt/muse/muse", "serve", "--disable-sandbox"],
+                            cwd="/tasks/1", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True)
+
+
+def guest(start_client=muse_client):
+    """A credential-free HTTP tunnel and CLI share the isolated network namespace."""
     replies = {}
     lock = threading.Lock()
 
@@ -373,6 +387,7 @@ def guest():
             try:
                 emit({"channel": "http", "id": request_id, "method": self.command,
                       "path": self.path, "authorization": self.headers.get("Authorization", ""),
+                      "responses_lite": self.headers.get("x-openai-internal-codex-responses-lite") == "true",
                       "body": base64.b64encode(self.rfile.read(size)).decode()})
                 started = False
                 while True:
@@ -396,30 +411,27 @@ def guest():
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Tunnel)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    config = Path.home() / ".config/muse"
-    value = settings(f"http://127.0.0.1:{server.server_port}")
-    value["run"].pop("toolset")
-    private_json(config / "settings.json", value)
-    muse = subprocess.Popen(["/opt/muse/muse", "serve", "--disable-sandbox"],
-                            cwd="/tasks/1", stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, text=True)
+    client = start_client(f"http://127.0.0.1:{server.server_port}")
 
     def read():
-        for line in muse.stdout:
-            emit({"channel": "rpc", "value": json.loads(line)})
+        try:
+            for line in client.stdout:
+                emit({"channel": "rpc", "value": json.loads(line)})
+        finally:
+            emit({"channel": "ended", "exit_code": client.wait()})
 
     threading.Thread(target=read, daemon=True).start()
     try:
         for line in sys.stdin:
             message = json.loads(line)
             if message.get("channel") == "rpc":
-                muse.stdin.write(json.dumps(message["value"]) + "\n")
-                muse.stdin.flush()
+                client.stdin.write(json.dumps(message["value"]) + "\n")
+                client.stdin.flush()
             elif message.get("channel") == "http" and message["id"] in replies:
                 replies[message["id"]].put(message)
     finally:
-        muse.kill()
-        muse.wait()
+        client.kill()
+        client.wait()
         server.shutdown()
         server.server_close()
 

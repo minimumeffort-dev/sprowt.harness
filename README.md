@@ -27,7 +27,7 @@ The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publica
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
-The experimental [Muse VM probe](docs/workers.md#muse-in-a-vm) runs the genuine CLI in Linux, with its account login kept on the Mac behind a scoped broker. Edits, execution, steering and filesystem isolation pass. Subscription metering and production integration remain unverified; Muse is not connected to the scheduler yet.
+Experimental [Muse](docs/workers.md#muse-in-a-vm) and [Codex](docs/workers.md#full-codex-in-a-vm) probes run the full CLIs in Linux, with account credentials kept on the Mac behind scoped brokers. Native edits, execution, steering and isolation pass. These are separate from the scheduler; Muse subscription metering remains unconfirmed.
 
 ## Architecture today
 

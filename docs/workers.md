@@ -94,7 +94,7 @@ The probe creates private temporary settings, fixtures, guard audit and session 
 
 | Check | Observed result |
 | --- | --- |
-| Subscription, streaming, MCP ping and steering | Passed with both guard configurations |
+| Account authentication, streaming, MCP ping and steering | Passed with both guard configurations |
 | Working `PreToolUse` guard | Native read blocked; MCP ping allowed |
 | Failed guard helper | Native read returned the denied synthetic file; isolation failed |
 | Native writes disabled | No file created |
@@ -143,10 +143,54 @@ Bubblewrap confines the whole CLI and its child commands to their task folder, p
 
 The test asks Muse to create and run a greeting, attempt a forbidden sibling read and accept steering. Rust scheduling, mixed workers, shared-VM coordination and login refresh remain separate work. Subscription metering is not independently exposed by this CLI, so an authenticated completion alone is not billing confirmation.
 
+Meta's [subscription guide](https://dev.meta.ai/docs/muse-code/subscriptions) associates subscription use with the account-linked CLI credential; extra API keys use API billing. This probe uses the account credential. The installed CLI's `usage/read` returns no metering data, so we still need account-side confirmation before claiming included usage.
+
 **Verified:** Linux startup, native edits and execution, independent output check, forbidden sibling read, steering, no provider credential in exported guest files, broker revocation and VM deletion. Three model requests used the existing account authentication.
 
 Completion, errors and Ctrl+C revoke broker access and delete the probe VM and temporary files. A forced process kill can interrupt cleanup. To repeat policy checks without a VM or model call:
 
 ```sh
 python3 -m unittest discover -s examples -p 'test_muse_vm_probe.py'
+```
+
+## Full Codex in a VM
+
+The [Codex VM probe](../examples/codex_vm_probe.py) runs the full Linux CLI and its tool helper inside the same worker boundary. ChatGPT credentials stay on the Mac. This is a standalone experiment; production still uses the host app-server and guest exec-server shown above.
+
+```mermaid
+flowchart TB
+    login["Mac · existing ChatGPT login"] --> broker["Mac · scoped model broker"]
+    broker <-->|"Account-authenticated inference"| model["ChatGPT model service"]
+    subgraph VM["Disposable Linux VM · isolated worker"]
+        cli["Codex CLI + tool helper"] -->|"Native edits and commands"| files["Worker task folder"]
+    end
+    cli <-->|"Model traffic over stdio"| broker
+```
+
+### Try it
+
+Use a file-backed ChatGPT login, Codex **0.159.2** and the built harness sandbox image:
+
+```sh
+python3 examples/codex_vm_probe.py
+```
+
+The probe downloads the matching Linux tool helper from OpenAI's release and verifies its checksum. The sandbox image already supplies the CLI. Temporary files and the VM are removed after completion, errors or Ctrl+C; a forced kill can interrupt cleanup.
+
+### Boundary and result
+
+- The guest receives a random broker token, never a ChatGPT access, refresh or ID token. No OpenAI API key is used.
+- The broker permits only streamed, unsaved **Sol 6.1 low** requests to the fixed Codex responses endpoint, with eight requests and three minutes of access. It blocks redirects, account routes and other models. Only the CLI's response-format flag is forwarded; provider response headers stay on the Mac.
+- The whole CLI, tool helper and commands run inside Bubblewrap: one writable task folder, private home, read-only system files and isolated process/network namespaces. No host mounts, published ports or direct external network access.
+
+**Verified:** native edits and commands, independent output check, forbidden sibling read, steering, command interruption, broker revocation, no provider credentials in exported guest files and VM deletion. Three successful requests used the existing ChatGPT account authentication and returned account usage headers. This establishes the account route; it does not measure a separate billing charge.
+
+Stopping requires both `turn/interrupt` and `thread/backgroundTerminals/clean`. Codex can retain background commands after a turn interruption. The probe checks that the child process actually exits after terminal cleanup.
+
+This version-pinned proof uses Codex's current ChatGPT responses route and needs a valid host login. Login refresh, production lifecycle, runtime downloads, mailboxes and mixed workers remain separate work. A revoked broker stops the turn without host execution or a provider fallback.
+
+Offline policy and shared transport checks:
+
+```sh
+python3 -m unittest discover -s examples -p 'test_*vm_probe.py'
 ```
