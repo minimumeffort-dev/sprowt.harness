@@ -20,6 +20,8 @@ flowchart TB
 
 A failed check pauses that task and its dependents. The other worker can finish independent work. **Ctrl+R** retries unfinished work; completed tasks stay done.
 
+Executors can coordinate through [saved task mailboxes](coordination.md). A task with unanswered asks waits; Rust resumes it after answers arrive. Queued edit rounds wait too, so they cannot replace tasks with outstanding questions. Messages do not change file ownership or dependencies.
+
 ## Working folder
 
 New codemods start from committed `HEAD` in their own host worktree. The first execution copies source into `/workspace` in Linux. A separate, local Git repository in the VM owns the integration branch and task worktrees. The project’s original Git metadata, remote configuration and credentials stay on the Mac.
@@ -80,4 +82,4 @@ Closing stops both workers, saves each unfinished draft, then saves a local chec
 
 ## Current limits
 
-Maximum two Codex executors per codemod. No Muse or direct peer messaging yet. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).
+Maximum two Codex executors per codemod, with task-addressed messaging. No Muse yet. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).

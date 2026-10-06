@@ -3,6 +3,7 @@ mod codex;
 mod execution;
 mod git_mod;
 mod git_sync;
+mod mailbox;
 mod mod_sync;
 mod packages;
 mod plan;

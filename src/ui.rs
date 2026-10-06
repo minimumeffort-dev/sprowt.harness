@@ -322,6 +322,24 @@ pub fn draw(
         frame.render_widget(text, body);
     } else {
         if !read_only {
+            let title = app
+                .current_mod()
+                .and_then(|m| m.question())
+                .map_or("message".to_owned(), |q| format!("answer #{}", q.id));
+            if matches!(app.view, View::Chat) {
+                app.input.set_block(
+                    Block::bordered()
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::new().fg(ACCENT))
+                        .padding(Padding::horizontal(1))
+                        .title(format!(" {title} ")),
+                );
+                app.input.set_placeholder_text(if title == "message" {
+                    "Describe a feature, a fix, or an idea..."
+                } else {
+                    "Answer the highlighted question..."
+                });
+            }
             frame.render_widget(&app.input, input);
         }
         let shortcuts = match app.view {
@@ -872,6 +890,8 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     }
     let mut hints = if app.read_only() {
         format!("{ctrl}p mods")
+    } else if app.current_mod().and_then(|m| m.question()).is_some() {
+        "↵ answer".to_owned()
     } else if app.published() || app.version_ready() {
         "↵ request edits".to_owned()
     } else {
@@ -994,6 +1014,8 @@ fn plan_lines(
                     "review" => "changes ready",
                     "applied" if git_mod => "PR published",
                     "applied" => "saved version",
+                    "blocked" if execution.tasks.iter().any(|run| run.status == "waiting") =>
+                        "waiting for reply",
                     "blocked" => "execution paused",
                     "verifying" => "final checks",
                     _ => "execution",
@@ -1040,6 +1062,7 @@ fn plan_lines(
             "running" | "sending" => "●",
             "checking" => "◌",
             "blocked" | "paused" => "!",
+            "waiting" => "?",
             _ => "○",
         });
         let prefix = if marker.is_empty() {
@@ -1199,7 +1222,7 @@ fn conversation_blocks<'a>(
         .filter(|p| p.status == "ready")
         .and_then(|p| p.plan.as_ref().map(|plan| (p, plan)));
     let plan_id = saved.map(|(p, _)| format!("plan:{}", p.source));
-    code_mod
+    let mut blocks: Vec<_> = code_mod
         .messages
         .iter()
         .filter_map(|message| {
@@ -1262,7 +1285,59 @@ fn conversation_blocks<'a>(
                 plan: false,
             })
         })
-        .collect()
+        .collect();
+    for message in &code_mod.coordination {
+        let question = code_mod.needs_answer(message);
+        if !question && !details {
+            continue;
+        }
+        let state = if message.answered {
+            "answered"
+        } else if message.acknowledged.is_some() {
+            "acknowledged"
+        } else if message.delivered.is_some() {
+            "delivered"
+        } else if !message.active {
+            "previous round"
+        } else {
+            "waiting"
+        };
+        let mut lines = vec![
+            Line::from(format!(
+                "{} {} · {}{} → {} · #{}",
+                if question { "?" } else { "↳" },
+                message.kind,
+                message.from_task,
+                message
+                    .sender
+                    .map_or(String::new(), |id| format!(" · w{id}")),
+                message.to_task,
+                message.id
+            ))
+            .fg(if question { ACCENT } else { KEY_HINT })
+            .bold(),
+        ];
+        lines.extend(message.body.lines().map(|line| Line::from(line.to_owned())));
+        if question {
+            let first = code_mod.question().unwrap().id;
+            lines.push(
+                Line::from(if message.id == first {
+                    "↵ answer in the composer".to_owned()
+                } else {
+                    format!("waiting · answer #{first} first")
+                })
+                .fg(ACCENT),
+            );
+        } else {
+            lines.push(Line::from(state).fg(MUTED));
+        }
+        blocks.push(ConversationBlock {
+            text: lines.into(),
+            user: false,
+            plan: false,
+        });
+    }
+    blocks
 }
 
 fn draw_conversation(

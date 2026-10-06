@@ -87,7 +87,7 @@ impl Worker {
                 &code_mod.description,
                 code_mod.planning.as_ref().and_then(|p| p.plan.as_ref()),
                 None,
-                Context::worker(code_mod, record.id, role),
+                Context::worker(code_mod, record.id, role).with_mailbox(&record.database),
             )?)
         } else {
             None
@@ -255,6 +255,22 @@ impl Worker {
         for event in events {
             self.receive(event, store, code_mod)?;
         }
+        if dispatch
+            && self.role == Role::Executor
+            && self.status == Status::Ready
+            && self.pending.is_none()
+            && self.recovery.is_none()
+            && code_mod.execution.as_ref().is_some_and(|e| {
+                e.tasks
+                    .iter()
+                    .any(|r| r.worker == Some(self.id) && r.status == "waiting")
+            })
+            && store.resume_mail(self.mod_id, self.id)?
+        {
+            code_mod.execution = store.execution(self.mod_id)?;
+            self.enabled = true;
+            self.error = None;
+        }
         if !dispatch || !self.enabled || self.pending.is_some() || self.recovery.is_some() {
             return Ok(());
         }
@@ -273,6 +289,9 @@ impl Worker {
                 store.next_input(self.mod_id, false)?
             }
         };
+        if input.is_none() && steering && self.role == Role::Executor {
+            input = store.next_mail(self.mod_id, self.id)?;
+        }
         if input.is_none()
             && self.role == Role::Executor
             && !steering
@@ -378,6 +397,9 @@ impl Worker {
         code_mod: &mut CodeMod,
     ) -> rusqlite::Result<()> {
         match event {
+            Event::MailboxChanged => {
+                code_mod.coordination = store.mailbox(self.mod_id)?;
+            }
             Event::Preparing(label) => self.preparing = (!label.is_empty()).then_some(label),
             Event::Configured(selection) => {
                 store.planning_model(self.mod_id, &selection)?;
@@ -514,6 +536,13 @@ impl Worker {
                 {
                     store.pending(self.id, None)?;
                     self.pending = None;
+                }
+                if source.starts_with("00000005-") {
+                    let id = i64::from_str_radix(source.rsplit('-').next().unwrap_or(""), 16)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                    store.defer_mail(self.mod_id, id)?;
+                    code_mod.coordination = store.mailbox(self.mod_id)?;
+                    return Ok(());
                 }
                 if source.starts_with("00000002-") {
                     code_mod
@@ -744,6 +773,10 @@ impl Worker {
         input: &Submission,
     ) -> rusqlite::Result<()> {
         store.acknowledge(self.id, input)?;
+        if input.source.starts_with("00000005-") {
+            code_mod.coordination = store.mailbox(self.mod_id)?;
+            return Ok(());
+        }
         if input.source.starts_with("00000003-") {
             code_mod.planning = store.planning(self.mod_id)?;
             return Ok(());
@@ -800,10 +833,9 @@ impl Worker {
             self.task_report = item["text"].as_str().map(str::to_owned);
             return Ok(());
         }
-        if item["clientId"]
-            .as_str()
-            .is_some_and(|source| source.starts_with("00000004-"))
-        {
+        if item["clientId"].as_str().is_some_and(|source| {
+            source.starts_with("00000004-") || source.starts_with("00000005-")
+        }) {
             return Ok(());
         }
         if self.role == Role::Planner {
@@ -931,7 +963,7 @@ impl Worker {
         }
         self.task_report = None;
         self.enabled = false;
-        self.error = Some(summary);
+        self.error = (status != "waiting").then_some(summary);
         Ok(())
     }
 
@@ -945,6 +977,18 @@ impl Worker {
             .iter()
             .find(|run| run.source == source)
             .unwrap();
+        if let Some(recipient) = store.waiting_mail(self.mod_id, run.id)? {
+            return self.block_task(
+                store,
+                code_mod,
+                "waiting",
+                if recipient == "user" {
+                    "Waiting for your answer in the composer.".into()
+                } else {
+                    format!("Waiting for a reply from {recipient}.")
+                },
+            );
+        }
         let task = code_mod
             .planning
             .as_ref()
@@ -1153,6 +1197,140 @@ mod tests {
         )
         .unwrap();
         (data, store, code_mod, worker)
+    }
+
+    #[test]
+    fn peer_delivery_is_not_a_user_message_and_waiting_gates_completion() {
+        let (data, mut store, mut m, ids, _) = crate::mailbox::tests::fixture();
+        let record = store.worker_at(m.id, Role::Executor, 1).unwrap();
+        let mut worker =
+            Worker::start(&data.0.join("project"), &m, record, Role::Planner, None).unwrap();
+        worker.role = Role::Executor;
+        worker.status = Status::Running;
+        let id =
+            crate::mailbox::tests::send(&mut store, m.id, ids[0], "b", "ask", None, "contract");
+        let input = store.next_mail(m.id, ids[1]).unwrap().unwrap();
+        store.pending(ids[1], Some(&input.source)).unwrap();
+        worker.pending = Some(input.clone());
+        worker
+            .receive(
+                Event::Accepted {
+                    source: input.source.clone(),
+                    turn: "turn-b".into(),
+                },
+                &mut store,
+                &mut m,
+            )
+            .unwrap();
+        worker.item(&store, &mut m, &json!({"type":"userMessage","id":"peer","clientId":input.source,"text":input.texts[0]}), false).unwrap();
+        assert_eq!(
+            store.load_project(&data.0.join("project")).unwrap().mods[0]
+                .messages
+                .len(),
+            2
+        );
+        assert_eq!(m.coordination[0].delivered, Some(ids[1]));
+        assert!(m.coordination[0].acknowledged.is_none());
+        assert_eq!(m.coordination[0].id, id);
+        crate::mailbox::tests::send(&mut store, m.id, ids[1], "user", "ask", None, "decision");
+        worker.task_source = Some(m.execution.as_ref().unwrap().tasks[1].source.clone());
+        worker.complete_task(&mut store, &mut m).unwrap();
+        assert_eq!(m.execution.as_ref().unwrap().tasks[1].status, "waiting");
+        assert!(!worker.enabled && worker.error.is_none());
+        assert!(!m.execution.as_ref().unwrap().complete());
+    }
+
+    #[test]
+    #[ignore = "runs two cooperating Codex workers in one temporary Apple Container VM"]
+    fn codex_workers_exchange_messages_and_resume_waiting_work() {
+        use std::{
+            fs,
+            time::{Duration, Instant},
+        };
+        let (data, mut store, mut m, ids, mut plan) = crate::mailbox::tests::fixture();
+        plan.tasks[0].outcome = "Use send_worker_message to ask task b which label to use, kind ask, key label-choice. No label is available until b replies. Read and acknowledge its reply, then write that exact label to a.txt. If unanswered, return blocked without writing a guessed label. Do not poll, install anything or touch other files.".into();
+        plan.tasks[0].checks = vec!["A contains sprowt-peer-42".into()];
+        plan.tasks[1].outcome = "Read your saved inbox. A asks which label to use. Acknowledge its ask, reply with exactly sprowt-peer-42 using send_worker_message kind reply, key label-answer, and its reply_to ID. Then write sprowt-peer-42 to b.txt. Do not install anything or touch other files.".into();
+        plan.tasks[1].checks = vec!["B contains sprowt-peer-42".into()];
+        store
+            .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
+            .unwrap();
+        for run in &m.execution.as_ref().unwrap().tasks {
+            store
+                .finish_task(m.id, &run.source, "paused", "", &[])
+                .unwrap();
+        }
+        store.retry_tasks(m.id).unwrap();
+        m.planning = store.planning(m.id).unwrap();
+        m.execution = store.execution(m.id).unwrap();
+        let root = m.execution.as_ref().unwrap().workspace.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let project = data.0.join("project");
+            let mut workers: Vec<_> = (0..2)
+                .map(|slot| {
+                    Worker::start(
+                        &project,
+                        &m,
+                        store.worker_at(m.id, Role::Executor, slot).unwrap(),
+                        Role::Executor,
+                        None,
+                    )
+                    .unwrap()
+                })
+                .collect();
+            let deadline = Instant::now() + Duration::from_secs(240);
+            let mut waited = false;
+            while Instant::now() < deadline && m.execution.as_ref().unwrap().status != "review" {
+                workers[0].poll(&mut store, &mut m, true, &project).unwrap();
+                waited |= m.execution.as_ref().unwrap().tasks[0].status == "waiting";
+                workers[1]
+                    .poll(&mut store, &mut m, waited, &project)
+                    .unwrap();
+                for worker in &workers {
+                    assert!(
+                        worker.error.is_none(),
+                        "{}",
+                        worker.error.as_deref().unwrap_or("")
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            assert!(waited, "A must pause until B's answer");
+            assert_eq!(
+                m.execution.as_ref().unwrap().status,
+                "review",
+                "Tasks: {}",
+                m.execution
+                    .as_ref()
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .map(|t| format!("{}: {} · {}", t.task_id, t.status, t.summary))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            );
+            let messages = store.mailbox(m.id).unwrap();
+            let ask = messages
+                .iter()
+                .find(|m| m.kind == "ask" && m.to_task == "b")
+                .unwrap();
+            let reply = messages
+                .iter()
+                .find(|m| m.reply_to == Some(ask.id))
+                .unwrap();
+            assert!(ask.answered && ask.acknowledged == Some(ids[1]));
+            assert_eq!(reply.acknowledged, Some(ids[0]));
+            for file in ["a.txt", "b.txt"] {
+                assert_eq!(
+                    fs::read_to_string(root.join("work").join(file))
+                        .unwrap()
+                        .trim(),
+                    "sprowt-peer-42"
+                );
+            }
+        }));
+        crate::sandbox::delete(&root).unwrap();
+        result.unwrap();
     }
 
     fn accept(worker: &mut Worker, store: &mut Store, code_mod: &mut CodeMod) {

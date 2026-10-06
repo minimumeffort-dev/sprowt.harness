@@ -34,7 +34,7 @@ The first launch in an empty project opens creation directly. Ctrl+J adds a newl
 
 ## Draft, queue, conversation
 
-A draft is what you are typing. Enter saves it to the queue. During work, ordinary instructions wait. Once a version is verified, the next instruction starts a new edit plan. Sending edits after a failed run replans against the work saved so far. That request and worker replies appear in the conversation. Drafts remain separate.
+A draft is what you are typing. Enter saves it to the queue, or answers the highlighted worker question when the composer says **answer #ID**. During work, ordinary instructions wait. Once a version is verified, the next instruction starts a new edit plan. Sending edits after a failed run replans against the work saved so far. That request and worker replies appear in the conversation. Drafts remain separate. See [Worker communication](coordination.md) for asks, replies and automatic resumption.
 
 Open **Ctrl+Q** to manage pending instructions:
 

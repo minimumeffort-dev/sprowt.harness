@@ -30,6 +30,8 @@ Codex’s configured effort is used when available. When unset, the harness read
 
 Plans show task titles, outcomes and dependencies first. **Ctrl+O · show/hide plan details** sits beside the heading. It expands file scopes, completion checks and planner model details. Check commands appear in indented blocks; multiline code keeps its source indentation, and wrapped lines stay inside the block. Expanding keeps the heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
 
+The same toggle reveals saved [worker messages](coordination.md). Questions for you stay visible with the sender and message ID; the composer says **answer #ID** and Enter saves your reply. Questions arriving while you type preserve the draft. Routine coordination stays collapsed.
+
 Completed planner chatter stays saved but is hidden from the transcript. The plan shows task progress; details show check results. **Ctrl+D** opens a full-width diff. Use **p** to publish verified changes as a PR, or **Ctrl+S** from the conversation. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
 
 Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Failed operations show **Ctrl+R · retry Git operation**. A published mod keeps its composer for requesting edits on the same PR.
@@ -53,14 +55,14 @@ Git setup shows the starting file list. GitHub setup uses Tab to choose connect 
 
 | Key | Action |
 | --- | --- |
-| Enter | Create a described mod, queue a message or save an edit |
+| Enter | Create a described mod, answer a highlighted question, queue a message or save an edit |
 | Ctrl+J | Add a newline |
 | Ctrl+P | Switch, create, close, reopen or delete a codemod |
 | Ctrl+Q | Manage queued instructions |
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
 | Ctrl+U | Sync the project branch and check the codemod's target |
-| Ctrl+O | Show or hide saved plan details |
+| Ctrl+O | Show or hide plan details and worker messages |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
 | Page Up / Page Down | Scroll on keyboards with those keys |

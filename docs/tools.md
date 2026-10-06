@@ -5,11 +5,13 @@ A small Rust dispatcher handles harness-owned operations. It checks the caller, 
 ```mermaid
 flowchart TB
     workflow["Harness workflow · confirmed actions"] --> dispatcher["Tool dispatcher · validate caller and inputs"]
-    agent["Executor · package request"] --> dispatcher
+    agent["Executor · package or message request"] --> dispatcher
     dispatcher --> host["Mac · Git, GitHub and resource cleanup"]
     dispatcher --> vm["Own mod VM · system package installation"]
+    dispatcher --> mailbox["Host SQLite · own codemod task mailboxes"]
     host --> result["Typed result · progress and recorded outcome"]
     vm --> result
+    mailbox --> result
 ```
 
 ## Available operations
@@ -32,8 +34,11 @@ flowchart TB
 | `prune_mod` | Harness | Remove an unchanged closed worktree; retain its branch |
 | `cleanup_mod` | Harness | VM deletion and Git worktree cleanup |
 | `install_system_packages` | Executor | Package setup inside its own Linux VM |
+| `send_worker_message` | Executor | Save an ask, reply or update in its codemod |
+| `read_worker_messages` | Executor | Read its assigned task's mailbox and peer assignments |
+| `ack_worker_messages` | Executor | Acknowledge its inbox messages |
 
-Only package installation is advertised to Codex, using a JSON input schema. Unknown tools, host operations requested by workers and package requests from planners are rejected. Package names and reasons use the same validation for JSON and typed Rust calls. The connected VM must match the workspace bound to that worker.
+Package installation and [worker messaging](coordination.md) are advertised to Codex executors using JSON input schemas. Unknown tools, host Git operations requested by workers and these tools requested by planners are rejected. Package names and reasons use the same validation for JSON and typed Rust calls. The connected VM must match the workspace bound to that worker. Mailboxes use its host-bound database, codemod and current task assignment; arguments cannot choose them.
 
 Initial Git setup and the GitHub destination require confirmation. Setup checks the reviewed file snapshot; adoption preserves the saved baseline. Repository setup validates owner/name, checks history and records progress for retries. Publication requires confirmation and verified source. Closing saves source locally before VM deletion. Pruning checks the saved commit and refuses outside edits. Edit rounds check PR status and its published commit when present. Git checkpoints own recovery. Credentials remain in host adapters.
 

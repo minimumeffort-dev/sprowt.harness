@@ -46,6 +46,7 @@ pub enum Action {
 }
 
 pub enum Event {
+    MailboxChanged,
     Preparing(String),
     Configured(Selection),
     TaskConfigured {
@@ -403,7 +404,10 @@ fn flush(
                 if params["threadId"] != thread || !params["namespace"].is_null() {
                     return Err(io::Error::other("This client tool is not available."));
                 }
-                let mut guard = vm.as_ref().map(|vm| vm.lock().unwrap());
+                let mut guard = vm
+                    .as_ref()
+                    .filter(|_| params["tool"] == crate::packages::TOOL)
+                    .map(|vm| vm.lock().unwrap());
                 if let Some(vm) = &mut guard {
                     vm.tasks.active = task;
                 }
@@ -417,7 +421,17 @@ fn flush(
                     )
                     .map(Output::message)
             })();
+            let changed = result.is_ok()
+                && [
+                    crate::mailbox::SEND,
+                    crate::mailbox::READ,
+                    crate::mailbox::ACK,
+                ]
+                .contains(&params["tool"].as_str().unwrap_or(""));
             rpc.write(json!({"id":message["id"],"result":{"success":result.is_ok(),"contentItems":[{"type":"inputText","text":result.unwrap_or_else(|error|error.to_string())}]}}))?;
+            if changed {
+                let _ = outgoing.send(Event::MailboxChanged);
+            }
             continue;
         }
         if message["method"] == "turn/completed"
@@ -543,7 +557,7 @@ fn serve(
         .as_ref()
         .map(|vm| vm.lock().unwrap().worker_home(context.worker_id()))
         .transpose()?
-        .map(|home| home.join("system-packages-thread"));
+        .map(|home| home.join("worker-messages-v1-thread"));
     let resume = resume.filter(|resume| {
         marker
             .as_ref()

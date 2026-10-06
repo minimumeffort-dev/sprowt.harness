@@ -21,6 +21,24 @@ pub struct CodeMod {
     pub messages: Vec<Message>,
     pub queue: Vec<QueuedMessage>,
     pub steering: Vec<String>,
+    pub coordination: Vec<crate::mailbox::Envelope>,
+}
+
+impl CodeMod {
+    pub fn question(&self) -> Option<&crate::mailbox::Envelope> {
+        self.coordination.iter().find(|m| self.needs_answer(m))
+    }
+
+    pub fn needs_answer(&self, message: &crate::mailbox::Envelope) -> bool {
+        !self.closed
+            && message.needs_user()
+            && self.execution.as_ref().is_some_and(|execution| {
+                execution
+                    .tasks
+                    .iter()
+                    .any(|run| Some(run.id) == message.task)
+            })
+    }
 }
 
 #[derive(Clone)]
@@ -33,6 +51,7 @@ pub struct Message {
 }
 
 pub struct WorkerRecord {
+    pub database: std::path::PathBuf,
     pub id: i64,
     pub thread_id: Option<String>,
     pub pending: Option<String>,
@@ -56,7 +75,7 @@ pub struct ProjectState {
     pub mods: Vec<CodeMod>,
 }
 
-pub struct Store(Connection);
+pub struct Store(pub(crate) Connection);
 
 impl Store {
     pub fn local() -> io::Result<Self> {
@@ -239,6 +258,9 @@ impl Store {
                 connection.execute_batch(sql).map_err(io::Error::other)?;
             }
         }
+        connection
+            .execute_batch(crate::mailbox::SCHEMA)
+            .map_err(io::Error::other)?;
         let has_worker = connection
             .prepare("PRAGMA table_info(task_runs)")
             .map_err(io::Error::other)?
@@ -307,6 +329,7 @@ impl Store {
                     messages: Vec::new(),
                     queue: Vec::new(),
                     steering: Vec::new(),
+                    coordination: Vec::new(),
                 })
             })?
             .collect::<Result<Vec<_>>>()?;
@@ -314,6 +337,7 @@ impl Store {
             code_mod.planning = self.planning(code_mod.id)?;
             code_mod.execution = self.execution(code_mod.id)?;
             code_mod.git_root = self.git_root(code_mod.id)?;
+            code_mod.coordination = self.mailbox(code_mod.id)?;
             let mut statement = self.0.prepare(
                 "SELECT item_id, role, body, model, effort FROM messages WHERE mod_id = ?1 ORDER BY id",
             )?;
@@ -417,6 +441,7 @@ impl Store {
             messages: if planned { vec![message] } else { Vec::new() },
             queue: Vec::new(),
             steering: Vec::new(),
+            coordination: Vec::new(),
         })
     }
 
@@ -714,7 +739,8 @@ impl Store {
     pub fn worker_at(&self, mod_id: i64, role: Role, slot: usize) -> Result<WorkerRecord> {
         let read = || {
             self.0.query_row("SELECT id, thread_id, pending FROM workers WHERE mod_id = ?1 AND role = ?2 ORDER BY id LIMIT 1 OFFSET ?3", params![mod_id,role.name(),slot as i64],
-            |row| Ok(WorkerRecord { id:row.get(0)?, thread_id:row.get(1)?, pending:row.get(2)? })).optional()
+            |row| Ok(WorkerRecord { database:Path::new(self.0.path().unwrap()).to_owned(),
+                id:row.get(0)?, thread_id:row.get(1)?, pending:row.get(2)? })).optional()
         };
         if let Some(worker) = read()? {
             return Ok(worker);
@@ -788,12 +814,20 @@ impl Store {
                 .find(|task| task.id == run.task_id)
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             let mut prompt = crate::execution::task_prompt(&plan, task, run.id);
+            let inbox = self.task_mail(mod_id, run.id)?;
+            if !inbox.is_empty() {
+                prompt.push_str(&format!(
+                    "\nSaved inbox (acknowledge received IDs):\n{inbox}"
+                ));
+            }
             if let Some(update) = crate::mod_sync::load(&execution.workspace)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
             {
                 prompt.push_str(&format!("\nIntegration context:\n{}", update.context));
             }
             vec![prompt]
+        } else if source.starts_with("00000005-") {
+            vec![self.mail_prompt(mod_id, id)?]
         } else {
             return Err(rusqlite::Error::InvalidQuery);
         };
@@ -902,6 +936,21 @@ impl Store {
             params![worker, input.source],
             |row| row.get(0),
         )?;
+        if input.source.starts_with("00000005-") {
+            let id = i64::from_str_radix(input.source.rsplit('-').next().unwrap(), 16)
+                .map_err(|_| rusqlite::Error::InvalidQuery)?;
+            if transaction.execute(
+                "UPDATE worker_messages SET delivered_by=COALESCE(delivered_by,?3)
+                WHERE mod_id=?1 AND id=?2 AND recipient_task IN(
+                    SELECT id FROM task_runs WHERE mod_id=?1 AND worker_id=?3)",
+                params![mod_id, id, worker],
+            )? != 1
+            {
+                return Err(rusqlite::Error::QueryReturnedNoRows);
+            }
+            transaction.execute("UPDATE workers SET pending=NULL WHERE id=?1", [worker])?;
+            return transaction.commit();
+        }
         if input.source.starts_with("00000003-") {
             let changed = transaction.execute(
                 "UPDATE plans SET status='running' WHERE mod_id=?1 AND source=?2",
@@ -1335,7 +1384,7 @@ impl Store {
         if changed != 1 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        transaction.execute("UPDATE executions SET status=CASE WHEN EXISTS(SELECT 1 FROM task_runs WHERE mod_id=?1 AND status IN ('blocked','paused')) THEN 'blocked' ELSE 'running' END WHERE mod_id=?1", [mod_id])?;
+        transaction.execute("UPDATE executions SET status=CASE WHEN EXISTS(SELECT 1 FROM task_runs WHERE mod_id=?1 AND status IN ('blocked','paused','waiting')) THEN 'blocked' ELSE 'running' END WHERE mod_id=?1", [mod_id])?;
         transaction.commit()
     }
 
@@ -1347,7 +1396,7 @@ impl Store {
         for task in execution
             .tasks
             .iter()
-            .filter(|task| ["blocked", "paused"].contains(&task.status.as_str()))
+            .filter(|task| ["blocked", "paused", "waiting"].contains(&task.status.as_str()))
         {
             let attempt: i64 = transaction.query_row(
                 "SELECT attempt FROM task_runs WHERE id=?1",
@@ -1415,7 +1464,7 @@ impl Store {
     }
 }
 
-fn task_source(id: i64, attempt: i64) -> String {
+pub(crate) fn task_source(id: i64, attempt: i64) -> String {
     format!(
         "00000004-{:04x}-4{:03x}-8000-{id:012x}",
         attempt & 0xffff,

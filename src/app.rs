@@ -1666,11 +1666,10 @@ impl App {
             {
                 return self.start_execution(active);
             }
-            if self.mods[active]
-                .execution
-                .as_ref()
-                .is_some_and(|e| matches!(e.status.as_str(), "review" | "applied" | "blocked"))
-                && !self.mods[active].queue.is_empty()
+            if self.mods[active].execution.as_ref().is_some_and(|e| {
+                matches!(e.status.as_str(), "review" | "applied" | "blocked")
+                    && !e.tasks.iter().any(|t| t.status == "waiting")
+            }) && !self.mods[active].queue.is_empty()
                 && !self.execution_busy()
             {
                 self.start_continuation(active);
@@ -2125,6 +2124,7 @@ impl App {
                     && reviewing_mod != Some(m.id)
                     && m.execution.as_ref().is_some_and(|e| {
                         matches!(e.status.as_str(), "review" | "applied" | "blocked")
+                            && !e.tasks.iter().any(|t| t.status == "waiting")
                     })
                     && !self
                         .workers
@@ -2471,8 +2471,18 @@ impl App {
             && !message.trim().is_empty()
         {
             let code_mod = &mut self.mods[index];
-            let queued = self.store.enqueue(code_mod.id, &message)?;
-            code_mod.queue.push(queued);
+            if let Some(question) = code_mod.question() {
+                if message.len() > 4000 {
+                    self.notice = Some("Keep the answer under 4,000 bytes.".into());
+                    return Ok(());
+                }
+                let reply = self.store.user_answer(code_mod.id, question.id, &message)?;
+                code_mod.messages.push(reply);
+                code_mod.coordination = self.store.mailbox(code_mod.id)?;
+            } else {
+                let queued = self.store.enqueue(code_mod.id, &message)?;
+                code_mod.queue.push(queued);
+            }
             code_mod.draft.clear();
             self.input.clear();
             self.celebrate();
@@ -2996,6 +3006,65 @@ mod tests {
             .iter()
             .map(|message| message.body.as_str())
             .collect()
+    }
+
+    #[test]
+    fn worker_questions_use_the_composer_and_routine_messages_stay_in_details() {
+        let (data, mut store, m, workers, _) = crate::mailbox::tests::fixture();
+        crate::mailbox::tests::send(
+            &mut store, m.id, workers[0], "b", "update", None, "contract",
+        );
+        let ask = crate::mailbox::tests::send(
+            &mut store, m.id, workers[0], "user", "ask", None, "decision",
+        );
+        let second = crate::mailbox::tests::send(
+            &mut store,
+            m.id,
+            workers[1],
+            "user",
+            "ask",
+            None,
+            "other-decision",
+        );
+        store.save_draft(m.id, "Keep the current behavior").unwrap();
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        let compact = rows(&screen(&mut app, 110, 40)).join("\n");
+        assert!(compact.contains("Message decision"));
+        assert!(compact.contains(&format!("answer #{ask}")));
+        assert!(compact.contains("↵ answer"));
+        assert!(!compact.contains("Message contract"));
+        assert_eq!(app.input.lines(), ["Keep the current behavior"]);
+        key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
+        let expanded = rows(&screen(&mut app, 110, 50)).join("\n");
+        assert!(expanded.contains("Message contract"));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(queued(&app).is_empty());
+        assert!(app.input.lines().join("").is_empty());
+        assert_eq!(app.current_mod().unwrap().question().unwrap().id, second);
+        assert!(
+            app.current_mod()
+                .unwrap()
+                .messages
+                .last()
+                .unwrap()
+                .body
+                .contains("Keep the current behavior")
+        );
+        paste(&mut app, "Use the simple option");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.current_mod().unwrap().question().is_none());
+        assert!(queued(&app).is_empty());
+        paste(&mut app, "Next edit");
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(queued(&app), ["Next edit"]);
+        let reopened = app.store.load_project(&app.project).unwrap();
+        assert!(reopened.mods[0].question().is_none());
+        assert!(
+            reopened.mods[0]
+                .messages
+                .iter()
+                .any(|m| m.body.contains("Use the simple option"))
+        );
     }
 
     fn screen(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {

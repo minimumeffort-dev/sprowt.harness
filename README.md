@@ -14,6 +14,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Planning and routing](docs/planning.md): Astra xhigh prepares the plan; Jev routes each task to Sol 6.1 medium, high or xhigh.
 - [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
 - [Plan execution](docs/execution.md): up to two Codex executors work in parallel, with separate task folders and combined verification.
+- [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod, with local sockets for browser checks. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
 - [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Workers within and across mods can run in parallel.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
@@ -28,7 +29,7 @@ Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per proje
 
 ## Architecture today
 
-Rust owns the interface, scheduling, workers and saved state. A shared tool dispatcher validates harness-owned operations and routes them to host or VM adapters. Codex plans and edits. Jev evaluates task difficulty and risk through a host-only API adapter.
+Rust owns the interface, scheduling, workers, task mailboxes and saved state. A shared tool dispatcher validates operations and routes them to host or VM adapters. Codex plans and edits. Jev evaluates task difficulty and risk through a host-only API adapter.
 
 ```mermaid
 flowchart TB
@@ -55,6 +56,8 @@ flowchart TB
 Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse follows later.
 
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
+
+Workers exchange asks, replies and updates through saved task mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows routine coordination alongside plan details.
 
 Merge PRs one at a time on GitHub. The harness syncs your project branch on startup and every 30 seconds while open, even with no codemods. Local edits and staging stay; unsafe updates pause. **Ctrl+U** checks immediately.
 
@@ -115,14 +118,14 @@ Setup saves the key in private local configuration, so the installed harness can
 
 | Key | Action |
 | --- | --- |
-| Enter | Send edits or queue an instruction during work |
+| Enter | Answer a highlighted question, send edits or queue an instruction |
 | Ctrl+J | Newline |
 | Ctrl+P | Switch, create, close, reopen or delete a codemod |
 | Ctrl+Q | Open the queue |
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
 | Ctrl+U | Sync the project branch and check the codemod's target |
-| Ctrl+O | Show or hide plan details |
+| Ctrl+O | Show or hide plan details and worker messages |
 | Ctrl+D | Review working-folder changes |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
 | Esc | Back, or quit from the conversation |
@@ -144,7 +147,7 @@ Git ignores local environment files, credentials, logs and databases. Use placeh
 
 ## What’s next
 
-Muse, direct worker communication and a review worker per mod. Shared context, memory, MCPs and skills follow in small batches.
+Muse and a review worker per mod. Shared context, memory, MCPs and skills follow in small batches.
 
 ## Development
 

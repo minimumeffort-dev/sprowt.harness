@@ -49,8 +49,12 @@ The live status shows the model and configured reasoning effort reported by Code
 
 ## Delivery and recovery
 
+Executors share [task mailboxes](coordination.md) through the host dispatcher. Mailbox calls run independently of the VM controller, so messaging does not hold the lock used for Git integration or package setup. User answers use the composer; waiting tasks resume after their questions are answered.
+
 Each queued or steering instruction has a stable delivery ID. Before sending, the harness saves it as pending. Once Codex accepts it, a transaction records the instruction in history and clears that worker’s pending state. Broadcast steering tracks an acknowledgement per worker and disappears only when all targets have accepted.
 
 On reconnect, Codex’s conversation records are checked for that ID. If delivery cannot be confirmed, the instruction is retained and automatic retry pauses. This reduces duplicate submissions; acceptance still does not mean the turn completed successfully. Tasks keep their assigned worker, delivery IDs, Codex turn IDs, status and checks. Only completed turns with passing verification can finish a task. If Codex has no saved file for an idle conversation, the harness starts a fresh one; uncertain task delivery never uses that fallback.
 
-Currently verified on macOS with Codex CLI **0.159.2**. Two Codex executors can share a mod VM. Muse and direct peer communication are future work.
+Worker messages use stable delivery IDs too, with separate receipt acknowledgements. Rejected injections remain in the saved inbox. Conversations created without the current worker tools start fresh when reconnected; saved source and history remain. Uncertain delivery still pauses for recovery.
+
+Currently verified on macOS with Codex CLI **0.159.2**. Two Codex executors can share a mod VM and exchange messages. Muse is future work.

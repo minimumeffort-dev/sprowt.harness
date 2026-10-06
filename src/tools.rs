@@ -12,7 +12,7 @@ use std::{
 use serde_json::{Value, json};
 
 use crate::{
-    git_mod, mod_sync, packages,
+    git_mod, mailbox, mod_sync, packages,
     plan::{Plan, Role},
     sandbox::Sandbox,
     store::CodeMod,
@@ -37,9 +37,12 @@ enum Tool {
     ReopenMod,
     PruneMod,
     InstallPackages,
+    SendMessage,
+    ReadMessages,
+    AckMessages,
 }
 
-const REGISTRY: [Tool; 16] = [
+const REGISTRY: [Tool; 19] = [
     Tool::SyncProject,
     Tool::InitializeProject,
     Tool::AdoptSnapshot,
@@ -56,6 +59,9 @@ const REGISTRY: [Tool; 16] = [
     Tool::ReopenMod,
     Tool::PruneMod,
     Tool::InstallPackages,
+    Tool::SendMessage,
+    Tool::ReadMessages,
+    Tool::AckMessages,
 ];
 static LOG: Mutex<()> = Mutex::new(());
 
@@ -78,11 +84,21 @@ impl Tool {
             Self::ReopenMod => "reopen_mod",
             Self::PruneMod => "prune_mod",
             Self::InstallPackages => packages::TOOL,
+            Self::SendMessage => mailbox::SEND,
+            Self::ReadMessages => mailbox::READ,
+            Self::AckMessages => mailbox::ACK,
         }
     }
 
     fn permitted(self, context: &Context) -> bool {
         match self {
+            Self::SendMessage | Self::ReadMessages | Self::AckMessages => {
+                context
+                    .worker
+                    .is_some_and(|(_, role)| role == Role::Executor)
+                    && context.database.is_some()
+                    && context.root.is_some()
+            }
             Self::SyncProject => context.worker.is_none() && context.project.is_some(),
             Self::InstallPackages => {
                 context
@@ -96,6 +112,7 @@ impl Tool {
 }
 
 pub struct Context {
+    database: Option<PathBuf>,
     pub tasks: Vec<i64>,
     mod_id: Option<i64>,
     worker: Option<(i64, Role)>,
@@ -108,6 +125,7 @@ pub struct Context {
 impl Context {
     pub fn project(project: &Path, root: PathBuf) -> Self {
         Self {
+            database: None,
             tasks: Vec::new(),
             mod_id: None,
             worker: None,
@@ -120,6 +138,7 @@ impl Context {
 
     pub fn harness(project: &Path, code_mod: &CodeMod) -> Self {
         Self {
+            database: None,
             tasks: code_mod
                 .execution
                 .as_ref()
@@ -142,6 +161,7 @@ impl Context {
 
     pub fn worker(code_mod: &CodeMod, id: i64, role: Role) -> Self {
         Self {
+            database: None,
             tasks: code_mod
                 .execution
                 .as_ref()
@@ -165,6 +185,11 @@ impl Context {
 
     pub fn worker_id(&self) -> i64 {
         self.worker.map_or(0, |(id, _)| id)
+    }
+
+    pub fn with_mailbox(mut self, database: &Path) -> Self {
+        self.database = Some(database.to_owned());
+        self
     }
 
     pub fn workspace(&self) -> Option<&Path> {
@@ -202,6 +227,7 @@ pub enum Request {
     ReopenMod,
     PruneMod,
     InstallPackages(packages::Request),
+    Message(mailbox::Request),
 }
 
 impl Request {
@@ -223,6 +249,9 @@ impl Request {
             Self::ReopenMod => Tool::ReopenMod,
             Self::PruneMod => Tool::PruneMod,
             Self::InstallPackages(_) => Tool::InstallPackages,
+            Self::Message(mailbox::Request::Send(_)) => Tool::SendMessage,
+            Self::Message(mailbox::Request::Read) => Tool::ReadMessages,
+            Self::Message(mailbox::Request::Ack(_)) => Tool::AckMessages,
         }
     }
 }
@@ -246,11 +275,14 @@ impl Output {
 }
 
 pub fn advertised(context: &Context) -> Vec<Value> {
-    REGISTRY
-        .iter()
-        .filter(|tool| **tool == Tool::InstallPackages && tool.permitted(context))
-        .map(|_| packages::tool())
-        .collect()
+    let mut tools = Vec::new();
+    if Tool::InstallPackages.permitted(context) {
+        tools.push(packages::tool());
+    }
+    if Tool::SendMessage.permitted(context) {
+        tools.extend(mailbox::tools());
+    }
+    tools
 }
 
 pub struct Dispatcher<'a> {
@@ -287,7 +319,12 @@ impl<'a> Dispatcher<'a> {
         let tool = REGISTRY.iter().copied().find(|tool| tool.name() == name);
         self.dispatch(
             tool,
-            || packages::Request::parse(arguments).map(Request::InstallPackages),
+            || match name {
+                mailbox::SEND | mailbox::READ | mailbox::ACK => {
+                    mailbox::Request::parse(name, arguments).map(Request::Message)
+                }
+                _ => packages::Request::parse(arguments).map(Request::InstallPackages),
+            },
             progress,
         )
     }
@@ -340,6 +377,18 @@ impl<'a> Dispatcher<'a> {
             }
             let root = self.context.root()?;
             match request {
+                Request::Message(request) => {
+                    let mut store =
+                        crate::store::Store::open(self.context.database.as_deref().unwrap())?;
+                    let result = store
+                        .mailbox_call(
+                            self.context.mod_id.unwrap(),
+                            self.context.worker_id(),
+                            request,
+                        )
+                        .map_err(io::Error::other)?;
+                    Ok(Output::Text(result.to_string()))
+                }
                 Request::SyncProject => {
                     progress("syncing project branch");
                     crate::git_sync::project(
@@ -568,6 +617,7 @@ mod tests {
 
     fn worker_context(context: &Context, role: Role) -> Context {
         Context {
+            database: None,
             tasks: Vec::new(),
             mod_id: context.mod_id,
             worker: Some((9, role)),
