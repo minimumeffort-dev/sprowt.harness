@@ -317,6 +317,15 @@ pub(crate) fn run(
                 return fs::read(&out);
             }
             let message = fs::read_to_string(&err).unwrap_or_default();
+            let mut lines = message.lines().collect::<Vec<_>>();
+            if let Some(index) = lines.iter().position(|line| {
+                let line = line.trim_start();
+                line.starts_with("error:") || line.starts_with("fatal:")
+            }) {
+                let cause = lines.remove(index);
+                lines.insert(0, cause);
+            }
+            let message = lines.join("\n");
             return Err(io::Error::other(if message.trim().is_empty() {
                 "Git/GitHub command failed.".into()
             } else {
@@ -2481,6 +2490,40 @@ esac
         publish(&root, "Recover commit checkpoint", false, &program, &flag).unwrap();
         assert_eq!(load(&root).unwrap().head.as_deref(), Some(head.as_str()));
         cleanup(&root, &flag).unwrap();
+    }
+
+    #[test]
+    fn command_failures_put_the_cause_before_progress_without_losing_stderr() {
+        let data = TestData::new();
+        fs::create_dir_all(&data.0).unwrap();
+        for cause in [
+            "error: cannot lock ref 'refs/remotes/origin/main'",
+            "fatal: could not read remote",
+        ] {
+            let message = format!(
+                "From fixture\n{}\n{cause}\nFurther details\n",
+                "progress ".repeat(300)
+            );
+            let mut command = Command::new("/bin/sh");
+            command.args(["-c", "printf '%s' \"$1\" >&2; exit 1", "fixture", &message]);
+            let error = run(command, &data.0, &AtomicBool::new(false))
+                .unwrap_err()
+                .to_string();
+            assert!(error.starts_with(cause), "{error}");
+            assert!(error.chars().count() <= 2000);
+            assert_eq!(
+                fs::read_to_string(data.0.join("git-error")).unwrap(),
+                message
+            );
+        }
+        let mut command = Command::new("/bin/sh");
+        command.args(["-c", "printf '%s' 'GitHub request failed' >&2; exit 1"]);
+        assert_eq!(
+            run(command, &data.0, &AtomicBool::new(false))
+                .unwrap_err()
+                .to_string(),
+            "GitHub request failed"
+        );
     }
 
     #[test]

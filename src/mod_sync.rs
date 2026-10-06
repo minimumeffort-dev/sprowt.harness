@@ -103,6 +103,7 @@ pub fn target(root: &Path, program: &Path, cancelled: &AtomicBool) -> io::Result
         "--no-tags",
         "--no-recurse-submodules",
         "--no-write-fetch-head",
+        "--refmap=",
         "--",
         "origin",
         &format!("+{reference}:{tracking}"),
@@ -706,6 +707,69 @@ pub(crate) mod tests {
         update.imported = true;
         save(root, &update).unwrap();
         workspace::review(root).unwrap().fingerprint
+    }
+
+    #[test]
+    fn target_checks_leave_project_refs_and_fetch_state_alone() {
+        let (data, repo, root, target, _) = fixture();
+        let flag = AtomicBool::new(false);
+        let base = git_mod::load(&root).unwrap().base;
+        git(
+            &root,
+            &repo,
+            &["update-ref", "refs/remotes/origin/main", &base],
+            &flag,
+        )
+        .unwrap();
+        let lock = repo.join(".git/refs/remotes/origin/main.lock");
+        fs::write(&lock, "another fetch owns this lock\n").unwrap();
+        fs::write(repo.join(".git/FETCH_HEAD"), "project fetch state\n").unwrap();
+        let second = data.0.join("workspaces/second-mod");
+        fs::create_dir(&second).unwrap();
+        git_mod::prepare(&repo, &second, &flag).unwrap();
+
+        for workspace in [&root, &second] {
+            let fetched = super::target(workspace, Path::new("gh"), &flag)
+                .unwrap()
+                .unwrap();
+            assert_eq!(fetched.head, target.head);
+            let state = git_mod::load(workspace).unwrap();
+            assert_eq!(
+                git(
+                    workspace,
+                    &repo,
+                    &[
+                        "rev-parse",
+                        &format!("refs/sprowt/upstream/{}", state.branch)
+                    ],
+                    &flag,
+                )
+                .unwrap(),
+                target.head
+            );
+        }
+        assert_eq!(
+            git(
+                &root,
+                &repo,
+                &["rev-parse", "refs/remotes/origin/main"],
+                &flag
+            )
+            .unwrap(),
+            base
+        );
+        assert_eq!(
+            git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
+            base
+        );
+        assert_eq!(
+            fs::read_to_string(lock).unwrap(),
+            "another fetch owns this lock\n"
+        );
+        assert_eq!(
+            fs::read_to_string(repo.join(".git/FETCH_HEAD")).unwrap(),
+            "project fetch state\n"
+        );
     }
 
     #[test]

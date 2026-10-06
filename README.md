@@ -60,7 +60,7 @@ Publishing keeps the VM and worktree for further edits. Closing saves source and
 
 You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows plan details; **Ctrl+T** opens worker history. Finished versions show tasks, check counts and the publish action. Small changes can stay with one worker.
 
-Merge PRs one at a time on GitHub. The harness syncs your project branch on startup and every 30 seconds while open, even with no codemods. Local edits and staging stay; unsafe updates pause. **Ctrl+U** checks immediately.
+Merge PRs one at a time on GitHub. The harness syncs your project branch on startup and every 30 seconds while open, even with no codemods. Codemod checks fetch into separate references, so they can run alongside project sync. Local edits and staging stay; unsafe updates pause. **Ctrl+U** checks immediately.
 
 Other codemods finish their current work, save a checkpoint and update in their existing VM. A worker resolves text conflicts and rechecks the combined code. Open PRs become drafts during the update; Publish updates the same PR and marks it ready again. Product decisions pause for your input; binary conflicts need manual resolution.
 

@@ -41,7 +41,7 @@ flowchart TB
     result -->|"Ctrl+S"| publish["Review changes · confirm PR"]
 ```
 
-Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Failed operations show **Ctrl+R · retry Git operation**. A published mod keeps its composer for requesting edits on the same PR.
+Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Failed operations put Git's error before progress output and show **Ctrl+R · retry Git operation**. A published mod keeps its composer for requesting edits on the same PR.
 
 Codemod, queue and project setup dialogs share spacing and keyboard hints. Empty codemod lists say **No active codemods** or **No closed codemods**, with a new-codemod action. Hints adapt to the available actions and terminal width. Plans and publish confirmations omit repeated VM guidance; the conversation keeps room for tasks and replies.
 

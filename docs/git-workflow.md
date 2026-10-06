@@ -52,6 +52,8 @@ If planning failed before execution, **Ctrl+R** refreshes an untouched worktree 
 
 Build codemods in parallel; merge their PRs one at a time on GitHub. The harness checks each target branch every **30 seconds** while open. **Ctrl+U** checks immediately.
 
+Each codemod fetches into its own `refs/sprowt/upstream/<branch>` reference. Target checks leave remote-tracking references and `FETCH_HEAD` unchanged, so they can run alongside project sync and other codemod checks.
+
 ```mermaid
 flowchart TB
     merged["PR A merges on GitHub"] --> wait["Codemod B finishes current workers"]
