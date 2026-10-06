@@ -27,7 +27,7 @@ The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publica
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
-The [Muse compatibility probe](docs/workers.md#muse-compatibility-probe) confirms subscription login, streaming, MCP calls and steering. Muse **1.4.1** allows native host reads when a guard hook fails, so it is not connected to the scheduler yet.
+The [Muse compatibility probe](docs/workers.md#muse-compatibility-probe) confirms subscription login, streaming, MCP calls and steering. Muse **1.4.1** allows native host reads when a guard hook fails. Its managed deny policy validates but does not activate beside private settings, so Muse is not connected to the scheduler yet.
 
 ## Architecture today
 

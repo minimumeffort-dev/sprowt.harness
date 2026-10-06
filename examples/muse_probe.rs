@@ -31,6 +31,10 @@ fn main() -> io::Result<()> {
             let result = probe(&root.0, Boundary::Empty)?;
             return result.require_boundary();
         }
+        Some("--managed-policy") => {
+            let root = PrivateRoot::new()?;
+            return managed_policy_probe(&root.0);
+        }
         None => {}
         _ => return Err(io::Error::other("Unknown probe option.")),
     }
@@ -153,21 +157,8 @@ fn probe(root: &Path, boundary: Boundary) -> io::Result<Observed> {
     fs::write(config.join("settings.json"), serde_json::to_vec(&settings)?)?;
     private(&config.join("settings.json"), 0o600)?;
 
-    let mut command = Command::new("muse");
-    command
-        .args(["serve", "--disable-shell", "--disable-write"])
-        .current_dir(&workspace)
-        .env_clear();
-    for name in ["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG"] {
-        if let Some(value) = env::var_os(name) {
-            command.env(name, value);
-        }
-    }
-    command
-        .env("XDG_CONFIG_HOME", root.join("config"))
-        .env("XDG_DATA_HOME", root.join("data"))
-        .env("XDG_CACHE_HOME", root.join("cache"))
-        .env("MUSE_NO_AUTO_UPDATE", "1");
+    let mut command = muse_command(root, &workspace);
+    command.args(["serve", "--disable-shell", "--disable-write"]);
     let (child, mut client) = rpc::Rpc::start(&mut command)?;
     let _process = Process(child);
     client.versioned = true;
@@ -336,6 +327,80 @@ fn probe(root: &Path, boundary: Boundary) -> io::Result<Observed> {
     Ok(observed)
 }
 
+fn muse_command(root: &Path, workspace: &Path) -> Command {
+    let mut command = Command::new("muse");
+    command.current_dir(workspace).env_clear();
+    for name in ["HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG"] {
+        if let Some(value) = env::var_os(name) {
+            command.env(name, value);
+        }
+    }
+    command
+        .env("XDG_CONFIG_HOME", root.join("config"))
+        .env("XDG_DATA_HOME", root.join("data"))
+        .env("XDG_CACHE_HOME", root.join("cache"))
+        .env("MUSE_NO_AUTO_UPDATE", "1");
+    command
+}
+
+fn managed_policy_probe(root: &Path) -> io::Result<()> {
+    let workspace = root.join("workspace");
+    let config = root.join("config/muse");
+    fs::create_dir(&workspace)?;
+    fs::create_dir_all(&config)?;
+    fs::write(config.join("settings.json"), b"{\"schema_version\":1}")?;
+    let before = muse_command(root, &workspace)
+        .args(["config", "status"])
+        .output()?;
+    ensure(before.status.success(), "Muse policy status failed.")?;
+    ensure(
+        policy_sources_absent(std::str::from_utf8(&before.stdout).unwrap_or_default()),
+        "BLOCKED: external or unknown managed configuration; per-worker isolation is unverified.",
+    )?;
+
+    let path = config.join("enterprise-policy.json");
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({"schema_version":1,"execution":{
+            "tool_rules":{"read_file":{"decision":"deny"}},"tool_rule_fallback":"deny"
+        }}))?,
+    )?;
+    private(&path, 0o600)?;
+    let validation = muse_command(root, &workspace)
+        .args(["config", "validate", "--plane", "policy", "--file"])
+        .arg(&path)
+        .output()?;
+    ensure(
+        validation.status.success(),
+        "Muse rejected the deny policy.",
+    )?;
+    println!("Deny policy document: valid. Validation does not activate it.");
+    let after = muse_command(root, &workspace)
+        .args(["config", "status"])
+        .output()?;
+    ensure(after.status.success(), "Muse policy status failed.")?;
+    ensure(
+        before.stdout == after.stdout,
+        "BLOCKED: managed state changed; this probe cannot attribute it to the private policy file.",
+    )?;
+    println!("Managed policy sources: absent; configuration generation unchanged.");
+    Err(io::Error::other(
+        "BLOCKED: policy beside private settings was not activated. No model turn or VM was started.",
+    ))
+}
+
+fn policy_sources_absent(status: &str) -> bool {
+    let rows: Vec<_> = status
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("plane=policy "))
+        .collect();
+    !rows.is_empty()
+        && rows
+            .iter()
+            .all(|row| row.split_whitespace().any(|field| field == "state=absent"))
+}
+
 fn shell_quote(text: &str) -> String {
     format!("'{}'", text.replace('\'', "'\\''"))
 }
@@ -478,6 +543,26 @@ impl Drop for Process {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn policy_status_requires_explicit_absence_from_every_policy_source() {
+        let absent = "plane=policy source_class=system_file state=absent\n  plane=policy source_class=macos_managed_preferences state=absent";
+        assert!(policy_sources_absent(absent));
+        for status in [
+            "",
+            "valid: plane=policy schema_version=1\nmember=execution.tool_rules.<id>.decision state=active",
+            "plane=defaults source_class=system_file state=absent",
+            "plane=policy source_class=system_file state=valid",
+            "plane=policy source_class=system_file state=unreadable",
+        ] {
+            assert!(!policy_sources_absent(status));
+        }
+        for state in ["valid", "unreadable", "unknown"] {
+            assert!(!policy_sources_absent(&format!(
+                "{absent}\nplane=policy source_class=windows_machine_policy state={state}"
+            )));
+        }
+    }
 
     #[test]
     fn guard_only_admits_the_exact_ping_call() {

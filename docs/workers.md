@@ -65,16 +65,22 @@ Muse **1.4.1** exposes `muse serve`, a JSON-RPC session protocol. Our [standalon
 
 ```mermaid
 flowchart TB
-    probe["Rust probe · temporary settings"] --> muse["Muse serve · host login"]
-    muse --> guard["Hook permits only MCP ping"]
-    guard -->|"Hook works"| denied["Native read blocked · MCP works"]
-    guard -->|"Hook helper fails"| read["Synthetic host file returned"]
-    read --> stop["Isolation check fails · Muse stays disconnected"]
+    probe["Private settings + managed deny document"] --> validation["Validate document · accepted"]
+    validation --> status["Check live policy sources · absent"]
+    status --> stop["Stop before model turn or VM"]
 ```
 
 ### Try it
 
-Sign in with `muse login`, then run from the harness repository:
+Check policy activation first. This runs offline and needs no login:
+
+```sh
+cargo run --example muse_probe --locked -- --managed-policy
+```
+
+It validates a deny document in a temporary configuration directory, then compares managed status before and after. Unknown or externally managed state stops the check. On Muse **1.4.1**, the policy sources stay absent and the configuration generation stays unchanged. **A `BLOCKED` exit is expected.**
+
+For the subscription, MCP and hook-failure checks, sign in with `muse login`, then run:
 
 ```sh
 cargo run --example muse_probe --locked
@@ -94,6 +100,8 @@ The probe creates private temporary settings, fixtures, guard audit and session 
 | Native writes disabled | No file created |
 | Empty `run.toolset` | Native tools absent, but MCP also unavailable |
 | MCP name in `run.toolset` | Startup rejects it as an unknown tool, including with the MCP server configured |
+| Managed deny document beside private settings | Validates; live policy sources remain absent |
+| `execution` policy in user `settings.json` | Startup reports an unknown member and ignores it |
 
 Muse's [permission guide](https://dev.meta.ai/docs/muse-code/permissions) says approval modes still admit file reads. Its [hook contract](https://meta-models.github.io/muse-code-sdk/next/guides/extend/hooks/) says failed hooks are ignored. A working hook therefore cannot be our isolation boundary. The probe rejects returned fixture contents, completed native tools, missing denial evidence or missing MCP/steering evidence.
 
@@ -103,7 +111,9 @@ To repeat the empty-toolset check:
 cargo run --example muse_probe --locked -- --no-native-tools
 ```
 
-Managed tool-deny policy documents validate in this binary, but placing one beside temporary user settings did not activate it. We have not verified a per-worker managed-policy configuration. No supported MCP-only setup has passed this probe yet.
+The validator's `state=active` describes a supported document member; it does not prove the policy was loaded. Muse documents [managed policy validation](https://dev.meta.ai/docs/muse-code/configuration) and [per-tool denial](https://dev.meta.ai/docs/muse-code/changelog), but this binary exposes no policy-file option for `serve`. Its exported session configuration recognizes MCP servers, not native tool policy. The tested MCP tool identities are also rejected in `execution.tool_rules`. We have not found a supported per-worker activation route. No machine-wide configuration was changed.
+
+A VM bridge needs an enforced native-tool denial with explicit MCP permission and observable startup evidence. Hook-free and failed-hook tests under that policy remain pending because it could not be activated.
 
 The probe starts no VM. Muse scheduling, mixed Codex–Muse execution, combined verification and VM cleanup remain unverified until the tool boundary holds under failure too.
 
