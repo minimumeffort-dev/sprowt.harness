@@ -420,6 +420,7 @@ impl Worker {
         state["plan"] = serde_json::json!(plan);
         state["task"] = serde_json::json!(task);
         state["previous_result"] = serde_json::json!({"summary":run.summary,"checks":run.checks});
+        state["repair"] = serde_json::json!(run.repair);
         Some(state)
     }
 
@@ -1051,6 +1052,29 @@ impl Worker {
                 store.task_status(self.mod_id, &source, "checking", None)?;
                 code_mod.execution = store.execution(self.mod_id)?;
                 self.begin_checks(source, report.checks);
+            }
+            Ok(report) if report.repair.is_some() => {
+                match store.request_repair(self.mod_id, &source, report.repair.as_ref().unwrap())? {
+                    Ok(()) => {
+                        save_message(
+                            store,
+                            code_mod,
+                            Message {
+                                item_id: Some(format!("repair:{source}")),
+                                role: "harness".into(),
+                                body: report.repair.as_ref().unwrap().notice(),
+                                model: None,
+                                effort: None,
+                            },
+                        )?;
+                        code_mod.execution = store.execution(self.mod_id)?;
+                        self.task_source = None;
+                        self.task_report = None;
+                        self.enabled = false;
+                        self.error = None;
+                    }
+                    Err(error) => self.block_task(store, code_mod, "blocked", error)?,
+                }
             }
             Ok(report) => self.block_task(store, code_mod, "blocked", report.summary)?,
             Err(error) => self.block_task(store, code_mod, "blocked", error)?,
@@ -2002,6 +2026,173 @@ mod tests {
             );
             assert_ne!(code_mod.execution.as_ref().unwrap().status, "review");
         }
+    }
+
+    #[test]
+    fn integration_report_requests_repair_without_claiming_completion() {
+        let (_data, mut store, mod_id, _plan, ids, _) = crate::repair::tests::fixture();
+        let mut code_mod = store
+            .load_project(Path::new("/repair-test"))
+            .unwrap()
+            .mods
+            .remove(0);
+        let record = store.worker_at(mod_id, Role::Executor, 0).unwrap();
+        let mut worker = Worker::start(
+            Path::new("/repair-test"),
+            &code_mod,
+            record,
+            Role::Planner,
+            None,
+        )
+        .unwrap();
+        worker.role = Role::Executor;
+        worker.status = Status::Ready;
+        worker.task_source = Some(crate::store::task_source(ids[2], 1));
+        worker.task_report = Some(json!({"status":"blocked","summary":"Retry is broken","checks":[],"repair":{
+            "task":"runtime","files":["app/runtime.js"],"check":"Retry works",
+            "command":["/usr/bin/node","/tasks/3/tests/retry.mjs"],"evidence":"Rejected download leaves Loading disabled."
+        }}).to_string());
+        worker.complete_task(&mut store, &mut code_mod).unwrap();
+        let execution = code_mod.execution.as_ref().unwrap();
+        assert_eq!(execution.tasks[2].status, "repair_wait");
+        assert!(!execution.complete());
+        assert!(worker.task_source.is_none() && !worker.enabled && worker.error.is_none());
+        assert!(
+            code_mod
+                .messages
+                .iter()
+                .any(|message| message.role == "harness"
+                    && message.body.contains("Repair requested"))
+        );
+        assert!(store.resume_repairs(mod_id).unwrap());
+    }
+
+    #[test]
+    #[ignore = "runs a Codex integration regression and a Muse repair in a disposable VM"]
+    fn codex_verifier_hands_a_regression_back_to_muse() {
+        use std::{
+            fs,
+            os::unix::fs::PermissionsExt,
+            sync::atomic::AtomicBool,
+            time::{Duration, Instant},
+        };
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("greet.sh"),
+            "#!/bin/sh\nprintf 'hello %s\\n' \"${1-}\"\n",
+        )
+        .unwrap();
+        fs::set_permissions(project.join("greet.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let mut m=store.create_mod(project_id,"A greeting script must greet a supplied name and reject an empty name with a nonzero exit. Verify it and document usage.").unwrap();
+        let plan=Plan::parse(&json!({"summary":"Verify greeting", "tasks":[
+            {"id":"runtime","title":"Greeting runtime","outcome":"Greet supplied names and reject empty names","files":["greet.sh"],"depends_on":[],"worker":"muse","checks":["Passing a name prints the greeting."]},
+            {"id":"integration","title":"Check empty input","outcome":"Verify empty input fails and document usage","files":["tests/empty.sh","README.md"],"depends_on":["runtime"],"worker":"codex","checks":["An empty name fails."]}
+        ]}).to_string()).unwrap();
+        store
+            .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
+            .unwrap();
+        m.planning = store.planning(m.id).unwrap();
+        let root = store.workspace_path(m.id).unwrap();
+        workspace::create(&project, &root).unwrap();
+        store.create_execution(m.id, &root, &plan).unwrap();
+        let muse = store
+            .worker_provider(m.id, Role::Executor, 0, "muse")
+            .unwrap();
+        let codex = store.worker_at(m.id, Role::Executor, 0).unwrap();
+        m.execution = store.execution(m.id).unwrap();
+        let runs = m.execution.as_ref().unwrap().tasks.clone();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // A completed happy-path check can miss a later integration regression.
+            let flag = AtomicBool::new(false);
+            let mut vm = crate::sandbox::Sandbox::prepare(&root, &flag, |_| {}).unwrap();
+            vm.prepare_tasks(&runs.iter().map(|run| run.id).collect::<Vec<_>>(), &flag)
+                .unwrap();
+            vm.assign_task(runs[0].id, muse.id, &flag).unwrap();
+            let check = Check {
+                task: Some(runs[0].id),
+                check: plan.tasks[0].checks[0].clone(),
+                command: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "test \"$(./greet.sh sprowt)\" = 'hello sprowt'".into(),
+                ],
+            };
+            let (_, checks) = vm
+                .verify_execution(&runs[0].source, &[check], &flag)
+                .unwrap();
+            assert_eq!(checks[0].exit_code, Some(0));
+            store
+                .0
+                .execute(
+                    "UPDATE task_runs SET worker_id=?2 WHERE id=?1",
+                    rusqlite::params![runs[0].id, muse.id],
+                )
+                .unwrap();
+            store
+                .finish_task(m.id, &runs[0].source, "done", "Happy path passes", &checks)
+                .unwrap();
+            drop(vm);
+            m.execution = store.execution(m.id).unwrap();
+            let mut workers = vec![
+                Worker::start_with_muse(&project, &m, muse, Role::Executor, None, true).unwrap(),
+                Worker::start_with_muse(&project, &m, codex, Role::Executor, None, true).unwrap(),
+            ];
+            let deadline = Instant::now() + Duration::from_secs(360);
+            let mut repaired = false;
+            while Instant::now() < deadline {
+                for worker in &mut workers {
+                    worker.poll(&mut store, &mut m, true, &project).unwrap();
+                }
+                if workers
+                    .iter()
+                    .all(|worker| matches!(worker.status, Status::Ready | Status::Complete))
+                    && store.resume_repairs(m.id).unwrap()
+                {
+                    repaired = true;
+                    m.execution = store.execution(m.id).unwrap();
+                    for worker in &mut workers {
+                        if !worker.enabled {
+                            worker.toggle();
+                        }
+                    }
+                }
+                let execution = m.execution.as_ref().unwrap();
+                assert_ne!(
+                    execution.status,
+                    "blocked",
+                    "{}",
+                    workers
+                        .iter()
+                        .filter_map(|worker| worker.error.as_deref())
+                        .collect::<Vec<_>>()
+                        .join("; ")
+                );
+                if execution.status == "review" {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            drop(workers);
+            assert!(repaired, "Verifier did not request a repair");
+            let execution = store.execution(m.id).unwrap().unwrap();
+            assert_eq!(execution.status, "review", "Repair did not finish");
+            assert_eq!(execution.checks.len(), 2);
+            assert!(
+                execution
+                    .checks
+                    .iter()
+                    .all(|check| check.exit_code == Some(0))
+            );
+            assert!(
+                root.join("work/tests/empty.sh").exists() && root.join("work/README.md").exists()
+            );
+        }));
+        crate::sandbox::delete(&root).unwrap();
+        result.unwrap();
     }
 
     #[test]

@@ -1750,6 +1750,8 @@ impl App {
                 .values()
                 .any(|w| w.mod_id == mod_id && (w.enabled || w.busy()));
             if running {
+                self.store.pause_repairs(mod_id)?;
+                self.mods[active].execution = self.store.execution(mod_id)?;
                 for worker in self
                     .workers
                     .values_mut()
@@ -2190,6 +2192,37 @@ impl App {
                     .map(|root| git_mod::checkout(root))
                     .unwrap_or_else(|| self.project.clone()),
             )?;
+        }
+        for code_mod in &mut self.mods {
+            let idle = self
+                .workers
+                .values()
+                .filter(|worker| worker.mod_id == code_mod.id && worker.role == Role::Executor)
+                .all(|worker| matches!(worker.status, Status::Ready | Status::Complete));
+            let connected = self
+                .workers
+                .values()
+                .any(|worker| worker.mod_id == code_mod.id && worker.role == Role::Executor);
+            if connected
+                && idle
+                && !code_mod.closed
+                && !self.git_jobs.contains_key(&code_mod.id)
+                && editing_mod != Some(code_mod.id)
+                && deleting_mod != Some(code_mod.id)
+                && reviewing_mod != Some(code_mod.id)
+                && self.store.resume_repairs(code_mod.id)?
+            {
+                code_mod.execution = self.store.execution(code_mod.id)?;
+                for worker in self
+                    .workers
+                    .values_mut()
+                    .filter(|worker| worker.mod_id == code_mod.id && worker.role == Role::Executor)
+                {
+                    if !worker.enabled {
+                        worker.toggle();
+                    }
+                }
+            }
         }
         for index in self.ready_plans() {
             self.auto_runs.remove(&self.mods[index].id);

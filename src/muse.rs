@@ -176,11 +176,22 @@ pub fn serve(
     loop {
         while let Ok(action) = actions.try_recv() {
             let (method, source, params) = match action {
-                Action::Run { source, text, .. } => {
+                Action::Run {
+                    source,
+                    text,
+                    routing,
+                } => {
+                    let report_schema = crate::execution::task_schema(routing.as_ref());
                     let id = crate::task_worktree::task_id(&source)?;
                     let config = {
                         let mut vm = vm.lock().unwrap();
                         vm.assign_muse_task(id, context.worker_id(), &cancelled)?;
+                        if routing
+                            .as_ref()
+                            .is_some_and(|state| !state["repair"].is_null())
+                        {
+                            vm.refresh_for_repair(id, &source, &cancelled)?;
+                        }
                         vm.muse_configuration(context.worker_id())
                     };
                     task = Some(id);
@@ -201,7 +212,7 @@ pub fn serve(
                         "turn/start",
                         source.clone(),
                         json!({"source":source,"text":prompt,"config":config,"state":state,
-                            "tools":tools::advertised(&context),"schema":crate::execution::schema()}),
+                            "tools":tools::advertised(&context),"schema":report_schema}),
                     )
                 }
                 Action::Steer {

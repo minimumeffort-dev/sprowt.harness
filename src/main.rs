@@ -10,6 +10,7 @@ mod muse;
 mod network;
 mod packages;
 mod plan;
+mod repair;
 mod router;
 mod rpc;
 mod sandbox;

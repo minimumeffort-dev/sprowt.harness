@@ -18,7 +18,7 @@ flowchart TB
     cleanup --> ready["Version ready · send edits or publish"]
 ```
 
-A failed check pauses that task and its dependents. The other worker can finish independent work. **Ctrl+R** retries unfinished work; completed tasks stay done.
+A failed check pauses that task and its dependents unless the worker requests a code repair from a completed owner. The other worker can finish independent work. **Ctrl+R** retries unfinished work; completed tasks stay done.
 
 Executors receive the planner's peer links and coordinate through [saved task mailboxes](coordination.md). Links describe what to coordinate; dependencies describe what must finish first. A task with unanswered asks waits; Rust resumes it after answers arrive. Queued edit rounds wait too, so they cannot replace tasks with outstanding questions. Messages do not change file ownership or dependencies.
 
@@ -64,6 +64,25 @@ Each active task has a spinner and worker ID through implementation and checks. 
 
 Finished versions show compact task rows, the final check count and the publish action. **Ctrl+T** opens saved worker narration and handoffs separately from plan details. Questions for you stay visible in the conversation.
 
+## Automatic repairs
+
+When integration finds a reproducible regression in a completed task, the worker returns a repair request: owner task, exact files, declared failing check, runnable command and observed failure. Rust validates ownership and waits for active turns and checks to finish.
+
+```mermaid
+flowchart TB
+    failure["Integration finds a regression"] --> request["Save failure evidence + responsible task"]
+    request --> owner["Owner repairs the latest combined code"]
+    owner --> affected["Rerun the verifier and affected dependent tasks"]
+    affected --> final["Rerun every final check"]
+    final --> ready["Checks pass · changes ready"]
+```
+
+The original worker, task identity and file scope stay. Independent completed tasks remain done. The owner's worktree refreshes from combined source; unfinished verifier edits merge with the repaired source. Text conflicts remain visible for resolution. Runtime files stay in the VM. Delivery markers prevent a restart from resetting an in-progress repair.
+
+Requests, failure evidence and the two-attempt budget save in SQLite. Reopened tasks lose their old passing checks, and publication waits for fresh final verification. **Ctrl+R** stops work; explicit retry preserves the repair budget. Each new plan starts a fresh budget. If a failure persists after two handoffs, send an edit request to revise the plan. **Ctrl+O** shows the repair check and failure evidence; the conversation keeps a short notice.
+
+Missing access, environment blockers, uncertainty and product decisions still pause. Repairs do not expand file ownership or approve network access. A worker must identify a completed owner and provide evidence; ordinary blocked reports and failed controller checks keep their retry flow.
+
 ## Updates from merged work
 
 When the PR target changes, a finished codemod saves a checkpoint and runs an integration plan in the same VM. Codex resolves text conflicts; Rust independently reruns the original and combined checks. Current workers finish first. Publication waits for verification. See [Worktrees and PRs](git-workflow.md#when-another-codemod-merges).
@@ -87,3 +106,12 @@ Closing stops both workers, saves each unfinished draft, then saves a local chec
 ## Current limits
 
 Maximum two executors per codemod, with task-addressed messaging. [Muse recovery](workers.md#muse-recovery) requires its retained VM disk; closing removes native history. Login refresh is not implemented. Agent availability is checked at startup; sign in or install a CLI, then restart. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).
+
+## Verify the repair flow
+
+These checks use disposable VMs and remove them afterward. The provider test uses your Codex and Muse subscriptions.
+
+```sh
+cargo test repair_handoff_preserves_drafts_and_rechecks_in_vm -- --ignored
+cargo test codex_verifier_hands_a_regression_back_to_muse -- --ignored
+```

@@ -1119,6 +1119,18 @@ fn plan_lines(
                         "waiting for reply",
                     "blocked" => "execution paused",
                     "verifying" => "final checks",
+                    "repairing"
+                        if execution
+                            .tasks
+                            .iter()
+                            .any(|run| run.status == "repair_paused") =>
+                        "repair paused",
+                    "repairing" => "repair requested",
+                    _ if execution
+                        .tasks
+                        .iter()
+                        .any(|run| run.repair.is_some() && run.status != "done") =>
+                        "repairing",
                     _ => "execution",
                 },
                 execution
@@ -1182,8 +1194,9 @@ fn plan_lines(
             "running" | "sending" | "checking" if activity.is_some() => activity.unwrap(),
             "running" | "sending" => "●",
             "checking" => "◌",
-            "blocked" | "paused" => "!",
+            "blocked" | "paused" | "repair_paused" => "!",
             "waiting" => "?",
+            "repair_wait" => "↺",
             _ => "○",
         });
         let prefix = if marker.is_empty() {
@@ -1261,6 +1274,21 @@ fn plan_lines(
             );
         }
         if details {
+            if let Some(run) = run
+                && run.status != "done"
+                && let Some(repair) = &run.repair
+                && (run.task_id == repair.task || run.status == "repair_wait")
+            {
+                lines.push(Line::from(format!("   repair check · {}", repair.check)).fg(ACCENT));
+                lines.extend(command_lines(&repair.command, width));
+                lines.extend(
+                    repair
+                        .evidence
+                        .lines()
+                        .take(6)
+                        .map(|line| Line::from(format!("     {line}")).fg(KEY_HINT)),
+                );
+            }
             if let Some(selection) = run.and_then(|run| run.selection.as_ref()) {
                 lines.push(
                     Line::from(format!(

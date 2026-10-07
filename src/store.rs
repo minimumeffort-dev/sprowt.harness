@@ -311,6 +311,7 @@ impl Store {
                 .execute_batch("ALTER TABLE task_runs ADD COLUMN routing TEXT")
                 .map_err(io::Error::other)?;
         }
+        crate::repair::migrate(&connection).map_err(io::Error::other)?;
         connection
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS steering_deliveries (
@@ -853,6 +854,14 @@ impl Store {
                 .find(|task| task.id == run.task_id)
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             let mut prompt = crate::execution::task_prompt(&plan, task, run.id);
+            if let Some(repair) = &run.repair {
+                prompt.push_str(&format!(
+                    "\nAutomatic repair context: {}\n{} Preserve saved edits. The harness refreshed this task from the combined source. Reproduce the failure using the evidence and command (adapt task paths to /tasks/{}); keep any temporary reproduction scripts outside source. The repair's failing check is supplemental: do not replace your original task checks with it. The report checks array must contain your current task's declared checks, with their exact text and order. Integration and all final checks must pass again.",
+                    serde_json::to_string(repair).unwrap(),
+                    if task.id == repair.task { "Fix this regression within your original file scope." } else { "Rerun this affected task after the owner fixed the regression; keep your original file scope." },
+                    run.id
+                ));
+            }
             let inbox = self.task_mail(mod_id, run.id)?;
             if !inbox.is_empty() {
                 prompt.push_str(&format!(
@@ -1210,6 +1219,10 @@ impl Store {
             "INSERT INTO executions(mod_id,workspace,backend) VALUES (?1,?2,'apple-container') ON CONFLICT(mod_id) DO UPDATE SET status='pending',checks='[]',fingerprint=NULL,backend='apple-container'",
             params![mod_id, workspace.to_string_lossy()],
         )?;
+        transaction.execute(
+            "UPDATE executions SET repair_count=0 WHERE mod_id=?1",
+            [mod_id],
+        )?;
         for task in &plan.tasks {
             transaction.execute(
                 "INSERT INTO task_runs(mod_id,task_id,source) VALUES (?1,?2,?3)",
@@ -1248,6 +1261,10 @@ impl Store {
         transaction.execute("DELETE FROM task_runs WHERE mod_id=?1", [mod_id])?;
         transaction.execute("INSERT INTO plans(mod_id,source,status,body) VALUES (?1,?2,'ready',?3) ON CONFLICT(mod_id) DO UPDATE SET source=excluded.source,status='ready',body=excluded.body,model=NULL,effort=NULL,routing=NULL", params![mod_id,source,serde_json::to_string(&update.plan).unwrap()])?;
         transaction.execute("INSERT INTO executions(mod_id,workspace,backend) VALUES (?1,?2,'apple-container') ON CONFLICT(mod_id) DO UPDATE SET status='pending',checks='[]',fingerprint=NULL,backend='apple-container'", params![mod_id,root.to_string_lossy()])?;
+        transaction.execute(
+            "UPDATE executions SET repair_count=0 WHERE mod_id=?1",
+            [mod_id],
+        )?;
         for task in &update.plan.tasks {
             transaction.execute(
                 "INSERT INTO task_runs(mod_id,task_id,source) VALUES (?1,?2,?3)",
@@ -1287,11 +1304,17 @@ impl Store {
         let Some((workspace, status, checks, fingerprint, backend)) = result else {
             return Ok(None);
         };
-        let mut statement = self.0.prepare("SELECT id,task_id,status,source,turn_id,summary,checks,worker_id,routing FROM task_runs WHERE mod_id=?1 ORDER BY id")?;
+        let mut statement = self.0.prepare("SELECT id,task_id,status,source,turn_id,summary,checks,worker_id,routing,repair FROM task_runs WHERE mod_id=?1 ORDER BY id")?;
         let tasks = statement
             .query_map([mod_id], |row| {
                 let checks: String = row.get(6)?;
                 Ok(TaskRun {
+                    repair: row
+                        .get::<_, Option<String>>(9)?
+                        .map(|text| {
+                            serde_json::from_str(&text).map_err(|_| rusqlite::Error::InvalidQuery)
+                        })
+                        .transpose()?,
                     selection: row
                         .get::<_, Option<String>>(8)?
                         .map(|text| {
@@ -1374,6 +1397,18 @@ impl Store {
         )?;
         let mut available = plan.clone();
         available.tasks.retain(|task| task.worker == provider);
+        if execution
+            .tasks
+            .iter()
+            .any(|run| run.status == "repair_wait")
+        {
+            available.tasks.retain(|task| {
+                execution
+                    .tasks
+                    .iter()
+                    .any(|run| run.task_id == task.id && run.repair.is_some())
+            });
+        }
         let Some(task) = execution.next_task(&available, worker) else {
             return Ok(None);
         };
@@ -1431,7 +1466,7 @@ impl Store {
         if changed != 1 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
-        transaction.execute("UPDATE executions SET status=CASE WHEN EXISTS(SELECT 1 FROM task_runs WHERE mod_id=?1 AND status IN ('blocked','paused','waiting')) THEN 'blocked' ELSE 'running' END WHERE mod_id=?1", [mod_id])?;
+        transaction.execute("UPDATE executions SET status=CASE WHEN EXISTS(SELECT 1 FROM task_runs WHERE mod_id=?1 AND status='repair_wait') THEN 'repairing' WHEN EXISTS(SELECT 1 FROM task_runs WHERE mod_id=?1 AND status IN ('blocked','paused','waiting')) THEN 'blocked' ELSE 'running' END WHERE mod_id=?1", [mod_id])?;
         transaction.commit()
     }
 
@@ -1440,6 +1475,10 @@ impl Store {
             .execution(mod_id)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         let transaction = self.0.transaction()?;
+        transaction.execute(
+            "UPDATE task_runs SET status='repair_wait' WHERE mod_id=?1 AND status='repair_paused'",
+            [mod_id],
+        )?;
         for task in execution
             .tasks
             .iter()

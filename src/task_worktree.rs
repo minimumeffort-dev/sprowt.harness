@@ -21,6 +21,8 @@ pub struct TaskWorktrees {
     pub active: Option<i64>,
     pub integrated: BTreeSet<i64>,
     #[serde(default)]
+    pub repair_sources: BTreeMap<i64, String>,
+    #[serde(default)]
     pub cleaned: bool,
 }
 
@@ -83,6 +85,47 @@ impl Sandbox {
         self.guest(&["/bin/mkdir", "-p", &worker_home(worker)], cancelled)?;
         self.activate_task(id, cancelled)?;
         self.save_tasks()
+    }
+
+    pub fn refresh_for_repair(
+        &mut self,
+        id: i64,
+        source: &str,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        if self
+            .tasks
+            .repair_sources
+            .get(&id)
+            .is_some_and(|saved| saved == source)
+        {
+            return Ok(());
+        }
+        self.activate_task(id, cancelled)?;
+        if self.tasks.integrated.contains(&id) {
+            self.git(Some(id), &["reset", "--hard", "integration"], cancelled)?;
+        } else {
+            let draft = self.snapshot(&folder(id), cancelled)?;
+            self.commit_source(Some(id), &draft, cancelled)?;
+            let merged = self.git(
+                Some(id),
+                &["merge", "--no-ff", "--no-edit", "integration"],
+                cancelled,
+            );
+            if merged.is_err() && !self.guest_exists(&format!("{GIT}/worktrees/{id}/MERGE_HEAD"))? {
+                merged?;
+            }
+        }
+        let combined = self.snapshot("/workspace", cancelled)?;
+        fs::write(
+            self.root().join(format!("task-drafts/{id}-base.json")),
+            serde_json::to_vec(&combined)?,
+        )?;
+        self.tasks.integrated.remove(&id);
+        self.tasks.repair_sources.insert(id, source.into());
+        self.save_tasks()?;
+        self.export(cancelled)?;
+        Ok(())
     }
 
     pub fn runtime_home(&self) -> String {

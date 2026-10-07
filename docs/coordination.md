@@ -47,3 +47,5 @@ Messages are saved before delivery. **Delivered** means the target provider acce
 Messages stay within one codemod. Task IDs follow current ownership, including tasks not yet assigned. Asks to unavailable tasks or asks that create a wait cycle are rejected. Workers read at useful checkpoints and continue independent work; they do not poll for replies.
 
 Bodies are limited to 4,000 bytes, with up to 32 unacknowledged messages per task. SQLite retains messages as local plain text. New edit and integration rounds keep the history but use new task identities, so old asks cannot reopen. Closing retains mailboxes; deleting the codemod removes them.
+
+Code regressions found after an owner finishes use [automatic repair handoffs](execution.md#automatic-repairs). Rust reopens that task; a mailbox message alone does not restart completed work.

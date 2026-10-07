@@ -690,6 +690,10 @@ fn serve(
                         }
                     }
                     if source.starts_with("00000004-") {
+                        let report_schema = crate::execution::task_schema(routing.as_ref());
+                        let repair = routing
+                            .as_ref()
+                            .is_some_and(|state| !state["repair"].is_null());
                         let _ = outgoing.send(Event::Preparing("choosing task model".into()));
                         let chosen = match (&router, routing) {
                             (Some(Ok(router)), Some(state)) => router.route(state),
@@ -717,11 +721,14 @@ fn serve(
                         stop_terminals(rpc, &thread)?;
                         let mut vm = vm.lock().unwrap();
                         vm.assign_task(id, context.worker_id(), &cancelled)?;
+                        if repair {
+                            vm.refresh_for_repair(id, &source, &cancelled)?;
+                        }
                         task = Some(id);
                         params["permissions"] = json!(format!("sprowt_task_{id}"));
                         params["environments"] =
                             json!([{"environmentId":"vm","cwd":vm.task_folder()}]);
-                        params["outputSchema"] = crate::execution::schema();
+                        params["outputSchema"] = report_schema;
                     } else if vm.is_some() {
                         return Err(io::Error::other(
                             "Execution requires an assigned task worktree.",

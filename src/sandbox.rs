@@ -1326,6 +1326,110 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "checks repair handoff, retained drafts, restart and verification in a disposable VM"]
+    fn repair_handoff_preserves_drafts_and_rechecks_in_vm() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("runtime.txt"), "original").unwrap();
+        let root = data.0.join(format!("repair-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let flag = AtomicBool::new(false);
+        let command = |script: &str| vec!["/bin/sh".into(), "-c".into(), script.into()];
+        let check = |id: i64, script: &str| Check {
+            task: Some(id),
+            check: "Regression check".into(),
+            command: command(script),
+        };
+        let source = |id: i64, attempt: i64| crate::store::task_source(id, attempt);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.prepare_tasks(&[1, 2, 3], &flag)?;
+                vm.assign_task(1, 101, &flag)?;
+                assert_eq!(vm.run(&command("printf buggy > runtime.txt; mkdir -p .venv; printf installed > .venv/proof"),&flag,30,8192)?.0,Some(0));
+                vm.verify_execution(&source(1, 1), &[check(1, "test -s runtime.txt")], &flag)?;
+                vm.assign_task(2, 102, &flag)?;
+                assert_eq!(
+                    vm.run(&command("printf ui > ui.txt"), &flag, 30, 8192)?.0,
+                    Some(0)
+                );
+                vm.verify_execution(&source(2, 1), &[check(2, "test -s ui.txt")], &flag)?;
+                vm.assign_task(3, 101, &flag)?;
+                assert_eq!(
+                    vm.run(
+                        &command(
+                            "printf diagnostics > integration.txt; printf documentation > README.md"
+                        ),
+                        &flag,
+                        30,
+                        8192
+                    )?
+                    .0,
+                    Some(0)
+                );
+                let (_, failed) = vm.verify_execution(
+                    &source(3, 1),
+                    &[check(3, "test \"$(cat runtime.txt)\" = fixed")],
+                    &flag,
+                )?;
+                assert_ne!(failed[0].exit_code, Some(0));
+                vm.assign_task(1, 101, &flag)?;
+                vm.refresh_for_repair(1, &source(1, 2), &flag)?;
+                assert_eq!(vm.run(&command("test \"$(cat ui.txt)\" = ui && test \"$(cat .venv/proof)\" = installed && printf fixed > runtime.txt && ! touch /tasks/2/denied"),&flag,30,8192)?.0,Some(0));
+                vm.export(&flag)?;
+                drop(vm);
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.assign_task(1, 101, &flag)?;
+                vm.refresh_for_repair(1, &source(1, 2), &flag)?;
+                // The same delivery and an explicit retry both preserve the saved fix.
+                vm.refresh_for_repair(1, &source(1, 3), &flag)?;
+                let fixed = check(
+                    1,
+                    "test \"$(cat runtime.txt)\" = fixed && test \"$(cat .venv/proof)\" = installed",
+                );
+                assert_eq!(
+                    vm.verify_execution(&source(1, 3), std::slice::from_ref(&fixed), &flag)?
+                        .1[0]
+                        .exit_code,
+                    Some(0)
+                );
+                vm.assign_task(3, 101, &flag)?;
+                vm.refresh_for_repair(3, &source(3, 2), &flag)?;
+                let integration = check(
+                    3,
+                    "test \"$(cat runtime.txt)\" = fixed && test \"$(cat integration.txt)\" = diagnostics && test \"$(cat README.md)\" = documentation && test \"$(cat ui.txt)\" = ui",
+                );
+                assert_eq!(
+                    vm.verify_execution(&source(3, 2), std::slice::from_ref(&integration), &flag)?
+                        .1[0]
+                        .exit_code,
+                    Some(0)
+                );
+                let (_, results) = vm.verify_execution(
+                    "final:repair",
+                    &[
+                        fixed,
+                        check(2, "test \"$(cat runtime.txt)\" = fixed && test -s ui.txt"),
+                        integration,
+                    ],
+                    &flag,
+                )?;
+                assert_eq!(results.len(), 3);
+                assert!(results.iter().all(|result| result.exit_code == Some(0)));
+                for id in [1, 2, 3] {
+                    assert!(!vm.guest_exists(&format!("/tasks/{id}"))?);
+                }
+                assert_eq!(fs::read(root.join("work/runtime.txt"))?, b"fixed");
+                assert_eq!(fs::read(root.join("work/integration.txt"))?, b"diagnostics");
+                Ok(())
+            },
+        ));
+        delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
+
+    #[test]
     #[ignore = "checks task worktrees, recovery and cleanup in a temporary Apple Container VM"]
     fn task_worktrees_isolate_combine_restore_and_clean() {
         let data = TestData::new();

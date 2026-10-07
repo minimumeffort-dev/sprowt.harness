@@ -13,7 +13,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and routing](docs/planning.md): describe the outcome. Astra xhigh chooses task splits, shared contracts and coordination; Jev routes each task to Sol 6.1 medium, high or xhigh.
 - [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
-- [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders and combined verification.
+- [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders, combined verification and automatic repair handoffs.
 - [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Workers choose runtimes and dependencies, request OS packages and ask you to approve blocked download domains.
 - [Workers and isolation](docs/workers.md): Codex planning and separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
@@ -46,7 +46,9 @@ flowchart TB
     first <-->|"Saved task mailboxes"| second
     first --> combine["Combine one result at a time · verify together"]
     second --> combine
-    combine --> ready["Version ready"]
+    combine -->|"Checks pass"| ready["Version ready"]
+    combine -->|"Regression found"| repair["Reopen responsible task · rerun affected checks"]
+    repair --> schedule
     ready --> edits["Send edits · plan the next round"]
     edits --> planner
     ready --> publish["Confirm publish · create or update PR"]
@@ -70,6 +72,8 @@ Blocked downloads show **Network access needed** beside the task. **Ctrl+N** sho
 Merge PRs one at a time on GitHub. The harness syncs your project branch on startup and every 30 seconds while open, even with no codemods. Codemod checks fetch into separate references, so they can run alongside project sync. Local edits and staging stay; unsafe updates pause. **Ctrl+U** checks immediately.
 
 Other codemods finish their current work, save a checkpoint and update in their existing VM. A worker resolves text conflicts and rechecks the combined code. Open PRs become drafts during the update; Publish updates the same PR and marks it ready again. Product decisions pause for your input; binary conflicts need manual resolution.
+
+When integration finds a regression in a completed task, it sends failure evidence back to that owner. The harness preserves work, reopens affected tasks and reruns final checks. Each plan allows two automatic repair attempts; unresolved failures stop with the next action. File ownership and network approvals stay in place.
 
 New test caches, package metadata and runtime databases stay out of source checkpoints. Committed database fixtures remain source; committed `.egg-info` metadata keeps its baseline contents, so parallel dependency installs do not create merge conflicts. Runtime data stays in the VM, separate from the PR.
 
