@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     io::Write,
     path::{Component, Path, PathBuf},
@@ -49,7 +49,7 @@ pub fn source_state(root: &Path) -> io::Result<Snapshot> {
 }
 
 fn read_state(root: &Path, snapshot: bool) -> io::Result<Snapshot> {
-    walk(root, snapshot)?
+    let source = walk(root, snapshot)?
         .into_iter()
         .map(|path| {
             let file = read_file(root, &path)?.ok_or_else(|| {
@@ -57,7 +57,31 @@ fn read_state(root: &Path, snapshot: bool) -> io::Result<Snapshot> {
             })?;
             Ok((path, file.bytes, file.mode))
         })
-        .collect()
+        .collect::<io::Result<Snapshot>>()?;
+    if !snapshot && root.file_name().is_some_and(|name| name == "work") {
+        source_snapshot(root.parent().unwrap_or(root), source)
+    } else {
+        Ok(source)
+    }
+}
+
+pub(crate) fn source_snapshot(root: &Path, source: Snapshot) -> io::Result<Snapshot> {
+    let mut files = source
+        .into_iter()
+        .filter(|(path, _, _)| source_path(root, path) && !package_metadata(path))
+        .map(|(path, bytes, mode)| (path, (bytes, mode)))
+        .collect::<BTreeMap<_, _>>();
+    let before = root.join("before");
+    if before.exists() {
+        for path in walk(&before, true)? {
+            if package_metadata(&path)
+                && let Some(file) = read_file(&before, &path)?
+            {
+                files.insert(path, (file.bytes, file.mode));
+            }
+        }
+    }
+    Ok(files.into_iter().map(|(p, (b, m))| (p, b, m)).collect())
 }
 
 pub fn project_state(project: &Path, root: &Path) -> io::Result<Snapshot> {
@@ -255,6 +279,21 @@ fn review_inner(root: &Path, snapshot: bool) -> io::Result<Review> {
     )?)?;
     let mut changes = Vec::new();
     for path in changed {
+        if !snapshot && package_metadata(&path) {
+            run_git(
+                root,
+                &[
+                    "--literal-pathspecs",
+                    "reset",
+                    "--quiet",
+                    "HEAD",
+                    "--",
+                    path.to_str()
+                        .ok_or_else(|| io::Error::other("Invalid metadata path."))?,
+                ],
+            )?;
+            continue;
+        }
         if excluded(&path) {
             return Err(io::Error::other(format!(
                 "{} is excluded from project changes.",
@@ -333,6 +372,11 @@ fn generated(path: &Path) -> bool {
             .iter()
             .any(|suffix| name.ends_with(suffix))
     })
+}
+
+pub(crate) fn package_metadata(path: &Path) -> bool {
+    path.components()
+        .any(|part| part.as_os_str().to_string_lossy().ends_with(".egg-info"))
 }
 
 pub(crate) fn source_path(workspace: &Path, path: &Path) -> bool {
@@ -710,6 +754,11 @@ mod tests {
         ] {
             fs::write(root.join("work").join(path), "generated").unwrap();
         }
+        fs::write(
+            root.join("work/tracked.egg-info/PKG-INFO"),
+            "regenerated metadata",
+        )
+        .unwrap();
         assert_eq!(source_state(&root.join("work")).unwrap(), before);
         // Simulate a review index left by an older harness version.
         run_git(&root, &["add", "--force", "--all"]).unwrap();
@@ -720,6 +769,18 @@ mod tests {
             fs::read_to_string(root.join("work/runtime.duckdb")).unwrap(),
             "generated"
         );
+        fs::remove_file(root.join("work/tracked.egg-info/PKG-INFO")).unwrap();
+        assert_eq!(
+            super::review(&root).unwrap().paths().collect::<Vec<_>>(),
+            [Path::new("a.txt")]
+        );
+        let mut expected = before;
+        expected
+            .iter_mut()
+            .find(|f| f.0 == Path::new("a.txt"))
+            .unwrap()
+            .1 = b"requested edit".to_vec();
+        assert_eq!(source_state(&root.join("work")).unwrap(), expected);
     }
 
     #[test]

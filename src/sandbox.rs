@@ -896,10 +896,7 @@ impl Sandbox {
             &["/bin/rm", "-f", "/opt/sprowt-transfer/source.tar"],
             &AtomicBool::new(false),
         )?;
-        Ok(decode_source(&bytes)?
-            .into_iter()
-            .filter(|(path, _, _)| workspace::source_path(&self.root, path))
-            .collect())
+        workspace::source_snapshot(&self.root, decode_source(&bytes)?)
     }
 
     pub fn export(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
@@ -1227,6 +1224,103 @@ mod tests {
                 Ok(())
             },
         ));
+        delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
+
+    #[test]
+    #[ignore = "recovers an old metadata merge conflict in a disposable Apple Container VM"]
+    fn tracked_package_metadata_does_not_conflict_with_parallel_source_edits() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(project.join("local.egg-info")).unwrap();
+        fs::write(project.join("first.txt"), "before").unwrap();
+        fs::write(project.join("local.egg-info/SOURCES.txt"), "baseline\n").unwrap();
+        for args in [
+            vec!["init"],
+            vec!["add", "."],
+            vec!["commit", "-m", "Baseline"],
+        ] {
+            checked(
+                &workspace::trusted_git()
+                    .arg("-C")
+                    .arg(&project)
+                    .args(args)
+                    .output()
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        let root = data.0.join(format!("metadata-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let flag = AtomicBool::new(false);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.prepare_tasks(&[1, 2], &flag)?;
+                vm.activate_task(1, &flag)?;
+                vm.activate_task(2, &flag)?;
+                // Reproduce checkpoints made before metadata was frozen to the baseline.
+                vm.guest(&["/bin/sh", "-c", r#"set -eu
+                saved_git() { /usr/bin/git -c user.name=Sprowt -c user.email=sprowt@localhost "$@"; }
+                cd /tasks/1
+                saved_git update-index --no-skip-worktree -- local.egg-info/SOURCES.txt
+                printf runtime > runtime.mjs
+                printf 'runtime.mjs\n' > local.egg-info/SOURCES.txt
+                saved_git add .; saved_git commit -m runtime
+                cd /tasks/2
+                saved_git update-index --no-skip-worktree -- local.egg-info/SOURCES.txt
+                printf panel > panel.mjs
+                printf 'panel.mjs\n' > local.egg-info/SOURCES.txt
+                saved_git add .; saved_git commit -m panel
+                cd /workspace
+                saved_git update-index --no-skip-worktree -- local.egg-info/SOURCES.txt
+                saved_git reset --hard integration
+                saved_git merge --no-ff --no-edit task/2
+                if saved_git merge --no-ff --no-edit task/1; then exit 1; fi
+                saved_git merge --abort
+                cd /tasks/1
+                if saved_git merge --no-ff --no-edit integration; then exit 1; fi
+                saved_git add .; saved_git commit -m conflict
+                grep -q '<<<<<<<' local.egg-info/SOURCES.txt
+            "#], &flag)?;
+                vm.tasks.integrated.insert(2);
+                vm.tasks.active = Some(1);
+                fs::write(root.join("tasks.json"), serde_json::to_vec(&vm.tasks)?)?;
+                vm.checkpoint_tasks(&flag)?;
+                drop(vm);
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                let check = Check { task: Some(1), check: "Runtime works".into(), command: vec!["/bin/sh".into(), "-c".into(), "test \"$(cat runtime.mjs)\" = runtime && test \"$(cat panel.mjs)\" = panel".into()] };
+                assert_eq!(
+                    vm.verify_execution(
+                        "00000004-0002-4000-8000-000000000001",
+                        std::slice::from_ref(&check),
+                        &flag
+                    )?
+                    .1[0]
+                        .exit_code,
+                    Some(0)
+                );
+                vm.guest(&["/bin/sh", "-c", "set -eu; grep -q '<<<<<<<' /tasks/1/local.egg-info/SOURCES.txt; cd /tasks/1; ! git diff --name-only | grep -q egg-info; test \"$(git show HEAD:local.egg-info/SOURCES.txt)\" = baseline"], &flag)?;
+                let source = vm.snapshot("/workspace", &flag)?;
+                assert_eq!(source, workspace::source_state(&root.join("work"))?);
+                let review = workspace::review(&root)?;
+                assert_eq!(
+                    review.paths().collect::<Vec<_>>(),
+                    [Path::new("panel.mjs"), Path::new("runtime.mjs")]
+                );
+                assert!(!review.patch.contains("egg-info"));
+                let (_, checks) = vm.verify_execution("final:1", &[check], &flag)?;
+                assert_eq!(checks[0].exit_code, Some(0));
+                Ok(())
+            },
+        ));
+        if matches!(&result, Ok(Err(_))) {
+            eprintln!(
+                "{}",
+                fs::read_to_string(root.join("sandbox.log")).unwrap_or_default()
+            );
+        }
         delete(&root).unwrap();
         result.unwrap().unwrap();
     }

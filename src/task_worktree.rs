@@ -525,7 +525,10 @@ impl Sandbox {
         self.git(id, &["read-tree", "--empty"], cancelled)?;
         let paths = self.root().join("task-paths");
         let mut bytes = Vec::new();
-        for (path, _, _) in source {
+        for (path, _, _) in source
+            .iter()
+            .filter(|(p, _, _)| !workspace::package_metadata(p))
+        {
             bytes.extend_from_slice(path.as_os_str().as_encoded_bytes());
             bytes.push(0);
         }
@@ -543,6 +546,35 @@ impl Sandbox {
                 cancelled,
             )?;
             fs::remove_file(paths)?;
+        }
+        // Installers rewrite tracked metadata; stage its baseline without changing runtime files.
+        for (path, bytes, mode) in source
+            .iter()
+            .filter(|(p, _, _)| workspace::package_metadata(p))
+        {
+            let saved = self.root().join("task-metadata");
+            fs::write(&saved, bytes)?;
+            self.copy_in(&saved, "/opt/sprowt-git/metadata", cancelled)?;
+            let mut command = vec![
+                "/bin/sh".to_owned(),
+                "-c".into(),
+                r#"set -eu
+                    metadata_mode=$1; metadata_path=$2; shift 2
+                    metadata_oid=$("$@" hash-object -w -- /opt/sprowt-git/metadata)
+                    "$@" update-index --add --cacheinfo "$metadata_mode,$metadata_oid,$metadata_path"
+                    "$@" update-index --skip-worktree -- "$metadata_path"
+                "#.into(),
+                "sprowt-metadata".into(),
+                if mode & 0o111 == 0 { "100644" } else { "100755" }.into(),
+                path.to_str().ok_or_else(|| io::Error::other("Invalid metadata path."))?.into(),
+            ];
+            command.extend(Self::git_command(id, &[]));
+            self.guest(
+                &command.iter().map(String::as_str).collect::<Vec<_>>(),
+                cancelled,
+            )?;
+            fs::remove_file(saved)?;
+            self.guest(&["/bin/rm", "/opt/sprowt-git/metadata"], cancelled)?;
         }
         let branch = id.map_or_else(|| "integration".into(), |id| format!("task/{id}"));
         if self.git_status(
