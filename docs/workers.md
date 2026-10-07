@@ -2,12 +2,22 @@
 
 Codex plans. Executors follow the saved plan in the codemod's Linux VM, with separate task worktrees and runtime homes. Up to two tasks can run at once.
 
-## Choose workers
+## Automatic discovery
 
-Codex is the default. To let the planner use Muse too:
+Start normally:
 
 ```sh
-sprowt-harness --muse
+sprowt-harness
+```
+
+Startup checks CLI versions and local account status. Codex is required for planning. Installed, signed-in Muse joins automatically; if Muse is absent, work uses Codex alone. An installed CLI with an unsupported version or missing account login stops startup with a clear next action.
+
+```mermaid
+flowchart TB
+    start["Run sprowt-harness"] --> check["Check installed CLIs and local account logins"]
+    check --> pool["Available workers · Codex, plus Muse when installed"]
+    pool --> planner["Astra xhigh · assign useful tasks and providers"]
+    planner --> schedule["Rust scheduler · run up to two ready tasks"]
 ```
 
 Describe the outcome normally. Astra xhigh assigns demanding implementation and integration checks to Codex, and can assign independent, well-scoped work to Muse. Small changes can stay with one provider. Saved tasks keep their provider and worker identity when retried.
@@ -18,7 +28,7 @@ Describe the outcome normally. Astra xhigh assigns demanding implementation and 
 | Codex executor | Host app-server + guest exec-server | Sol 6.1 medium, high or xhigh, selected with Jev |
 | Muse executor | Full Muse CLI inside the VM | Muse Spark 1.3 high |
 
-The CLI flag enables a provider; it does not force parallel tasks. Plans using Muse require `--muse` when reopened. Jev currently routes Codex effort only.
+Discovery does not run inference, start a VM or copy credentials. It checks availability, not remote account access or usage limits. Saved Muse tasks require Muse on restart; their provider is retained. Jev currently routes Codex effort only.
 
 ## Login
 

@@ -23,7 +23,7 @@ sequenceDiagram
     Tools-->>Harness: Check results
 ```
 
-Each worker and the verification connection use standard input/output. The harness reruns checks in the same VM the workers used. With `--muse`, the full Muse CLI runs there too, inside an enforced process sandbox. Its model requests reach a host credential broker over stdio; runtime downloads still use the VM proxy. See [Workers](workers.md).
+Each worker and the verification connection use standard input/output. The harness reruns checks in the same VM the workers used. When assigned a task, the full Muse CLI runs there too, inside an enforced process sandbox. Its model requests reach a host credential broker over stdio; runtime downloads still use the VM proxy. See [Workers](workers.md).
 
 ## Source files
 

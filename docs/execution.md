@@ -22,7 +22,7 @@ A failed check pauses that task and its dependents. The other worker can finish 
 
 Executors receive the planner's peer links and coordinate through [saved task mailboxes](coordination.md). Links describe what to coordinate; dependencies describe what must finish first. A task with unanswered asks waits; Rust resumes it after answers arrive. Queued edit rounds wait too, so they cannot replace tasks with outstanding questions. Messages do not change file ownership or dependencies.
 
-Provider assignments come from the planner. Muse is available with `--muse`; Codex remains the planner and integration worker. Both providers use the same checks, task mailboxes and source checkpoints. See [Workers](workers.md).
+Provider assignments come from the planner's automatically detected worker pool. Codex remains the planner and integration worker. Both providers use the same checks, task mailboxes and source checkpoints. See [Workers](workers.md).
 
 ## Working folder
 
@@ -86,4 +86,4 @@ Closing stops both workers, saves each unfinished draft, then saves a local chec
 
 ## Current limits
 
-Maximum two executors per codemod, with task-addressed messaging. Muse requires `--muse`; native Muse session replay and login refresh are not implemented. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).
+Maximum two executors per codemod, with task-addressed messaging. Native Muse session replay and login refresh are not implemented. Agent availability is checked at startup; sign in or install a CLI, then restart. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).

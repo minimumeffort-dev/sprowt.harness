@@ -16,7 +16,7 @@ import time
 import urllib.request
 
 from muse_transport import (Broker, CHECKSUM, MODEL, VERSION, Rpc, command_id,
-                            guest, host_login, private_json, settings)
+                            guest, host_login, private_json, read_account, settings)
 
 
 def artifact(cache):
@@ -382,6 +382,8 @@ if __name__ == "__main__":
             guest(guest_client)
         elif sys.argv[1:] == ["--mcp"]:
             mcp()
+        elif sys.argv[1:2] == ["--account"]:
+            print(json.dumps(read_account(Path(sys.argv[2]))), flush=True)
         elif sys.argv[1:2] == ["--artifact"]:
             print(artifact(Path(sys.argv[2])), flush=True)
         else:

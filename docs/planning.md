@@ -36,7 +36,7 @@ flowchart TB
 
 ## Provider assignment
 
-Codex is available by default. `--muse` lets Astra assign independent, well-scoped work to Muse while keeping demanding or high-risk implementation and integration on Codex. The scheduler matches each task to its saved provider. Muse currently uses Spark 1.3 high; it does not call Jev.
+Startup detects installed CLIs and local account logins. Astra receives the available worker pool and can assign independent, well-scoped work to Muse while keeping demanding or high-risk implementation and integration on Codex. The scheduler matches each task to its saved provider. Muse currently uses Spark 1.3 high; it does not call Jev.
 
 ## Jev task routing
 
@@ -77,7 +77,7 @@ Rust checks that:
 - Coordination links name existing peers, exclude the task itself and duplicate peers, and carry brief topics.
 - File scopes use exact project-relative paths, with no globs or parent traversal.
 - Tasks sharing file or directory scopes have a dependency between them.
-- Every task uses Codex or, when enabled with `--muse`, Muse.
+- The planner's response schema limits worker assignments to the detected providers: Codex, or Codex and Muse.
 
 These checks validate structure and declared scopes. They do not prove the plan will solve the request.
 

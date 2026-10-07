@@ -27,11 +27,11 @@ The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publica
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
-Enable mixed workers with `sprowt-harness --muse` after signing in with Muse **1.4.1-R4503.1**. Muse runs inside the VM behind a host credential broker. Account authentication is verified; subscription metering remains unconfirmed. The [full Codex VM probe](docs/workers.md#standalone-diagnostics) is still separate from production.
+Startup detects Codex and Muse from your installed CLIs and account logins. Muse **1.4.1-R4503.1** joins the worker pool automatically; it runs inside the VM behind a host credential broker. Account authentication is verified; subscription metering remains unconfirmed. The [full Codex VM probe](docs/workers.md#standalone-diagnostics) is still separate from production.
 
 ## Architecture today
 
-Rust owns the interface, scheduling, workers, task mailboxes and saved state. A shared tool dispatcher validates operations and routes them to host or VM adapters. Codex plans; Codex and Muse execute. Jev evaluates task difficulty and risk through a host-only API adapter.
+Rust owns the interface, scheduling, workers, task mailboxes and saved state. Startup checks the available agents and gives that pool to the planner. A shared tool dispatcher validates operations and routes them to host or VM adapters. Codex plans; Codex and Muse execute. Jev evaluates task difficulty and risk through a host-only API adapter.
 
 ```mermaid
 flowchart TB
@@ -57,7 +57,7 @@ flowchart TB
     verify --> ready
 ```
 
-Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. With `--muse`, the planner can assign independent work to Spark 1.3 high; Jev continues to route Codex effort.
+Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. When Muse is available, the planner can assign independent work to Spark 1.3 high; Jev continues to route Codex effort.
 
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
@@ -76,6 +76,8 @@ You need [Rust](https://rustup.rs), [Codex CLI](https://github.com/openai/codex)
 ```sh
 codex -c 'cli_auth_credentials_store="file"' login
 ```
+
+Installed Muse joins automatically after `muse login`. Without Muse, the harness uses Codex alone. An installed CLI with an unsupported version or missing account login gives a startup error with the next action. See [Workers](docs/workers.md#login).
 
 Install and start [Apple Container](https://github.com/apple/container):
 

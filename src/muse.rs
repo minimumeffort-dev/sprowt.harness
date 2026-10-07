@@ -21,6 +21,7 @@ use crate::{
 };
 
 pub const MODEL: &str = "muse-spark-1.3";
+pub const VERSION: &str = "1.4.1-R4503.1";
 static FILE: AtomicU64 = AtomicU64::new(0);
 
 fn helper() -> io::Result<std::path::PathBuf> {
@@ -56,11 +57,48 @@ fn helper() -> io::Result<std::path::PathBuf> {
 fn command(root: &std::path::Path) -> Command {
     let mut command = Command::new("python3");
     command.arg(root.join("bridge.py")).env_clear().envs(
-        ["PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR"]
-            .iter()
-            .filter_map(|name| env::var_os(name).map(|value| (*name, value))),
+        [
+            "PATH",
+            "HOME",
+            "USER",
+            "LOGNAME",
+            "LANG",
+            "TMPDIR",
+            "XDG_CONFIG_HOME",
+        ]
+        .iter()
+        .filter_map(|name| env::var_os(name).map(|value| (*name, value))),
     );
     command
+}
+
+pub fn account_state() -> io::Result<String> {
+    let root = helper()?;
+    let account = root.join(format!(
+        ".account-{}-{}",
+        std::process::id(),
+        FILE.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir(&account)?;
+    let result = (|| {
+        let mut command = command(&root);
+        command.arg("--account").arg(&account);
+        let output = crate::agents::output(command, Duration::from_secs(15)).map_err(|_| {
+            io::Error::other("Could not check Muse login. Ensure Python 3 is installed, then run muse login and restart the harness.")
+        })?;
+        if output.status.success()
+            && let Some(state) = serde_json::from_slice::<serde_json::Value>(&output.stdout)
+                .ok()
+                .and_then(|v| v["state"].as_str().map(str::to_owned))
+        {
+            return Ok(state);
+        }
+        Err(io::Error::other(
+            "Could not read your Muse account. Run muse login and restart the harness.",
+        ))
+    })();
+    fs::remove_dir_all(account)?;
+    result
 }
 
 pub fn serve(
@@ -75,7 +113,7 @@ pub fn serve(
     let (instructions, context) = setup;
     let _ = outgoing.send(Event::Preparing("preparing Muse".into()));
     let root = helper()?;
-    let binary = root.join("muse-1.4.1-R4503.1");
+    let binary = root.join(format!("muse-{VERSION}"));
     // Verify the pinned artifact on every connection, even when cached.
     let output = command(&root)
         .args(["--artifact", root.to_str().unwrap()])

@@ -82,9 +82,12 @@ pub struct App {
 
 impl App {
     pub fn new(project: PathBuf, motion: bool) -> io::Result<Self> {
+        let muse = crate::agents::detect()?;
         let project = project.canonicalize()?;
         let project = git_mod::project_root(&project).unwrap_or(project);
-        Self::load(project, motion, Store::local()?).map_err(io::Error::other)
+        let mut app = Self::load(project, motion, Store::local()?).map_err(io::Error::other)?;
+        app.muse = muse;
+        Ok(app)
     }
 
     fn load(project: PathBuf, motion: bool, store: Store) -> Result<Self> {
@@ -1874,7 +1877,10 @@ impl App {
         let uses_muse = role == Role::Executor
             && plan.is_some_and(|p| p.tasks.iter().any(|t| t.worker == "muse"));
         if uses_muse && !self.muse {
-            self.notice = Some("This plan uses Muse. Restart the harness with --muse.".into());
+            self.notice = Some(format!(
+                "This plan needs Muse {}. Install it, run muse login and restart the harness.",
+                crate::muse::VERSION
+            ));
             return Ok(());
         }
         let count = if role == Role::Executor {

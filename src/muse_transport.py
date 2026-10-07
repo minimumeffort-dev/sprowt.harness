@@ -54,10 +54,11 @@ def private_json(path, value):
 
 
 class Rpc:
-    def __init__(self, command, env=None, cwd=None):
+    def __init__(self, command, env=None, cwd=None, own_group=True):
+        self.own_group = own_group
         self.process = subprocess.Popen(command, env=env, cwd=cwd, stdin=subprocess.PIPE,
                                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                        text=True, start_new_session=True)
+                                        text=True, start_new_session=own_group)
         self.incoming = queue.Queue()
         self.counter = 0
         self.buffered = []
@@ -101,12 +102,39 @@ class Rpc:
 
     def close(self):
         if self.process.poll() is None:
-            os.killpg(self.process.pid, signal.SIGKILL)
+            if self.own_group:
+                os.killpg(self.process.pid, signal.SIGKILL)
+            else:
+                self.process.kill()
         self.process.wait()
         try:
             self.process.stdin.close()
         except OSError:
             pass
+
+
+def account_client(root, base, own_group=True):
+    config = root / "config/muse"
+    auth = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "muse/auth.json"
+    private_json(config / "settings.json", settings(base))
+    (config / "auth.json").symlink_to(auth)
+    env = {key: os.environ[key] for key in ("HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG")
+           if key in os.environ}
+    env.update(XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"),
+               XDG_CACHE_HOME=str(root / "cache"), MUSE_NO_AUTO_UPDATE="1")
+    return Rpc(["muse", "serve", "--disable-shell", "--disable-write"], env, root, own_group)
+
+
+def read_account(root):
+    # Stay in the caller's process group so a discovery timeout stops both processes.
+    rpc = account_client(root, "http://127.0.0.1:9", own_group=False)
+    try:
+        rpc.call("initialize", {"clientInfo": {"name": "sprowt_account_check", "version": "0.1"},
+                                "capabilities": {"experimentalApi": True}})
+        rpc.write({"method": "initialized"})
+        return {"state": rpc.call("account/read", {}).get("state", "unknown")}
+    finally:
+        rpc.close()
 
 
 def host_login(root, quiet=False):
@@ -147,16 +175,9 @@ def host_login(root, quiet=False):
 
     server = ThreadingHTTPServer(("127.0.0.1", 0), Capture)
     threading.Thread(target=server.serve_forever, daemon=True).start()
-    config = root / "config/muse"
-    auth = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "muse/auth.json"
-    private_json(config / "settings.json", settings(f"http://127.0.0.1:{server.server_port}"))
-    (config / "auth.json").symlink_to(auth)
-    env = {key: os.environ[key] for key in ("HOME", "USER", "LOGNAME", "PATH", "TMPDIR", "LANG")
-           if key in os.environ}
-    env.update(XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"),
-               XDG_CACHE_HOME=str(root / "cache"), MUSE_NO_AUTO_UPDATE="1")
-    rpc = Rpc(["muse", "serve", "--disable-shell", "--disable-write"], env, root)
+    rpc = None
     try:
+        rpc = account_client(root, f"http://127.0.0.1:{server.server_port}")
         rpc.call("initialize", {"clientInfo": {"name": "sprowt_muse_broker_probe", "version": "0.1"},
                                 "capabilities": {"experimentalApi": True}})
         rpc.write({"method": "initialized"})
@@ -184,7 +205,8 @@ def host_login(root, quiet=False):
             print("Host account login: verified; genuine request authentication stays in memory.")
         return captured
     finally:
-        rpc.close()
+        if rpc:
+            rpc.close()
         server.shutdown()
         server.server_close()
 class NoRedirect(urllib.request.HTTPRedirectHandler):
