@@ -5,10 +5,10 @@ A small Rust dispatcher handles harness-owned operations. It checks the caller, 
 ```mermaid
 flowchart TB
     workflow["Harness workflow · confirmed actions"] --> dispatcher["Tool dispatcher · validate caller and inputs"]
-    agent["Executor · package or message request"] --> dispatcher
+    agent["Executor · package, network or message request"] --> dispatcher
     dispatcher --> host["Mac · Git, GitHub and resource cleanup"]
     dispatcher --> vm["Own mod VM · system package installation"]
-    dispatcher --> mailbox["Host SQLite · own codemod task mailboxes"]
+    dispatcher --> mailbox["Host SQLite · own codemod mailboxes and network requests"]
     host --> result["Typed result · progress and recorded outcome"]
     vm --> result
     mailbox --> result
@@ -34,11 +34,14 @@ flowchart TB
 | `prune_mod` | Harness | Remove an unchanged closed worktree; retain its branch |
 | `cleanup_mod` | Harness | VM deletion and Git worktree cleanup |
 | `install_system_packages` | Executor | Package setup inside its own Linux VM |
+| `request_network_access` | Executor | Save exact download domains and a reason for user approval |
 | `send_worker_message` | Executor | Save an ask, reply or update in its codemod |
 | `read_worker_messages` | Executor | Read its mailbox, live assignments and relevant peer scopes and topics |
 | `ack_worker_messages` | Executor | Acknowledge its inbox messages |
 
-Package installation and [worker messaging](coordination.md) are advertised to executors using JSON input schemas; Muse receives them through the guest MCP bridge. Unknown tools, host Git operations requested by workers and these tools requested by planners are rejected. Package names and reasons use the same validation for JSON and typed Rust calls. The connected VM must match the workspace bound to that worker. Mailboxes use its host-bound database, codemod and current task assignment; arguments cannot choose them.
+Package installation, network requests and [worker messaging](coordination.md) are advertised to executors using JSON input schemas; Muse receives them through the guest MCP bridge. Unknown tools, host Git operations requested by workers and these tools requested by planners are rejected. JSON and typed Rust calls share input validation. The VM workspace must match the one bound to that worker. Mailboxes and network requests use its host-bound database, codemod and current task assignment; arguments cannot choose them.
+
+Network requests accept 1–8 exact public hostnames and a short reason. URLs, ports, IPs, wildcards and control characters are rejected. The tool records a request; only the host UI can approve or deny it. Approval is scoped to one codemod and reconnects the requesting worker after its turn stops. Saved files and other workers stay. See [Downloads](sandbox.md#downloads).
 
 Initial Git setup and the GitHub destination require confirmation. Setup checks the reviewed file snapshot; adoption preserves the saved baseline. Repository setup validates owner/name, checks history and records progress for retries. Publication requires confirmation and verified source. Closing saves source locally before VM deletion. Pruning checks the saved commit and refuses outside edits. Edit rounds check PR status and its published commit when present. Git checkpoints own recovery. Credentials remain in host adapters.
 
@@ -60,4 +63,4 @@ The dispatcher is independent of Codex’s transport. The Muse connection uses t
 
 ## Muse MCP bridge
 
-Muse gets the same advertised package and mailbox tools through a guest MCP server. Requests cross the stdio tunnel into the existing dispatcher with the connected worker identity. Guest calls cannot select another codemod or access harness-only Git, GitHub or cleanup operations. External host MCP servers are not exposed.
+Muse gets the same advertised package, network-request and mailbox tools through a guest MCP server. Requests cross the stdio tunnel into the existing dispatcher with the connected worker identity. Guest calls cannot select another codemod, approve network access or access harness-only Git, GitHub or cleanup operations. External host MCP servers are not exposed.

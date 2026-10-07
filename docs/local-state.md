@@ -10,6 +10,7 @@ flowchart TB
     mod --> messages["Conversation history"]
     mod --> pending["Queue and waiting steering"]
     mod --> mail["Task mailboxes · asks, replies and receipt state"]
+    mod --> network["Network requests · decisions and exact domain grants"]
     mod --> execution["Execution · working folder, task status and check results"]
     mod --> workers["Workers · provider, role, conversation and pending delivery"]
     mod --> git["Worktree path · publication, close and retention checkpoints"]
@@ -79,6 +80,8 @@ Muse's verified Linux binary and adapter files live in `~/Library/Caches/sprowt-
 Muse recovery files are private, written atomically before delivery and contain IDs, not credentials or message bodies. Native conversations and tool history remain in that worker's VM home. Quitting retains them; VM deletion removes them. SQLite stores the native session identity and pending receipt. See [Muse recovery](workers.md#muse-recovery).
 
 The `worker_messages` table saves [coordination](coordination.md): task identities, bodies, reply links, retry keys and delivery/receipt state. New edit and integration rounds retain that history but retire its task addresses. Closing keeps messages; deleting a codemod removes them. Mailbox access goes through the host dispatcher; the database is never copied into the VM.
+
+`network_requests` saves exact domains, reasons, decisions and retry state for each task. `network_grants` stores approved domains for that codemod. New edit or integration rounds remove old task requests and retain grants. Closing makes grants inactive; reopening restores them. Deletion removes both. These tables stay on the Mac; worker tools can request access, while only the host UI can approve it. The shared `network.json` is unchanged by approvals.
 
 Project synchronization uses a temporary Git index and locks the real index while fast-forwarding. Its checkpoint completes an interrupted index update on retry. A repository lock serializes project sync with codemod setup. Git hooks and project filters are disabled. Planning starts only after synchronization and worktree setup finish.
 

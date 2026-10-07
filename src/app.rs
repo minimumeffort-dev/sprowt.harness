@@ -39,9 +39,11 @@ pub enum View {
     ProjectSetup(bool, u16),
     Repository(bool),
     ConfirmRepository(bool),
+    Network(i64, u16),
 }
 
 pub struct App {
+    pub network_requests: Vec<crate::network::Access>,
     pub muse: bool,
     pub project: PathBuf,
     pub input: TextArea<'static>,
@@ -142,6 +144,7 @@ impl App {
             store.select_mod(state.id, state.mods[index].id)?;
         }
         let mut app = Self {
+            network_requests: Vec::new(),
             muse: false,
             project_sync_root: store
                 .project_path(state.id)
@@ -296,6 +299,7 @@ impl App {
                 | View::History(_)
                 | View::Publish
                 | View::ProjectSetup(_, _)
+                | View::Network(_, _)
                 | View::ConfirmRepository(_) => {}
             },
             Event::Key(key) if key.kind != KeyEventKind::Release => {
@@ -320,6 +324,24 @@ impl App {
                     return Ok(());
                 }
                 match self.view {
+                    View::Network(id, scroll) => match key.code {
+                        KeyCode::Down => self.view = View::Network(id, scroll.saturating_add(1)),
+                        KeyCode::Up => self.view = View::Network(id, scroll.saturating_sub(1)),
+                        KeyCode::Esc => self.view = View::Chat,
+                        KeyCode::Char('a' | 'd')
+                            if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
+                        {
+                            if let Some(mod_id) = self.current_mod().map(|m| m.id) {
+                                self.store.decide_network(
+                                    mod_id,
+                                    id,
+                                    key.code == KeyCode::Char('a'),
+                                )?;
+                                self.refresh_network_requests()?;
+                            }
+                        }
+                        _ => {}
+                    },
                     View::Chat => self.chat_key(key)?,
                     View::Mods(index) => self.picker_key(key, index)?,
                     View::DeleteMod(index) => match key.code {
@@ -494,6 +516,11 @@ impl App {
     fn chat_key(&mut self, key: KeyEvent) -> Result<()> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
+            KeyCode::Char('n') if ctrl => {
+                if let Some(request) = self.pending_network() {
+                    self.view = View::Network(request.id, 0);
+                }
+            }
             KeyCode::Esc => self.quit = true,
             KeyCode::Char('p') if ctrl => {
                 self.show_closed = self.current_mod().is_some_and(|m| m.closed);
@@ -2107,6 +2134,7 @@ impl App {
     }
 
     fn poll_workers(&mut self) -> Result<()> {
+        self.refresh_network_requests()?;
         self.poll_git_jobs()?;
         self.maintain_project();
         for mod_id in std::mem::take(&mut self.auto_plans) {
@@ -2150,6 +2178,10 @@ impl App {
                 editing_mod != Some(code_mod.id)
                     && deleting_mod != Some(code_mod.id)
                     && reviewing_mod != Some(code_mod.id)
+                    && !self
+                        .network_requests
+                        .iter()
+                        .any(|r| r.worker == worker.id && r.status == "approved")
                     && !self.git_jobs.contains_key(&code_mod.id)
                     && !code_mod.closed,
                 &code_mod
@@ -2163,6 +2195,7 @@ impl App {
             self.auto_runs.remove(&self.mods[index].id);
             self.start_execution(index)?;
         }
+        self.resume_network_workers()?;
         self.maintain_updates()?;
         let edits = self
             .mods
@@ -2236,6 +2269,74 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    pub fn pending_network(&self) -> Option<&crate::network::Access> {
+        let id = self.current_mod()?.id;
+        self.network_requests
+            .iter()
+            .find(|r| r.mod_id == id && r.status == "pending")
+    }
+
+    fn refresh_network_requests(&mut self) -> Result<()> {
+        self.network_requests.clear();
+        for code_mod in self.mods.iter().filter(|m| !m.closed) {
+            self.network_requests
+                .extend(self.store.network_requests(code_mod.id)?);
+        }
+        if let View::Network(id, _) = self.view
+            && !self
+                .network_requests
+                .iter()
+                .any(|r| r.id == id && r.status == "pending")
+        {
+            self.view = self
+                .pending_network()
+                .map_or(View::Chat, |r| View::Network(r.id, 0));
+        }
+        Ok(())
+    }
+
+    fn resume_network_workers(&mut self) -> Result<()> {
+        let requests = self
+            .network_requests
+            .iter()
+            .filter(|r| r.status == "approved")
+            .cloned()
+            .collect::<Vec<_>>();
+        for access in requests {
+            if self.git_jobs.contains_key(&access.mod_id)
+                || self.workers.get(&access.worker).is_some_and(Worker::busy)
+            {
+                continue;
+            }
+            let Some(index) = self
+                .mods
+                .iter()
+                .position(|m| m.id == access.mod_id && !m.closed)
+            else {
+                continue;
+            };
+            if let Some(record) = self.store.resume_network(&access)? {
+                self.workers.remove(&record.id);
+                self.mods[index].execution = self.store.execution(access.mod_id)?;
+                match Worker::start_with_muse(
+                    &self.source_project(index),
+                    &self.mods[index],
+                    record,
+                    Role::Executor,
+                    None,
+                    self.muse,
+                ) {
+                    Ok(worker) => {
+                        self.workers.insert(worker.id, worker);
+                        self.notice = None;
+                    }
+                    Err(error) => self.notice = Some(error.to_string()),
+                }
+            }
+        }
+        self.refresh_network_requests()
     }
 
     fn poll_git_jobs(&mut self) -> Result<()> {
@@ -3163,6 +3264,227 @@ mod tests {
             .chunks(buffer.area.width as usize)
             .map(|row| row.iter().map(|cell| cell.symbol()).collect())
             .collect()
+    }
+
+    #[test]
+    fn network_dialog_preserves_drafts_and_requires_an_explicit_decision() {
+        let (data, store, m, root, workers) = crate::network::tests::fixture();
+        let project = data.0.join("project");
+        let request=crate::network::Request::parse(serde_json::json!({"domains":["huggingface.co","cdn.jsdelivr.net"],"reason":"Verify model weights and browser runtime"})).unwrap();
+        store
+            .request_network(m.id, workers[0], request, false)
+            .unwrap();
+        let mut app = App::load(project, false, store).unwrap();
+        app.input.insert_str("keep this draft");
+        app.refresh_network_requests().unwrap();
+        let notice = rows(&screen(&mut app, 120, 36)).join("\n");
+        assert!(
+            notice.contains("Network access needed") && notice.contains("ctrl+n review domains")
+        );
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+        let dialog = rows(&screen(&mut app, 120, 36))
+            .join("\n")
+            .replace('\u{a0}', " ");
+        assert!(dialog.contains("huggingface.co") && dialog.contains("cdn.jsdelivr.net"));
+        assert!(dialog.contains("allow for codemod") && dialog.contains("Verify model weights"));
+        let narrow = rows(&screen(&mut app, 80, 24))
+            .join("\n")
+            .replace('\u{a0}', " ");
+        assert!(narrow.contains("huggingface.co") && narrow.contains("cdn.jsdelivr.net"));
+        assert!(narrow.contains("allow for codemod") && narrow.contains("d deny"));
+        app.handle(Event::Paste("a".into())).unwrap();
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+        assert!(crate::network::grants(&root).unwrap().is_empty());
+        app.handle(Event::Key(KeyEvent::new_with_kind(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE,
+            KeyEventKind::Repeat,
+        )))
+        .unwrap();
+        assert!(crate::network::grants(&root).unwrap().is_empty());
+        app.handle(Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)))
+            .unwrap();
+        assert!(app.pending_network().is_some());
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('n'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::NONE,
+        )))
+        .unwrap();
+        assert!(matches!(app.view, View::Chat));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(
+            app.pending_network().is_none() && crate::network::grants(&root).unwrap().is_empty()
+        );
+        assert_eq!(
+            app.store.load_project(&app.project).unwrap().mods[0].draft,
+            "keep this draft"
+        );
+    }
+
+    #[test]
+    fn long_network_requests_scroll_and_retired_requests_return_to_the_draft() {
+        let (data, store, m, _root, workers) = crate::network::tests::fixture();
+        let reason = format!("{}ENDREASON", "download verification ".repeat(12));
+        let request = crate::network::Request::parse(serde_json::json!({
+            "domains": (0..8).map(|i| format!("model-cache-{i}.example.com")).collect::<Vec<_>>(),
+            "reason": reason
+        }))
+        .unwrap();
+        store
+            .request_network(m.id, workers[0], request, false)
+            .unwrap();
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        app.input.insert_str("keep this draft");
+        app.refresh_network_requests().unwrap();
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL);
+        let first = rows(&screen(&mut app, 80, 24))
+            .join("\n")
+            .replace('\u{a0}', " ");
+        assert!(first.contains("model-cache-0.example.com") && first.contains("↑↓ scroll"));
+        let View::Network(id, _) = app.view else {
+            panic!("Network dialog missing")
+        };
+        app.view = View::Network(id, u16::MAX);
+        let last = rows(&screen(&mut app, 80, 24))
+            .join("\n")
+            .replace('\u{a0}', " ");
+        assert!(
+            last.contains("ENDREASON") && last.contains("a allow for codemod"),
+            "{last}"
+        );
+        app.store.follow_up(m.id, "A different task", None).unwrap();
+        app.refresh_network_requests().unwrap();
+        assert!(matches!(app.view, View::Chat));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
+    #[ignore = "Runs Codex and Muse domain requests and retries in a disposable VM"]
+    fn both_workers_resume_after_codemod_network_approval() {
+        use std::fs;
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("README.md"), "Disposable network fixture.\n").unwrap();
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let m = store
+            .create_mod(project_id, "Check two independent downloads")
+            .unwrap();
+        let root = store.workspace_path(m.id).unwrap();
+        let tasks=[("a","codex"),("b","muse")].map(|(id,provider)|serde_json::json!({"id":id,"title":format!("{provider} download"),"outcome":format!("Network approval fixture. In {id}.txt write before-approval ONLY if it does not already exist. Run /usr/bin/curl -f -I --max-time 15 https://example.com. If blocked by the proxy allowlist, call request_network_access for example.com with reason Verify fixture download, then return completed:false and keep the source file. On retry, require {id}.txt still contains before-approval. Once example.com returns success, verify https://example.org remains blocked-by-allowlist. Then append exactly allowed to {id}.txt once. Never bypass the network policy or change other source files."),"files":[format!("{id}.txt")],"depends_on":[],"worker":provider,"checks":["Marker retains saved work and records allowed download"]}));
+        let plan = crate::plan::Plan::parse(
+            &serde_json::json!({"summary":"Two network checks","tasks":tasks}).to_string(),
+        )
+        .unwrap();
+        store
+            .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
+            .unwrap();
+        workspace::create(&project, &root).unwrap();
+        store.create_execution(m.id, &root, &plan).unwrap();
+        let mut app = App::load(project.clone(), false, store).unwrap();
+        app.muse = true;
+        app.input.insert_str("keep the composer draft");
+        app.start_worker(0, Role::Executor).unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let deadline = Instant::now() + Duration::from_secs(600);
+            let mut approved = false;
+            let mut previous = String::new();
+            while Instant::now() < deadline {
+                app.poll_workers().unwrap();
+                let state = app.mods[0]
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .map(|t| format!("{}:{}", t.task_id, t.status))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if state != previous {
+                    eprintln!("Network fixture: {state}");
+                    previous = state;
+                }
+                let pending = app
+                    .network_requests
+                    .iter()
+                    .filter(|r| r.status == "pending")
+                    .count();
+                if pending == 2 && !approved && !app.workers.values().any(Worker::busy) {
+                    assert!(
+                        !crate::sandbox::network(&root)
+                            .unwrap()
+                            .contains_key("example.com")
+                    );
+                    let screen = rows(&screen(&mut app, 120, 36)).join("\n");
+                    assert!(screen.contains("ctrl+n review domains"));
+                    app.handle(Event::Key(KeyEvent::new(
+                        KeyCode::Char('n'),
+                        KeyModifiers::CONTROL,
+                    )))
+                    .unwrap();
+                    app.handle(Event::Key(KeyEvent::new(
+                        KeyCode::Char('a'),
+                        KeyModifiers::NONE,
+                    )))
+                    .unwrap();
+                    approved = true;
+                    assert_eq!(app.input.lines(), ["keep the composer draft"]);
+                }
+                assert!(
+                    app.workers.values().all(|w| w.status != Status::Failed),
+                    "{}",
+                    app.worker_error().unwrap_or("")
+                );
+                if app.mods[0].execution.as_ref().unwrap().status == "review" {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(
+                approved,
+                "Both providers must request access through the dispatcher"
+            );
+            assert_eq!(
+                app.mods[0].execution.as_ref().unwrap().status,
+                "review",
+                "{}",
+                app.worker_error().unwrap_or("")
+            );
+            for id in ["a", "b"] {
+                let text = fs::read_to_string(root.join(format!("work/{id}.txt"))).unwrap();
+                assert!(text.contains("before-approval") && text.contains("allowed"));
+            }
+            assert!(
+                app.mods[0]
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .checks
+                    .iter()
+                    .all(|c| c.exit_code == Some(0))
+            );
+            assert_eq!(app.input.lines(), ["keep the composer draft"]);
+        }));
+        app.workers.clear();
+        drop(app);
+        crate::sandbox::delete(&root).unwrap();
+        if let Err(error) = outcome {
+            std::panic::resume_unwind(error);
+        }
     }
 
     fn execution_app() -> (TestData, App, PathBuf) {

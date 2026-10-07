@@ -82,7 +82,9 @@ Account authentication is verified. Subscription metering is not independently e
 
 ## Messages and steering
 
-Both providers use the same [task mailboxes](coordination.md) and [tool dispatcher](tools.md). Muse receives the advertised inbox and package tools through a guest MCP server. Calls carry the current worker's identity; workers cannot publish PRs or run host commands through this bridge.
+Both providers use the same [task mailboxes](coordination.md) and [tool dispatcher](tools.md). Muse receives the advertised inbox, package and network-request tools through a guest MCP server. Calls carry the current worker's identity; workers cannot publish PRs, approve network access or run host commands through this bridge.
+
+Blocked downloads can request exact domains for your approval. Approval reconnects only the affected worker and retries its saved task; peers continue. Native conversation context is reused when compatible. An older Codex conversation without the current tool set starts fresh from the saved plan, source and accepted instructions. See [Downloads](sandbox.md#downloads).
 
 Worker labels and saved replies show provider, worker ID, model and effort. **Ctrl+R** stops or retries work. Steering is acknowledged separately for each targeted worker; reordering the queue does not deliver instructions.
 

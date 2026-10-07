@@ -7,6 +7,7 @@ mod git_sync;
 mod mailbox;
 mod mod_sync;
 mod muse;
+mod network;
 mod packages;
 mod plan;
 mod router;

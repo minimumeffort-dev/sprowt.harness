@@ -12,7 +12,7 @@ use std::{
 use serde_json::{Value, json};
 
 use crate::{
-    git_mod, mailbox, mod_sync, packages,
+    git_mod, mailbox, mod_sync, network, packages,
     plan::{Plan, Role},
     sandbox::Sandbox,
     store::CodeMod,
@@ -37,12 +37,13 @@ enum Tool {
     ReopenMod,
     PruneMod,
     InstallPackages,
+    RequestNetwork,
     SendMessage,
     ReadMessages,
     AckMessages,
 }
 
-const REGISTRY: [Tool; 19] = [
+const REGISTRY: [Tool; 20] = [
     Tool::SyncProject,
     Tool::InitializeProject,
     Tool::AdoptSnapshot,
@@ -59,6 +60,7 @@ const REGISTRY: [Tool; 19] = [
     Tool::ReopenMod,
     Tool::PruneMod,
     Tool::InstallPackages,
+    Tool::RequestNetwork,
     Tool::SendMessage,
     Tool::ReadMessages,
     Tool::AckMessages,
@@ -84,6 +86,7 @@ impl Tool {
             Self::ReopenMod => "reopen_mod",
             Self::PruneMod => "prune_mod",
             Self::InstallPackages => packages::TOOL,
+            Self::RequestNetwork => network::TOOL,
             Self::SendMessage => mailbox::SEND,
             Self::ReadMessages => mailbox::READ,
             Self::AckMessages => mailbox::ACK,
@@ -92,7 +95,7 @@ impl Tool {
 
     fn permitted(self, context: &Context) -> bool {
         match self {
-            Self::SendMessage | Self::ReadMessages | Self::AckMessages => {
+            Self::SendMessage | Self::ReadMessages | Self::AckMessages | Self::RequestNetwork => {
                 context
                     .worker
                     .is_some_and(|(_, role)| role == Role::Executor)
@@ -235,6 +238,7 @@ pub enum Request {
     ReopenMod,
     PruneMod,
     InstallPackages(packages::Request),
+    NetworkAccess(network::Request),
     Message(mailbox::Request),
 }
 
@@ -257,6 +261,7 @@ impl Request {
             Self::ReopenMod => Tool::ReopenMod,
             Self::PruneMod => Tool::PruneMod,
             Self::InstallPackages(_) => Tool::InstallPackages,
+            Self::NetworkAccess(_) => Tool::RequestNetwork,
             Self::Message(mailbox::Request::Send(_)) => Tool::SendMessage,
             Self::Message(mailbox::Request::Read) => Tool::ReadMessages,
             Self::Message(mailbox::Request::Ack(_)) => Tool::AckMessages,
@@ -289,6 +294,7 @@ pub fn advertised(context: &Context) -> Vec<Value> {
     }
     if Tool::SendMessage.permitted(context) {
         tools.extend(mailbox::tools());
+        tools.push(network::tool());
     }
     tools
 }
@@ -328,6 +334,7 @@ impl<'a> Dispatcher<'a> {
         self.dispatch(
             tool,
             || match name {
+                network::TOOL => network::Request::parse(arguments).map(Request::NetworkAccess),
                 mailbox::SEND | mailbox::READ | mailbox::ACK => {
                     mailbox::Request::parse(name, arguments).map(Request::Message)
                 }
@@ -385,6 +392,41 @@ impl<'a> Dispatcher<'a> {
             }
             let root = self.context.root()?;
             match request {
+                Request::NetworkAccess(request) => {
+                    let store =
+                        crate::store::Store::open(self.context.database.as_deref().unwrap())?;
+                    let execution = store
+                        .execution(self.context.mod_id.unwrap())
+                        .map_err(io::Error::other)?
+                        .ok_or_else(|| io::Error::other("Network requests require the mod VM."))?;
+                    if execution.backend != "apple-container"
+                        || execution.workspace.canonicalize()? != root.canonicalize()?
+                    {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "Network request is outside this mod's VM.",
+                        ));
+                    }
+                    let request = request.validate()?;
+                    let policy = crate::sandbox::network(root)?;
+                    let already_allowed = request.domains.iter().all(|domain| {
+                        policy.keys().any(|allowed| {
+                            domain == allowed
+                                || allowed
+                                    .strip_prefix('*')
+                                    .is_some_and(|suffix| domain.ends_with(suffix))
+                        })
+                    });
+                    store
+                        .request_network(
+                            self.context.mod_id.unwrap(),
+                            self.context.worker_id(),
+                            request,
+                            already_allowed,
+                        )
+                        .map(Output::Text)
+                        .map_err(io::Error::other)
+                }
                 Request::Message(request) => {
                     let mut store =
                         crate::store::Store::open(self.context.database.as_deref().unwrap())?;

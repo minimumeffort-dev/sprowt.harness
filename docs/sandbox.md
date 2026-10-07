@@ -84,7 +84,7 @@ Setup progress appears beside the active worker. Requests and results are saved 
 
 Codex uses its experimental [dynamic tool interface](https://learn.chatgpt.com/docs/app-server#dynamic-tool-calls-experimental); Muse uses the guest MCP bridge.
 
-If a saved executor conversation lacks the setup tool, reconnecting opens a new conversation. The goal, saved plan, unfinished task and accepted user instructions supply its context. The VM, runtime, source and transcript are retained; completed tasks stay complete.
+If a saved Codex executor conversation lacks the current harness tools, reconnecting opens a new conversation. The goal, saved plan, unfinished task and accepted user instructions supply its context. The VM, runtime, source and transcript are retained; completed tasks stay complete.
 
 ## Browser checks
 
@@ -112,20 +112,34 @@ flowchart TB
     proxy["Codex network proxy<br/>Uses the Mac's domain allowlist"]
     packages["Public runtime and package sources"]
     command -->|"Request a download"| proxy
-    proxy -->|"Allowed domain"| packages
+    proxy -->|"Global allowlist + codemod approvals"| packages
 ```
 
 Other domains, direct connections and private network destinations are blocked.
 
 The default allowlist covers common Python, Node, Rust, Go and other package sources, plus Playwright browser downloads. It allows `cdn.playwright.dev`, its Microsoft mirror and redirects to `storage.googleapis.com`. System package setup uses `deb.debian.org` for Debian packages and security updates. The worker requests missing browser libraries through the setup tool.
 
-Edit the host-only file to add required domains:
+For a blocked download or documentation request, Codex and Muse call `request_network_access` with exact hostnames and a reason. The task shows **Network access needed · Ctrl+N**.
+
+```mermaid
+flowchart TB
+    blocked["Worker · download blocked"] --> request["Request exact domains + reason"]
+    request --> review["You · Ctrl+N reviews the request"]
+    review -->|"a · allow for codemod"| retry["Reconnect affected worker · retry saved task"]
+    review -->|"d · deny"| pause["Task stays paused · no extra access"]
+```
+
+**Esc** defers the decision and keeps your draft. Approval waits for the requesting turn to stop, then reconnects that worker with the updated proxy policy. Its source, runtime and completed tasks stay. Other workers continue; their existing proxy connections receive the new policy on reconnect. Requests already covered by your approvals do not ask again.
+
+Grants apply to downloads and independent checks in that codemod. Redirects to another blocked host need another request. Workers cannot approve requests, change the global policy or request wildcards, IPs, URLs or ports. Closing makes grants inactive; reopening restores them. Deleting the codemod removes them. Requests and decisions are saved on the Mac in SQLite.
+
+For domains you want available to every codemod, edit the host-only file:
 
 ```text
 ~/Library/Application Support/sprowt-harness/network.json
 ```
 
-It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomains. Existing local policies are kept when upgrading; new default domains must also be added to that file. Quit and reopen the harness, then press **Ctrl+R** to reconnect with the updated policy. A model cannot edit this host policy. Allowed services can receive data; domain filtering is not a guarantee against data leaving the VM.
+It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomains. Existing local policies are kept when upgrading; new default domains must also be added to that file. Quit and reopen the harness, then press **Ctrl+R** to reconnect with manual changes. Per-codemod approvals leave this file unchanged and reconnect automatically. Allowed services can receive data; domain filtering is not a guarantee against data leaving the VM.
 
 ## VM lifecycle
 
@@ -160,6 +174,7 @@ cargo test sandbox::tests::task_worktrees -- --ignored --nocapture
 cargo test codex::tests::task_turn -- --ignored --nocapture
 cargo test codex::tests::two_clients_share_a_vm -- --ignored --nocapture
 cargo test codex::tests::browser_turn_and_verification -- --ignored --nocapture
+cargo test app::tests::both_workers_resume_after_codemod_network_approval -- --ignored --nocapture
 ```
 
-These use temporary repositories and VMs, checking worker restrictions, tool ownership, source transfer and cleanup. GitHub publication uses a local fixture. The Codex tests use short subscription-backed turns, including two simultaneous workers. The browser check installs Chromium, renders a local page through both execution paths and verifies socket, network and file boundaries. Native VM tests require the pinned host and guest Codex versions; shared images remain for reuse.
+These use temporary repositories and VMs, checking worker restrictions, tool ownership, source transfer and cleanup. GitHub publication uses a local fixture. The Codex tests use short subscription-backed turns, including two simultaneous workers. The browser check verifies socket, network and file boundaries. The network test runs both providers through a blocked download, host approval and automatic retry, confirming saved files survive and an unapproved domain stays blocked. Native VM tests require the pinned CLI versions; shared images remain for reuse.

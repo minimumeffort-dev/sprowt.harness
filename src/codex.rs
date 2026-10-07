@@ -87,6 +87,7 @@ fn shared_vm(
     let mut registry = VMS.lock().unwrap();
     registry.retain(|_, vm| vm.strong_count() > 0);
     if let Some(vm) = registry.get(root).and_then(Weak::upgrade) {
+        vm.lock().unwrap().refresh_network()?;
         return Ok(vm);
     }
     let mut vm = Sandbox::prepare(root, cancelled, progress)?;
@@ -571,7 +572,7 @@ fn serve(
         .as_ref()
         .map(|vm| vm.lock().unwrap().worker_home(context.worker_id()))
         .transpose()?
-        .map(|home| home.join("worker-messages-v1-thread"));
+        .map(|home| home.join("worker-network-v1-thread"));
     let resume = resume.filter(|resume| {
         marker
             .as_ref()

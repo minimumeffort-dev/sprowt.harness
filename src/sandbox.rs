@@ -42,6 +42,10 @@ pub struct Sandbox {
 }
 
 impl Sandbox {
+    pub fn refresh_network(&mut self) -> io::Result<()> {
+        self.domains = network(&self.root)?;
+        Ok(())
+    }
     pub fn root(&self) -> &Path {
         &self.root
     }
@@ -1055,7 +1059,7 @@ fn name(root: &Path) -> io::Result<String> {
     Ok(format!("sprowt-{suffix}"))
 }
 
-fn network(root: &Path) -> io::Result<BTreeMap<String, String>> {
+pub(crate) fn network(root: &Path) -> io::Result<BTreeMap<String, String>> {
     let file = root
         .parent()
         .and_then(Path::parent)
@@ -1078,10 +1082,12 @@ fn network(root: &Path) -> io::Result<BTreeMap<String, String>> {
             file.display()
         )));
     }
-    Ok(domains
+    let mut policy: BTreeMap<_, _> = domains
         .into_iter()
         .map(|domain| (domain, "allow".into()))
-        .collect())
+        .collect();
+    policy.extend(crate::network::grants(root)?);
+    Ok(policy)
 }
 
 fn container() -> Command {

@@ -681,7 +681,7 @@ pub(crate) mod tests {
             .unwrap()
             .database;
         let context = Context::worker(&m, workers[0], Role::Executor).with_mailbox(&database);
-        assert_eq!(crate::tools::advertised(&context).len(), 4);
+        assert_eq!(crate::tools::advertised(&context).len(), 5);
         assert!(
             crate::tools::advertised(&context)
                 .iter()

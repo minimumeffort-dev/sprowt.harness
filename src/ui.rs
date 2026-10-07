@@ -163,10 +163,12 @@ pub fn draw(
             Line::from(vec!["sprowt".fg(ACCENT).bold(), " harness".bold()]),
             Line::from(fit_name(&project, heading.width)).fg(MUTED),
             Line::from(fit_name(&status, heading.width)).fg(KEY_HINT),
-            Line::from(
+            Line::from(if app.pending_network().is_some() {
+                "! Network access needed · ctrl+n".into()
+            } else {
                 app.worker_error()
-                    .map_or(String::new(), |error| fit_name(error, heading.width)),
-            )
+                    .map_or(String::new(), |error| fit_name(error, heading.width))
+            })
             .fg(Color::Red),
         ]),
         heading,
@@ -281,6 +283,8 @@ pub fn draw(
             &[("↵", "confirm"), ("esc", "back")],
         );
         frame.render_widget(text, body);
+    } else if let View::Network(id, scroll) = app.view {
+        draw_network(frame, app, id, scroll, dialog_area);
     } else if let View::Mods(index) = app.view {
         draw_mod_picker(frame, app, index, dialog_area);
     } else if let View::DeleteMod(index) = app.view {
@@ -723,7 +727,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     let inner = block.inner(panel);
     let mut rows = Vec::new();
     let mut total: usize = 0;
-    for item in conversation_blocks(code_mod, false, true, inner.width, None, false) {
+    for item in conversation_blocks(code_mod, false, true, inner.width, None, false, &[]) {
         let paragraph = Paragraph::new(item.text).wrap(Wrap { trim: false });
         let height =
             paragraph.line_count(inner.width.saturating_sub(if item.user { 2 } else { 0 }));
@@ -794,6 +798,47 @@ fn dialog_selection() -> Style {
     Style::new().fg(Color::White).bg(SELECTED)
 }
 
+fn draw_network(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, area: Rect) {
+    let Some(access) = app
+        .network_requests
+        .iter()
+        .find(|r| r.id == id && r.status == "pending")
+    else {
+        return;
+    };
+    let mut lines = vec![
+        Line::from(format!(
+            "w{} requests access for this codemod",
+            access.worker
+        ))
+        .fg(KEY_HINT),
+        Line::default(),
+    ];
+    lines.extend(
+        access
+            .domains
+            .iter()
+            .map(|d| Line::from(format!("◇ {d}")).fg(ACCENT).bold()),
+    );
+    lines.push(Line::default());
+    lines.push(Line::from(access.reason.clone()));
+    let body = Paragraph::new(lines).wrap(Wrap { trim: false });
+    let rows = body.line_count(area.width.saturating_sub(4));
+    let mut shortcuts = vec![("a", "allow for codemod"), ("d", "deny"), ("esc", "back")];
+    let (mut content, _) = draw_dialog(frame, area, "network access", rows, false, &shortcuts);
+    if rows > content.height as usize {
+        shortcuts.insert(2, ("↑↓", "scroll"));
+        content = draw_dialog(frame, area, "network access", rows, false, &shortcuts).0;
+    }
+    let maximum = body
+        .line_count(content.width)
+        .saturating_sub(content.height as usize)
+        .min(u16::MAX as usize) as u16;
+    let scroll = scroll.min(maximum);
+    app.view = View::Network(id, scroll);
+    frame.render_widget(body.scroll((scroll, 0)), content);
+}
+
 fn draw_dialog(
     frame: &mut Frame,
     area: Rect,
@@ -815,7 +860,7 @@ fn draw_dialog(
     let hints_height = hints.line_count(area.width.saturating_sub(4)) as u16;
     let action_height = u16::from(has_action);
     let panel = Rect {
-        height: (rows.clamp(1, 7) as u16 + action_height + 3 + hints_height).min(area.height),
+        height: (rows.clamp(1, 12) as u16 + action_height + 3 + hints_height).min(area.height),
         ..area
     };
     let block = Block::bordered()
@@ -1032,6 +1077,7 @@ fn command_lines(argv: &[String], width: u16) -> Vec<Line<'static>> {
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn plan_lines(
     plan: &Plan,
     planning: &Planning,
@@ -1040,6 +1086,7 @@ fn plan_lines(
     width: u16,
     activity: Option<&'static str>,
     published: bool,
+    network: &[crate::network::Access],
 ) -> Vec<Line<'static>> {
     let completed = execution
         .is_some_and(|e| e.complete() && matches!(e.status.as_str(), "review" | "applied"));
@@ -1172,6 +1219,26 @@ fn plan_lines(
         ]));
         if !compact {
             lines.push(Line::from(format!("   {}", task.outcome)));
+        }
+        if let Some(access) = run.and_then(|run| {
+            network
+                .iter()
+                .filter(|r| r.task == run.id)
+                .min_by_key(|r| match r.status.as_str() {
+                    "pending" => 0,
+                    "approved" => 1,
+                    _ => 2,
+                })
+        }) {
+            lines.push(
+                Line::from(match access.status.as_str() {
+                    "pending" => "   ! Network access needed · ctrl+n review domains",
+                    "denied" => "   ! Network access denied · task paused",
+                    _ => "   ◌ Access approved · reconnecting worker",
+                })
+                .fg(ACCENT)
+                .bold(),
+            );
         }
         let dependencies: Vec<_> = task
             .depends_on
@@ -1315,6 +1382,7 @@ fn conversation_blocks<'a>(
     width: u16,
     activity: Option<&'static str>,
     published: bool,
+    network: &[crate::network::Access],
 ) -> Vec<ConversationBlock<'a>> {
     let saved = code_mod
         .planning
@@ -1347,6 +1415,7 @@ fn conversation_blocks<'a>(
                         width,
                         activity,
                         published,
+                        network,
                     )
                     .into(),
                     user: false,
@@ -1481,6 +1550,7 @@ fn draw_conversation(
             area.width,
             activity,
             app.published(),
+            &app.network_requests,
         )
     });
     let mut rows = Vec::new();

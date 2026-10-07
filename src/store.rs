@@ -280,6 +280,9 @@ impl Store {
         connection
             .execute_batch(crate::mailbox::SCHEMA)
             .map_err(io::Error::other)?;
+        connection
+            .execute_batch(crate::network::SCHEMA)
+            .map_err(io::Error::other)?;
         let has_worker = connection
             .prepare("PRAGMA table_info(task_runs)")
             .map_err(io::Error::other)?
@@ -500,6 +503,8 @@ impl Store {
             [mod_id],
         )?;
         for table in [
+            "network_requests",
+            "network_grants",
             "task_runs",
             "executions",
             "steering_requests",
@@ -559,6 +564,7 @@ impl Store {
         let (description, attempt): (String, i64) = transaction.query_row("SELECT COALESCE(m.description,m.name),COALESCE(p.attempt,0) FROM code_mods m LEFT JOIN plans p ON p.mod_id=m.id WHERE m.id=?1", [mod_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
         let source = plan_source(mod_id, attempt + 1);
         transaction.execute("UPDATE code_mods SET closed=0,closed_at=NULL,description=?2 WHERE id=?1", params![mod_id, format!("{description}\n\nUse the current source and finish any incomplete work. Plan this edit, including checks for the new behavior and regressions:\n{request}")])?;
+        transaction.execute("DELETE FROM network_requests WHERE mod_id=?1", [mod_id])?;
         transaction.execute("DELETE FROM task_runs WHERE mod_id=?1", [mod_id])?;
         transaction.execute(
             "UPDATE executions SET status='planning',checks='[]',fingerprint=NULL WHERE mod_id=?1",
@@ -1238,6 +1244,7 @@ impl Store {
         if current.as_deref() == Some(&source) {
             return transaction.commit();
         }
+        transaction.execute("DELETE FROM network_requests WHERE mod_id=?1", [mod_id])?;
         transaction.execute("DELETE FROM task_runs WHERE mod_id=?1", [mod_id])?;
         transaction.execute("INSERT INTO plans(mod_id,source,status,body) VALUES (?1,?2,'ready',?3) ON CONFLICT(mod_id) DO UPDATE SET source=excluded.source,status='ready',body=excluded.body,model=NULL,effort=NULL,routing=NULL", params![mod_id,source,serde_json::to_string(&update.plan).unwrap()])?;
         transaction.execute("INSERT INTO executions(mod_id,workspace,backend) VALUES (?1,?2,'apple-container') ON CONFLICT(mod_id) DO UPDATE SET status='pending',checks='[]',fingerprint=NULL,backend='apple-container'", params![mod_id,root.to_string_lossy()])?;
