@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.request
 
-from muse_transport import (Broker, CHECKSUM, MODEL, VERSION, Rpc, command_id,
+from muse_transport import (Broker, CHECKSUM, MODEL, VERSION, Rpc, RpcError, command_id,
                             guest, host_login, private_json, read_account, settings)
 
 
@@ -268,6 +268,165 @@ def normalize(message):
     return None
 
 
+class SessionState:
+    def __init__(self, path, config):
+        self.path = Path(path)
+        saved = json.loads(self.path.read_text()) if self.path.exists() else {}
+        if saved and (not isinstance(saved, dict) or saved.get("vm") != config["name"]
+                or type(saved.get("task")) is not int or saved["task"] <= 0
+                or saved.get("cwd") != f'/tasks/{saved["task"]}'
+                or not isinstance(saved.get("commands"), dict)
+                or not all(isinstance(command, dict) and isinstance(command.get("id"), str)
+                           for command in saved["commands"].values())
+                or not isinstance(saved.get("sessionId"), str) or not isinstance(saved.get("startId"), str)):
+            raise RuntimeError("Saved Muse recovery state is invalid; work is retained.")
+        self.resuming = bool(saved) and saved.get("cwd") == config["cwd"]
+        self.value = saved if self.resuming else {
+            "vm": config["name"], "cwd": config["cwd"], "task": int(config["cwd"].rsplit("/", 1)[1]),
+            "sessionId": command_id(), "startId": command_id(), "commands": {}}
+        self.save()
+
+    def save(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        next_path = self.path.with_suffix(".next")
+        with next_path.open("w") as output:
+            os.chmod(next_path, 0o600)
+            json.dump(self.value, output)
+            output.flush()
+            os.fsync(output.fileno())
+        next_path.replace(self.path)
+        directory = os.open(self.path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+
+    def command(self, source):
+        commands = self.value["commands"]
+        if source not in commands:
+            commands[source] = {"id": command_id()}
+            self.save()
+        return commands[source]["id"]
+
+    def accepted(self, source, result):
+        if result.get("status") != "accepted" or not isinstance(result.get("turnId"), str):
+            raise RuntimeError("Muse returned no accepted turn ID.")
+        self.value["commands"][source]["turnId"] = result["turnId"]
+        self.save()
+
+
+def recovered_thread(rpc, state, result):
+    session = result["session"]
+    if session["sessionId"] != state.value["sessionId"] or session["workspaceRoot"] != state.value["cwd"]:
+        raise RuntimeError("Muse recovery returned a different session or task folder.")
+    sources = {v["id"]: source for source, v in state.value["commands"].items()}
+    turns, items, cursor, size = {}, {}, None, 0
+
+    def fold(item):
+        if item.get("kind") not in {"userMessage", "agentMessage"} or not item.get("turnId"):
+            return
+        key = item["itemId"]
+        if key not in items or item.get("revision", 0) >= items[key].get("revision", 0):
+            items[key] = item
+
+    # Native inline history can be downgraded. Page durable events for receipts and terminals.
+    for _ in range(64):
+        params = {"sessionId": session["sessionId"], "limit": 1000}
+        if cursor:
+            params["cursor"] = cursor
+        page = rpc.call("view/page", params)
+        size += len(json.dumps(page))
+        if size > 8 * 1024 * 1024:
+            raise RuntimeError("Muse recovery history exceeds its limit; delivery remains unconfirmed.")
+        for event in page["events"]:
+            params = event["params"]
+            if event["method"].startswith("item/") and "item" in params:
+                fold(params["item"])
+            elif event["method"] == "turn/completed":
+                turns[params["turnId"]] = params["terminal"]
+        next_cursor = page["nextCursor"]
+        if next_cursor is None:
+            break
+        if next_cursor == cursor:
+            raise RuntimeError("Muse recovery cursor did not advance.")
+        cursor = next_cursor
+    else:
+        raise RuntimeError("Muse recovery history exceeds its limit; delivery remains unconfirmed.")
+    history = result.get("history", {})
+    snapshot = history.get("snapshot") or {}
+    for item in history.get("items") or (snapshot.get("state") or {}).get("items") or []:
+        fold(item)
+    last = result.get("lastTurn")
+    if last:
+        turns[last["turnId"]] = last["terminal"]
+    if session.get("activeTurnId"):
+        turns[session["activeTurnId"]] = "inProgress"
+    grouped = {}
+    for item in items.values():
+        if item["kind"] == "userMessage":
+            source = sources.get(item.get("commandId"))
+            if not source:
+                continue
+            value = {"type": "userMessage", "id": item["itemId"], "clientId": source,
+                     "content": [{"type": "text", "text": item.get("text", "")} ]}
+        elif item.get("status") == "completed":
+            value = normalize({"method": "item/completed", "params": {"item": item}})["params"]["item"]
+        else:
+            continue
+        grouped.setdefault(item["turnId"], []).append(value)
+    return {"id": session["sessionId"], "turns": [
+        {"id": turn, "status": turns.get(turn, "interrupted"), "items": values}
+        for turn, values in grouped.items()]}
+
+
+def connect(config, tools, state, headers, root, emit, allow_new):
+    broker = Broker(headers, requests=128, lifetime=3600, output_tokens=8192)
+    rpc = None
+    try:
+        guest_files = root / "guest"
+        guest_files.mkdir(exist_ok=True)
+        auth = {"schema_version": 1, "providers": {"meta": {"api_key": broker.capability}}}
+        for name, data in [("auth.json", auth), (".sprowt-tools.json", tools)]:
+            private_json(guest_files / name, data)
+            destination = config["env"]["HOME"] + ("/.config/muse/auth.json" if name == "auth.json" else "/" + name)
+            subprocess.run(["container", "copy", str(guest_files / name), config["name"] + ":" + destination],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        rpc = ManagedRpc(config, broker, emit, tools)
+        init = rpc.call("initialize", {"clientInfo": {"name": "sprowt_harness", "version": "0.1"},
+            "capabilities": {"experimentalApi": True, "requestedCapabilities": ["sessionMcp"], "userInputDialogs": False}})
+        if "sessionMcp" not in init.get("grantedCapabilities", []):
+            raise RuntimeError("Muse did not enable session MCP tools.")
+        rpc.write({"method": "initialized"})
+        mcp_config = {"mcpServers": {"sprowt": {"transport": "stdio", "command": "/usr/bin/python3",
+            "args": ["/opt/sprowt-muse/bridge.py", "--mcp"], "framing": "lineDelimitedJson", "mode": "required"}}}
+        if state.resuming:
+            try:
+                result = rpc.call("session/resume", {"commandId": command_id(), "sessionId": state.value["sessionId"],
+                    "history": "inline", "config": mcp_config})
+                thread = recovered_thread(rpc, state, result)
+                # Resume notifications are already represented by the folded history.
+                rpc.buffered.clear()
+                return rpc, thread
+            except RpcError as error:
+                if error.kind != "sessionNotFound":
+                    raise
+                if state.value["commands"] and not allow_new:
+                    raise RuntimeError("Muse session is missing. Work and uncertain delivery are retained; Ctrl+R retries recovery.") from error
+                # A removed VM has no native log. An explicit retry may rebuild from saved source.
+                state.value.update(sessionId=command_id(), startId=command_id(), commands={})
+                state.save()
+        rpc.call("session/start", {"commandId": state.value["startId"], "sessionId": state.value["sessionId"],
+            "workspaceRoot": config["cwd"], "providerId": "meta", "modelId": MODEL,
+            "approvalMode": "allowAll", "config": mcp_config})
+        state.resuming = True
+        return rpc, {"id": state.value["sessionId"], "turns": []}
+    except Exception:
+        broker.revoked = True
+        if rpc:
+            rpc.close()
+        raise
+
+
 def host():
     lock, requests = threading.Lock(), queue.Queue()
 
@@ -283,7 +442,7 @@ def host():
             requests.put(None)
 
     threading.Thread(target=receive, daemon=True).start()
-    rpc, config, commands, root = None, None, {}, tempfile.TemporaryDirectory(prefix="sprowt-muse-auth-")
+    rpc, state, root = None, None, tempfile.TemporaryDirectory(prefix="sprowt-muse-auth-")
     try:
         headers = host_login(Path(root.name), quiet=True)
         emit({"method": "bridge/ready"})
@@ -303,37 +462,26 @@ def host():
             if message:
                 method, params = message["method"], message.get("params", {})
                 try:
-                    if method == "turn/start":
+                    if method in {"session/resume", "turn/start"}:
                         if rpc:
                             rpc.close()
                         config = params["config"]
-                        broker = Broker(headers, requests=128, lifetime=3600, output_tokens=8192)
-                        auth = {"schema_version": 1, "providers": {"meta": {"api_key": broker.capability}}}
-                        # Transfer only an expiring broker capability and advertised tool schemas.
-                        guest_files = Path(root.name) / "guest"
-                        guest_files.mkdir(exist_ok=True)
-                        for name, data in [("auth.json", auth), (".sprowt-tools.json", params["tools"])]:
-                            private_json(guest_files / name, data)
-                            destination = config["env"]["HOME"] + ("/.config/muse/auth.json" if name == "auth.json" else "/" + name)
-                            subprocess.run(["container", "copy", str(guest_files / name), config["name"] + ":" + destination], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                        rpc = ManagedRpc(config, broker, emit, params["tools"])
-                        init = rpc.call("initialize", {"clientInfo": {"name": "sprowt_harness", "version": "0.1"}, "capabilities": {"experimentalApi": True, "requestedCapabilities": ["sessionMcp"], "userInputDialogs": False}})
-                        if "sessionMcp" not in init.get("grantedCapabilities", []):
-                            raise RuntimeError("Muse did not enable session MCP tools.")
-                        rpc.write({"method": "initialized"})
-                        session = rpc.call("session/start", {"commandId": command_id(), "workspaceRoot": config["cwd"],
-                            "providerId": "meta", "modelId": MODEL, "approvalMode": "allowAll",
-                            "config": {"mcpServers": {"sprowt": {"transport": "stdio", "command": "/usr/bin/python3",
-                                "args": ["/opt/sprowt-muse/bridge.py", "--mcp"], "framing": "lineDelimitedJson", "mode": "required"}}}})["session"]["sessionId"]
-                        text = params["text"] + "\nReturn only a JSON object as your final answer matching this schema: " + json.dumps(params["schema"])
-                        result = rpc.call("turn/start", {"commandId": commands.setdefault(params["source"], command_id()), "sessionId": session,
-                            "reasoningEffort": "high", "input": [{"type": "text", "text": text}]})
+                        state = SessionState(params["state"], config)
+                        rpc, thread = connect(config, params["tools"], state, headers, Path(root.name), emit,
+                                              params.get("allowNew", False))
+                        session = thread["id"]
+                        if method == "session/resume":
+                            result = {"thread": thread}
+                        else:
+                            emit({"method": "thread/started", "params": {"thread": {"id": session}}})
+                            text = params["text"] + "\nReturn only a JSON object as your final answer matching this schema: " + json.dumps(params["schema"])
+                            result = rpc.call("turn/start", {"commandId": state.command(params["source"]), "sessionId": session,
+                                "reasoningEffort": "high", "input": [{"type": "text", "text": text}]})
+                            state.accepted(params["source"], result)
                     elif method == "turn/steer":
-                        result = rpc.call(method, {"commandId": commands.setdefault(params["source"], command_id()), "sessionId": session,
+                        result = rpc.call(method, {"commandId": state.command(params["source"]), "sessionId": session,
                             "expectedTurnId": params["turn"], "input": [{"type": "text", "text": text} for text in params["texts"]]})
-                        if result.get("status") != "accepted":
-                            raise RuntimeError("Muse did not accept steering.")
-                        result = {"turnId": params["turn"]}
+                        state.accepted(params["source"], result)
                     elif method == "turn/interrupt":
                         rpc.call(method, {"commandId": command_id(), "sessionId": session, "turnId": params["turn"]})
                         result = {}
@@ -348,8 +496,12 @@ def host():
                     emit({"id": message["id"], "result": result})
                 except (OSError, RuntimeError, ValueError, queue.Empty, subprocess.SubprocessError) as error:
                     detail = str(error) if isinstance(error, RuntimeError) else type(error).__name__
-                    emit({"id": message["id"], "error": {"code": -32000, "message": "Muse request failed: " + detail}})
-                    if method == "turn/start" and rpc:
+                    rejected = (isinstance(error, RpcError) and error.method == method
+                        and method in {"turn/start", "turn/steer"}
+                        and error.kind in {"commandRejected", "invalidParams", "sessionNotFound"})
+                    emit({"id": message["id"], "error": {"code": -32000, "message": "Muse request failed: " + detail,
+                        "data": {"delivery": "rejected" if rejected else "unknown"}}})
+                    if method in {"turn/start", "session/resume"} and rpc:
                         rpc.close()
                         rpc = None
             if rpc:

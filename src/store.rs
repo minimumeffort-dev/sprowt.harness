@@ -996,7 +996,7 @@ impl Store {
             return transaction.commit();
         }
         if input.source.starts_with("00000004-") {
-            let changed = transaction.execute("UPDATE task_runs SET status='running' WHERE mod_id=?1 AND source=?2 AND status IN ('sending','running')", params![mod_id,input.source])?;
+            let changed = transaction.execute("UPDATE task_runs SET status='running' WHERE mod_id=?1 AND source=?2 AND status IN ('sending','running','paused')", params![mod_id,input.source])?;
             if changed != 1 {
                 return Err(rusqlite::Error::QueryReturnedNoRows);
             }

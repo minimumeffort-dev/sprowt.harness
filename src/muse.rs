@@ -138,14 +138,41 @@ pub fn serve(
             "Muse account login could not be resolved. Run muse and sign in first.",
         ));
     }
-    let thread = format!("muse-worker-{}", context.worker_id());
+    let state = context
+        .workspace()
+        .unwrap()
+        .join("muse")
+        .join(format!("{}.json", context.worker_id()));
+    let mut task = None;
+    let mut thread = json!({"id":format!("muse-worker-{}", context.worker_id()),"turns":[]});
+    if resume.is_some() && state.exists() {
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&state)?)?;
+        if let Some(id) = saved["task"]
+            .as_i64()
+            .filter(|id| context.tasks.contains(id))
+        {
+            let config = {
+                let mut vm = vm.lock().unwrap();
+                vm.assign_muse_task(id, context.worker_id(), &cancelled)?;
+                vm.muse_configuration(context.worker_id())
+            };
+            let _ = outgoing.send(Event::Preparing("restoring Muse session".into()));
+            thread = rpc.call(
+                "session/resume",
+                json!({"state":state,"config":config,
+                "tools":tools::advertised(&context),
+                "allowNew":resume.as_ref().is_some_and(|r| r.restart_if_missing)}),
+            )?["thread"]
+                .clone();
+            task = Some(id);
+        }
+    }
     let _ = outgoing.send(Event::Ready {
-        thread: json!({"id":thread,"turns":[]}),
+        thread,
         model: Some(MODEL.into()),
         effort: Some("high".into()),
     });
     let mut accepted = resume.map_or_else(Vec::new, |r| r.accepted_instructions);
-    let mut task = None;
     loop {
         while let Ok(action) = actions.try_recv() {
             let (method, source, params) = match action {
@@ -173,7 +200,8 @@ pub fn serve(
                     (
                         "turn/start",
                         source.clone(),
-                        json!({"source":source,"text":prompt,"config":config,"tools":tools::advertised(&context),"schema":crate::execution::schema()}),
+                        json!({"source":source,"text":prompt,"config":config,"state":state,
+                            "tools":tools::advertised(&context),"schema":crate::execution::schema()}),
                     )
                 }
                 Action::Steer {

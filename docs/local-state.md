@@ -52,6 +52,7 @@ flowchart TB
         ├── checkpoint-error present if a worker checkpoint needs recovery
         ├── vm.json   VM identity and image digest; removed after VM deletion
         ├── host-codex/ private worker directories and login links; never shared with the guest
+        ├── muse/     per-worker native session, task, command and accepted turn IDs
         ├── sandbox.log setup diagnostics
         ├── packages.jsonl OS package requests and results
         ├── tools.jsonl harness tool activity; metadata only
@@ -74,6 +75,8 @@ The database file uses owner-only permissions; its directory is private to your 
 Agent availability is checked on each startup, not saved as a setting. Task providers and worker identities remain saved.
 
 Muse's verified Linux binary and adapter files live in `~/Library/Caches/sprowt-harness/muse/`. The binary is shared across codemods; closing or deleting a codemod does not remove that cache. Temporary login-check files are removed after discovery, including failures and timeouts. Temporary account-resolution files are removed when the host broker exits. Guest capabilities live only in the worker's VM home and expire when its turn ends.
+
+Muse recovery files are private, written atomically before delivery and contain IDs, not credentials or message bodies. Native conversations and tool history remain in that worker's VM home. Quitting retains them; VM deletion removes them. SQLite stores the native session identity and pending receipt. See [Muse recovery](workers.md#muse-recovery).
 
 The `worker_messages` table saves [coordination](coordination.md): task identities, bodies, reply links, retry keys and delivery/receipt state. New edit and integration rounds retain that history but retire its task addresses. Closing keeps messages; deleting a codemod removes them. Mailbox access goes through the host dispatcher; the database is never copied into the VM.
 

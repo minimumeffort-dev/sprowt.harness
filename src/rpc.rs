@@ -76,7 +76,11 @@ impl Rpc {
             if message.get("id") == Some(&json!(id)) && message.get("method").is_none() {
                 if let Some(error) = message.get("error") {
                     return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
+                        if error["data"]["delivery"] == "unknown" {
+                            io::ErrorKind::Other
+                        } else {
+                            io::ErrorKind::InvalidInput
+                        },
                         error["message"]
                             .as_str()
                             .unwrap_or("Codex rejected the request."),
@@ -116,6 +120,16 @@ pub fn terminate(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn uncertain_bridge_errors_are_not_delivery_rejections() {
+        let script = "import json,sys; request=json.loads(sys.stdin.readline()); print(json.dumps({'id':request['id'],'error':{'message':'connection lost','data':{'delivery':'unknown'}}}),flush=True)";
+        let (mut child, mut rpc) =
+            Rpc::start(Command::new("python3").args(["-c", script])).unwrap();
+        let error = rpc.call("turn/start", json!({})).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        terminate(&mut child);
+    }
 
     #[test]
     fn versioned_envelopes_are_opt_in() {

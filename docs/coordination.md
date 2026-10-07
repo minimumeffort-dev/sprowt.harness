@@ -40,7 +40,7 @@ An executor can finish independent work before pausing for a reply. Unanswered a
 
 Replies reference the original ask. Stable keys make repeated sends idempotent. Rust binds codemod and worker identity; model arguments cannot impersonate another worker. Messages carry context and cannot change file scope, permissions or the user's goal.
 
-Messages are saved before delivery. **Delivered** means the target provider accepted the injection; **acknowledged** means the recipient called the receipt tool; **answered** means a reply was saved. None means the source passed verification. Codex reconnect checks its saved conversation; Muse pauses uncertain delivery for explicit retry. Rejected injections stay in the inbox for a later read.
+Messages are saved before delivery. **Delivered** means the target provider accepted the injection; **acknowledged** means the recipient called the receipt tool; **answered** means a reply was saved. None means the source passed verification. Both providers check native conversation receipts on reconnect. Confirmed injections are not repeated; uncertain delivery pauses for explicit retry. Rejected injections stay in the inbox for a later read.
 
 ## Boundaries
 

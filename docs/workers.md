@@ -86,7 +86,26 @@ Both providers use the same [task mailboxes](coordination.md) and [tool dispatch
 
 Worker labels and saved replies show provider, worker ID, model and effort. **Ctrl+R** stops or retries work. Steering is acknowledged separately for each targeted worker; reordering the queue does not deliver instructions.
 
-The harness saves a delivery as pending before sending it. Acceptance records its receipt atomically. Unknown delivery remains saved and pauses automatic retry. Codex checks its saved conversation for receipts on reconnect. Muse starts a fresh task session from the saved plan, source and accepted user instructions; an interrupted or uncertain delivery pauses for explicit retry. Native Muse conversation replay is not implemented.
+The harness saves a delivery as pending before sending it. Acceptance records its receipt atomically. Both providers check their saved conversation for receipts on reconnect. Unknown delivery remains saved and pauses automatic retry.
+
+## Muse recovery
+
+Muse keeps one native conversation per assigned task in its VM home. Stop and retry reuse it. Quitting retains the VM disk; reopening restores the same conversation, including tool results and accepted steering.
+
+```mermaid
+flowchart TB
+    reopen["Reconnect to retained VM"] --> resume["Resume Muse task session"]
+    resume --> receipts["Read native delivery receipts and turn results"]
+    receipts --> done["Completed turn · verify saved work"]
+    receipts --> stopped["Interrupted turn · Ctrl+R continues with context"]
+    receipts --> unknown["Unknown delivery · retain instruction and pause"]
+```
+
+Session and command IDs save on the Mac before submission. Accepted turn IDs save before acknowledgment. Recovery reads native items and paged events, including when inline history is unavailable. A saved command ID alone is not proof of delivery. Repeated receipt processing keeps one transcript entry and does not resend steering or mailbox messages.
+
+An interrupted turn waits for **Ctrl+R**. A completed turn reruns independent checks without asking Muse to implement it again. Missing or unreadable native history keeps uncertain delivery paused. Recovery is bounded to 64 pages and 8 MiB; oversized histories pause too.
+
+Another task or edit round starts a new session with its own folder and permissions. Closing or deleting removes the VM and its native logs. After reopening a closed mod, explicit retry rebuilds context from the saved plan, source and accepted instructions; the old native tool history is unavailable.
 
 ## Lifecycle
 

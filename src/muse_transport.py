@@ -53,6 +53,15 @@ def private_json(path, value):
     path.chmod(0o600)
 
 
+class RpcError(RuntimeError):
+    def __init__(self, method, error):
+        self.method = method
+        self.kind = (error.get("data") or {}).get("kind")
+        code = error.get("code")
+        code = code if isinstance(code, int) else "unknown"
+        super().__init__(f"CLI rejected {method} ({code}); details withheld.")
+
+
 class Rpc:
     def __init__(self, command, env=None, cwd=None, own_group=True):
         self.own_group = own_group
@@ -90,9 +99,7 @@ class Rpc:
             value = self.next()
             if value.get("id") == self.counter and "method" not in value:
                 if "error" in value:
-                    code = value["error"].get("code")
-                    code = code if isinstance(code, int) else "unknown"
-                    raise RuntimeError(f"CLI rejected {method} ({code}); details withheld.")
+                    raise RpcError(method, value["error"])
                 return value["result"]
             if "id" in value and "method" in value:
                 self.write({"id": value["id"], "error": {"code": -32601,

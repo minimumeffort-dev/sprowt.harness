@@ -16,7 +16,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders and combined verification.
 - [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod, with local sockets for browser checks. Workers choose runtimes and dependencies; the harness installs requested OS packages.
-- [Workers and isolation](docs/workers.md): Codex planning and separate Codex or Muse executors. Workers within and across mods can run in parallel.
+- [Workers and isolation](docs/workers.md): Codex planning and separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
 - [Terminal and companion](docs/terminal.md): compact results, separate plan details and worker history, task spinners and a Sprowt pet that reacts to work.
@@ -58,6 +58,8 @@ flowchart TB
 ```
 
 Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. When Muse is available, the planner can assign independent work to Spark 1.3 high; Jev continues to route Codex effort.
+
+Muse resumes its native task conversation after a stop or harness restart while the VM disk remains. Saved delivery IDs are checked against native receipts before any retry. Completed work goes straight to verification; unknown delivery stays paused. Starting another task creates a separate conversation.
 
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
@@ -154,7 +156,7 @@ Git ignores local environment files, credentials, logs and databases. Use placeh
 
 ## What’s next
 
-Native Muse recovery, login refresh and review workers. Shared context, memory, external MCPs and skills follow in small batches.
+Login refresh and review workers. Shared context, memory, external MCPs and skills follow in small batches.
 
 ## Development
 

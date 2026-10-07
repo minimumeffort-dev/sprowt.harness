@@ -455,6 +455,7 @@ impl Worker {
                 self.effort = effort;
                 self.preparing = None;
                 store.save_thread(self.id, thread["id"].as_str().unwrap())?;
+                self.thread_id = thread["id"].as_str().map(str::to_owned);
                 if self.role == Role::Executor {
                     self.recover_task(store, code_mod, &thread)?;
                     if let Some(selection) = code_mod.execution.as_ref().and_then(|execution| {
@@ -731,6 +732,12 @@ impl Worker {
             Event::Notification(message) => {
                 let params = &message["params"];
                 match message["method"].as_str().unwrap_or("") {
+                    "thread/started" => {
+                        if let Some(id) = params["thread"]["id"].as_str() {
+                            store.save_thread(self.id, id)?;
+                            self.thread_id = Some(id.into());
+                        }
+                    }
                     "item/agentMessage/delta"
                         if self.role == Role::Executor && self.task_source.is_none() =>
                     {
@@ -1063,7 +1070,9 @@ impl Worker {
             .and_then(|execution| {
                 execution.tasks.iter().find(|run| {
                     (run.worker == Some(self.id) || run.worker.is_none())
-                        && ["sending", "running", "checking"].contains(&run.status.as_str())
+                        && (["sending", "running", "checking"].contains(&run.status.as_str())
+                            || run.status == "paused"
+                                && self.recovery.as_deref() == Some(&run.source))
                 })
             })
             .cloned();
@@ -1233,9 +1242,13 @@ mod tests {
         let mut m = store
             .create_mod(project_id, "Create two independent greeting scripts")
             .unwrap();
+        let context_token = format!(
+            "muse-context-{}",
+            data.0.file_name().unwrap().to_str().unwrap()
+        );
         let plan = Plan::parse(&json!({"summary":"Two greetings","tasks":[
             {"id":"codex","title":"Codex greeting","outcome":"Create codex.sh printing exactly hello codex. Read your inbox and send a useful update to the muse task once done.","files":["codex.sh"],"depends_on":[],"coordination":[{"task":"muse","topic":"Greeting fixture verification"}],"worker":"codex","checks":["Script prints hello codex"]},
-            {"id":"muse","title":"Muse greeting","outcome":"This is a cancellation fixture. Before writing source, if $HOME/cancel-once is absent, create that marker and run /bin/sleep 299. The harness will interrupt that command; on retry skip it. Then create muse.sh printing exactly hello muse. Use the native MCP inbox tools to read messages and send the codex task a useful update once done.","files":["muse.sh"],"depends_on":[],"coordination":[{"task":"codex","topic":"Greeting fixture verification"}],"worker":"muse","checks":["Script prints hello muse"]}
+            {"id":"muse","title":"Muse greeting","outcome":format!("This is a cancellation fixture. Remember {context_token} for your final summary; do not write it to files or repeat it in commentary. Before writing source, if $HOME/cancel-once is absent, create that marker and run /bin/sleep 299. The harness will interrupt that command and restart. On retry skip the sleep and recall the same token from conversation history in your final summary; do not invent a replacement. Then create muse.sh printing exactly hello muse. Use the native MCP inbox tools to read messages and send the codex task a useful update once done."),"files":["muse.sh"],"depends_on":[],"coordination":[{"task":"codex","topic":"Greeting fixture verification"}],"worker":"muse","checks":["Script prints hello muse"]}
         ]}).to_string()).unwrap();
         let source = m.planning.as_ref().unwrap().source.clone();
         store.save_plan(m.id, &source, &plan).unwrap();
@@ -1277,10 +1290,11 @@ mod tests {
                 workers.iter().all(|w| w.status == Status::Ready),
                 "Worker startup timed out"
             );
-            let deadline = Instant::now() + Duration::from_secs(360);
+            let deadline = Instant::now() + Duration::from_secs(600);
             let mut previous = String::new();
             let mut overlap = false;
             let mut steered = false;
+            let mut lost_ack = false;
             let mut interrupted = false;
             let mut retried = false;
             let mut inspect_at = Instant::now();
@@ -1292,7 +1306,24 @@ mod tests {
             };
             while Instant::now() < deadline && m.execution.as_ref().unwrap().status != "review" {
                 for worker in &mut workers {
-                    worker.poll(&mut store, &mut m, true, &project).unwrap();
+                    if worker.provider == "muse"
+                        && worker
+                            .pending
+                            .as_ref()
+                            .is_some_and(|input| input.source.starts_with("00000002-"))
+                    {
+                        let events = worker.client.as_ref().unwrap().poll().collect::<Vec<_>>();
+                        for event in events {
+                            if matches!(&event, Event::Accepted { source, .. } if source.starts_with("00000002-"))
+                            {
+                                lost_ack = true;
+                            } else {
+                                worker.receive(event, &mut store, &mut m).unwrap();
+                            }
+                        }
+                    } else {
+                        worker.poll(&mut store, &mut m, true, &project).unwrap();
+                    }
                     assert!(
                         worker.error.is_none()
                             || interrupted
@@ -1320,11 +1351,7 @@ mod tests {
                         .unwrap();
                     steered = true;
                 }
-                if steered
-                    && !interrupted
-                    && workers[1].pending.is_none()
-                    && Instant::now() >= inspect_at
-                {
+                if steered && !interrupted && lost_ack && Instant::now() >= inspect_at {
                     let process = sleeper();
                     assert!(process.status.success());
                     if String::from_utf8_lossy(&process.stdout).trim() != "0" {
@@ -1345,11 +1372,96 @@ mod tests {
                         "0",
                         "Muse left its child command running"
                     );
+                    let updated = Plan::parse(
+                        &serde_json::to_string(&plan)
+                            .unwrap()
+                            .replace(&context_token, "the token from your earlier turn"),
+                    )
+                    .unwrap();
+                    store.save_plan(m.id, &source, &updated).unwrap();
+                    m.planning = store.planning(m.id).unwrap();
+                    let state_path = root.join("muse").join(format!("{}.json", workers[1].id));
+                    let state: Value =
+                        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+                    let native_session = state["sessionId"].as_str().unwrap().to_owned();
+                    let steering = state["commands"]
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .find(|source| source.starts_with("00000002-"))
+                        .unwrap()
+                        .clone();
+                    assert_eq!(
+                        store
+                            .worker_provider(m.id, Role::Executor, 0, "muse")
+                            .unwrap()
+                            .pending
+                            .as_deref(),
+                        Some(steering.as_str())
+                    );
+                    let user_messages = m.messages.iter().filter(|msg| msg.role == "user").count();
+                    workers.clear();
+                    store = data.store();
+                    m = store.load_project(&project).unwrap().mods.remove(0);
+                    workers = ["codex", "muse"]
+                        .iter()
+                        .map(|provider| {
+                            Worker::start_with_muse(
+                                &project,
+                                &m,
+                                store
+                                    .worker_provider(m.id, Role::Executor, 0, provider)
+                                    .unwrap(),
+                                Role::Executor,
+                                None,
+                                true,
+                            )
+                            .unwrap()
+                        })
+                        .collect();
+                    let reconnect = Instant::now() + Duration::from_secs(180);
+                    while workers.iter().any(|w| w.status == Status::Connecting)
+                        && Instant::now() < reconnect
+                    {
+                        for worker in &mut workers {
+                            worker.poll(&mut store, &mut m, false, &project).unwrap();
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                    assert!(
+                        workers[1].status == Status::Ready,
+                        "Muse recovery: {:?}",
+                        workers[1].error
+                    );
+                    assert!(
+                        workers[1].recovery.is_none(),
+                        "Accepted steering was not recovered"
+                    );
+                    assert_eq!(
+                        workers[1].thread_id.as_deref(),
+                        Some(native_session.as_str())
+                    );
+                    assert_eq!(
+                        m.messages.iter().filter(|msg| msg.role == "user").count(),
+                        user_messages + 1
+                    );
+                    let restored: Value =
+                        serde_json::from_slice(&fs::read(state_path).unwrap()).unwrap();
+                    assert_eq!(
+                        restored["commands"], state["commands"],
+                        "Recovery resubmitted instructions"
+                    );
                     store.retry_tasks(m.id).unwrap();
                     m.execution = store.execution(m.id).unwrap();
-                    workers[1].toggle();
+                    for worker in &mut workers {
+                        if !worker.enabled {
+                            worker.toggle();
+                        }
+                    }
                     retried = true;
-                    eprintln!("Native child exit verified; retrying the Muse task");
+                    eprintln!(
+                        "Harness restarted; native session and lost steering receipt recovered without redelivery"
+                    );
                 }
                 let state = workers
                     .iter()
@@ -1378,6 +1490,18 @@ mod tests {
             assert!(m.messages.iter().any(|msg| msg.role.starts_with("muse:")
                 && msg.model.as_deref() == Some(crate::muse::MODEL)
                 && msg.effort.as_deref() == Some("high")));
+            assert!(
+                m.execution
+                    .as_ref()
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .find(|task| task.task_id == "muse")
+                    .unwrap()
+                    .summary
+                    .contains(&context_token),
+                "Muse lost its native conversation context"
+            );
             assert!(
                 store
                     .mailbox(m.id)
@@ -1931,6 +2055,36 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn muse_native_receipt_confirms_a_task_paused_after_losing_its_ack() {
+        let (_data, mut store, mut m, mut worker) = executor();
+        worker.provider = "muse".into();
+        let source = worker.task_source.take().unwrap();
+        store.task_status(m.id, &source, "paused", None).unwrap();
+        store.pending(worker.id, Some(&source)).unwrap();
+        m.execution = store.execution(m.id).unwrap();
+        worker.recovery = Some(source.clone());
+        worker.receive(Event::Ready { model:Some(crate::muse::MODEL.into()), effort:Some("high".into()),
+            thread:json!({"id":"native-session", "turns":[{"id":"native-turn", "status":"cancelled", "items":[
+                {"type":"userMessage", "clientId":source, "content":[{"type":"text", "text":"task"}]}]}]}) },
+            &mut store, &mut m).unwrap();
+        assert!(worker.recovery.is_none());
+        assert_eq!(worker.thread_id.as_deref(), Some("native-session"));
+        assert!(
+            store
+                .worker_for(m.id, Role::Planner)
+                .unwrap()
+                .pending
+                .is_none()
+        );
+        assert_eq!(m.execution.as_ref().unwrap().tasks[0].status, "paused");
+        assert_eq!(
+            m.execution.as_ref().unwrap().tasks[0].turn.as_deref(),
+            Some("native-turn")
+        );
+        assert!(!worker.enabled);
     }
 
     #[test]
