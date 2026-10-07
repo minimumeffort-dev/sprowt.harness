@@ -66,7 +66,7 @@ Finished versions show compact task rows, the final check count and the publish 
 
 ## Automatic repairs
 
-When integration finds a reproducible regression in a completed task, the worker returns a repair request: owner task, exact files, declared failing check, runnable command and observed failure. Rust validates ownership and waits for active turns and checks to finish.
+When integration finds a reproducible regression in a completed task, the worker returns a repair request: owner task, exact files, declared failing check, runnable command and observed failure. The failing check belongs to the reporting task; the owner names whose code needs fixing. Both providers' report schemas constrain check names to the reporting task. Rust validates ownership and waits for active turns and checks to finish. Invalid requests identify the field that needs correcting; **Ctrl+R** retries with saved work intact.
 
 ```mermaid
 flowchart TB

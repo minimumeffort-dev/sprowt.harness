@@ -35,15 +35,26 @@ impl Repair {
     }
 
     pub fn validate(&self, reporter: &Task) -> std::result::Result<(), String> {
-        if self.task.trim().is_empty()
-            || self.files.is_empty()
-            || self.files.len() > 32
-            || !reporter.checks.contains(&self.check)
-            || self.command.is_empty()
+        if self.task.trim().is_empty() {
+            return Err("Repair report is missing the responsible task.".into());
+        }
+        if !reporter.checks.contains(&self.check) {
+            return Err(format!(
+                "Repair check must match the reporting task's declared checks ({}), not the owner's checks.",
+                reporter.id
+            ));
+        }
+        if self.command.is_empty()
             || !std::path::Path::new(&self.command[0]).is_absolute()
             || self.command.iter().any(|arg| arg.contains('\0'))
-            || self.evidence.trim().is_empty()
-            || self.evidence.len() > 16_000
+        {
+            return Err("Repair command needs an absolute executable and valid arguments.".into());
+        }
+        if self.evidence.trim().is_empty() || self.evidence.len() > 16_000 {
+            return Err("Repair evidence must be nonempty and at most 16,000 bytes.".into());
+        }
+        if self.files.is_empty()
+            || self.files.len() > 32
             || self.files.iter().any(|file| {
                 file.is_empty()
                     || file.contains(['\\', '*', '?', '[', ']'])
@@ -52,7 +63,7 @@ impl Repair {
                         .any(|part| !matches!(part, std::path::Component::Normal(_)))
             })
         {
-            return Err("A repair needs an owner, exact files, a declared failing check, its absolute command and short failure evidence.".into());
+            return Err("Repair files need 1–32 exact project-relative paths, without wildcards or parent paths.".into());
         }
         Ok(())
     }
@@ -310,6 +321,35 @@ pub(crate) mod tests {
             command: vec!["/usr/bin/node".into(), "/tasks/3/tests/retry.mjs".into()],
             evidence: "Rejected weight download leaves Loading disabled.".into(),
         }
+    }
+
+    #[test]
+    fn repair_check_belongs_to_the_reporter_not_the_owner() {
+        let (_data, mut store, mod_id, plan, ids, _) = fixture();
+        let mut report =
+            json!({"status":"blocked","summary":"Retry is broken","checks":[],"repair":request()});
+        report["repair"]["check"] = json!(plan.tasks[0].checks[0]);
+        let error = crate::execution::Report::parse(&report.to_string(), &plan.tasks[2])
+            .err()
+            .unwrap();
+        assert!(error.contains("reporting task") && error.contains("integration"));
+        report["repair"]["check"] = json!(plan.tasks[2].checks[0]);
+        let report = crate::execution::Report::parse(&report.to_string(), &plan.tasks[2]).unwrap();
+        assert!(
+            store
+                .request_repair(
+                    mod_id,
+                    &task_source(ids[2], 1),
+                    report.repair.as_ref().unwrap()
+                )
+                .unwrap()
+                .is_ok()
+        );
+        assert!(store.resume_repairs(mod_id).unwrap());
+        let execution = store.execution(mod_id).unwrap().unwrap();
+        assert_eq!(execution.tasks[0].status, "pending");
+        assert_eq!(execution.tasks[1].status, "done");
+        assert_eq!(execution.tasks[2].status, "pending");
     }
 
     #[test]
