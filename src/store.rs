@@ -1382,7 +1382,7 @@ impl Store {
             .iter()
             .filter(|run| ["sending", "running", "checking"].contains(&run.status.as_str()))
             .count()
-            >= 2
+            >= crate::scheduler::CAPACITY
             || execution.tasks.iter().any(|run| {
                 run.worker == Some(worker)
                     && ["sending", "running", "checking"].contains(&run.status.as_str())
@@ -1397,18 +1397,6 @@ impl Store {
         )?;
         let mut available = plan.clone();
         available.tasks.retain(|task| task.worker == provider);
-        if execution
-            .tasks
-            .iter()
-            .any(|run| run.status == "repair_wait")
-        {
-            available.tasks.retain(|task| {
-                execution
-                    .tasks
-                    .iter()
-                    .any(|run| run.task_id == task.id && run.repair.is_some())
-            });
-        }
         let Some(task) = execution.next_task(&available, worker) else {
             return Ok(None);
         };

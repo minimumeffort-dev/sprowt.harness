@@ -61,6 +61,8 @@ flowchart TB
 
 Each worker has its own conversation, runtime HOME and cancellation signal. The shared controller serializes checkpoints, Git integration, independent checks and system package installation. Model turns and task commands overlap.
 
+The two active slots follow ready work. They can run two Codex workers, two Muse workers or one of each. Astra's saved provider assignments stay; Rust fills capacity when dependencies pass. Idle workers are parked and reused. Connecting, running and checking all occupy a slot. Saved task ownership, delivery recovery and repair handoffs keep the original worker.
+
 Codex's trusted host process handles inference and uses its guest environment for executor tools. Its apps, inherited MCP servers, plugins, hooks and delegation are disabled. The planner's host sandbox is read-only and denies credential directories and local environment files.
 
 Muse and all its child commands run inside the guest exec-server's enforced Linux process sandbox. Its own internal sandbox is disabled inside that boundary. Muse can read required system files and write its assigned task folder, runtime home and temporary files. Other task folders are unavailable. Runtime downloads use the same harness allowlist as independent verification.
@@ -88,7 +90,7 @@ Both providers use the same [task mailboxes](coordination.md) and [tool dispatch
 
 Blocked downloads can request exact domains for your approval. Approval reconnects only the affected worker and retries its saved task; peers continue. Native conversation context is reused when compatible. An older Codex conversation without the current tool set starts fresh from the saved plan, source and accepted instructions. See [Downloads](sandbox.md#downloads).
 
-Worker labels and saved replies show provider, worker ID, model and effort. **Ctrl+R** stops or retries work. Steering is acknowledged separately for each targeted worker; reordering the queue does not deliver instructions.
+The codemod row shows each active provider, worker ID and task number; narrow terminals show a count. Worker labels and saved replies show model and effort. **Ctrl+R** stops or retries work. Steering is acknowledged separately for each targeted worker; reordering the queue does not deliver instructions.
 
 The harness saves a delivery as pending before sending it. Acceptance records its receipt atomically. Both providers check their saved conversation for receipts on reconnect. Unknown delivery remains saved and pauses automatic retry.
 

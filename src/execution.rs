@@ -58,10 +58,16 @@ pub struct Report {
 }
 
 impl Execution {
-    pub fn next_task(&self, plan: &Plan, worker: i64) -> Option<&TaskRun> {
-        self.tasks.iter().find(|run| {
+    pub fn next_task<'a>(&'a self, plan: &'a Plan, worker: i64) -> Option<&'a TaskRun> {
+        self.ready_tasks(plan)
+            .find(|run| run.worker.is_none_or(|id| id == worker))
+    }
+
+    pub fn ready_tasks<'a>(&'a self, plan: &'a Plan) -> impl Iterator<Item = &'a TaskRun> {
+        let repairing = self.tasks.iter().any(|run| run.status == "repair_wait");
+        self.tasks.iter().filter(move |run| {
             run.status == "pending"
-                && run.worker.is_none_or(|id| id == worker)
+                && (!repairing || run.repair.is_some())
                 && run.repair.as_ref().is_none_or(|repair| {
                     run.task_id == repair.task
                         || self

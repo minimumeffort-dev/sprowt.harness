@@ -179,7 +179,7 @@ pub fn draw(
         app.current_mod()
             .map_or("", |code_mod| code_mod.name.as_str()),
         mod_row,
-        app.worker_count(),
+        &app.worker_activity(),
         matches!(
             app.view,
             View::Mods(_) | View::DeleteMod(_) | View::CloseMod(_)
@@ -488,22 +488,25 @@ fn draw_queue_editor(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     );
 }
 
-fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, workers: usize, open: bool) {
+fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, workers: &[String], open: bool) {
     let [label, selector, status] = Layout::horizontal([
         Constraint::Length(11),
         Constraint::Length(area.width.saturating_sub(11).min(54)),
         Constraint::Min(0),
     ])
     .areas(area);
-    if workers > 0 {
-        frame.render_widget(
-            Line::from(format!(
-                "  {workers} {} running",
-                if workers == 1 { "worker" } else { "workers" }
-            ))
-            .fg(ACCENT),
-            status,
-        );
+    if !workers.is_empty() {
+        let activity = format!("  {}", workers.join(" │ "));
+        let count = workers.len();
+        let label = if Line::from(activity.clone()).width() <= status.width as usize {
+            activity
+        } else {
+            format!(
+                "  {count} {} running",
+                if count == 1 { "worker" } else { "workers" }
+            )
+        };
+        frame.render_widget(Line::from(label).fg(ACCENT), status);
     }
     frame.render_widget(Line::from("<codemod/>").fg(KEY_HINT), label);
     frame.render_widget(

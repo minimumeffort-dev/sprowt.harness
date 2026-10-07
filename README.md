@@ -39,10 +39,8 @@ flowchart TB
     sync --> setup["Git branch + worktree"]
     setup --> planner["Astra xhigh · inspect source and plan"]
     planner --> schedule["Rust scheduler · ready tasks"]
-    schedule --> route["Jev + Rust · route Codex tasks"]
-    route --> first["Codex executor · own task worktree"]
-    schedule --> second["Second executor · Codex or Muse · own task worktree"]
-    route --> second
+    schedule --> first["Slot 1 · Codex or Muse · own task worktree"]
+    schedule --> second["Slot 2 · Codex or Muse · own task worktree"]
     first <-->|"Saved task mailboxes"| second
     first --> combine["Combine one result at a time · verify together"]
     second --> combine
@@ -60,6 +58,8 @@ flowchart TB
 ```
 
 Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. When Muse is available, the planner can assign independent work to Spark 1.3 high; Jev continues to route Codex effort.
+
+The two active slots follow ready tasks: two Codex, two Muse or one of each. Saved provider assignments and dependencies decide who runs. Idle workers keep their identity and conversation; retries and repairs return to the original owner. The codemod row shows each active provider, worker ID and task number.
 
 Muse resumes its native task conversation after a stop or harness restart while the VM disk remains. Saved delivery IDs are checked against native receipts before any retry. Completed work goes straight to verification; unknown delivery stays paused. Starting another task creates a separate conversation.
 

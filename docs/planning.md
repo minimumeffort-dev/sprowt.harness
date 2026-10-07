@@ -36,7 +36,7 @@ flowchart TB
 
 ## Provider assignment
 
-Startup detects installed CLIs and local account logins. Astra receives the available worker pool and can assign independent, well-scoped work to Muse while keeping demanding or high-risk implementation and integration on Codex. The scheduler matches each task to its saved provider. Muse currently uses Spark 1.3 high; it does not call Jev.
+Startup detects installed CLIs and local account logins. Astra receives the available worker pool and can assign independent, well-scoped work to Muse while keeping demanding or high-risk implementation and integration on Codex. The scheduler matches ready tasks to their saved providers, filling two active slots with Codex, Muse or both. Dependencies and task ownership stay fixed. Muse currently uses Spark 1.3 high; it does not call Jev.
 
 ## Jev task routing
 

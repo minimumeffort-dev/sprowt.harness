@@ -175,7 +175,7 @@ impl Store {
             params![access.task, access.mod_id, access.worker],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )?;
-        if !["paused", "blocked", "done"].contains(&status.as_str()) {
+        if !["pending", "paused", "blocked", "done"].contains(&status.as_str()) {
             return Ok(None);
         }
         let approved: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM network_requests WHERE id=?1 AND task_id=?2 AND mod_id=?3 AND worker_id=?4 AND status='approved' AND resumed=0)",params![access.id,access.task,access.mod_id,access.worker],|r|r.get(0))?;
@@ -187,11 +187,13 @@ impl Store {
             tx.commit()?;
             return Ok(None);
         }
-        tx.execute("UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,summary='',checks='[]' WHERE id=?1",params![access.task,attempt+1,crate::store::task_source(access.task,attempt+1)])?;
-        tx.execute(
-            "UPDATE workers SET pending=NULL WHERE id=?1 AND pending=?2",
-            params![access.worker, source],
-        )?;
+        if status != "pending" {
+            tx.execute("UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,summary='',checks='[]' WHERE id=?1",params![access.task,attempt+1,crate::store::task_source(access.task,attempt+1)])?;
+            tx.execute(
+                "UPDATE workers SET pending=NULL WHERE id=?1 AND pending=?2",
+                params![access.worker, source],
+            )?;
+        }
         let record = tx.query_row("SELECT id,provider,thread_id,pending FROM workers WHERE id=?1 AND mod_id=?2 AND role='executor'",params![access.worker,access.mod_id],|r|Ok(WorkerRecord {id:r.get(0)?,provider:r.get(1)?,thread_id:r.get(2)?,pending:r.get(3)?,database}))?;
         tx.commit()?;
         Ok(Some(record))
@@ -277,6 +279,31 @@ pub(crate) mod tests {
 
     fn request(domain: &str) -> Request {
         Request::parse(json!({"domains":[domain],"reason":"Download fixture"})).unwrap()
+    }
+
+    #[test]
+    fn explicit_retry_does_not_leave_an_approved_request_blocking_dispatch() {
+        let (_data, mut store, m, _root, workers) = fixture();
+        store
+            .request_network(m.id, workers[0], request("example.com"), false)
+            .unwrap();
+        let access = store.network_requests(m.id).unwrap().remove(0);
+        let source = m.execution.as_ref().unwrap().tasks[0].source.clone();
+        store
+            .finish_task(m.id, &source, "blocked", "Needs access", &[])
+            .unwrap();
+        store.decide_network(m.id, access.id, true).unwrap();
+        store.retry_tasks(m.id).unwrap();
+        let before = store.execution(m.id).unwrap().unwrap().tasks[0]
+            .source
+            .clone();
+        let record = store.resume_network(&access).unwrap().unwrap();
+        assert_eq!(record.id, workers[0]);
+        assert_eq!(
+            store.execution(m.id).unwrap().unwrap().tasks[0].source,
+            before
+        );
+        assert!(store.network_requests(m.id).unwrap().is_empty());
     }
 
     #[test]

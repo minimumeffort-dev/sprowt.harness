@@ -52,6 +52,8 @@ flowchart TB
 
 Rust dispatches at most two ready tasks into `/tasks/<task-run-id>`. Each worktree has its own branch and index, sharing Git objects. New tasks start from the latest combined source. A retry keeps the same worker and task folder. The worker can write that folder, its own runtime home and temporary files; other task folders, combined source and Git metadata remain read-only.
 
+Slots follow the saved task providers: two Codex, two Muse or one of each. Rust reserves task ownership before connecting, parks idle workers and reuses them when their work is ready. Connecting and verification count toward the same two-slot limit. Stops stay paused; reopening waits for **Ctrl+R**. Network approval queues the original worker's retry until capacity is available.
+
 One controller owns VM startup and shutdown, task checkpoints, Git integration and system package setup. Controller operations run one at a time; model turns and task commands overlap. Worker conversations and cancellation signals are separate.
 
 Workers prepare project runtimes and dependencies; missing OS packages go through the [VM setup tool](sandbox.md#system-packages).
@@ -107,11 +109,18 @@ Closing stops both workers, saves each unfinished draft, then saves a local chec
 
 Maximum two executors per codemod, with task-addressed messaging. [Muse recovery](workers.md#muse-recovery) requires its retained VM disk; closing removes native history. Login refresh is not implemented. Agent availability is checked at startup; sign in or install a CLI, then restart. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).
 
-## Verify the repair flow
+## Verify scheduling and repairs
 
 These checks use disposable VMs and remove them afterward. The provider test uses your Codex and Muse subscriptions.
 
 ```sh
 cargo test repair_handoff_preserves_drafts_and_rechecks_in_vm -- --ignored
 cargo test codex_verifier_hands_a_regression_back_to_muse -- --ignored
+```
+
+Scheduling tests cover provider combinations, dependencies and saved owners. The VM check runs two Codex tasks followed by two Muse tasks, checks real overlap and removes the VM afterward.
+
+```sh
+cargo test scheduler
+cargo test worker_slots_follow_provider_waves_in_vm -- --ignored
 ```

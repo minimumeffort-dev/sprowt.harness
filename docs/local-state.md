@@ -73,7 +73,7 @@ Generated test caches and new runtime databases stay on the VM disk, outside sou
 
 The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
 
-Agent availability is checked on each startup, not saved as a setting. Task providers and worker identities remain saved.
+Agent availability is checked on each startup, not saved as a setting. Task providers and worker identities remain saved. Idle workers keep their native conversation IDs; the scheduler reuses them for ready work. The two-slot limit counts active workers, not saved identities. Startup restores state without activating unfinished work.
 
 Muse's verified Linux binary and adapter files live in `~/Library/Caches/sprowt-harness/muse/`. The binary is shared across codemods; closing or deleting a codemod does not remove that cache. Temporary login-check files are removed after discovery, including failures and timeouts. Temporary account-resolution files are removed when the host broker exits. Guest capabilities live only in the worker's VM home and expire when its turn ends.
 

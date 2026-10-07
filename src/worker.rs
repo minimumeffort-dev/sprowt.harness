@@ -991,6 +991,43 @@ impl Worker {
             .map_or_else(|| "task".into(), |task| task.title.clone())
     }
 
+    pub fn activity(&self, code_mod: &CodeMod) -> String {
+        let task = code_mod.execution.as_ref().and_then(|e| {
+            e.tasks
+                .iter()
+                .find(|run| {
+                    run.worker == Some(self.id)
+                        && matches!(run.status.as_str(), "sending" | "running" | "checking")
+                })
+                .or_else(|| {
+                    e.tasks
+                        .iter()
+                        .find(|run| run.worker == Some(self.id) && run.status == "pending")
+                })
+        });
+        let number = task.and_then(|run| {
+            code_mod
+                .planning
+                .as_ref()?
+                .plan
+                .as_ref()?
+                .tasks
+                .iter()
+                .position(|task| task.id == run.task_id)
+        });
+        let action = number.map_or_else(
+            || {
+                if self.status == Status::Checking {
+                    "final checks".into()
+                } else {
+                    "connecting".into()
+                }
+            },
+            |n| format!("task {}", n + 1),
+        );
+        format!("{} w{} · {action}", self.provider, self.id)
+    }
+
     fn block_task(
         &mut self,
         store: &mut Store,

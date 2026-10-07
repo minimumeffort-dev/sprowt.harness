@@ -17,7 +17,7 @@ use crate::{
     git_mod::{self, GitMod, Job},
     plan::Role,
     sprout,
-    store::{CodeMod, Store, source_id},
+    store::{CodeMod, Store, WorkerRecord, source_id},
     tools::{Context, Dispatcher, Request},
     ui,
     worker::{Status, Worker},
@@ -63,6 +63,7 @@ pub struct App {
     pub steer_target: Option<i64>,
     auto_plans: BTreeSet<i64>,
     auto_runs: BTreeSet<i64>,
+    executing_mods: BTreeSet<i64>,
     git_jobs: BTreeMap<i64, Job>,
     project_job: Option<Job>,
     project_check: Option<Instant>,
@@ -171,6 +172,7 @@ impl App {
             steer_target: None,
             auto_plans: BTreeSet::new(),
             auto_runs: BTreeSet::new(),
+            executing_mods: BTreeSet::new(),
             git_jobs: BTreeMap::new(),
             project_job: None,
             project_check: None,
@@ -337,6 +339,9 @@ impl App {
                                     id,
                                     key.code == KeyCode::Char('a'),
                                 )?;
+                                if key.code == KeyCode::Char('a') {
+                                    self.executing_mods.insert(mod_id);
+                                }
                                 self.refresh_network_requests()?;
                             }
                         }
@@ -1015,6 +1020,7 @@ impl App {
                 .collect::<Vec<_>>();
             self.auto_plans.remove(&id);
             self.auto_runs.remove(&id);
+            self.executing_mods.remove(&id);
             self.git_jobs.insert(
                 id,
                 Job::start(
@@ -1095,6 +1101,7 @@ impl App {
             .map(|execution| execution.workspace.clone());
         self.auto_plans.remove(&mod_id);
         self.auto_runs.remove(&mod_id);
+        self.executing_mods.remove(&mod_id);
         self.workers.retain(|_, worker| worker.mod_id != mod_id);
         if workspace.is_some()
             && let Err(error) = Dispatcher::new(
@@ -1193,6 +1200,7 @@ impl App {
 
     fn start_continuation(&mut self, index: usize) {
         let id = self.mods[index].id;
+        self.executing_mods.remove(&id);
         self.workers.retain(|_, worker| worker.mod_id != id);
         if self.mods[index].git_root.is_none() {
             if let Err(error) = self.finish_edit(index) {
@@ -1338,6 +1346,7 @@ impl App {
             .into_iter()
             .filter_map(|key| self.workers.remove(&key))
             .collect::<Vec<_>>();
+        self.executing_mods.remove(&id);
         self.git_jobs.insert(
             id,
             Job::start("updating from target branch", move |cancelled| {
@@ -1509,12 +1518,13 @@ impl App {
         })
     }
 
-    pub fn worker_count(&self) -> usize {
-        self.current_mod().map_or(0, |m| {
+    pub fn worker_activity(&self) -> Vec<String> {
+        self.current_mod().map_or_else(Vec::new, |m| {
             self.workers
                 .values()
                 .filter(|w| w.mod_id == m.id && w.role == Role::Executor && w.busy())
-                .count()
+                .map(|w| w.activity(m))
+                .collect()
         })
     }
 
@@ -1750,6 +1760,7 @@ impl App {
                 .values()
                 .any(|w| w.mod_id == mod_id && (w.enabled || w.busy()));
             if running {
+                self.executing_mods.remove(&mod_id);
                 self.store.pause_repairs(mod_id)?;
                 self.mods[active].execution = self.store.execution(mod_id)?;
                 for worker in self
@@ -1912,42 +1923,87 @@ impl App {
             ));
             return Ok(());
         }
-        let count = if role == Role::Executor {
-            self.mods[index]
-                .execution
-                .as_ref()
-                .map_or(1, |e| e.tasks.len().min(2))
-        } else {
-            1
-        };
-        for slot in 0..count {
-            self.start_worker_slot(index, role, slot)?;
+        let mod_id = self.mods[index].id;
+        if role == Role::Executor {
+            self.executing_mods.insert(mod_id);
+            return self.schedule_execution(index);
+        }
+        let record = self.store.worker_provider(mod_id, role, 0, "codex")?;
+        self.start_worker_record(index, role, record)
+    }
+
+    fn schedule_execution(&mut self, index: usize) -> Result<()> {
+        let mod_id = self.mods[index].id;
+        for record in self.store.executors(mod_id)? {
+            if !self.workers.get(&record.id).is_some_and(Worker::busy) {
+                self.store.resume_mail(mod_id, record.id)?;
+            }
+        }
+        let busy = self
+            .workers
+            .values()
+            .filter(|w| w.mod_id == mod_id && w.role == Role::Executor && w.busy())
+            .map(|w| w.id)
+            .collect::<Vec<_>>();
+        let unavailable = self
+            .workers
+            .values()
+            .filter(|w| w.mod_id == mod_id && w.status == Status::Failed)
+            .map(|w| w.id)
+            .chain(
+                self.network_requests
+                    .iter()
+                    .filter(|r| r.mod_id == mod_id && r.status == "approved")
+                    .map(|r| r.worker),
+            )
+            .collect::<Vec<_>>();
+        let plan = self.mods[index]
+            .planning
+            .as_ref()
+            .unwrap()
+            .plan
+            .as_ref()
+            .unwrap();
+        let records = self
+            .store
+            .schedule_workers(mod_id, plan, &busy, &unavailable)?;
+        self.mods[index].execution = self.store.execution(mod_id)?;
+        for worker in self
+            .workers
+            .values_mut()
+            .filter(|w| w.mod_id == mod_id && w.role == Role::Executor)
+        {
+            if !worker.busy() && !records.iter().any(|r| r.id == worker.id) {
+                worker.enabled = false;
+            }
+        }
+        for record in records {
+            if let Some(worker) = self.workers.get_mut(&record.id) {
+                if !worker.enabled && matches!(worker.status, Status::Ready | Status::Complete) {
+                    worker.toggle();
+                }
+            } else {
+                self.start_worker_record(index, Role::Executor, record)?;
+            }
+        }
+        if self.mods[index]
+            .execution
+            .as_ref()
+            .is_some_and(|e| matches!(e.status.as_str(), "review" | "applied"))
+        {
+            self.executing_mods.remove(&mod_id);
         }
         Ok(())
     }
 
-    fn start_worker_slot(&mut self, index: usize, role: Role, slot: usize) -> Result<()> {
+    fn start_worker_record(
+        &mut self,
+        index: usize,
+        role: Role,
+        record: WorkerRecord,
+    ) -> Result<()> {
         let project = self.source_project(index);
         let mod_id = self.mods[index].id;
-        let plan = self.mods[index]
-            .planning
-            .as_ref()
-            .and_then(|p| p.plan.as_ref());
-        let mixed = role == Role::Executor
-            && plan.is_some_and(|p| {
-                p.tasks.iter().any(|t| t.worker == "muse")
-                    && p.tasks.iter().any(|t| t.worker == "codex")
-            });
-        let only_muse = role == Role::Executor
-            && plan.is_some_and(|p| p.tasks.iter().all(|t| t.worker == "muse"));
-        let provider = if only_muse || mixed && slot == 1 {
-            "muse"
-        } else {
-            "codex"
-        };
-        let record =
-            self.store
-                .worker_provider(mod_id, role, if mixed { 0 } else { slot }, provider)?;
         self.workers.remove(&record.id);
         let selection = if role == Role::Planner {
             if record.pending.is_none()
@@ -2121,6 +2177,7 @@ impl App {
             .into_iter()
             .filter_map(|key| self.workers.remove(&key))
             .collect::<Vec<_>>();
+        self.executing_mods.remove(&id);
         self.git_jobs.insert(
             id,
             Job::start("publishing PR", move |cancelled| {
@@ -2168,6 +2225,24 @@ impl App {
         )
         .then(|| self.current_mod().map(|m| m.id))
         .flatten();
+        self.resume_network_workers()?;
+        let scheduled = self
+            .mods
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| {
+                self.executing_mods.contains(&m.id)
+                    && !m.closed
+                    && !self.git_jobs.contains_key(&m.id)
+                    && editing_mod != Some(m.id)
+                    && deleting_mod != Some(m.id)
+                    && reviewing_mod != Some(m.id)
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        for index in scheduled {
+            self.schedule_execution(index)?;
+        }
         for worker in self.workers.values_mut() {
             let code_mod = self
                 .mods
@@ -2178,6 +2253,8 @@ impl App {
                 &mut self.store,
                 code_mod,
                 editing_mod != Some(code_mod.id)
+                    && (worker.role == Role::Planner
+                        || self.executing_mods.contains(&code_mod.id) && worker.enabled)
                     && deleting_mod != Some(code_mod.id)
                     && reviewing_mod != Some(code_mod.id)
                     && !self
@@ -2193,42 +2270,10 @@ impl App {
                     .unwrap_or_else(|| self.project.clone()),
             )?;
         }
-        for code_mod in &mut self.mods {
-            let idle = self
-                .workers
-                .values()
-                .filter(|worker| worker.mod_id == code_mod.id && worker.role == Role::Executor)
-                .all(|worker| matches!(worker.status, Status::Ready | Status::Complete));
-            let connected = self
-                .workers
-                .values()
-                .any(|worker| worker.mod_id == code_mod.id && worker.role == Role::Executor);
-            if connected
-                && idle
-                && !code_mod.closed
-                && !self.git_jobs.contains_key(&code_mod.id)
-                && editing_mod != Some(code_mod.id)
-                && deleting_mod != Some(code_mod.id)
-                && reviewing_mod != Some(code_mod.id)
-                && self.store.resume_repairs(code_mod.id)?
-            {
-                code_mod.execution = self.store.execution(code_mod.id)?;
-                for worker in self
-                    .workers
-                    .values_mut()
-                    .filter(|worker| worker.mod_id == code_mod.id && worker.role == Role::Executor)
-                {
-                    if !worker.enabled {
-                        worker.toggle();
-                    }
-                }
-            }
-        }
         for index in self.ready_plans() {
             self.auto_runs.remove(&self.mods[index].id);
             self.start_execution(index)?;
         }
-        self.resume_network_workers()?;
         self.maintain_updates()?;
         let edits = self
             .mods
@@ -2338,7 +2383,8 @@ impl App {
             .cloned()
             .collect::<Vec<_>>();
         for access in requests {
-            if self.git_jobs.contains_key(&access.mod_id)
+            if !self.executing_mods.contains(&access.mod_id)
+                || self.git_jobs.contains_key(&access.mod_id)
                 || self.workers.get(&access.worker).is_some_and(Worker::busy)
             {
                 continue;
@@ -2353,20 +2399,7 @@ impl App {
             if let Some(record) = self.store.resume_network(&access)? {
                 self.workers.remove(&record.id);
                 self.mods[index].execution = self.store.execution(access.mod_id)?;
-                match Worker::start_with_muse(
-                    &self.source_project(index),
-                    &self.mods[index],
-                    record,
-                    Role::Executor,
-                    None,
-                    self.muse,
-                ) {
-                    Ok(worker) => {
-                        self.workers.insert(worker.id, worker);
-                        self.notice = None;
-                    }
-                    Err(error) => self.notice = Some(error.to_string()),
-                }
+                self.notice = None;
             }
         }
         self.refresh_network_requests()
@@ -3520,6 +3553,172 @@ mod tests {
         }
     }
 
+    #[test]
+    fn stopping_and_reopening_do_not_reactivate_the_pool() {
+        let (data, store, id, _plan) = crate::scheduler::tests::fixture(&["codex", "muse"], false);
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        let record = app
+            .store
+            .worker_provider(id, Role::Executor, 0, "codex")
+            .unwrap();
+        let mut worker =
+            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        worker.role = Role::Executor;
+        worker.status = Status::Ready;
+        app.workers.insert(worker.id, worker);
+        app.executing_mods.insert(id);
+        app.toggle_worker().unwrap();
+        assert!(!app.executing_mods.contains(&id));
+        app.poll_workers().unwrap();
+        assert!(app.workers.values().all(|w| !w.enabled));
+        assert!(
+            app.mods[0]
+                .execution
+                .as_ref()
+                .unwrap()
+                .tasks
+                .iter()
+                .all(|r| r.status == "pending")
+        );
+        drop(app);
+        let app = App::load(data.0.join("project"), false, data.store()).unwrap();
+        assert!(app.executing_mods.is_empty() && app.workers.is_empty());
+    }
+
+    #[test]
+    fn an_approved_network_retry_stays_paused_after_stop_or_restart() {
+        let (data, mut store, m, _root, workers) = crate::network::tests::fixture();
+        let request = crate::network::Request::parse(
+            serde_json::json!({"domains":["example.com"],"reason":"Download fixture"}),
+        )
+        .unwrap();
+        store
+            .request_network(m.id, workers[0], request, false)
+            .unwrap();
+        let access = store.network_requests(m.id).unwrap().remove(0);
+        let source = m.execution.as_ref().unwrap().tasks[0].source.clone();
+        store
+            .finish_task(m.id, &source, "blocked", "Needs access", &[])
+            .unwrap();
+        store.decide_network(m.id, access.id, true).unwrap();
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        app.refresh_network_requests().unwrap();
+        app.resume_network_workers().unwrap();
+        assert_eq!(
+            app.mods[0].execution.as_ref().unwrap().tasks[0].status,
+            "blocked"
+        );
+        assert!(app.workers.is_empty());
+        app.executing_mods.insert(m.id);
+        app.resume_network_workers().unwrap();
+        assert_eq!(
+            app.mods[0].execution.as_ref().unwrap().tasks[0].status,
+            "pending"
+        );
+        assert_eq!(
+            app.mods[0].execution.as_ref().unwrap().tasks[0].worker,
+            Some(workers[0])
+        );
+        assert!(
+            app.workers.is_empty(),
+            "Approval queues work through admission"
+        );
+        app.executing_mods.remove(&m.id);
+        app.poll_workers().unwrap();
+        assert!(app.workers.is_empty());
+    }
+
+    #[test]
+    #[ignore = "Runs two Codex then two Muse tasks through the scheduler in a disposable VM"]
+    fn worker_slots_follow_provider_waves_in_vm() {
+        let (data, mut store, id, mut plan) =
+            crate::scheduler::tests::fixture(&["codex", "codex", "muse", "muse"], true);
+        let project = data.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("README.md"), "Disposable scheduler fixture.\n").unwrap();
+        let root = store.execution(id).unwrap().unwrap().workspace;
+        workspace::create(&project, &root).unwrap();
+        for (i, task) in plan.tasks.iter_mut().enumerate() {
+            task.outcome = format!(
+                "Write exactly task{i} followed by a newline in {i}.txt. Run /bin/sleep 8 once before writing, to exercise concurrent execution. Use /bin/sh for the file check. Do not install dependencies or change any other source."
+            );
+        }
+        let source = store.planning(id).unwrap().unwrap().source;
+        store.save_plan(id, &source, &plan).unwrap();
+        let mut app = App::load(project, false, store).unwrap();
+        app.muse = true;
+        app.start_worker(0, Role::Executor).unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let deadline = Instant::now() + Duration::from_secs(480);
+            let mut overlap = [false; 2];
+            let mut previous = String::new();
+            while Instant::now() < deadline {
+                app.poll_workers().unwrap();
+                assert!(
+                    app.workers
+                        .values()
+                        .filter(|w| w.role == Role::Executor && w.busy())
+                        .count()
+                        <= 2
+                );
+                let execution = app.mods[0].execution.as_ref().unwrap();
+                let state = execution
+                    .tasks
+                    .iter()
+                    .map(|r| format!("{}:{}", r.task_id, r.status))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if state != previous {
+                    eprintln!("Scheduler fixture: {state}");
+                    previous = state;
+                }
+                for (wave, pair) in execution.tasks.chunks(2).enumerate() {
+                    overlap[wave] |= pair.iter().all(|r| r.status == "running");
+                }
+                assert!(
+                    app.workers.values().all(|w| w.status != Status::Failed),
+                    "{}",
+                    app.worker_error().unwrap_or("")
+                );
+                if execution.status == "review" {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert_eq!(
+                app.mods[0].execution.as_ref().unwrap().status,
+                "review",
+                "{}",
+                app.worker_error().unwrap_or("")
+            );
+            assert_eq!(overlap, [true, true], "Both pairs must actually overlap");
+            let records = app.store.executors(id).unwrap();
+            assert_eq!(records.iter().filter(|r| r.provider == "codex").count(), 2);
+            assert_eq!(records.iter().filter(|r| r.provider == "muse").count(), 2);
+            for i in 0..4 {
+                assert_eq!(
+                    std::fs::read_to_string(root.join(format!("work/{i}.txt"))).unwrap(),
+                    format!("task{i}\n")
+                );
+            }
+            assert!(
+                app.mods[0]
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .checks
+                    .iter()
+                    .all(|c| c.exit_code == Some(0))
+            );
+        }));
+        app.workers.clear();
+        drop(app);
+        crate::sandbox::delete(&root).unwrap();
+        if let Err(error) = outcome {
+            std::panic::resume_unwind(error);
+        }
+    }
+
     fn execution_app() -> (TestData, App, PathBuf) {
         let data = TestData::new();
         let project = data.0.join("project");
@@ -4137,8 +4336,11 @@ mod tests {
         let (_data, mut app, _root) = execution_app();
         let id = app.current_mod().unwrap().id;
         let mut workers = Vec::new();
-        for slot in 0..2 {
-            let record = app.store.worker_at(id, Role::Executor, slot).unwrap();
+        for provider in ["codex", "muse"] {
+            let record = app
+                .store
+                .worker_provider(id, Role::Executor, 0, provider)
+                .unwrap();
             let mut worker = Worker::start(
                 &app.project,
                 app.current_mod().unwrap(),
@@ -4164,6 +4366,7 @@ mod tests {
         let mut second = plan.tasks[0].clone();
         second.id = "two".into();
         second.title = "Second task".into();
+        second.worker = "muse".into();
         plan.tasks.push(second);
         let execution = app.mods[0].execution.as_mut().unwrap();
         execution.status = "running".into();
@@ -4181,7 +4384,10 @@ mod tests {
             Some(Duration::from_millis(80)),
         ))
         .join("\n");
-        assert!(view.contains("2 workers running"));
+        assert!(view.contains(&format!("codex w{} · task 1", workers[0])));
+        assert!(view.contains(&format!("muse w{} · task 2", workers[1])));
+        let narrow = rows(&screen(&mut app, 90, 36)).join("\n");
+        assert!(narrow.contains("2 workers running"));
         assert!(view.contains(&format!("⠙ 1. Greeting · w{}", workers[0])));
         assert!(view.contains(&format!("⠙ 2. Second task · w{}", workers[1])));
         let queued = app.store.enqueue(id, "Only the second worker").unwrap();

@@ -14,6 +14,7 @@ mod repair;
 mod router;
 mod rpc;
 mod sandbox;
+mod scheduler;
 mod sprout;
 mod store;
 mod task_worktree;
