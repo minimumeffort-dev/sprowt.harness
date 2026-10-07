@@ -7,8 +7,10 @@ flowchart TB
     goal["Request + project brief"] --> planner["Astra xhigh · inspect source and define contracts"]
     planner --> validate["Rust · validate tasks, scopes and dependencies"]
     validate --> schedule["Rust · assign up to two independent tasks"]
-    schedule --> route["Jev + Rust policy · model and effort per task"]
+    schedule --> route["Jev + Rust policy · Codex model and effort"]
     route --> execute["Codex executors · task worktrees inside the VM"]
+    schedule --> muse["Muse Spark 1.3 high · own VM task worktree"]
+    muse --> checks
     execute --> checks["Rust · combine changes and rerun checks"]
 ```
 
@@ -32,6 +34,10 @@ flowchart TB
     ui --> together
 ```
 
+## Provider assignment
+
+Codex is available by default. `--muse` lets Astra assign independent, well-scoped work to Muse while keeping demanding or high-risk implementation and integration on Codex. The scheduler matches each task to its saved provider. Muse currently uses Spark 1.3 high; it does not call Jev.
+
 ## Jev task routing
 
 [Jev](https://docs.typesafe.ai/introduction) is a hosted decision model. It evaluates four independent questions: difficulty, uncertainty, cross-component impact and security or data-integrity risk. Rust maps those answers to profiles:
@@ -43,7 +49,7 @@ flowchart TB
 | Hard, uncertain or high risk | `gpt-6.1-sol` | xhigh |
 | Missing configuration, timeout or invalid response | `gpt-6.1-sol` | xhigh |
 
-Each task routes before its turn starts, using the project brief, saved plan, contracts, assigned scope and checks. Steering stays in the current turn. Planning is pinned to `gpt-6-astra` xhigh, so it needs no routing call.
+Each Codex task routes before its turn starts, using the project brief, saved plan, contracts, assigned scope and checks. Steering stays in the current turn. Planning is pinned to `gpt-6-astra` xhigh, so it needs no routing call.
 
 Requests time out after eight seconds. The initial confidence floor is **0.80 for every question**. Rust validates options, probabilities and confidence before lowering effort. These thresholds are experimental; confidence measures distribution concentration, not guaranteed correctness. Test them on real codemods before changing them. See [Jev confidence](https://docs.typesafe.ai/confidence).
 
@@ -71,7 +77,7 @@ Rust checks that:
 - Coordination links name existing peers, exclude the task itself and duplicate peers, and carry brief topics.
 - File scopes use exact project-relative paths, with no globs or parent traversal.
 - Tasks sharing file or directory scopes have a dependency between them.
-- Every task uses the connected provider: Codex.
+- Every task uses Codex or, when enabled with `--muse`, Muse.
 
 These checks validate structure and declared scopes. They do not prove the plan will solve the request.
 

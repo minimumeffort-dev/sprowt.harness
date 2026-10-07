@@ -42,6 +42,7 @@ pub enum View {
 }
 
 pub struct App {
+    pub muse: bool,
     pub project: PathBuf,
     pub input: TextArea<'static>,
     pub mods: Vec<CodeMod>,
@@ -138,6 +139,7 @@ impl App {
             store.select_mod(state.id, state.mods[index].id)?;
         }
         let mut app = Self {
+            muse: false,
             project_sync_root: store
                 .project_path(state.id)
                 .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
@@ -1865,6 +1867,16 @@ impl App {
     }
 
     fn start_worker(&mut self, index: usize, role: Role) -> Result<()> {
+        let plan = self.mods[index]
+            .planning
+            .as_ref()
+            .and_then(|p| p.plan.as_ref());
+        let uses_muse = role == Role::Executor
+            && plan.is_some_and(|p| p.tasks.iter().any(|t| t.worker == "muse"));
+        if uses_muse && !self.muse {
+            self.notice = Some("This plan uses Muse. Restart the harness with --muse.".into());
+            return Ok(());
+        }
         let count = if role == Role::Executor {
             self.mods[index]
                 .execution
@@ -1882,7 +1894,25 @@ impl App {
     fn start_worker_slot(&mut self, index: usize, role: Role, slot: usize) -> Result<()> {
         let project = self.source_project(index);
         let mod_id = self.mods[index].id;
-        let record = self.store.worker_at(mod_id, role, slot)?;
+        let plan = self.mods[index]
+            .planning
+            .as_ref()
+            .and_then(|p| p.plan.as_ref());
+        let mixed = role == Role::Executor
+            && plan.is_some_and(|p| {
+                p.tasks.iter().any(|t| t.worker == "muse")
+                    && p.tasks.iter().any(|t| t.worker == "codex")
+            });
+        let only_muse = role == Role::Executor
+            && plan.is_some_and(|p| p.tasks.iter().all(|t| t.worker == "muse"));
+        let provider = if only_muse || mixed && slot == 1 {
+            "muse"
+        } else {
+            "codex"
+        };
+        let record =
+            self.store
+                .worker_provider(mod_id, role, if mixed { 0 } else { slot }, provider)?;
         self.workers.remove(&record.id);
         let selection = if role == Role::Planner {
             if record.pending.is_none()
@@ -1898,7 +1928,14 @@ impl App {
         } else {
             None
         };
-        match Worker::start(&project, &self.mods[index], record, role, selection) {
+        match Worker::start_with_muse(
+            &project,
+            &self.mods[index],
+            record,
+            role,
+            selection,
+            self.muse,
+        ) {
             Ok(worker) => {
                 self.workers.insert(worker.id, worker);
                 if role == Role::Planner {

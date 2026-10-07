@@ -11,7 +11,7 @@ flowchart TB
     mod --> pending["Queue and waiting steering"]
     mod --> mail["Task mailboxes · asks, replies and receipt state"]
     mod --> execution["Execution · working folder, task status and check results"]
-    mod --> workers["Workers · role, Codex conversation ID and pending delivery"]
+    mod --> workers["Workers · provider, role, conversation and pending delivery"]
     mod --> git["Worktree path · publication, close and retention checkpoints"]
 ```
 
@@ -70,6 +70,8 @@ Apple Container manages each VM’s disk separately. Per-worker runtimes and dow
 Generated test caches and new runtime databases stay on the VM disk, outside source exports and Git checkpoints. Already committed database fixtures stay in source. Reconnection repairs older checkpoint indexes without deleting their runtime data. Closing or deleting the VM removes that data too. See [Source and generated files](execution.md#source-and-generated-files).
 
 The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
+
+Muse's verified Linux binary and adapter files live in `~/Library/Caches/sprowt-harness/muse/`. The binary is shared across codemods; closing or deleting a codemod does not remove that cache. Temporary account-resolution files are removed when the host broker exits. Guest capabilities live only in the worker's VM home and expire when its turn ends.
 
 The `worker_messages` table saves [coordination](coordination.md): task identities, bodies, reply links, retry keys and delivery/receipt state. New edit and integration rounds retain that history but retire its task addresses. Closing keeps messages; deleting a codemod removes them. Mailbox access goes through the host dispatcher; the database is never copied into the VM.
 

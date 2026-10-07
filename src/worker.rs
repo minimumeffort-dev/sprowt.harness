@@ -29,6 +29,8 @@ pub struct Worker {
     pub id: i64,
     pub mod_id: i64,
     pub role: Role,
+    provider: String,
+    muse: bool,
     pub selection: Option<Selection>,
     pub model: Option<String>,
     pub effort: Option<String>,
@@ -51,6 +53,7 @@ pub struct Worker {
 }
 
 impl Worker {
+    #[cfg(test)]
     pub fn start(
         project: &Path,
         code_mod: &CodeMod,
@@ -58,11 +61,25 @@ impl Worker {
         role: Role,
         selection: Option<Selection>,
     ) -> io::Result<Self> {
+        Self::start_with_muse(project, code_mod, record, role, selection, false)
+    }
+
+    pub fn start_with_muse(
+        project: &Path,
+        code_mod: &CodeMod,
+        record: WorkerRecord,
+        role: Role,
+        selection: Option<Selection>,
+        muse: bool,
+    ) -> io::Result<Self> {
         let workspace = code_mod
             .execution
             .as_ref()
             .filter(|execution| execution.status != "applied")
             .map(|execution| execution.workspace.join("work"));
+        let mut context = Context::worker(code_mod, record.id, role).with_mailbox(&record.database);
+        context.provider = record.provider.clone();
+        context.muse = muse;
         let client = if role == Role::Executor {
             Some(Client::start(
                 project,
@@ -87,7 +104,7 @@ impl Worker {
                 &code_mod.description,
                 code_mod.planning.as_ref().and_then(|p| p.plan.as_ref()),
                 None,
-                Context::worker(code_mod, record.id, role).with_mailbox(&record.database),
+                context,
             )?)
         } else {
             None
@@ -96,6 +113,8 @@ impl Worker {
             id: record.id,
             mod_id: code_mod.id,
             role,
+            provider: record.provider,
+            muse,
             selection,
             model: None,
             effort: None,
@@ -154,7 +173,8 @@ impl Worker {
             "◆"
         });
         format!(
-            "{glyph} codex · {}{}{} · {state} · {}",
+            "{glyph} {} · {}{}{} · {state} · {}",
+            self.provider,
             if self.role == Role::Executor {
                 format!("executor · w{}", self.id)
             } else {
@@ -218,6 +238,8 @@ impl Worker {
             store.planning_model(self.mod_id, &selection)?;
             code_mod.planning = store.planning(self.mod_id)?;
             self.selection = Some(selection.clone());
+            let mut context = Context::worker(code_mod, self.id, self.role);
+            context.muse = self.muse;
             match Client::start(
                 project,
                 self.thread_id.clone().map(|id| Resume {
@@ -238,7 +260,7 @@ impl Worker {
                 &code_mod.description,
                 None,
                 Some(selection),
-                Context::worker(code_mod, self.id, self.role),
+                context,
             ) {
                 Ok(client) => {
                     self.client = Some(client);
@@ -326,7 +348,18 @@ impl Worker {
                     store.execution_status(self.mod_id, "verifying")?;
                     code_mod.execution = store.execution(self.mod_id)?;
                     self.begin_checks(format!("final:{}", self.mod_id), checks);
-                } else if !execution
+                } else if !execution.tasks.iter().any(|run| {
+                    run.status == "pending"
+                        && code_mod
+                            .planning
+                            .as_ref()
+                            .and_then(|p| p.plan.as_ref())
+                            .is_some_and(|p| {
+                                p.tasks
+                                    .iter()
+                                    .any(|t| t.id == run.task_id && t.worker == self.provider)
+                            })
+                }) && !execution
                     .tasks
                     .iter()
                     .any(|run| ["sending", "running", "checking"].contains(&run.status.as_str()))
@@ -679,7 +712,7 @@ impl Worker {
                     code_mod,
                     Message {
                         item_id: Some(format!("result:{source}")),
-                        role: format!("codex:{}", self.id),
+                        role: format!("{}:{}", self.provider, self.id),
                         body: summary,
                         model: self.model.clone(),
                         effort: self.effort.clone(),
@@ -711,7 +744,7 @@ impl Worker {
                                 .cloned()
                                 .unwrap_or(Message {
                                     item_id: Some(id.into()),
-                                    role: format!("codex:{}", self.id),
+                                    role: format!("{}:{}", self.provider, self.id),
                                     body: String::new(),
                                     model: self.model.clone(),
                                     effort: self.effort.clone(),
@@ -884,7 +917,7 @@ impl Worker {
             Message {
                 item_id: Some(id.into()),
                 role: if role == "codex" {
-                    format!("codex:{}", self.id)
+                    format!("{}:{}", self.provider, self.id)
                 } else {
                     role.into()
                 },
@@ -1003,7 +1036,7 @@ impl Worker {
         let report = self
             .task_report
             .as_deref()
-            .ok_or_else(|| "Codex returned no task report.".into())
+            .ok_or_else(|| format!("{} returned no task report.", self.provider))
             .and_then(|text| Report::parse(text, task));
         match report {
             Ok(report) if report.status == "completed" => {
@@ -1175,6 +1208,192 @@ mod tests {
     use super::*;
     use crate::store::test_support::TestData;
     use serde_json::json;
+
+    #[test]
+    #[ignore = "Uses both subscription CLIs and a disposable Apple Container VM"]
+    fn mixed_vm_workers_execute_and_exchange_mail() {
+        use std::{
+            fs,
+            time::{Duration, Instant},
+        };
+        let data = TestData::new();
+        let project = data.0.join("project");
+        let root = data.0.join(format!(
+            "mixed-{}",
+            data.0.file_name().unwrap().to_str().unwrap()
+        ));
+        fs::create_dir_all(&project).unwrap();
+        fs::write(
+            project.join("README.md"),
+            "A disposable greeting fixture.\n",
+        )
+        .unwrap();
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        let mut m = store
+            .create_mod(project_id, "Create two independent greeting scripts")
+            .unwrap();
+        let plan = Plan::parse(&json!({"summary":"Two greetings","tasks":[
+            {"id":"codex","title":"Codex greeting","outcome":"Create codex.sh printing exactly hello codex. Read your inbox and send a useful update to the muse task once done.","files":["codex.sh"],"depends_on":[],"coordination":[{"task":"muse","topic":"Greeting fixture verification"}],"worker":"codex","checks":["Script prints hello codex"]},
+            {"id":"muse","title":"Muse greeting","outcome":"This is a cancellation fixture. Before writing source, if $HOME/cancel-once is absent, create that marker and run /bin/sleep 299. The harness will interrupt that command; on retry skip it. Then create muse.sh printing exactly hello muse. Use the native MCP inbox tools to read messages and send the codex task a useful update once done.","files":["muse.sh"],"depends_on":[],"coordination":[{"task":"codex","topic":"Greeting fixture verification"}],"worker":"muse","checks":["Script prints hello muse"]}
+        ]}).to_string()).unwrap();
+        let source = m.planning.as_ref().unwrap().source.clone();
+        store.save_plan(m.id, &source, &plan).unwrap();
+        m.planning = store.planning(m.id).unwrap();
+        workspace::create(&project, &root).unwrap();
+        store.create_execution(m.id, &root, &plan).unwrap();
+        m.execution = store.execution(m.id).unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut workers: Vec<_> = ["codex", "muse"]
+                .iter()
+                .map(|provider| {
+                    Worker::start_with_muse(
+                        &project,
+                        &m,
+                        store
+                            .worker_provider(m.id, Role::Executor, 0, provider)
+                            .unwrap(),
+                        Role::Executor,
+                        None,
+                        true,
+                    )
+                    .unwrap()
+                })
+                .collect();
+            let startup = Instant::now() + Duration::from_secs(240);
+            while workers.iter().any(|w| w.status != Status::Ready) && Instant::now() < startup {
+                for worker in &mut workers {
+                    worker.poll(&mut store, &mut m, false, &project).unwrap();
+                    assert!(
+                        worker.error.is_none(),
+                        "{}: {}",
+                        worker.provider,
+                        worker.error.as_deref().unwrap_or("")
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert!(
+                workers.iter().all(|w| w.status == Status::Ready),
+                "Worker startup timed out"
+            );
+            let deadline = Instant::now() + Duration::from_secs(360);
+            let mut previous = String::new();
+            let mut overlap = false;
+            let mut steered = false;
+            let mut interrupted = false;
+            let mut retried = false;
+            let mut inspect_at = Instant::now();
+            let name = format!("sprowt-{}", root.file_name().unwrap().to_str().unwrap());
+            let sleeper = || {
+                std::process::Command::new("container").args(["exec", &name, "/usr/bin/python3", "-c",
+                    "from pathlib import Path; print(sum(b'/bin/sleep\\x00299\\x00' in p.read_bytes() for p in Path('/proc').glob('[0-9]*/cmdline')))"])
+                    .output().unwrap()
+            };
+            while Instant::now() < deadline && m.execution.as_ref().unwrap().status != "review" {
+                for worker in &mut workers {
+                    worker.poll(&mut store, &mut m, true, &project).unwrap();
+                    assert!(
+                        worker.error.is_none()
+                            || interrupted
+                                && !retried
+                                && worker.provider == "muse"
+                                && worker.status == Status::Ready,
+                        "{}: {}",
+                        worker.provider,
+                        worker.error.as_deref().unwrap_or("")
+                    );
+                }
+                overlap |= m
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .filter(|t| t.status == "running")
+                    .count()
+                    == 2;
+                if workers[1].status == Status::Running && !steered {
+                    let queued = store.enqueue(m.id, "Include sprowt-steering-ok in your final JSON summary; keep the required greeting unchanged.").unwrap();
+                    store
+                        .steer_to(m.id, &[queued.id], &[workers[1].id])
+                        .unwrap();
+                    steered = true;
+                }
+                if steered
+                    && !interrupted
+                    && workers[1].pending.is_none()
+                    && Instant::now() >= inspect_at
+                {
+                    let process = sleeper();
+                    assert!(process.status.success());
+                    if String::from_utf8_lossy(&process.stdout).trim() != "0" {
+                        workers[1].toggle();
+                        interrupted = true;
+                        eprintln!("Interrupting Muse's native sleep command");
+                    }
+                    inspect_at = Instant::now() + Duration::from_millis(500);
+                }
+                if interrupted && !retried && workers[1].status == Status::Ready {
+                    let process = sleeper();
+                    assert!(
+                        process.status.success(),
+                        "Stopping Muse stopped the shared VM"
+                    );
+                    assert_eq!(
+                        String::from_utf8_lossy(&process.stdout).trim(),
+                        "0",
+                        "Muse left its child command running"
+                    );
+                    store.retry_tasks(m.id).unwrap();
+                    m.execution = store.execution(m.id).unwrap();
+                    workers[1].toggle();
+                    retried = true;
+                    eprintln!("Native child exit verified; retrying the Muse task");
+                }
+                let state = workers
+                    .iter()
+                    .map(|w| w.label(None))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                if state != previous {
+                    eprintln!("{state}");
+                    previous = state;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            assert_eq!(m.execution.as_ref().unwrap().status, "review");
+            assert!(overlap, "Mixed workers never overlapped");
+            assert!(
+                steered && interrupted && retried,
+                "Steering or cancellation was not exercised"
+            );
+            assert!(
+                m.messages
+                    .iter()
+                    .any(|msg| msg.role.starts_with("muse:")
+                        && msg.body.contains("sprowt-steering-ok")),
+                "Muse did not follow accepted steering"
+            );
+            assert!(m.messages.iter().any(|msg| msg.role.starts_with("muse:")
+                && msg.model.as_deref() == Some(crate::muse::MODEL)
+                && msg.effort.as_deref() == Some("high")));
+            assert!(
+                store
+                    .mailbox(m.id)
+                    .unwrap()
+                    .iter()
+                    .any(|msg| msg.from_task == "muse"),
+                "Muse never used the MCP mailbox"
+            );
+            assert!(!project.join("muse.sh").exists());
+            drop(workers);
+        }));
+        crate::sandbox::delete(&root).unwrap();
+        if let Err(error) = outcome {
+            std::panic::resume_unwind(error);
+        }
+    }
 
     fn final_plan() -> Value {
         json!({"summary":"Add greeting", "tasks":[{"id":"1","title":"Greeting flag",

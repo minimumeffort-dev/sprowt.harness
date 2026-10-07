@@ -9,7 +9,7 @@ flowchart TB
     first --> context["Own description, plan and messages"]
     first --> worktree["Own Git branch and worktree"]
     worktree --> planner["Codex planner · read-only"]
-    planner --> executor["Up to two Codex executors · independent tasks"]
+    planner --> executor["Up to two Codex or Muse executors · independent tasks"]
     executor --> vm["Own Linux VM · source copy and runtime"]
 ```
 

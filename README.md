@@ -13,10 +13,10 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and routing](docs/planning.md): describe the outcome. Astra xhigh chooses task splits, shared contracts and coordination; Jev routes each task to Sol 6.1 medium, high or xhigh.
 - [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
-- [Plan execution](docs/execution.md): up to two Codex executors work in parallel, with separate task folders and combined verification.
+- [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders and combined verification.
 - [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
-- [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod, with local sockets for browser checks. Codex chooses runtimes and dependencies; the harness installs requested OS packages.
-- [Workers and isolation](docs/workers.md): separate Codex planner and executor conversations. Workers within and across mods can run in parallel.
+- [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod, with local sockets for browser checks. Workers choose runtimes and dependencies; the harness installs requested OS packages.
+- [Workers and isolation](docs/workers.md): Codex planning and separate Codex or Muse executors. Workers within and across mods can run in parallel.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
 - [Terminal and companion](docs/terminal.md): compact results, separate plan details and worker history, task spinners and a Sprowt pet that reacts to work.
@@ -27,11 +27,11 @@ The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publica
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
-Experimental [Muse](docs/workers.md#muse-in-a-vm) and [Codex](docs/workers.md#full-codex-in-a-vm) probes run the full CLIs in Linux, with account credentials kept on the Mac behind scoped brokers. Native edits, execution, steering and isolation pass. These are separate from the scheduler; Muse subscription metering remains unconfirmed.
+Enable mixed workers with `sprowt-harness --muse` after signing in with Muse **1.4.1-R4503.1**. Muse runs inside the VM behind a host credential broker. Account authentication is verified; subscription metering remains unconfirmed. The [full Codex VM probe](docs/workers.md#standalone-diagnostics) is still separate from production.
 
 ## Architecture today
 
-Rust owns the interface, scheduling, workers, task mailboxes and saved state. A shared tool dispatcher validates operations and routes them to host or VM adapters. Codex plans and edits. Jev evaluates task difficulty and risk through a host-only API adapter.
+Rust owns the interface, scheduling, workers, task mailboxes and saved state. A shared tool dispatcher validates operations and routes them to host or VM adapters. Codex plans; Codex and Muse execute. Jev evaluates task difficulty and risk through a host-only API adapter.
 
 ```mermaid
 flowchart TB
@@ -39,9 +39,10 @@ flowchart TB
     sync --> setup["Git branch + worktree"]
     setup --> planner["Astra xhigh · inspect source and plan"]
     planner --> schedule["Rust scheduler · ready tasks"]
-    schedule --> route["Jev + Rust · route each task"]
-    route --> first["Codex worker 1 · own task worktree"]
-    route --> second["Codex worker 2 · own task worktree"]
+    schedule --> route["Jev + Rust · route Codex tasks"]
+    route --> first["Codex executor · own task worktree"]
+    schedule --> second["Second executor · Codex or Muse · own task worktree"]
+    route --> second
     first <-->|"Saved task mailboxes"| second
     first --> combine["Combine one result at a time · verify together"]
     second --> combine
@@ -56,7 +57,7 @@ flowchart TB
     verify --> ready
 ```
 
-Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse follows later.
+Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. With `--muse`, the planner can assign independent work to Spark 1.3 high; Jev continues to route Codex effort.
 
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
@@ -151,7 +152,7 @@ Git ignores local environment files, credentials, logs and databases. Use placeh
 
 ## What’s next
 
-Muse and a review worker per mod. Shared context, memory, MCPs and skills follow in small batches.
+Native Muse recovery, login refresh and review workers. Shared context, memory, external MCPs and skills follow in small batches.
 
 ## Development
 

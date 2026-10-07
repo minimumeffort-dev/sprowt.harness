@@ -29,6 +29,7 @@ impl CodeMod {
         self.messages.iter().any(|m| {
             m.role == "codex"
                 || m.role.starts_with("codex:")
+                || m.role.starts_with("muse:")
                 || m.role == "planner"
                     && !m
                         .item_id
@@ -65,6 +66,7 @@ pub struct Message {
 pub struct WorkerRecord {
     pub database: std::path::PathBuf,
     pub id: i64,
+    pub provider: String,
     pub thread_id: Option<String>,
     pub pending: Option<String>,
 }
@@ -187,6 +189,11 @@ impl Store {
             )
             .map_err(io::Error::other)?;
         for (table, column, sql) in [
+            (
+                "workers",
+                "provider",
+                "ALTER TABLE workers ADD COLUMN provider TEXT NOT NULL DEFAULT 'codex'",
+            ),
             (
                 "code_mods",
                 "closed",
@@ -748,18 +755,32 @@ impl Store {
         self.worker_at(mod_id, role, 0)
     }
 
+    #[cfg(test)]
     pub fn worker_at(&self, mod_id: i64, role: Role, slot: usize) -> Result<WorkerRecord> {
+        self.worker_provider(mod_id, role, slot, "codex")
+    }
+
+    pub fn worker_provider(
+        &self,
+        mod_id: i64,
+        role: Role,
+        slot: usize,
+        provider: &str,
+    ) -> Result<WorkerRecord> {
+        if !["codex", "muse"].contains(&provider) || role == Role::Planner && provider != "codex" {
+            return Err(rusqlite::Error::InvalidQuery);
+        }
         let read = || {
-            self.0.query_row("SELECT id, thread_id, pending FROM workers WHERE mod_id = ?1 AND role = ?2 ORDER BY id LIMIT 1 OFFSET ?3", params![mod_id,role.name(),slot as i64],
+            self.0.query_row("SELECT id, thread_id, pending FROM workers WHERE mod_id = ?1 AND role = ?2 AND provider = ?4 ORDER BY id LIMIT 1 OFFSET ?3", params![mod_id,role.name(),slot as i64,provider],
             |row| Ok(WorkerRecord { database:Path::new(self.0.path().unwrap()).to_owned(),
-                id:row.get(0)?, thread_id:row.get(1)?, pending:row.get(2)? })).optional()
+                id:row.get(0)?, provider:provider.into(), thread_id:row.get(1)?, pending:row.get(2)? })).optional()
         };
         if let Some(worker) = read()? {
             return Ok(worker);
         }
         self.0.execute(
-            "INSERT INTO workers(mod_id,role) VALUES (?1,?2)",
-            params![mod_id, role.name()],
+            "INSERT INTO workers(mod_id,role,provider) VALUES (?1,?2,?3)",
+            params![mod_id, role.name(), provider],
         )?;
         read()?.ok_or(rusqlite::Error::QueryReturnedNoRows)
     }
@@ -1339,7 +1360,14 @@ impl Store {
         {
             return Ok(None);
         }
-        let Some(task) = execution.next_task(plan, worker) else {
+        let provider: String = self.0.query_row(
+            "SELECT provider FROM workers WHERE id=?1 AND mod_id=?2",
+            params![worker, mod_id],
+            |row| row.get(0),
+        )?;
+        let mut available = plan.clone();
+        available.tasks.retain(|task| task.worker == provider);
+        let Some(task) = execution.next_task(&available, worker) else {
             return Ok(None);
         };
         let input = self.submission(mod_id, &task.source)?;
@@ -2471,5 +2499,60 @@ mod tests {
         assert_eq!(restored.id, worker.id);
         assert_eq!(restored.thread_id.as_deref(), Some("keep conversation"));
         assert_eq!(restored.pending.as_deref(), Some(source.as_str()));
+    }
+    #[test]
+    fn providers_keep_identity_and_receive_only_their_tasks() {
+        let data = test_support::TestData::new();
+        let mut store = data.store();
+        let project = store.load_project(Path::new("/mixed-project")).unwrap();
+        let m = store.create_mod(project.id, "Mixed providers").unwrap();
+        let plan = Plan::parse(&serde_json::json!({"summary":"Two tasks","tasks":[
+            {"id":"a","title":"A","outcome":"A","files":["a.txt"],"depends_on":[],"worker":"muse","checks":["A works"]},
+            {"id":"b","title":"B","outcome":"B","files":["b.txt"],"depends_on":[],"worker":"codex","checks":["B works"]}
+        ]}).to_string()).unwrap();
+        store
+            .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
+            .unwrap();
+        store
+            .create_execution(m.id, &data.0.join("work"), &plan)
+            .unwrap();
+        let codex = store.worker_at(m.id, Role::Executor, 0).unwrap();
+        let muse = store
+            .worker_provider(m.id, Role::Executor, 0, "muse")
+            .unwrap();
+        assert_ne!(codex.id, muse.id);
+        let c = store.task_input(m.id, codex.id, &plan).unwrap().unwrap();
+        let a = store.task_input(m.id, muse.id, &plan).unwrap().unwrap();
+        let execution = store.execution(m.id).unwrap().unwrap();
+        assert_eq!(
+            execution
+                .tasks
+                .iter()
+                .find(|r| r.source == c.source)
+                .unwrap()
+                .task_id,
+            "b"
+        );
+        assert_eq!(
+            execution
+                .tasks
+                .iter()
+                .find(|r| r.source == a.source)
+                .unwrap()
+                .task_id,
+            "a"
+        );
+        drop(store);
+        let store = data.store();
+        let restored = store
+            .worker_provider(m.id, Role::Executor, 0, "muse")
+            .unwrap();
+        assert_eq!(restored.id, muse.id);
+        assert_eq!(restored.provider, "muse");
+        assert!(
+            store
+                .worker_provider(m.id, Role::Planner, 0, "muse")
+                .is_err()
+        );
     }
 }

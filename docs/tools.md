@@ -38,7 +38,7 @@ flowchart TB
 | `read_worker_messages` | Executor | Read its mailbox, live assignments and relevant peer scopes and topics |
 | `ack_worker_messages` | Executor | Acknowledge its inbox messages |
 
-Package installation and [worker messaging](coordination.md) are advertised to Codex executors using JSON input schemas. Unknown tools, host Git operations requested by workers and these tools requested by planners are rejected. Package names and reasons use the same validation for JSON and typed Rust calls. The connected VM must match the workspace bound to that worker. Mailboxes use its host-bound database, codemod and current task assignment; arguments cannot choose them.
+Package installation and [worker messaging](coordination.md) are advertised to executors using JSON input schemas; Muse receives them through the guest MCP bridge. Unknown tools, host Git operations requested by workers and these tools requested by planners are rejected. Package names and reasons use the same validation for JSON and typed Rust calls. The connected VM must match the workspace bound to that worker. Mailboxes use its host-bound database, codemod and current task assignment; arguments cannot choose them.
 
 Initial Git setup and the GitHub destination require confirmation. Setup checks the reviewed file snapshot; adoption preserves the saved baseline. Repository setup validates owner/name, checks history and records progress for retries. Publication requires confirmation and verified source. Closing saves source locally before VM deletion. Pruning checks the saved commit and refuses outside edits. Edit rounds check PR status and its published commit when present. Git checkpoints own recovery. Credentials remain in host adapters.
 
@@ -56,4 +56,8 @@ Each workspace’s host-only `tools.jsonl` records call ID, tool, mod, worker wh
 
 Add a typed request, a registry entry with its caller policy, and an adapter. Worker-facing tools also need input validation and a JSON schema. Test permitted callers and workspace boundaries before exposing the operation.
 
-The dispatcher is independent of Codex’s transport. A future Muse connection can use the same requests and policies. Codex’s native command and file tools continue through its VM connection; MCPs and runtime plugin loading are not connected yet.
+The dispatcher is independent of Codex’s transport. The Muse connection uses the same requests and policies. Codex’s native command and file tools continue through its VM connection; external MCPs and runtime plugin loading are not connected yet.
+
+## Muse MCP bridge
+
+Muse gets the same advertised package and mailbox tools through a guest MCP server. Requests cross the stdio tunnel into the existing dispatcher with the connected worker identity. Guest calls cannot select another codemod or access harness-only Git, GitHub or cleanup operations. External host MCP servers are not exposed.

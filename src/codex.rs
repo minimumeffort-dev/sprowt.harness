@@ -75,7 +75,7 @@ pub enum Event {
     },
 }
 
-type SharedVm = Arc<Mutex<Sandbox>>;
+pub(crate) type SharedVm = Arc<Mutex<Sandbox>>;
 static VMS: Mutex<BTreeMap<PathBuf, Weak<Mutex<Sandbox>>>> = Mutex::new(BTreeMap::new());
 
 fn shared_vm(
@@ -143,6 +143,9 @@ impl Client {
         let (actions, inbox) = mpsc::channel();
         let (outgoing, events) = mpsc::channel();
         let mut instructions = plan::instructions(role, description, plan, workspace.is_some());
+        if role == Role::Planner && context.muse {
+            instructions = instructions.replace("Only Codex is connected; assign every task to codex.", "Codex and Muse are connected. Assign demanding or high-risk implementation and integration checks to codex; use muse for well-scoped independent implementation, tests or documentation. Use both when that is useful, without forcing a split.");
+        }
         if role == Role::Planner {
             instructions.push_str(&format!(
                 "\nProject brief (verify against source): {}",
@@ -173,6 +176,17 @@ impl Client {
                         io::ErrorKind::Interrupted,
                         "Worker startup stopped. Ctrl+R retries.",
                     ));
+                }
+                if context.provider == "muse" {
+                    return crate::muse::serve(
+                        vm.ok_or_else(|| io::Error::other("Muse requires a VM."))?,
+                        resume,
+                        (instructions, context),
+                        stopped,
+                        process.clone(),
+                        inbox,
+                        &outgoing,
+                    );
                 }
                 let permissions = if vm.is_some() {
                     "sprowt_vm"
@@ -665,6 +679,10 @@ fn serve(
                     }
                     if role == Role::Planner {
                         params["outputSchema"] = plan::schema();
+                        if context.muse {
+                            params["outputSchema"]["properties"]["tasks"]["items"]["properties"]
+                                ["worker"]["enum"] = json!(["codex", "muse"]);
+                        }
                         if let Some(selection) = &selection {
                             params["model"] = json!(selection.model);
                             params["effort"] = json!(selection.effort);

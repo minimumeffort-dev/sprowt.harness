@@ -108,7 +108,7 @@ impl Plan {
             if task.id.trim().is_empty()
                 || task.title.trim().is_empty()
                 || task.outcome.trim().is_empty()
-                || task.worker != "codex"
+                || !["codex", "muse"].contains(&task.worker.as_str())
                 || task.checks.is_empty()
                 || task.checks.iter().any(|check| check.trim().is_empty())
             {
@@ -394,6 +394,8 @@ mod tests {
         assert!(p.validate().is_err());
         p.tasks.pop();
         p.tasks[0].worker = "muse".into();
+        assert!(p.validate().is_ok());
+        p.tasks[0].worker = "unavailable".into();
         assert!(p.validate().is_err());
     }
 }

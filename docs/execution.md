@@ -1,6 +1,6 @@
 # Plan execution
 
-Creating a codemod starts planning and execution automatically. Up to two Codex executors follow dependencies in the mod’s Linux VM.
+Creating a codemod starts planning and execution automatically. Up to two Codex or Muse executors follow dependencies in the mod’s Linux VM.
 
 ```mermaid
 flowchart TB
@@ -21,6 +21,8 @@ flowchart TB
 A failed check pauses that task and its dependents. The other worker can finish independent work. **Ctrl+R** retries unfinished work; completed tasks stay done.
 
 Executors receive the planner's peer links and coordinate through [saved task mailboxes](coordination.md). Links describe what to coordinate; dependencies describe what must finish first. A task with unanswered asks waits; Rust resumes it after answers arrive. Queued edit rounds wait too, so they cannot replace tasks with outstanding questions. Messages do not change file ownership or dependencies.
+
+Provider assignments come from the planner. Muse is available with `--muse`; Codex remains the planner and integration worker. Both providers use the same checks, task mailboxes and source checkpoints. See [Workers](workers.md).
 
 ## Working folder
 
@@ -52,13 +54,13 @@ Rust dispatches at most two ready tasks into `/tasks/<task-run-id>`. Each worktr
 
 One controller owns VM startup and shutdown, task checkpoints, Git integration and system package setup. Controller operations run one at a time; model turns and task commands overlap. Worker conversations and cancellation signals are separate.
 
-Codex prepares project runtimes and dependencies; missing OS packages go through the [VM setup tool](sandbox.md#system-packages).
+Workers prepare project runtimes and dependencies; missing OS packages go through the [VM setup tool](sandbox.md#system-packages).
 
 Each task returns a short summary and runnable commands for every declared check. Rust reruns them with a 30-second limit per command. Missing checks, nonzero exits, timeouts or checks that change source files block completion. Passing tasks are merged into the integration branch one at a time, as they finish. A conflict pauses execution and keeps both versions. The saved draft includes non-conflicting changes and conflict markers. **Ctrl+R** asks the worker to resolve them, or send an edit request to replan.
 
 After all tasks finish, the harness updates each task folder to the combined source and reruns its checks there. Commands keep their original paths and installed dependencies. Successful final verification removes the task folders. Failed checks retain them for retry.
 
-Each active task has a spinner and worker ID through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide Codex; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.
+Each active task has a spinner and worker ID through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide workers; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.
 
 Finished versions show compact task rows, the final check count and the publish action. **Ctrl+T** opens saved worker narration and handoffs separately from plan details. Questions for you stay visible in the conversation.
 
@@ -84,4 +86,4 @@ Closing stops both workers, saves each unfinished draft, then saves a local chec
 
 ## Current limits
 
-Maximum two Codex executors per codemod, with task-addressed messaging. No Muse yet. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).
+Maximum two executors per codemod, with task-addressed messaging. Muse requires `--muse`; native Muse session replay and login refresh are not implemented. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).

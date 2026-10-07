@@ -46,6 +46,63 @@ impl Sandbox {
         &self.root
     }
 
+    pub(crate) fn prepare_muse(
+        &mut self,
+        helper: &Path,
+        binary: &Path,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.install_packages(
+            &Request {
+                packages: vec!["python3".into()],
+                reason: "Muse's credential-free VM transport".into(),
+            },
+            cancelled,
+        )?;
+        self.guest(&["/bin/mkdir", "-p", "/opt/sprowt-muse"], cancelled)?;
+        for (path, name) in [
+            (binary.to_owned(), "muse"),
+            (helper.join("bridge.py"), "bridge.py"),
+            (helper.join("muse_transport.py"), "muse_transport.py"),
+        ] {
+            self.copy_in(&path, &format!("/opt/sprowt-muse/{name}"), cancelled)?;
+        }
+        self.guest(&["/bin/chmod", "755", "/opt/sprowt-muse/muse"], cancelled)
+    }
+
+    pub(crate) fn muse_configuration(&self, worker: i64) -> Value {
+        let cwd = self.task_folder();
+        let home = crate::task_worktree::worker_home(worker);
+        let mut entries =
+            vec![json!({"path":{"type":"special","value":{"kind":"minimal"}},"access":"read"})];
+        entries.extend([("/proc", "read"), ("/opt/sprowt-muse", "read"), (cwd.as_str(), "write"), (home.as_str(), "write"), ("/tmp", "write")]
+            .map(|(path,access)| json!({"path":{"type":"path","path":format!("file://{path}")},"access":access})));
+        entries.push(
+            json!({"path":{"type":"path","path":format!("file://{cwd}/.git")},"access":"read"}),
+        );
+        json!({"name":self.name,"executor": ["container", "exec", "--interactive", &self.name, "env", "-i", "HOME=/home/sprowt", "CODEX_HOME=/opt/codex-home", "PATH=/usr/local/bin:/usr/bin:/bin", "/usr/local/bin/codex", "exec-server", "--listen", "stdio"],
+            "cwd":cwd,"env":{"HOME":home,"PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1","MUSE_NO_AUTO_UPDATE":"1"},
+            "sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":entries},"network":"enabled"},"cwd":format!("file://{cwd}"),"workspaceRoots":[format!("file://{cwd}")],"windowsSandboxLevel":"disabled","useLegacyLandlock":false},
+            "proxy":{"proxy":{"enabled":true,"enableSocks5":false,"enableSocks5Udp":false,"allowUpstreamProxy":false,"dangerouslyAllowAllUnixSockets":true,"mode":"full","domains":self.domains,"unixSockets":{},"allowLocalBinding":true},"auditMetadata":{}}})
+    }
+
+    pub(crate) fn assign_muse_task(
+        &mut self,
+        id: i64,
+        worker: i64,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.assign_task(id, worker, cancelled)?;
+        self.guest(
+            &[
+                "/bin/mkdir",
+                "-p",
+                &format!("{}/.config/muse", crate::task_worktree::worker_home(worker)),
+            ],
+            cancelled,
+        )
+    }
+
     pub fn prepare(
         root: &Path,
         cancelled: &AtomicBool,

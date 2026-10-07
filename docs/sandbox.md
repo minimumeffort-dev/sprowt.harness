@@ -1,6 +1,6 @@
 # Local Linux sandbox
 
-Each executing codemod gets its own Apple Container VM. Codex chooses and installs the project’s runtime there. Your login stays on the Mac.
+Each executing codemod gets its own Apple Container VM. Workers choose and install the project’s runtime there. Your login stays on the Mac.
 
 ## Commands and checks
 
@@ -23,7 +23,7 @@ sequenceDiagram
     Tools-->>Harness: Check results
 ```
 
-Each worker and the verification connection use standard input/output. The harness reruns checks in the same VM that Codex used.
+Each worker and the verification connection use standard input/output. The harness reruns checks in the same VM the workers used. With `--muse`, the full Muse CLI runs there too, inside an enforced process sandbox. Its model requests reach a host credential broker over stdio; runtime downloads still use the VM proxy. See [Workers](workers.md).
 
 ## Source files
 
@@ -55,7 +55,7 @@ codex -c 'cli_auth_credentials_store="file"' login
 
 Create a mod; its valid plan starts execution automatically. The first execution builds the shared development image; later runs reuse it. **Ctrl+D** opens the diff. New codemods publish PRs. Existing snapshot mods can be adopted into Git. See [Worktrees and PRs](git-workflow.md).
 
-The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Codex reads your manifests, installs a compatible runtime under its own `/home/sprowt/workers/<worker-id>` (HOME), then installs project dependencies in its task worktree. Git objects are shared inside the VM; task dependencies remain in their own folders until final verification succeeds.
+The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Each executor reads your manifests, installs a compatible runtime under its own `/home/sprowt/workers/<worker-id>` (HOME), then installs project dependencies in its task worktree. Git objects are shared inside the VM; task dependencies remain in their own folders until final verification succeeds.
 
 ## System packages
 
@@ -67,9 +67,9 @@ The [tool dispatcher](tools.md) validates the request and verifies that the conn
 
 ```mermaid
 flowchart TB
-    worker["1. Codex · identify missing OS dependencies"]
+    worker["1. Worker · identify missing OS dependencies"]
     setup["2. Harness · validate names and install in the mod VM"]
-    task["3. Codex · continue the task and browser checks"]
+    task["3. Worker · continue the task and browser checks"]
     worker -->|"Package names + reason"| setup
     setup -->|"Installed, or a specific error"| task
 ```
@@ -82,7 +82,7 @@ Debian can create an empty `/root/.ssh` directory. Reconnection permits that emp
 
 Setup progress appears beside the active worker. Requests and results are saved in the mod’s `packages.jsonl`; Codex also saves the tool result in its conversation. **Ctrl+R** stops setup; a retry completes pending package configuration before continuing. A failed installation keeps the working files and reports its error.
 
-Uses Codex’s experimental [dynamic tool interface](https://learn.chatgpt.com/docs/app-server#dynamic-tool-calls-experimental).
+Codex uses its experimental [dynamic tool interface](https://learn.chatgpt.com/docs/app-server#dynamic-tool-calls-experimental); Muse uses the guest MCP bridge.
 
 If a saved executor conversation lacks the setup tool, reconnecting opens a new conversation. The goal, saved plan, unfinished task and accepted user instructions supply its context. The VM, runtime, source and transcript are retained; completed tasks stay complete.
 

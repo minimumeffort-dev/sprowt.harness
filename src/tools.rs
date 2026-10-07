@@ -112,6 +112,8 @@ impl Tool {
 }
 
 pub struct Context {
+    pub provider: String,
+    pub muse: bool,
     database: Option<PathBuf>,
     pub tasks: Vec<i64>,
     mod_id: Option<i64>,
@@ -125,6 +127,8 @@ pub struct Context {
 impl Context {
     pub fn project(project: &Path, root: PathBuf) -> Self {
         Self {
+            provider: "codex".into(),
+            muse: false,
             database: None,
             tasks: Vec::new(),
             mod_id: None,
@@ -138,6 +142,8 @@ impl Context {
 
     pub fn harness(project: &Path, code_mod: &CodeMod) -> Self {
         Self {
+            provider: "codex".into(),
+            muse: false,
             database: None,
             tasks: code_mod
                 .execution
@@ -161,6 +167,8 @@ impl Context {
 
     pub fn worker(code_mod: &CodeMod, id: i64, role: Role) -> Self {
         Self {
+            provider: "codex".into(),
+            muse: false,
             database: None,
             tasks: code_mod
                 .execution
@@ -617,6 +625,8 @@ mod tests {
 
     fn worker_context(context: &Context, role: Role) -> Context {
         Context {
+            provider: "codex".into(),
+            muse: false,
             database: None,
             tasks: Vec::new(),
             mod_id: context.mod_id,

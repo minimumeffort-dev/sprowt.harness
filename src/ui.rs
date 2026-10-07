@@ -1356,6 +1356,7 @@ fn conversation_blocks<'a>(
             if !history
                 && (message.role == "codex"
                     || message.role.starts_with("codex:")
+                    || message.role.starts_with("muse:")
                     || saved.is_some() && message.role == "planner")
             {
                 return None;
@@ -1372,9 +1373,9 @@ fn conversation_blocks<'a>(
                         } else if message.role == "planner" {
                             "▤ codex · planner".to_owned()
                         } else {
-                            message.role.strip_prefix("codex:").map_or_else(
-                                || "◆ codex · executor".into(),
-                                |id| format!("◆ codex · executor · w{id}"),
+                            message.role.split_once(':').map_or_else(
+                                || format!("◆ {} · executor", message.role),
+                                |(provider, id)| format!("◆ {provider} · executor · w{id}"),
                             )
                         },
                         message

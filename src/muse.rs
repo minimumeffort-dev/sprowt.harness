@@ -1,0 +1,237 @@
+use std::{
+    env, fs, io,
+    process::{Child, Command},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{Receiver, Sender},
+    },
+    thread,
+    time::Duration,
+};
+
+use directories::ProjectDirs;
+use serde_json::json;
+
+use crate::{
+    codex::{Action, Event, Resume, SharedVm},
+    router::Selection,
+    rpc::Rpc,
+    tools::{self, Context, Dispatcher, Output},
+};
+
+pub const MODEL: &str = "muse-spark-1.3";
+static FILE: AtomicU64 = AtomicU64::new(0);
+
+fn helper() -> io::Result<std::path::PathBuf> {
+    let dirs = ProjectDirs::from("", "", "sprowt-harness")
+        .ok_or_else(|| io::Error::other("Cannot locate the Muse cache."))?;
+    let root = dirs.cache_dir().join("muse");
+    fs::create_dir_all(&root)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700))?;
+    }
+    for (name, content) in [
+        ("bridge.py", include_str!("muse_bridge.py")),
+        ("muse_transport.py", include_str!("muse_transport.py")),
+    ] {
+        let target = root.join(name);
+        if fs::read(&target).ok().as_deref() == Some(content.as_bytes()) {
+            continue;
+        }
+        // Concurrent workers must never import a partially written adapter.
+        let next = root.join(format!(
+            ".{name}-{}-{}",
+            std::process::id(),
+            FILE.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&next, content)?;
+        fs::rename(next, target)?;
+    }
+    Ok(root)
+}
+
+fn command(root: &std::path::Path) -> Command {
+    let mut command = Command::new("python3");
+    command.arg(root.join("bridge.py")).env_clear().envs(
+        ["PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR"]
+            .iter()
+            .filter_map(|name| env::var_os(name).map(|value| (*name, value))),
+    );
+    command
+}
+
+pub fn serve(
+    vm: SharedVm,
+    resume: Option<Resume>,
+    setup: (String, Context),
+    cancelled: Arc<AtomicBool>,
+    process: Arc<Mutex<Option<Child>>>,
+    actions: Receiver<Action>,
+    outgoing: &Sender<Event>,
+) -> io::Result<()> {
+    let (instructions, context) = setup;
+    let _ = outgoing.send(Event::Preparing("preparing Muse".into()));
+    let root = helper()?;
+    let binary = root.join("muse-1.4.1-R4503.1");
+    // Verify the pinned artifact on every connection, even when cached.
+    let output = command(&root)
+        .args(["--artifact", root.to_str().unwrap()])
+        .output()?;
+    if !output.status.success() || !binary.is_file() {
+        return Err(io::Error::other(
+            "Muse setup failed. Install Muse 1.4.1-R4503.1 and log in with your account.",
+        ));
+    }
+    vm.lock()
+        .unwrap()
+        .prepare_muse(&root, &binary, &cancelled)?;
+    let (child, mut rpc) = Rpc::start(&mut command(&root))?;
+    *process.lock().unwrap() = Some(child);
+    rpc.client_tools = true;
+    let ready = rpc
+        .receiver
+        .recv_timeout(Duration::from_secs(45))
+        .map_err(io::Error::other)??;
+    if ready["method"] != "bridge/ready" {
+        return Err(io::Error::other(
+            "Muse account login could not be resolved. Run muse and sign in first.",
+        ));
+    }
+    let thread = format!("muse-worker-{}", context.worker_id());
+    let _ = outgoing.send(Event::Ready {
+        thread: json!({"id":thread,"turns":[]}),
+        model: Some(MODEL.into()),
+        effort: Some("high".into()),
+    });
+    let mut accepted = resume.map_or_else(Vec::new, |r| r.accepted_instructions);
+    let mut task = None;
+    loop {
+        while let Ok(action) = actions.try_recv() {
+            let (method, source, params) = match action {
+                Action::Run { source, text, .. } => {
+                    let id = crate::task_worktree::task_id(&source)?;
+                    let config = {
+                        let mut vm = vm.lock().unwrap();
+                        vm.assign_muse_task(id, context.worker_id(), &cancelled)?;
+                        vm.muse_configuration(context.worker_id())
+                    };
+                    task = Some(id);
+                    let _ = outgoing.send(Event::TaskConfigured {
+                        source: source.clone(),
+                        selection: Selection {
+                            model: MODEL.into(),
+                            effort: "high".into(),
+                            reason: "Muse executor".into(),
+                            evidence: None,
+                        },
+                    });
+                    let prompt = format!(
+                        "{instructions}\nAccepted user instructions: {}\n{text}",
+                        accepted.join("\n\n")
+                    );
+                    (
+                        "turn/start",
+                        source.clone(),
+                        json!({"source":source,"text":prompt,"config":config,"tools":tools::advertised(&context),"schema":crate::execution::schema()}),
+                    )
+                }
+                Action::Steer {
+                    source,
+                    texts,
+                    turn,
+                } => (
+                    "turn/steer",
+                    source.clone(),
+                    json!({"source":source,"texts":texts,"turn":turn}),
+                ),
+                Action::Stop { turn } => ("turn/interrupt", String::new(), json!({"turn":turn})),
+                Action::Verify { source, checks } => {
+                    let (before, checks) = vm
+                        .lock()
+                        .unwrap()
+                        .verify_execution(&source, &checks, &cancelled)?;
+                    let _ = outgoing.send(Event::Checked {
+                        source,
+                        checks,
+                        before,
+                    });
+                    continue;
+                }
+                Action::Shutdown(finished) => {
+                    rpc.call("shutdown", json!({}))?;
+                    if let Some(id) = task {
+                        vm.lock().unwrap().checkpoint_task(id)?;
+                    }
+                    let _ = finished.send(());
+                    return Ok(());
+                }
+            };
+            let steering: Vec<String> = params["texts"].as_array().map_or_else(Vec::new, |texts| {
+                texts
+                    .iter()
+                    .filter_map(|text| text.as_str().map(str::to_owned))
+                    .collect()
+            });
+            match rpc.call(method, params) {
+                Ok(result) if !source.is_empty() => {
+                    let turn = result["turnId"]
+                        .as_str()
+                        .or_else(|| result["acceptedTurnId"].as_str())
+                        .ok_or_else(|| io::Error::other("Muse returned no accepted turn ID."))?;
+                    accepted.extend(steering);
+                    let _ = outgoing.send(Event::Accepted {
+                        source,
+                        turn: turn.into(),
+                    });
+                }
+                Ok(_) => (),
+                Err(error) if !source.is_empty() && error.kind() == io::ErrorKind::InvalidInput => {
+                    let _ = outgoing.send(Event::Rejected {
+                        source,
+                        message: error.to_string(),
+                    });
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        while let Ok(value) = rpc.receiver.try_recv() {
+            rpc.receive(value?)?;
+        }
+        for message in std::mem::take(&mut rpc.buffered) {
+            if message["method"] == "item/tool/call" && message.get("id").is_some() {
+                let params = &message["params"];
+                let mut guard =
+                    (params["name"] == crate::packages::TOOL).then(|| vm.lock().unwrap());
+                if let Some(vm) = &mut guard {
+                    vm.tasks.active = task;
+                }
+                let result = Dispatcher::new(&context, guard.as_deref_mut(), &cancelled)
+                    .worker_call(
+                        params["name"].as_str().unwrap_or(""),
+                        params["arguments"].clone(),
+                        |label| {
+                            let _ = outgoing.send(Event::Preparing(label.into()));
+                        },
+                    )
+                    .map(Output::message);
+                rpc.write(json!({"id":message["id"],"result":{"isError":result.is_err(),"content":[{"type":"text","text":result.unwrap_or_else(|e|e.to_string())}]}}))?;
+                let _ = outgoing.send(Event::MailboxChanged);
+            } else if message["method"] == "bridge/failed" {
+                return Err(io::Error::other(
+                    "Muse VM bridge stopped. Work is retained; Ctrl+R retries.",
+                ));
+            } else {
+                if message["method"] == "turn/completed"
+                    && let Some(id) = task
+                {
+                    vm.lock().unwrap().checkpoint_task(id)?;
+                }
+                let _ = outgoing.send(Event::Notification(message));
+            }
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}

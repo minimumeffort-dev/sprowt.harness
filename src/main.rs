@@ -5,6 +5,7 @@ mod git_mod;
 mod git_sync;
 mod mailbox;
 mod mod_sync;
+mod muse;
 mod packages;
 mod plan;
 mod router;
@@ -36,6 +37,9 @@ struct Cli {
     /// Disable animations.
     #[arg(long)]
     no_motion: bool,
+    /// Let the planner use Muse alongside Codex executors. Requires a Muse account login.
+    #[arg(long)]
+    muse: bool,
     /// Prune closed worktrees after this many days; 0 keeps them indefinitely.
     #[arg(long, default_value_t = 30)]
     closed_worktree_days: u32,
@@ -59,6 +63,7 @@ fn main() -> io::Result<()> {
     }
 
     let mut app = App::new(std::env::current_dir()?, !cli.no_motion)?;
+    app.muse = cli.muse;
     app.prune_closed(cli.closed_worktree_days)
         .map_err(io::Error::other)?;
     let mut terminal = ratatui::init();
