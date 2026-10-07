@@ -86,10 +86,14 @@ fn detect_with(
     };
     if !version.status.success()
         || String::from_utf8_lossy(&version.stdout).trim()
-            != format!("Muse Code 1.4.1 ({})", muse::VERSION)
+            != format!(
+                "Muse Code {} ({})",
+                muse::VERSION.split('-').next().unwrap(),
+                muse::VERSION
+            )
     {
         return Err(io::Error::other(format!(
-            "Install Muse {} before starting the harness.",
+            "This harness needs Muse {}. Update and reinstall the harness after Muse updates.",
             muse::VERSION
         )));
     }
@@ -145,7 +149,7 @@ mod tests {
         Ok(reply(match (name, args) {
             ("codex", ["--version"]) => "codex-cli 0.159.2\n",
             ("codex", _) => "Logged in using ChatGPT\n",
-            ("muse", _) => "Muse Code 1.4.1 (1.4.1-R4503.1)\n",
+            ("muse", _) => "Muse Code 1.4.3 (1.4.3-R5018.1)\n",
             _ => unreachable!(),
         }))
     }
@@ -186,6 +190,22 @@ mod tests {
                 || panic!("Unsupported Muse must not start")
             )
             .is_err()
+        );
+        let older = detect_with(
+            |name, args| {
+                if name == "muse" {
+                    Ok(reply("Muse Code 1.4.1 (1.4.1-R4503.1)\n"))
+                } else {
+                    installed(name, args)
+                }
+            },
+            || panic!("Unsupported Muse must not start"),
+        )
+        .unwrap_err();
+        assert!(
+            older
+                .to_string()
+                .contains("Update and reinstall the harness")
         );
         let error = detect_with(
             |name, args| {

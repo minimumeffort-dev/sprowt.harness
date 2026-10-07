@@ -27,7 +27,7 @@ The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publica
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
-Startup detects Codex and Muse from your installed CLIs and account logins. Muse **1.4.1-R4503.1** joins the worker pool automatically; it runs inside the VM behind a host credential broker. Account authentication is verified; subscription metering remains unconfirmed. The [full Codex VM probe](docs/workers.md#standalone-diagnostics) is still separate from production.
+Startup detects Codex and Muse from your installed CLIs and account logins. Muse **1.4.3-R5018.1** joins the worker pool automatically; it runs inside the VM behind a host credential broker. Account authentication is verified; subscription metering remains unconfirmed. The [full Codex VM probe](docs/workers.md#standalone-diagnostics) is still separate from production.
 
 ## Architecture today
 

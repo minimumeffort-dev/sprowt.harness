@@ -20,8 +20,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL = "muse-spark-1.3"
 ORIGIN = "https://api.meta.ai"
-VERSION = "1.4.1-R4503.1"
-CHECKSUM = "a6d46239975adac282aa829d2a5bd1cd3119334c18ecfa776d4377daebddb595"
+VERSION = "1.4.3-R5018.1"
+CHECKSUM = "6426c76a0081f20d60f6cad03308a147d79ce45758f1a89fd2713253cf475497"
 IMAGE = "sprowt-sandbox:0.159.2-v1"
 
 

@@ -38,7 +38,9 @@ Use a file-backed ChatGPT login for Codex:
 codex -c 'cli_auth_credentials_store="file"' login
 ```
 
-For Muse, install **1.4.1-R4503.1** and sign in on your Mac with `muse login`. A host CLI resolves that existing account login; the real provider header stays in host memory. No separate Meta API key is used. The Mac also needs Python 3 for the small stdio adapter.
+For Muse, install **1.4.3-R5018.1** and sign in on your Mac with `muse login`. A host CLI resolves that existing account login; the real provider header stays in host memory. No separate Meta API key is used. The Mac also needs Python 3 for the small stdio adapter.
+
+CLI releases are pinned because protocol changes can affect isolation and recovery. If Muse updates itself, update and reinstall the harness for the matching supported release. The Linux binary is pinned and checksum-verified too.
 
 On first use, the harness downloads the matching Linux Muse binary, checks its pinned SHA-256 and caches it privately. Python for the guest transport is installed through the existing VM package controller. No host folder is mounted into the VM.
 

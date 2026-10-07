@@ -39,7 +39,7 @@ def artifact(root):
         return path
     info = json.loads((Path.home() / ".local/bin/.muse-release-info.json").read_text())
     if info.get("version") != VERSION:
-        raise RuntimeError("This probe requires installed Muse 1.4.1-R4503.1.")
+        raise RuntimeError("This probe requires installed Muse " + VERSION + ".")
     manifest_url = info["manifest_url"]
     if not manifest_url.startswith("https://lookaside.facebook.com/"):
         raise RuntimeError("Unrecognized Muse release origin.")

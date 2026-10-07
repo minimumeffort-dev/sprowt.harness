@@ -21,7 +21,7 @@ use crate::{
 };
 
 pub const MODEL: &str = "muse-spark-1.3";
-pub const VERSION: &str = "1.4.1-R4503.1";
+pub const VERSION: &str = "1.4.3-R5018.1";
 static FILE: AtomicU64 = AtomicU64::new(0);
 
 fn helper() -> io::Result<std::path::PathBuf> {
@@ -119,9 +119,9 @@ pub fn serve(
         .args(["--artifact", root.to_str().unwrap()])
         .output()?;
     if !output.status.success() || !binary.is_file() {
-        return Err(io::Error::other(
-            "Muse setup failed. Install Muse 1.4.1-R4503.1 and log in with your account.",
-        ));
+        return Err(io::Error::other(format!(
+            "Muse setup failed. Install Muse {VERSION} and log in with your account."
+        )));
     }
     vm.lock()
         .unwrap()
