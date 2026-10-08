@@ -3699,6 +3699,85 @@ mod tests {
     }
 
     #[test]
+    fn menu_shortcuts_keep_typing_and_confirmations_intact() {
+        let (_data, mut app, _root) = execution_app();
+        for letter in ['n', 'c', 'd', 'f'] {
+            key(&mut app, KeyCode::Char(letter), KeyModifiers::NONE);
+        }
+        assert!(matches!(app.view, View::Chat));
+        let draft = app.input.lines().to_vec();
+        assert_eq!(draft, ["keep this draftncdf"]);
+        for (letter, action) in [('c', Action::Close), ('d', Action::Delete)] {
+            app.open_actions();
+            app.handle(Event::Key(KeyEvent::new_with_kind(
+                KeyCode::Char(letter),
+                KeyModifiers::NONE,
+                KeyEventKind::Repeat,
+            )))
+            .unwrap();
+            assert!(matches!(app.view, View::Actions(_)));
+            key(&mut app, KeyCode::Char(letter), KeyModifiers::NONE);
+            assert!(match action {
+                Action::Close => matches!(app.view, View::CloseMod(0)),
+                _ => matches!(app.view, View::DeleteMod(0)),
+            });
+            assert!(app.mods.len() == 1 && !app.mods[0].closed && app.git_jobs.is_empty());
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+            assert_eq!(app.input.lines(), draft);
+        }
+        app.open_actions();
+        let selected = app.view;
+        key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert!(app.view == selected);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        app.notice = Some("Check failed".into());
+        app.open_actions();
+        key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Failure(0)));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.input.lines(), draft);
+        app.open_actions();
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::NewMod) && app.input.lines() == [""]);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.input.lines(), draft);
+    }
+
+    #[test]
+    fn every_menu_action_has_an_aligned_shortcut_and_the_dock_shows_menu_sequences() {
+        let (_data, mut app, _root) = execution_app();
+        app.notice = Some("Check failed".into());
+        for width in [36, 80, 120] {
+            app.open_actions();
+            let rendered = rows(&screen(&mut app, width, 36));
+            let mut columns = Vec::new();
+            for item in &app.action_dock().actions {
+                assert!(item.action.shortcut().is_some() || item.action.menu_shortcut().is_some());
+                let line = rendered
+                    .iter()
+                    .find(|line| line.contains(&item.label))
+                    .unwrap();
+                let start = line.find(&item.label).unwrap();
+                columns.push(line[..start].chars().count());
+                if let Some(letter) = item.action.menu_shortcut() {
+                    assert!(line[..start].trim().ends_with(letter));
+                }
+            }
+            assert!(columns.windows(2).all(|pair| pair[0] == pair[1]));
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+            let rendered = rows(&screen(&mut app, width, 36)).join("\n");
+            assert!(
+                rendered.contains(if width < 60 {
+                    "^g f Show full error"
+                } else {
+                    "ctrl+g f Show full error"
+                }),
+                "{rendered}"
+            );
+        }
+    }
+
+    #[test]
     fn all_actions_preserves_drafts_and_revalidates_selected_actions() {
         let (_data, mut app, _root) = execution_app();
         let draft = app.input.lines().to_vec();

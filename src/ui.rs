@@ -966,10 +966,29 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     format!("{hints}  esc quit")
 }
 
-fn action_control(item: &ActionItem, width: u16) -> Line<'static> {
+fn action_control(item: &ActionItem, width: u16, menu: bool) -> Line<'static> {
     let mut spans = Vec::new();
-    if let Some(key) = item.action.shortcut() {
-        spans.push(format!("{}{key} ", if width < 60 { "^" } else { "ctrl+" }).fg(ACCENT));
+    let ctrl = if width < 60 { "^" } else { "ctrl+" };
+    let shortcut = item
+        .action
+        .shortcut()
+        .map(|key| format!("{ctrl}{key}"))
+        .or_else(|| {
+            item.action.menu_shortcut().map(|key| {
+                if menu {
+                    key.to_string()
+                } else {
+                    format!("{ctrl}g {key}")
+                }
+            })
+        });
+    if let Some(shortcut) = shortcut {
+        let column = if menu {
+            if width < 60 { 2 } else { 6 }
+        } else {
+            0
+        };
+        spans.push(format!("{shortcut:<column$} ").fg(ACCENT));
     }
     spans.push(item.label.clone().fg(KEY_HINT));
     Line::from(spans)
@@ -993,7 +1012,7 @@ fn dock_lines(dock: &ActionDock, width: u16, elapsed: Option<Duration>) -> Vec<L
         .and_then(|id| dock.actions.iter().find(|a| a.action == id))
     {
         next.spans.extend(
-            action_control(primary, width)
+            action_control(primary, width, false)
                 .spans
                 .into_iter()
                 .map(|s| s.bold().bg(CONTROL)),
@@ -1018,7 +1037,7 @@ fn dock_lines(dock: &ActionDock, width: u16, elapsed: Option<Duration>) -> Vec<L
             continue;
         }
         if let Some(item) = dock.actions.iter().find(|a| a.action == action) {
-            let control = action_control(item, width);
+            let control = action_control(item, width, false);
             if next.width() + control.width() + 2 <= width as usize {
                 next.spans.push(Span::raw("  "));
                 next.spans.extend(control.spans);
@@ -1054,7 +1073,7 @@ fn draw_actions(frame: &mut Frame, app: &mut App, dock: &ActionDock, selected: A
     );
     app.scroll.content = body;
     let items = dock.actions.iter().map(|item| {
-        let mut line = action_control(item, body.width);
+        let mut line = action_control(item, body.width, true);
         if dock.primary == Some(item.action) {
             line.spans.insert(0, "› ".fg(ACCENT));
         } else {

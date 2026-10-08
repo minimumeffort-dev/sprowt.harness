@@ -45,6 +45,16 @@ impl Action {
     pub(super) fn has_shortcut(key: char) -> bool {
         "rnodesuqtp".contains(key)
     }
+
+    pub fn menu_shortcut(self) -> Option<char> {
+        match self {
+            Self::NewMod => Some('n'),
+            Self::Close => Some('c'),
+            Self::Delete => Some('d'),
+            Self::Failure => Some('f'),
+            _ => None,
+        }
+    }
 }
 
 pub struct ActionItem {
@@ -395,6 +405,12 @@ impl App {
             KeyCode::Char(c) if ctrl && Action::has_shortcut(c) => {
                 self.view = self.action_origin.take().unwrap_or(View::Chat);
                 self.action_shortcut(c)?;
+            }
+            KeyCode::Char(c) if key.modifiers.is_empty() && key.kind == KeyEventKind::Press => {
+                if let Some(item) = actions.iter().find(|a| a.action.menu_shortcut() == Some(c)) {
+                    self.view = self.action_origin.take().unwrap_or(View::Chat);
+                    self.perform_action(item.action)?;
+                }
             }
             _ => {}
         }

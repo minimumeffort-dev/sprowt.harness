@@ -40,6 +40,8 @@ The dock stays in one place. Rust chooses the recommendation from current state:
 
 **Ctrl+G · All actions** lists the available actions and shortcuts. Use ↑/↓ and Enter; Esc returns to the same draft. Secondary actions that do not fit remain in the menu. Its selection keeps its meaning as workers finish; unavailable actions cannot run.
 
+Every menu item shows its shortcut. Inside All actions, **n** starts a new codemod, **c** closes the current one, **d** deletes it and **f** opens full error details when available. Close and delete still require confirmation. These letters remain ordinary text in the composer; the dock shows **Ctrl+G** followed by the letter for menu actions.
+
 **View diff**, **Ask agent to review** and **Publish PR** are separate actions. Review remains optional, and publication keeps its confirmations. Enter in the composer sends your message; it never triggers the dock's recommendation. Workers finishing do not move focus from your draft.
 
 Errors show a short cause in the dock. **Show full error** in All actions opens scrollable evidence. The footer keeps message entry and scrolling hints; the codemod selector stays at the top.
