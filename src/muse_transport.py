@@ -23,8 +23,8 @@ from http.client import HTTPException
 
 MODEL = "muse-spark-1.3"
 ORIGIN = "https://api.meta.ai"
-VERSION = "1.4.3-R5018.1"
-CHECKSUM = "6426c76a0081f20d60f6cad03308a147d79ce45758f1a89fd2713253cf475497"
+VERSION = "1.4.4-R5419.1"
+CHECKSUM = "bc1196793927baaf07535e9199d053ea3754b3bc658da1fec13d37f089cccd11"
 IMAGE = "sprowt-sandbox:0.159.2-v1"
 
 

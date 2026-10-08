@@ -21,7 +21,7 @@ use crate::{
 };
 
 pub const MODEL: &str = "muse-spark-1.3";
-pub const VERSION: &str = "1.4.3-R5018.1";
+pub const VERSION: &str = "1.4.4-R5419.1";
 static FILE: AtomicU64 = AtomicU64::new(0);
 
 fn helper() -> io::Result<std::path::PathBuf> {

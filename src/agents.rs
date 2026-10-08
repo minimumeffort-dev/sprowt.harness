@@ -92,8 +92,22 @@ fn detect_with(
                 muse::VERSION
             )
     {
+        let output = String::from_utf8_lossy(&version.stdout);
+        let installed = output
+            .trim()
+            .strip_prefix("Muse Code ")
+            .and_then(|text| text.rsplit_once('('))
+            .and_then(|(_, version)| version.strip_suffix(')'))
+            .filter(|version| {
+                !version.is_empty()
+                    && version.len() <= 64
+                    && version
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+            })
+            .unwrap_or("unknown version");
         return Err(io::Error::other(format!(
-            "This harness needs Muse {}. Update and reinstall the harness after Muse updates.",
+            "Muse {installed} is installed; this harness supports {}. Update the harness source and reinstall, or use the supported Muse release.",
             muse::VERSION
         )));
     }
@@ -149,9 +163,35 @@ mod tests {
         Ok(reply(match (name, args) {
             ("codex", ["--version"]) => "codex-cli 0.159.2\n",
             ("codex", _) => "Logged in using ChatGPT\n",
-            ("muse", _) => "Muse Code 1.4.3 (1.4.3-R5018.1)\n",
+            ("muse", _) => "Muse Code 1.4.4 (1.4.4-R5419.1)\n",
             _ => unreachable!(),
         }))
+    }
+
+    #[test]
+    fn muse_version_mismatch_names_both_versions_and_keeps_the_vm_pin_in_sync() {
+        assert!(
+            include_str!("muse_transport.py").contains(&format!("VERSION = \"{}\"", muse::VERSION))
+        );
+        for version in ["1.4.3-R5018.1", "99.0.0-R9999.1"] {
+            let error = detect_with(
+                |name, args| {
+                    if name == "muse" {
+                        Ok(reply(&format!(
+                            "Muse Code {} ({version})",
+                            version.split('-').next().unwrap()
+                        )))
+                    } else {
+                        installed(name, args)
+                    }
+                },
+                || panic!("Unsupported Muse must not start"),
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains(&format!("Muse {version} is installed")));
+            assert!(error.contains(&format!("supports {}", muse::VERSION)));
+        }
     }
 
     #[test]
@@ -205,7 +245,7 @@ mod tests {
         assert!(
             older
                 .to_string()
-                .contains("Update and reinstall the harness")
+                .contains("Update the harness source and reinstall")
         );
         let error = detect_with(
             |name, args| {

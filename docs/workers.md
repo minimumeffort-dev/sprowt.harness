@@ -10,7 +10,7 @@ Start normally:
 sprowt-harness
 ```
 
-Startup checks CLI versions and local account status. Codex is required for planning. Installed, signed-in Muse joins automatically; if Muse is absent, work uses Codex alone. An installed CLI with an unsupported version or missing account login stops startup with a clear next action.
+Startup checks CLI versions and local account status. Codex is required for planning. Installed, signed-in Muse joins automatically; if Muse is absent, work uses Codex alone. An installed CLI with an unsupported version or missing account login stops startup with a clear next action. Version errors show the installed and supported releases. Muse updates need a matching, verified Linux binary before the harness accepts them.
 
 ```mermaid
 flowchart TB
@@ -38,7 +38,7 @@ Use a file-backed ChatGPT login for Codex:
 codex -c 'cli_auth_credentials_store="file"' login
 ```
 
-For Muse, install **1.4.3-R5018.1** and sign in on your Mac with `muse login`. A host CLI resolves that existing account login; the real provider header stays in host memory. No separate Meta API key is used. The Mac also needs Python 3 for the small stdio adapter.
+For Muse, install **1.4.4-R5419.1** and sign in on your Mac with `muse login`. A host CLI resolves that existing account login; the real provider header stays in host memory. No separate Meta API key is used. The Mac also needs Python 3 for the small stdio adapter.
 
 CLI releases are pinned because protocol changes can affect isolation and recovery. If Muse updates itself, update and reinstall the harness for the matching supported release. The Linux binary is pinned and checksum-verified too.
 
