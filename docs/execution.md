@@ -30,7 +30,7 @@ New codemods start from committed `HEAD` in their own host worktree. The first e
 
 The host’s `work/` folder holds source exports for planning, review and checkpoint saves. It is not mounted into the VM. Credentials, dependencies and caches are excluded from snapshots; `.env.example` and `.env.sample` are included. Source files remain visible even if a generated `.gitignore` would hide them.
 
-Each worker’s runtimes and download caches stay in the VM across edit rounds and publication. Task-local dependencies are removed with their completed task folders. Closing removes that VM; reopening creates a fresh one when execution starts. See [Local Linux sandbox](sandbox.md) and [Workers](workers.md).
+Each worker’s runtimes and download caches stay in the VM across edit rounds and publication. Task-local dependencies stay until a replacement plan removes the old task folders. Closing removes that VM; reopening creates a fresh one when execution starts. See [Local Linux sandbox](sandbox.md) and [Workers](workers.md).
 
 ### Source and generated files
 
@@ -64,11 +64,11 @@ Passing tasks are merged into the integration branch one at a time, as they fini
 
 A late peer acknowledgement with no check commands keeps the last valid task report. A newer full report, blocker or repair request takes precedence. User steering clears the previous report and requires a fresh one. Live turns and recovered history follow the same rule; retained commands still run against the current source before completion.
 
-After all tasks finish, the harness updates each task folder to the combined source and reruns its checks there. Commands keep their original paths and installed dependencies. Successful final verification removes the task folders. Failed checks retain them for retry.
+After all tasks finish, the harness updates each task folder to the combined source and reruns its checks there. Commands keep their original paths and installed dependencies. Task folders stay through final verification, review and repairs. A replacement plan removes the previous task folders; closing or deleting the codemod removes the VM.
 
 Each active task has a spinner and worker ID through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide workers; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.
 
-Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Failed output shows the assertion or error. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
+Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Final verification stops at the first failure: details show that command and its evidence, with skipped commands summarized in muted text. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
 
 Finished versions show compact task rows, the final check count and the publish action. **Ctrl+T** opens saved worker narration and handoffs separately from plan details. Questions for you stay visible in the conversation.
 
@@ -89,7 +89,21 @@ Recovery keeps the task, worker, folder and file scope. The worker receives the 
 
 Browser checks must wait for the matching successful response and resulting UI state before reading saved data. Register the response wait before triggering the action. Exercise races with controlled request completion, rather than sleeps.
 
-The one-attempt budget saves with each task. Restart and explicit retry retain it; a new plan resets it. Stops, timeouts, missing or mismatched commands do not trigger recovery. Access requests still need approval. Failed final combined checks wait for **Ctrl+R**. Existing blocked tasks receive their saved failure evidence on retry.
+The one-attempt budget saves with each task. Restart and explicit retry retain it; a new plan resets it. Stops, timeouts and mismatched reports do not trigger recovery. Access requests still need approval. Ordinary failed final checks wait for **Ctrl+R**. Existing blocked tasks receive their saved failure evidence on retry.
+
+### Missing task environments
+
+Before running a check, the harness verifies that its executable is available. If final verification finds a missing executable, it returns the task to its original Codex or Muse worker using the same one-attempt recovery budget. Other completed tasks stay done.
+
+```mermaid
+flowchart TB
+    missing["Check executable missing"] --> owner["Original worker restores dependencies"]
+    owner --> task["Rerun all task checks"]
+    task --> combined["Rerun all final checks"]
+    combined --> ready["Changes ready"]
+```
+
+The worker receives the latest combined source, saved commands and failure evidence. It chooses compatible runtimes from project manifests and preserves source and check coverage. No language is hard-coded. Repeated failures pause with **Retry final checks**. An existing paused run can enter recovery with **Ctrl+R**; reinstalling alone does not resume work.
 
 ## Automatic repairs
 
@@ -128,7 +142,7 @@ Use the queue’s **s** action to steer an active turn immediately. Steering and
 
 **Ctrl+E** requests [independent review](review.md) of a finished version. Findings return to existing owners; affected tasks and final checks rerun before a fresh review. **Ctrl+D** opens source changes while workers are idle. **Ctrl+S**, or **p** inside the diff, starts publication after verification. Confirm Git adoption or a GitHub destination if needed, then the PR. Publication commits and pushes to the codemod branch and retains the VM for more edits.
 
-Closing stops both workers, saves each unfinished draft, then saves a local checkpoint and a Git bundle of the VM’s task branches before removing the VM. Reopening restores unfinished task source and branch relationships. Draft exports include edits from both tasks; overlapping text edits get conflict markers. Binary conflicts retain the VM until resolved. Installed runtimes and dependencies must be prepared again in the fresh VM; saved check commands may need an edit request to rebuild their environment. Deleting discards local work. See [Worktrees and PRs](git-workflow.md) for retention and recovery.
+Closing stops both workers, saves each unfinished draft, then saves a local checkpoint and a Git bundle of the VM’s task branches before removing the VM. Reopening restores unfinished task source and branch relationships. Draft exports include edits from both tasks; overlapping text edits get conflict markers. Binary conflicts retain the VM until resolved. Installed runtimes and dependencies must be prepared again in the fresh VM. Missing executables in final checks use the bounded recovery above; other environment failures stay visible for retry or an edit request. Deleting discards local work. See [Worktrees and PRs](git-workflow.md) for retention and recovery.
 
 ## Current limits
 

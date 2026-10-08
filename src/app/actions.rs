@@ -140,8 +140,12 @@ impl App {
                 e.checks
                     .iter()
                     .chain(e.tasks.iter().flat_map(|t| &t.checks))
-                    .any(|c| c.exit_code.is_some_and(|code| code != 0))
+                    .any(|c| c.failed())
             });
+            let final_blocked = m
+                .execution
+                .as_ref()
+                .is_some_and(|e| e.complete() && e.status == "blocked" && !e.checks.is_empty());
             let run = !m.closed
                 && (running
                     || retry
@@ -177,6 +181,7 @@ impl App {
                         Reopen => "Reopen codemod",
                         Stop => "Stop workers",
                         RetryGit => "Retry Git operation",
+                        Retry if final_blocked => "Retry final checks",
                         Retry => "Retry work",
                         _ => "Run work",
                     },
@@ -245,6 +250,15 @@ impl App {
                     "Reviewing changes".into()
                 } else {
                     m.execution.as_ref().map_or("Working".into(), |e| {
+                        if e.status == "verifying" {
+                            return "Final verification".into();
+                        }
+                        if e.tasks
+                            .iter()
+                            .any(|t| t.status != "done" && t.restoring_runtime())
+                        {
+                            return "Restoring task environment".into();
+                        }
                         format!(
                             "Working · {}/{} tasks done",
                             e.tasks.iter().filter(|t| t.status == "done").count(),
@@ -269,6 +283,14 @@ impl App {
                 dock.status = format!("{} changed · combined checks needed", target.branch);
                 dock.primary = Some(Update);
                 dock.tone = Tone::Attention;
+            } else if final_blocked {
+                dock.status = "Final verification blocked".into();
+                dock.primary = worker_action;
+                dock.tone = Tone::Attention;
+                dock.error = m
+                    .execution
+                    .as_ref()
+                    .and_then(|e| e.checks.iter().find(|c| c.failed()).map(|c| c.brief()));
             } else if self.worker_error().is_some() || failed_checks {
                 dock.status = "Work paused".into();
                 dock.primary = if failed_checks && details && !self.plan_details {

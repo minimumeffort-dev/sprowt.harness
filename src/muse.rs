@@ -187,7 +187,9 @@ pub fn serve(
                         let mut vm = vm.lock().unwrap();
                         vm.assign_muse_task(id, context.worker_id(), &cancelled)?;
                         if routing.as_ref().is_some_and(|state| {
-                            !state["repair"].is_null() || state["review_fix"] == true
+                            !state["repair"].is_null()
+                                || state["review_fix"] == true
+                                || state["runtime_recovery"] == true
                         }) {
                             vm.refresh_for_repair(id, &source, &cancelled)?;
                         }

@@ -3019,6 +3019,7 @@ mod tests {
             .source
             .clone();
         let checks = vec![crate::execution::CheckResult {
+            missing_runtime: None,
             task: None,
             check: plan.tasks[0].checks[0].clone(),
             command: vec!["/usr/bin/true".into()],
@@ -3088,6 +3089,7 @@ mod tests {
                 .checks
                 .iter()
                 .map(|check| crate::execution::CheckResult {
+                    missing_runtime: None,
                     task: Some(execution.tasks[0].id),
                     check: check.clone(),
                     command: vec!["/usr/bin/true".into()],
@@ -4798,6 +4800,7 @@ mod tests {
             .source
             .clone();
         let checks = vec![crate::execution::CheckResult {
+            missing_runtime: None,
             task: None,
             check: "prints hello".into(),
             command: vec!["/usr/bin/true".into()],
@@ -5272,7 +5275,7 @@ mod tests {
         assert!(
             rows(&screen(&mut app, 116, 40))
                 .join("\n")
-                .contains("ctrl+r Retry work")
+                .contains("ctrl+r Retry final checks")
         );
     }
 
@@ -5365,6 +5368,10 @@ mod tests {
         ))
         .join("\n");
         assert!(checking.contains("⠙ 1. Greeting"));
+        let execution = app.mods[0].execution.as_mut().unwrap();
+        execution.tasks[0].status = "done".into();
+        execution.status = "verifying".into();
+        assert_eq!(app.action_dock().status, "Final verification");
         app.workers.values_mut().next().unwrap().status = Status::Ready;
         let idle = rows(&screen_at(
             &mut app,
@@ -5694,6 +5701,45 @@ mod tests {
     }
 
     #[test]
+    fn final_verification_groups_skipped_commands_and_offers_retry() {
+        for width in [80, 120] {
+            let (_data, mut app, _) = execution_app();
+            let e = app.mods[0].execution.as_mut().unwrap();
+            for task in &mut e.tasks {
+                task.status = "done".into();
+            }
+            e.status = "blocked".into();
+            e.checks = (0..16)
+                .map(|i| crate::execution::CheckResult {
+                    task: Some(e.tasks[0].id),
+                    check: "Verify relevance".into(),
+                    command: vec!["/tasks/53/.venv/bin/python".into(), format!("check-{i}")],
+                    exit_code: None,
+                    missing_runtime: (i == 0).then(|| "/tasks/53/.venv/bin/python".into()),
+                    output: if i == 0 {
+                        "Check executable is unavailable: /tasks/53/.venv/bin/python.".into()
+                    } else {
+                        "Not run.".into()
+                    },
+                })
+                .collect();
+            app.plan_details = true;
+            let dock = app.action_dock();
+            assert_eq!(dock.status, "Final verification blocked");
+            assert!(dock.primary == Some(Action::Retry));
+            assert!(dock.actions.iter().any(|a| a.label == "Retry final checks"));
+            assert!(dock.error.unwrap().contains("executable is unavailable"));
+            let buffer = screen(&mut app, width, 55);
+            let rendered = rows(&buffer).join("\n");
+            assert!(rendered.contains("15 commands not run"), "{rendered}");
+            assert!(!rendered.contains("Not run."), "{rendered}");
+            assert_eq!(rendered.matches("! Verify relevance").count(), 1);
+            assert!(!rendered.contains("Working · 3/3"));
+            assert_eq!(app.input.lines(), ["keep this draft"]);
+        }
+    }
+
+    #[test]
     fn verification_results_show_the_assertion_and_label_worker_claims() {
         let (_data, mut app, _) = execution_app();
         let id = app.mods[0].id;
@@ -5705,7 +5751,7 @@ mod tests {
         let source = app.mods[0].execution.as_ref().unwrap().tasks[0]
             .source
             .clone();
-        let checks = vec![crate::execution::CheckResult { task: None, check: "Suite".into(), command: vec!["/bin/true".into()], exit_code: Some(0), output: String::new() }, crate::execution::CheckResult { task: None, check: "Browser flows".into(), command: vec!["/bin/false".into()], exit_code: Some(1), output: "DeprecationWarning: dependency\nTraceback\nAssertionError: Upload retry\nactual: undefined\nexpected: true".into() }];
+        let checks = vec![crate::execution::CheckResult { missing_runtime: None, task: None, check: "Suite".into(), command: vec!["/bin/true".into()], exit_code: Some(0), output: String::new() }, crate::execution::CheckResult { missing_runtime: None, task: None, check: "Browser flows".into(), command: vec!["/bin/false".into()], exit_code: Some(1), output: "DeprecationWarning: dependency\nTraceback\nAssertionError: Upload retry\nactual: undefined\nexpected: true".into() }];
         app.store
             .finish_task(id, &source, "blocked", "All checks passed", &checks)
             .unwrap();
@@ -5749,6 +5795,7 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, name)| crate::execution::CheckResult {
+                missing_runtime: None,
                 task: Some(run.id),
                 check: (*name).into(),
                 command: vec!["/bin/check".into(), format!("--scenario-{i}")],

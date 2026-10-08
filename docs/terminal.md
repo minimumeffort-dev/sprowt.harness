@@ -69,7 +69,7 @@ User messages have a `>` prefix and a subtle background. Agent messages show the
 
 The worker status uses a small dot spinner during connection, execution and verification. Each running task shows its worker ID and uses the same spinner in the plan, including while its checks run. Completed tasks and replies stay still. `--no-motion` uses a static activity glyph.
 
-The codemod row lists each active provider, worker ID and numbered task. Final verification says **final checks**. Narrow terminals show the active worker count instead; task rows retain their worker IDs.
+The codemod row lists each active provider, worker ID and numbered task. During combined checks the dock says **Final verification**; a failure says **Final verification blocked** with **Retry final checks**. Details show the first failed command and a muted skipped count. Missing-runtime recovery says **Restoring task environment**. Narrow terminals show the active worker count instead; task rows retain their worker IDs.
 
 Codex’s configured effort is used when available. When unset, the harness reads the model’s default from Codex’s catalog and sends it explicitly with new turns. Replies save that effort for reopening. Older replies without recorded effort show **effort unknown**.
 

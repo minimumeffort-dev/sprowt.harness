@@ -729,7 +729,9 @@ fn serve(
                     if source.starts_with("00000004-") {
                         let report_schema = crate::execution::task_schema(routing.as_ref());
                         let repair = routing.as_ref().is_some_and(|state| {
-                            !state["repair"].is_null() || state["review_fix"] == true
+                            !state["repair"].is_null()
+                                || state["review_fix"] == true
+                                || state["runtime_recovery"] == true
                         });
                         let _ = outgoing.send(Event::Preparing("choosing task model".into()));
                         let chosen = match (&router, routing) {

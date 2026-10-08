@@ -410,10 +410,7 @@ impl Sandbox {
                 break;
             }
         }
-        let passed = !checks.is_empty()
-            && results.len() == checks.len()
-            && results.iter().all(|result| result.exit_code == Some(0));
-        self.finish_checks(passed, &keep)?;
+        self.finish_checks(&keep)?;
         Ok((combined, results))
     }
 
@@ -430,17 +427,11 @@ impl Sandbox {
         self.save_tasks()
     }
 
-    pub fn finish_checks(&mut self, passed: bool, cancelled: &AtomicBool) -> io::Result<()> {
+    fn finish_checks(&mut self, cancelled: &AtomicBool) -> io::Result<()> {
         self.tasks.active = None;
         self.save_tasks()?;
+        // Review and repair can rerun any task's commands in this plan.
         self.export(cancelled)?;
-        if passed {
-            for id in self.tasks.round.clone() {
-                self.remove_task(id, cancelled)?;
-            }
-            self.tasks.cleaned = true;
-            self.save_tasks()?;
-        }
         Ok(())
     }
 

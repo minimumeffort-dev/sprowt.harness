@@ -365,6 +365,7 @@ pub(crate) mod tests {
                 )
                 .unwrap();
             let checks = vec![CheckResult {
+                missing_runtime: None,
                 task: Some(run.id),
                 check: task.checks[0].clone(),
                 command: vec![

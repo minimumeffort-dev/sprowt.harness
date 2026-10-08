@@ -977,6 +977,41 @@ impl Sandbox {
             if cancelled.load(Ordering::Relaxed) {
                 break;
             }
+            let executable = check
+                .command
+                .first()
+                .ok_or_else(|| io::Error::other("Verification requires an executable."))?;
+            let probe = vec!["/usr/bin/test".into(), "-x".into(), executable.clone()];
+            let available = match self.run(&probe, cancelled, 30, 8192) {
+                Ok((Some(0), _, _)) => true,
+                Ok((Some(1), _, _)) => false,
+                result => {
+                    results.push(CheckResult {
+                        task: check.task,
+                        check: check.check.clone(),
+                        command: check.command.clone(),
+                        exit_code: None,
+                        output: match result {
+                            Err(error) => error.to_string(),
+                            Ok(_) => "Executable check was interrupted.".into(),
+                        },
+                        missing_runtime: None,
+                    });
+                    break;
+                }
+            };
+            let missing_runtime = (!available).then(|| executable.clone());
+            if let Some(path) = &missing_runtime {
+                results.push(CheckResult {
+                    task: check.task,
+                    check: check.check.clone(),
+                    command: check.command.clone(),
+                    exit_code: None,
+                    output: format!("Check executable is unavailable: {path}. Its task environment needs rebuilding."),
+                    missing_runtime,
+                });
+                break;
+            }
             let (exit_code, output) = match self.run(&check.command, cancelled, 30, 8192) {
                 Ok((exit, stdout, stderr)) => (
                     exit,
@@ -994,6 +1029,7 @@ impl Sandbox {
                 command: check.command.clone(),
                 exit_code,
                 output,
+                missing_runtime: None,
             });
             if exit_code != Some(0) {
                 break;
@@ -1430,13 +1466,96 @@ mod tests {
                 assert_eq!(results.len(), 3);
                 assert!(results.iter().all(|result| result.exit_code == Some(0)));
                 for id in [1, 2, 3] {
-                    assert!(!vm.guest_exists(&format!("/tasks/{id}"))?);
+                    assert!(vm.guest_exists(&format!("/tasks/{id}"))?);
                 }
                 assert_eq!(fs::read(root.join("work/runtime.txt"))?, b"fixed");
                 assert_eq!(fs::read(root.join("work/integration.txt"))?, b"diagnostics");
                 Ok(())
             },
         ));
+        delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
+
+    #[test]
+    #[ignore = "checks runtime retention and missing executable recovery in a disposable VM"]
+    fn review_rechecks_retain_task_runtimes() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("source.txt"), "original").unwrap();
+        let root = data.0.join(format!("runtime-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let flag = AtomicBool::new(false);
+        let source = |id| crate::store::task_source(id, 1);
+        let command = |script: &str| vec!["/bin/sh".into(), "-c".into(), script.into()];
+        let check = |id| Check {
+            task: Some(id),
+            check: "Runtime sees combined source".into(),
+            command: vec![format!("/tasks/{id}/.venv/bin/check")],
+        };
+        let setup = command(
+            "mkdir -p .venv/bin; printf '#!/bin/sh\ntest -s source.txt\n' > .venv/bin/check; chmod +x .venv/bin/check",
+        );
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.prepare_tasks(&[1, 2], &flag)?;
+                for id in [1, 2] {
+                    vm.assign_task(id, 100 + id, &flag)?;
+                    assert_eq!(vm.run(&setup, &flag, 30, 8192)?.0, Some(0));
+                    assert_eq!(
+                        vm.verify_execution(&source(id), &[check(id)], &flag)?.1[0].exit_code,
+                        Some(0)
+                    );
+                }
+                let checks = [check(1), check(2)];
+                assert!(
+                    vm.verify_execution("final:test", &checks, &flag)?
+                        .1
+                        .iter()
+                        .all(|c| c.exit_code == Some(0))
+                );
+                drop(vm);
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                // A review reopens only task 2; task 1 must still be runnable afterward.
+                vm.assign_task(2, 102, &flag)?;
+                let retry = crate::store::task_source(2, 2);
+                vm.refresh_for_repair(2, &retry, &flag)?;
+                assert_eq!(
+                    vm.run(&command("printf reviewed > source.txt"), &flag, 30, 8192)?
+                        .0,
+                    Some(0)
+                );
+                assert_eq!(
+                    vm.verify_execution(&retry, &[check(2)], &flag)?.1[0].exit_code,
+                    Some(0)
+                );
+                let (before, results) = vm.verify_execution("final:test", &checks, &flag)?;
+                assert_eq!(results.len(), 2);
+                assert!(results.iter().all(|c| c.exit_code == Some(0)));
+                // Simulate an environment removed by an older harness.
+                vm.guest(&["/bin/rm", "/tasks/1/.venv/bin/check"], &flag)?;
+                let (_, results) = vm.verify_execution("final:test", &checks, &flag)?;
+                assert_eq!(results.len(), 1);
+                assert_eq!(
+                    results[0].missing_runtime.as_deref(),
+                    Some("/tasks/1/.venv/bin/check")
+                );
+                assert!(results[0].failed() && !results[0].output.contains("panicked"));
+                vm.assign_task(1, 101, &flag)?;
+                let retry = crate::store::task_source(1, 2);
+                vm.refresh_for_repair(1, &retry, &flag)?;
+                assert_eq!(vm.run(&setup, &flag, 30, 8192)?.0, Some(0));
+                vm.verify_execution(&retry, &[check(1)], &flag)?;
+                let (after, results) = vm.verify_execution("final:test", &checks, &flag)?;
+                assert_eq!(before, after);
+                assert_eq!(results.len(), 2);
+                assert!(results.iter().all(|c| c.exit_code == Some(0)));
+                vm.prepare_tasks(&[3], &flag)?;
+                assert!(!vm.guest_exists("/tasks/1")? && !vm.guest_exists("/tasks/2")?);
+                Ok(())
+            }));
         delete(&root).unwrap();
         result.unwrap().unwrap();
     }
@@ -1522,15 +1641,20 @@ mod tests {
                 assert_eq!(before, workspace::source_state(&root.join("work"))?);
                 assert_eq!(before.len(), 3);
                 assert!(
+                    vm.guest_exists("/tasks/1")?
+                        && vm.guest_exists("/tasks/2")?
+                        && vm.guest_exists("/tasks/3")?
+                );
+                drop(vm);
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                assert!(vm.guest_exists("/tasks/1")?);
+                // A new edit round retains combined source and removes old task branches.
+                vm.prepare_tasks(&[4], &flag)?;
+                assert!(
                     !vm.guest_exists("/tasks/1")?
                         && !vm.guest_exists("/tasks/2")?
                         && !vm.guest_exists("/tasks/3")?
                 );
-                drop(vm);
-                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
-                assert!(!vm.guest_exists("/tasks/1")?);
-                // A new edit round retains combined source and removes old task branches.
-                vm.prepare_tasks(&[4], &flag)?;
                 vm.activate_task(4, &flag)?;
                 assert_eq!(
                     vm.run(

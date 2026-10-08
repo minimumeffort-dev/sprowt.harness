@@ -375,7 +375,7 @@ impl Worker {
                             command: result.command.clone(),
                         })
                         .collect();
-                    store.execution_status(self.mod_id, "verifying")?;
+                    store.execution_checks(self.mod_id, "verifying", &[], None)?;
                     code_mod.execution = store.execution(self.mod_id)?;
                     self.begin_checks(format!("final:{}", self.mod_id), checks);
                 } else if !execution.tasks.iter().any(|run| {
@@ -455,6 +455,7 @@ impl Worker {
         state["verification_feedback"] = serde_json::json!(run.verification_feedback);
         state["repair"] = serde_json::json!(run.repair);
         state["review_fix"] = serde_json::json!(run.review_feedback.is_some());
+        state["runtime_recovery"] = serde_json::json!(run.restoring_runtime());
         Some(state)
     }
 
@@ -717,12 +718,15 @@ impl Worker {
                         .iter()
                         .zip(&self.verification)
                         .all(|(result, expected)| {
-                            result.check == expected.check && result.command == expected.command
+                            expected.task.is_none_or(|id| result.task == Some(id))
+                                && result.check == expected.check
+                                && result.command == expected.command
                         });
                 if matched {
                     // Retain commands skipped after a failure or interruption.
                     checks.extend(self.verification.iter().skip(checks.len()).map(|check| {
                         crate::execution::CheckResult {
+                            missing_runtime: None,
                             task: check.task,
                             check: check.check.clone(),
                             command: check.command.clone(),
@@ -746,16 +750,36 @@ impl Worker {
                         &checks,
                         fingerprint.as_deref(),
                     )?;
+                    let recover = !passed
+                        && matched
+                        && self.enabled
+                        && self.status == Status::Checking
+                        && self.error.is_none()
+                        && store.recover_runtime(self.mod_id)?;
                     code_mod.execution = store.execution(self.mod_id)?;
                     self.task_source = None;
-                    self.enabled = false;
+                    self.enabled = recover;
                     self.status = if passed {
                         Status::Complete
                     } else {
                         Status::Ready
                     };
-                    if !passed && self.error.is_none() {
-                        self.error = Some("Final checks failed or were stopped. See plan details; Ctrl+R reruns them.".into());
+                    if recover {
+                        save_message(store, code_mod, Message {
+                            item_id: Some(format!("runtime:{source}:{}", checks.iter().find_map(|c| c.missing_runtime.as_ref()).unwrap())),
+                            role: "system".into(),
+                            body: "Restoring a missing task environment, then rerunning final checks.".into(),
+                            model: None,
+                            effort: None,
+                        })?;
+                    } else if !passed && self.error.is_none() {
+                        self.error = Some(format!(
+                            "Final verification blocked · {} · Ctrl+R retries",
+                            checks
+                                .iter()
+                                .find(|c| c.failed())
+                                .map_or_else(|| "checks interrupted".into(), |c| c.brief())
+                        ));
                     }
                     return Ok(());
                 }
@@ -2283,6 +2307,7 @@ mod tests {
                 vec![]
             } else {
                 vec![crate::execution::CheckResult {
+                    missing_runtime: None,
                     task: None,
                     check: worker.verification[0].check.clone(),
                     command: worker.verification[0].command.clone(),
@@ -2331,6 +2356,7 @@ mod tests {
         let checked = |source: String| Event::Checked {
             source,
             checks: vec![crate::execution::CheckResult {
+                missing_runtime: None,
                 task: Some(id),
                 check: worker.verification[0].check.clone(),
                 command: worker.verification[0].command.clone(),
@@ -2422,6 +2448,7 @@ mod tests {
                     Event::Checked {
                         source: worker.task_source.clone().unwrap(),
                         checks: vec![crate::execution::CheckResult {
+                            missing_runtime: None,
                             task: Some(id),
                             check: worker.verification[0].check.clone(),
                             command: if case == "mismatch" {
@@ -2523,6 +2550,7 @@ mod tests {
                     .take(count)
                     .enumerate()
                     .map(|(i, c)| crate::execution::CheckResult {
+                        missing_runtime: None,
                         task: c.task,
                         check: c.check,
                         command: c.command,
@@ -2652,6 +2680,7 @@ mod tests {
                                 checks: checks
                                     .into_iter()
                                     .map(|check| crate::execution::CheckResult {
+                                        missing_runtime: None,
                                         task: check.task,
                                         check: check.check,
                                         command: check.command,
@@ -2971,6 +3000,161 @@ mod tests {
     }
 
     #[test]
+    fn final_missing_runtime_returns_to_its_owner_once() {
+        for provider in ["codex", "muse"] {
+            let (data, mut store, mut m, mut verifier) = executor();
+            let owner = store
+                .worker_provider(m.id, Role::Executor, 0, provider)
+                .unwrap();
+            let id = m.execution.as_ref().unwrap().tasks[0].id;
+            let source = m.execution.as_ref().unwrap().tasks[0].source.clone();
+            let executable = format!("/tasks/{id}/.venv/bin/python");
+            let mut check = crate::execution::CheckResult {
+                task: Some(id),
+                check: verifier.verification[0].check.clone(),
+                command: vec![executable.clone()],
+                exit_code: Some(0),
+                output: String::new(),
+                missing_runtime: None,
+            };
+            store
+                .0
+                .execute(
+                    "UPDATE task_runs SET worker_id=?2 WHERE id=?1",
+                    rusqlite::params![id, owner.id],
+                )
+                .unwrap();
+            store
+                .finish_task(m.id, &source, "done", "Passed", &[check.clone()])
+                .unwrap();
+            m.execution = store.execution(m.id).unwrap();
+            verifier.verification = vec![Check {
+                task: Some(id),
+                check: check.check.clone(),
+                command: check.command.clone(),
+            }];
+            verifier.task_source = Some(format!("final:{}", m.id));
+            check.exit_code = None;
+            check.output = "Check executable is unavailable.".into();
+            check.missing_runtime = Some(executable);
+            let event = || Event::Checked {
+                source: format!("final:{}", m.id),
+                checks: vec![check.clone()],
+                before: workspace::source_state(
+                    &m.execution.as_ref().unwrap().workspace.join("work"),
+                )
+                .unwrap(),
+            };
+            let first = event();
+            let duplicate = event();
+            verifier.receive(first, &mut store, &mut m).unwrap();
+            verifier.receive(duplicate, &mut store, &mut m).unwrap();
+            let run = &m.execution.as_ref().unwrap().tasks[0];
+            assert_eq!(run.status, "pending");
+            assert_eq!(run.worker, Some(owner.id));
+            assert!(run.restoring_runtime());
+            assert!(verifier.error.is_none());
+            let next = run.source.clone();
+            assert_ne!(next, source);
+            assert_eq!(
+                verifier.task_context(&m, &next).unwrap()["runtime_recovery"],
+                true
+            );
+            drop(store);
+            let mut store = data.store();
+            let input = store.submission(m.id, &next).unwrap();
+            assert!(input.texts[0].contains("Preserve the combined source, tests"));
+            assert!(input.texts[0].contains("every declared check"));
+            // A second missing-runtime result cannot reopen the task again, even after restart.
+            store
+                .finish_task(m.id, &next, "done", "Rebuilt", &[check.clone()])
+                .unwrap();
+            store
+                .execution_checks(m.id, "blocked", &[check], None)
+                .unwrap();
+            assert!(!store.recover_runtime(m.id).unwrap());
+            assert_eq!(store.execution(m.id).unwrap().unwrap().status, "blocked");
+        }
+    }
+
+    #[test]
+    fn final_runtime_recovery_rejects_stops_mismatches_and_assertions() {
+        for case in [
+            "stopped",
+            "mismatch",
+            "wrong task",
+            "assertion",
+            "source changed",
+        ] {
+            let (_data, mut store, mut m, mut worker) = executor();
+            let id = m.execution.as_ref().unwrap().tasks[0].id;
+            let source = m.execution.as_ref().unwrap().tasks[0].source.clone();
+            let mut check = crate::execution::CheckResult {
+                task: Some(id),
+                check: worker.verification[0].check.clone(),
+                command: vec!["/tasks/1/runtime".into()],
+                exit_code: Some(0),
+                output: String::new(),
+                missing_runtime: None,
+            };
+            store
+                .0
+                .execute(
+                    "UPDATE task_runs SET worker_id=?2 WHERE id=?1",
+                    rusqlite::params![id, worker.id],
+                )
+                .unwrap();
+            store
+                .finish_task(m.id, &source, "done", "Passed", &[check.clone()])
+                .unwrap();
+            m.execution = store.execution(m.id).unwrap();
+            worker.verification = vec![Check {
+                task: Some(id),
+                check: check.check.clone(),
+                command: check.command.clone(),
+            }];
+            worker.task_source = Some(format!("final:{}", m.id));
+            check.exit_code = None;
+            check.output = "Check executable is unavailable.".into();
+            check.missing_runtime = check.command.first().cloned();
+            match case {
+                "stopped" => worker.enabled = false,
+                "mismatch" => check.command[0] = "/another/runtime".into(),
+                "wrong task" => check.task = Some(id + 1),
+                "assertion" => {
+                    check.exit_code = Some(1);
+                    check.missing_runtime = None;
+                    check.output = "AssertionError".into();
+                }
+                "source changed" => std::fs::write(
+                    m.execution.as_ref().unwrap().workspace.join("work/new.txt"),
+                    "changed",
+                )
+                .unwrap(),
+                _ => unreachable!(),
+            }
+            worker
+                .receive(
+                    Event::Checked {
+                        source: worker.task_source.clone().unwrap(),
+                        checks: vec![check],
+                        before: worker.verify_before.clone().unwrap(),
+                    },
+                    &mut store,
+                    &mut m,
+                )
+                .unwrap();
+            assert_eq!(m.execution.as_ref().unwrap().status, "blocked", "{case}");
+            assert_eq!(
+                m.execution.as_ref().unwrap().tasks[0].status,
+                "done",
+                "{case}"
+            );
+            assert!(!worker.enabled, "{case}");
+        }
+    }
+
+    #[test]
     fn final_checks_save_the_verified_snapshot_and_unconfirmed_delivery_stays_retryable() {
         let (_data, mut store, mut code_mod, mut worker) = executor();
         let source = worker.task_source.clone().unwrap();
@@ -2980,6 +3164,7 @@ mod tests {
         code_mod.execution = store.execution(code_mod.id).unwrap();
         worker.task_source = Some(format!("final:{}", code_mod.id));
         let checks = vec![crate::execution::CheckResult {
+            missing_runtime: None,
             task: None,
             check: worker.verification[0].check.clone(),
             command: worker.verification[0].command.clone(),

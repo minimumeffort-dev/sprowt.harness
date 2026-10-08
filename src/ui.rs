@@ -1556,11 +1556,7 @@ fn plan_lines(
                     .filter(|check| check.exit_code == Some(0))
                     .count();
                 let total = run.checks.len().max(task.checks.len());
-                let failed = run
-                    .checks
-                    .iter()
-                    .filter(|check| check.exit_code.is_some_and(|code| code != 0))
-                    .count();
+                let failed = run.checks.iter().filter(|check| check.failed()).count();
                 lines.push(
                     Line::from(format!(
                         "     verification · {passed}/{total} passed · {failed} failed · {} not run",
@@ -1585,10 +1581,7 @@ fn plan_lines(
                         "·"
                     } else if results.iter().all(|result| result.exit_code == Some(0)) {
                         "✓"
-                    } else if results
-                        .iter()
-                        .any(|result| result.exit_code.is_some_and(|code| code != 0))
-                    {
+                    } else if results.iter().any(|result| result.failed()) {
                         "!"
                     } else {
                         "·"
@@ -1603,7 +1596,7 @@ fn plan_lines(
                 )));
                 for result in results {
                     lines.extend(command_lines(&result.command, command_width));
-                    if result.exit_code != Some(0) {
+                    if result.failed() {
                         lines.extend(
                             result
                                 .evidence()
@@ -1628,7 +1621,7 @@ fn plan_lines(
                 for check in run
                     .verification_feedback
                     .iter()
-                    .filter(|check| check.exit_code != Some(0))
+                    .filter(|check| check.failed())
                 {
                     lines.push(Line::from(format!("     ! {}", check.check)).fg(Color::Red));
                     lines.extend(
@@ -1663,7 +1656,7 @@ fn plan_lines(
             if !completed {
                 lines.push(
                     Line::from(format!(
-                        "final checks · {} / {} passed",
+                        "final verification · {} / {} passed",
                         execution
                             .checks
                             .iter()
@@ -1674,18 +1667,24 @@ fn plan_lines(
                     .fg(KEY_HINT),
                 );
             }
-            for check in execution
+            if let Some(check) = execution.checks.iter().find(|check| check.failed()) {
+                lines.extend(wrap_line(
+                    Line::from(format!("! {}", check.check)).fg(Color::Red),
+                    width,
+                    2,
+                ));
+                lines.extend(command_lines(&check.command, width));
+                lines.extend(check.evidence().lines().flat_map(|line| {
+                    wrap_line(Line::from(format!("  {line}")).fg(Color::Red), width, 2)
+                }));
+            }
+            let skipped = execution
                 .checks
                 .iter()
-                .filter(|check| check.exit_code != Some(0))
-            {
-                lines.push(Line::from(format!("! {}", check.check)).fg(Color::Red));
-                lines.extend(
-                    check
-                        .evidence()
-                        .lines()
-                        .map(|line| Line::from(line.to_owned()).fg(Color::Red)),
-                );
+                .filter(|check| check.skipped())
+                .count();
+            if skipped > 0 {
+                lines.push(Line::from(format!("  · {skipped} commands not run")).fg(MUTED));
             }
         }
         if let Some(model) = &planning.model {

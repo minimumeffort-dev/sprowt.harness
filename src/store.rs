@@ -898,7 +898,12 @@ impl Store {
             if let Some(feedback) = &run.review_feedback {
                 prompt.push_str(&format!("\n{feedback} The harness refreshed this task from combined source. Preserve all other completed work."));
             }
-            if !run.verification_feedback.is_empty() {
+            if run.restoring_runtime() {
+                prompt.push_str(&format!(
+                    "\nRestore this task's missing runtime: {}\nThe harness refreshed the task folder from combined source. Inspect the project manifests and rebuild compatible runtimes and dependencies in this task folder or your runtime home. Preserve the combined source, tests and all declared check coverage. Rerun every declared check and return repeatable commands. Report access or installation blockers honestly; do not bypass permissions.",
+                    serde_json::to_string(&run.verification_feedback).unwrap()
+                ));
+            } else if !run.verification_feedback.is_empty() {
                 prompt.push_str(&format!(
                     "\nIndependent verification failed: {}\nReproduce the failure and fix it within your original file scope. Preserve all declared checks and their coverage; do not skip failures or weaken assertions. Browser tests must register a matching response wait before triggering an action, await successful completion and assert the resulting state. Exercise relevant races by controlling request completion, not arbitrary sleeps. If the defect belongs to a completed peer, request a repair with the observed evidence. Report environment or access blockers honestly. Rerun every declared check, including checks not reached previously.",
                     serde_json::to_string(&run.verification_feedback).unwrap()
@@ -1535,6 +1540,57 @@ impl Store {
         Ok(true)
     }
 
+    pub fn recover_runtime(&mut self, mod_id: i64) -> Result<bool> {
+        let Some(execution) = self.execution(mod_id)? else {
+            return Ok(false);
+        };
+        let Some(failure) = execution.checks.iter().find(|check| check.failed()) else {
+            return Ok(false);
+        };
+        if execution.status != "blocked"
+            || failure.missing_runtime.is_none()
+            || failure.missing_runtime.as_ref() != failure.command.first()
+        {
+            return Ok(false);
+        }
+        let Some(run) = execution.tasks.iter().find(|run| {
+            Some(run.id) == failure.task
+                && run.status == "done"
+                && run.worker.is_some()
+                && run
+                    .checks
+                    .iter()
+                    .any(|check| check.check == failure.check && check.command == failure.command)
+        }) else {
+            return Ok(false);
+        };
+        let feedback = execution
+            .checks
+            .iter()
+            .filter(|check| check.task == Some(run.id))
+            .collect::<Vec<_>>();
+        let tx = self.0.transaction()?;
+        let attempt: i64 = tx.query_row(
+            "SELECT attempt FROM task_runs WHERE id=?1",
+            [run.id],
+            |row| row.get(0),
+        )?;
+        let changed = tx.execute(
+            "UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,verification_feedback=?4,checks='[]',verification_retries=verification_retries+1 WHERE id=?1 AND status='done' AND verification_retries=0",
+            params![run.id,attempt+1,task_source(run.id,attempt+1),serde_json::to_string(&feedback).unwrap()]
+        )?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        tx.execute("UPDATE workers SET pending=NULL WHERE id=?1", [run.worker])?;
+        tx.execute(
+            "UPDATE executions SET status='running',checks='[]',fingerprint=NULL WHERE mod_id=?1",
+            [mod_id],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     pub fn retry_tasks(&mut self, mod_id: i64) -> Result<()> {
         let execution = self
             .execution(mod_id)?
@@ -1997,6 +2053,7 @@ mod tests {
                 code_mod.id,
                 "review",
                 &[crate::execution::CheckResult {
+                    missing_runtime: None,
                     task: None,
                     check: "tests pass".into(),
                     command: vec!["/usr/bin/true".into()],

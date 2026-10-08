@@ -68,7 +68,7 @@ State is saved automatically as you create mods, type drafts, manage queues and 
 
 The [tool dispatcher](tools.md) records call IDs, callers, duration and outcomes in `tools.jsonl`. Inputs and outputs are omitted. Tool logs stay on the Mac and are removed with the mod; recovery uses saved execution state and Git checkpoints.
 
-Apple Container manages each VM’s disk separately. Per-worker runtimes and download caches persist across publication and edit rounds. Task folders and their local dependencies are removed after successful final checks. Closing or deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
+Apple Container manages each VM’s disk separately. Per-worker runtimes and download caches persist across publication and edit rounds. Task folders and their local dependencies stay through final checks, review and repairs; a replacement plan removes the old task folders. Closing or deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
 
 Generated test caches and new runtime databases stay on the VM disk, outside source exports and Git checkpoints. Already committed database fixtures stay in source. Reconnection repairs older checkpoint indexes without deleting their runtime data. Closing or deleting the VM removes that data too. See [Source and generated files](execution.md#source-and-generated-files).
 
@@ -80,7 +80,7 @@ Muse's verified Linux binary and adapter files live in `~/Library/Caches/sprowt-
 
 Muse recovery files are private, written atomically before delivery and contain IDs, not credentials or message bodies. Native conversations and tool history remain in that worker's VM home. Quitting retains them; VM deletion removes them. SQLite stores the native session identity and pending receipt. See [Muse recovery](workers.md#muse-recovery).
 
-Task rows save verification feedback and a one-attempt recovery budget. Requeueing saves the evidence, new attempt identity and budget atomically. Restart and explicit retry retain the budget; passing verification clears the feedback. See [Verification feedback](execution.md#verification-feedback).
+Task rows save verification feedback and a one-attempt recovery budget, shared with missing-runtime recovery. Check results record missing executables separately from test failures. Requeueing saves the evidence, original owner, new attempt identity and budget atomically. Restart and explicit retry retain the budget; passing verification clears the feedback. See [Verification feedback](execution.md#verification-feedback).
 
 Task rows also save repair evidence and affected-task context. The execution stores a separate repair-attempt count; restart and explicit retry retain it. A new plan resets both budgets. See [Automatic repairs](execution.md#automatic-repairs).
 

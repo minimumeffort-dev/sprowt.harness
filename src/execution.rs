@@ -40,9 +40,21 @@ pub struct CheckResult {
     pub command: Vec<String>,
     pub exit_code: Option<i64>,
     pub output: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub missing_runtime: Option<String>,
 }
 
 impl CheckResult {
+    pub fn skipped(&self) -> bool {
+        self.exit_code.is_none()
+            && self.missing_runtime.is_none()
+            && (self.output.is_empty() || self.output == "Not run.")
+    }
+
+    pub fn failed(&self) -> bool {
+        self.exit_code != Some(0) && !self.skipped()
+    }
+
     pub fn evidence(&self) -> String {
         let lines = self
             .output
@@ -74,6 +86,14 @@ impl CheckResult {
             .filter(|line| !line.trim().is_empty())
             .unwrap_or(&self.check);
         line.chars().take(180).collect()
+    }
+}
+
+impl TaskRun {
+    pub fn restoring_runtime(&self) -> bool {
+        self.verification_feedback
+            .iter()
+            .any(|check| check.missing_runtime.is_some())
     }
 }
 

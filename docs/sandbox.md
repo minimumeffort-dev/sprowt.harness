@@ -55,7 +55,7 @@ codex -c 'cli_auth_credentials_store="file"' login
 
 Create a mod; its valid plan starts execution automatically. The first execution builds the shared development image; later runs reuse it. **Ctrl+D** opens the diff. New codemods publish PRs. Existing snapshot mods can be adopted into Git. See [Worktrees and PRs](git-workflow.md).
 
-The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Each executor reads your manifests, installs a compatible runtime under its own `/home/sprowt/workers/<worker-id>` (HOME), then installs project dependencies in its task worktree. Git objects are shared inside the VM; task dependencies remain in their own folders until final verification succeeds.
+The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Each executor reads your manifests, installs a compatible runtime under its own `/home/sprowt/workers/<worker-id>` (HOME), then installs project dependencies in its task worktree. Git objects are shared inside the VM; task dependencies remain available through final verification, review and repairs.
 
 ## System packages
 
@@ -148,14 +148,14 @@ It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomain
 | --- | --- |
 | Running | Running; reused across tasks |
 | Paused | Retained with unfinished task folders and dependencies |
-| Awaiting review | Retained; completed task folders removed |
+| Awaiting review | Retained with task folders and dependencies |
 | PR published or edits requested | Retained for further work |
 | Closed | Deleted after a local checkpoint; worktree and history stay |
 | Deleted | Deleted with the local workspace and history |
 
 Quitting stops VMs and retains unfinished mods’ disks. Reopening and **Ctrl+R** reconnect without losing dependencies. Reconnecting clears guest processes left by a crash. Shared images and the container service remain for reuse.
 
-Publication saves the PR URL and retains the VM and worktree. Edit rounds reuse the same VM and per-worker runtime/download caches. Completed task folders and their local dependencies are removed after the combined checks pass. Failed operations keep source and offer **Ctrl+R** to retry.
+Publication saves the PR URL and retains the VM and worktree. Edit rounds reuse the same VM and per-worker runtime/download caches. Task folders and their local dependencies are removed when a replacement plan starts. Review and repair reuse them. Failed operations keep source and offer **Ctrl+R** to retry.
 
 Closing exports source and task branches, commits a local checkpoint and removes the VM; the worktree and history remain. Reopening creates a fresh VM when execution resumes, restoring task branches from a local Git bundle. Runtime installations are not part of that bundle. Deleting discards local source and history. Closed worktree retention removes only the host worktree, retaining the branch and exports. See [Worktrees and PRs](git-workflow.md).
 
