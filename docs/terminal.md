@@ -60,6 +60,7 @@ Rust chooses the next action from current state:
 | Blocked download | Review the requested domains |
 | Failed check | Inspect failed checks before retrying |
 | Changes ready | Ask an agent to review; viewing the diff and publishing are also available |
+| Review issues found | View findings, then choose Fix issues |
 | Review passed | Publish PR |
 | Target branch changed | Update from the target and recheck |
 | PR published | Send edits to update the same PR |
@@ -69,7 +70,7 @@ While work runs, **Stop workers** appears when available. Other actions stay in 
 
 **Ctrl+G · Actions** lists the available actions and shortcuts in aligned columns. Use ↑/↓ and Enter; Esc returns to the same draft. Its selection keeps its meaning as workers finish; unavailable actions cannot run.
 
-Every menu item shows its shortcut. Inside All actions, **n** starts a new codemod, **c** closes the current one, **d** deletes it and **f** inspects a failure when available. Close and delete still require confirmation. These letters remain ordinary text in the composer; the dock shows **Ctrl+G** followed by the letter for menu actions.
+Every menu item shows its shortcut. Inside All actions, **n** starts a new codemod, **c** closes the current one, **d** deletes it and **f** inspects a failure when available. **i** opens review findings and **x** starts fixes when the review is current. Close and delete still require confirmation. These letters remain ordinary text in the composer; the dock shows **Ctrl+G** followed by the letter for menu actions.
 
 **View diff**, **Ask agent to review** and **Publish PR** are separate actions. Review remains optional, and publication keeps its confirmations. Enter in the composer sends your message; it never triggers the dock's recommendation. Workers finishing do not move focus from your draft.
 
@@ -107,13 +108,13 @@ Check details count passed, failed and unrun commands. Several commands can belo
 
 Task history includes saved narration, model and effort, and [worker messages](coordination.md). Questions for you stay visible in the conversation with the sender and message ID; the Enter hint says **Answer #ID** and saves your reply.
 
-Finished versions show one row per task and the final check count. The dock recommends review; diff and publication remain in Actions. **Ctrl+E** starts an independent reviewer; its result stays compact and **Ctrl+O** expands findings. Outcomes, contracts, commands and routing stay behind **Ctrl+O**; routine worker chatter stays in history. **Ctrl+D** opens a full-width diff. Use **p** there, or **Ctrl+S** from the conversation, to review and confirm publication. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
+Finished versions show one row per task and the final check count. The dock recommends review; diff and publication remain in Actions. **Ctrl+E** starts an independent reviewer. Its result stays compact; **Ctrl+G**, then **i**, opens the [findings view](review.md#what-you-see). **x · Fix issues** starts repairs after you inspect them. Outcomes, contracts, commands and routing stay behind **Ctrl+O**; routine worker chatter stays in history. **Ctrl+D** opens a full-width diff. Use **p** there, or **Ctrl+S** from the conversation, to review and confirm publication. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
 
 ```mermaid
 flowchart TB
     result["Tasks + check count"] -->|"Ctrl+O"| details["Plan details · contracts, checks, routing"]
     result -->|"Ctrl+T"| tasks["Tasks · inspect one task and its history"]
-    result -->|"Ctrl+E"| review["Independent review · scoped fixes and fresh checks"]
+    result -->|"Ctrl+E"| review["Independent review · inspect findings and choose Fix issues"]
     result -->|"Ctrl+S"| publish["Review changes · confirm PR"]
 ```
 
@@ -152,6 +153,7 @@ Use the mouse wheel or trackpad over the conversation, plan, task details, diff,
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
 | Ctrl+E | Ask an agent to review; r inside the diff |
+| Ctrl+G, then i | View review findings; x starts fixes |
 | Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+T | Tasks and history; also returns to the conversation from those views |

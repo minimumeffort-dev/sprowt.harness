@@ -78,6 +78,7 @@ impl App {
             View::TaskHistory(id, offset) => View::TaskHistory(id, shift(offset)),
             View::Failure(offset) => View::Failure(shift(offset)),
             View::Review(offset) => View::Review(shift(offset)),
+            View::Findings(offset) => View::Findings(shift(offset)),
             View::History(offset) => View::History(shift(offset)),
             View::ProjectSetup(saved, offset) => View::ProjectSetup(saved, shift(offset)),
             View::Network(id, offset) => View::Network(id, shift(offset)),

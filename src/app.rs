@@ -42,6 +42,7 @@ pub enum View {
     Queue(usize),
     EditQueue(usize),
     Review(u16),
+    Findings(u16),
     History(u16),
     Tasks(usize),
     Task(i64, u16),
@@ -323,6 +324,7 @@ impl App {
                 | View::CloseMod(_)
                 | View::Queue(_)
                 | View::Review(_)
+                | View::Findings(_)
                 | View::History(_)
                 | View::Tasks(_)
                 | View::Task(_, _)
@@ -440,6 +442,7 @@ impl App {
                         }
                         _ => {}
                     },
+                    View::Findings(scroll) => self.findings_key(key, scroll)?,
                     View::Tasks(selected) => self.tasks_key(key, selected),
                     View::Task(id, scroll) => self.task_key(key, id, scroll, false)?,
                     View::TaskHistory(id, scroll) => self.task_key(key, id, scroll, true)?,
@@ -2293,13 +2296,7 @@ impl App {
             {
                 continue;
             }
-            if review.status == "findings" {
-                if self.store.review_fixes(code_mod)? {
-                    self.mods[index].execution = self.store.execution(id)?;
-                    self.executing_mods.insert(id);
-                }
-                self.mods[index].agent_review = self.store.review_state(id)?;
-            } else if review.status == "fixing"
+            if review.status == "fixing"
                 && code_mod
                     .execution
                     .as_ref()
@@ -4859,6 +4856,137 @@ mod tests {
     }
 
     #[test]
+    fn review_findings_wait_for_explicit_fixes_and_preserve_navigation() {
+        let (data, mut store, mut m, _) = crate::review::tests::fixture();
+        store
+            .begin_review(
+                m.id,
+                m.execution.as_ref().unwrap().fingerprint.as_ref().unwrap(),
+            )
+            .unwrap();
+        m.agent_review = store.review_state(m.id).unwrap();
+        let source = m.agent_review.as_ref().unwrap().source.clone();
+        store
+            .finish_review(&m, &source, &crate::review::tests::finding())
+            .unwrap();
+        let project = data.0.join("project");
+        let mut app = App::load(project.clone(), false, store).unwrap();
+        app.maintain_reviews().unwrap();
+        assert_eq!(
+            app.mods[0].agent_review.as_ref().unwrap().status,
+            "findings"
+        );
+        assert!(app.mods[0].execution.as_ref().unwrap().complete());
+        assert!(app.executing_mods.is_empty());
+        drop(app);
+        let mut app = App::load(project, false, data.store()).unwrap();
+        app.maintain_reviews().unwrap();
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 0);
+        app.input.insert_str("keep my draft");
+        assert!(app.action_dock().primary == Some(Action::Findings));
+        assert_eq!(app.action_dock().status, "1 review issue found");
+        key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Findings(0)));
+        let contents = rows(&screen(&mut app, 90, 30)).join("\n");
+        assert!(contents.contains("P2 · Reject empty names"));
+        assert!(contents.contains("Open · greet.sh:2 · runtime"));
+        assert!(contents.contains("Proposed fix:"));
+        assert!(contents.contains("x\u{a0}fix\u{a0}issues"), "{contents}");
+        // A narrow pane scrolls with the mouse and clamps after resizing.
+        let first = screen(&mut app, 48, 20);
+        let content = app.scroll.content;
+        wheel(&mut app, false, content);
+        assert_ne!(first, screen(&mut app, 48, 20));
+        assert!(matches!(app.view, View::Findings(offset) if offset > 0));
+        screen(&mut app, 120, 50);
+        assert!(matches!(app.view, View::Findings(0)));
+        key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::History(0)));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Findings(0)));
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().status, "fixing");
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 1);
+        assert!(app.executing_mods.contains(&m.id));
+        let runs = &app.mods[0].execution.as_ref().unwrap().tasks;
+        assert!(runs.iter().all(|run| run.status == "pending"));
+        assert!(
+            runs[0]
+                .review_feedback
+                .as_ref()
+                .unwrap()
+                .contains("Reject empty names")
+        );
+        assert!(
+            rows(&screen(&mut app, 90, 30))
+                .join("\n")
+                .contains("Fix queued")
+        );
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 1);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Chat));
+        assert_eq!(app.input.lines(), ["keep my draft"]);
+    }
+
+    #[test]
+    fn outdated_or_exhausted_reviews_cannot_dispatch_fixes() {
+        for reason in ["queue", "source", "rounds"] {
+            let (data, mut store, mut m, _) = crate::review::tests::fixture();
+            store
+                .begin_review(
+                    m.id,
+                    m.execution.as_ref().unwrap().fingerprint.as_ref().unwrap(),
+                )
+                .unwrap();
+            m.agent_review = store.review_state(m.id).unwrap();
+            let source = m.agent_review.as_ref().unwrap().source.clone();
+            store
+                .finish_review(&m, &source, &crate::review::tests::finding())
+                .unwrap();
+            let mut app = App::load(data.0.join("project"), false, store).unwrap();
+            app.perform_action(Action::Findings).unwrap();
+            match reason {
+                "queue" => {
+                    let message = app.store.enqueue(m.id, "Change the request").unwrap();
+                    app.mods[0].queue.push(message);
+                    app.maintain_reviews().unwrap();
+                }
+                "source" => {
+                    std::fs::write(
+                        m.execution
+                            .as_ref()
+                            .unwrap()
+                            .workspace
+                            .join("work/greet.sh"),
+                        "changed source\n",
+                    )
+                    .unwrap();
+                }
+                _ => {
+                    app.store
+                        .0
+                        .execute("UPDATE reviews SET rounds=2 WHERE mod_id=?1", [m.id])
+                        .unwrap();
+                    app.mods[0].agent_review = app.store.review_state(m.id).unwrap();
+                }
+            }
+            key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+            assert!(app.mods[0].execution.as_ref().unwrap().complete());
+            assert!(app.executing_mods.is_empty());
+            let contents = rows(&screen(&mut app, 100, 30)).join("\n");
+            assert!(contents.contains("Reject empty names"));
+            assert!(contents.contains(if reason == "rounds" {
+                "Fix limit reached"
+            } else {
+                "Outdated"
+            }));
+            assert!(!contents.contains("x\u{a0}fix\u{a0}issues"));
+        }
+    }
+
+    #[test]
     fn review_status_is_compact_details_are_explicit_and_edits_invalidate_it() {
         let (data, mut store, mut m, _plan) = crate::review::tests::fixture();
         store
@@ -5007,6 +5135,9 @@ mod tests {
                     "{}",
                     app.worker_error().unwrap_or("")
                 );
+                if state.status == "findings" {
+                    app.perform_action(Action::FixIssues).unwrap();
+                }
                 std::thread::sleep(Duration::from_millis(50));
             }
             let state = app.mods[0].agent_review.as_ref().unwrap();

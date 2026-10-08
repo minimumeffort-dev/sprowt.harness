@@ -128,7 +128,7 @@ Another task or edit round starts a new session with its own folder and permissi
 
 ## Independent reviewer
 
-**Ctrl+E** starts a fresh Codex conversation using Sol 6.1 xhigh. It reads the combined source inside the existing VM with no source writes or harness tools. Findings return to existing owners; verified fixes receive another fresh review. See [Independent review](review.md).
+**Ctrl+E** starts a fresh Codex conversation using Sol 6.1 xhigh. It reads the combined source inside the existing VM with no source writes or harness tools. You inspect findings and choose **Fix issues** to return them to existing owners; verified fixes receive another fresh review. See [Independent review](review.md).
 
 ## Lifecycle
 

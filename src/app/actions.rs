@@ -15,6 +15,8 @@ pub enum Action {
     Failure,
     Diff,
     Review,
+    Findings,
+    FixIssues,
     Publish,
     Update,
     Queue,
@@ -52,6 +54,8 @@ impl Action {
             Self::Close => Some('c'),
             Self::Delete => Some('d'),
             Self::Failure => Some('f'),
+            Self::Findings => Some('i'),
+            Self::FixIssues => Some('x'),
             _ => None,
         }
     }
@@ -88,6 +92,37 @@ pub struct ActionDock {
 }
 
 impl App {
+    pub(super) fn findings_key(&mut self, key: KeyEvent, scroll: u16) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => self.view = View::Chat,
+            KeyCode::Up => self.view = View::Findings(scroll.saturating_sub(1)),
+            KeyCode::Down => self.view = View::Findings(scroll.saturating_add(1)),
+            KeyCode::PageUp => self.view = View::Findings(scroll.saturating_sub(self.page_size)),
+            KeyCode::PageDown => self.view = View::Findings(scroll.saturating_add(self.page_size)),
+            KeyCode::Char('x') if key.modifiers.is_empty() && key.kind == KeyEventKind::Press => {
+                self.perform_action(Action::FixIssues)?;
+            }
+            KeyCode::Char('e')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.kind == KeyEventKind::Press =>
+            {
+                self.perform_action(Action::Review)?;
+            }
+            KeyCode::Char('r')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && key.kind == KeyEventKind::Press =>
+            {
+                self.action_shortcut('r')?;
+            }
+            KeyCode::Char('h') if key.modifiers.is_empty() => {
+                self.history_origin = Some(View::Findings(scroll));
+                self.view = View::History(0);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     pub fn composer_view(&self) -> View {
         if matches!(self.view, View::Actions(_)) {
             self.action_origin.unwrap_or(View::Chat)
@@ -217,6 +252,20 @@ impl App {
                     .push(ActionItem::new(Review, "Ask agent to review"));
                 dock.actions.push(ActionItem::new(Publish, "Publish PR"));
             }
+            if m.agent_review.as_ref().is_some_and(|r| r.report.is_some()) {
+                dock.actions
+                    .push(ActionItem::new(Findings, "View review findings"));
+            }
+            if !busy
+                && !running
+                && self.git_activity().is_none()
+                && m.agent_review
+                    .as_ref()
+                    .is_some_and(|r| r.status == "findings" && r.rounds < 2 && r.current(m))
+            {
+                dock.actions
+                    .push(ActionItem::new(FixIssues, "Fix review issues"));
+            }
             if !m.queue.is_empty() && !m.closed {
                 dock.actions.push(ActionItem::new(
                     Queue,
@@ -310,6 +359,18 @@ impl App {
                     worker_action
                 };
                 dock.tone = Tone::Attention;
+            } else if let Some(review) = m
+                .agent_review
+                .as_ref()
+                .filter(|r| r.status == "findings" && r.current(m))
+            {
+                let count = review.report.as_ref().map_or(0, |r| r.findings.len());
+                dock.status = format!(
+                    "{count} review issue{} found",
+                    if count == 1 { "" } else { "s" }
+                );
+                dock.primary = Some(Findings);
+                dock.tone = Tone::Attention;
             } else if self.published() {
                 dock.status = "PR published".into();
                 dock.tone = Tone::Ready;
@@ -319,9 +380,6 @@ impl App {
                     Some("clean") => {
                         dock.status = "Review passed · changes ready".into();
                         dock.primary = Some(Publish);
-                    }
-                    Some("findings") => {
-                        dock.status = "Review found issues".into();
                     }
                     Some("paused" | "blocked") => {
                         dock.status = "Review paused".into();
@@ -500,6 +558,18 @@ impl App {
             Action::Review => {
                 if let Some(index) = self.active {
                     self.begin_agent_review(index)?;
+                }
+            }
+            Action::Findings => self.view = View::Findings(0),
+            Action::FixIssues => {
+                if let Some(index) = self.active {
+                    let id = self.mods[index].id;
+                    if self.store.review_fixes(&self.mods[index])? {
+                        self.mods[index].execution = self.store.execution(id)?;
+                        self.executing_mods.insert(id);
+                    }
+                    self.mods[index].agent_review = self.store.review_state(id)?;
+                    self.view = View::Findings(0);
                 }
             }
             Action::Publish => {

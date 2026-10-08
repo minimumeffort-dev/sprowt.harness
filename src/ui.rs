@@ -1,3 +1,4 @@
+mod findings;
 mod tasks;
 
 use std::time::Duration;
@@ -322,6 +323,16 @@ pub fn draw(
         draw_queue_editor(frame, app, index, dialog_area);
     } else if let View::Review(scroll) = app.view {
         draw_review(
+            frame,
+            app,
+            scroll,
+            Rect {
+                width: area.width,
+                ..dialog_area
+            },
+        );
+    } else if let View::Findings(scroll) = app.view {
+        findings::draw(
             frame,
             app,
             scroll,
@@ -1891,6 +1902,12 @@ fn conversation_blocks<'a>(
             && let Some(report) = &review.report
         {
             lines.push(Line::from(report.summary.clone()).fg(Color::Red));
+        }
+        if review.report.is_some() {
+            lines.push(Line::from(vec![
+                "ctrl+g i".fg(ACCENT),
+                " View review findings".fg(KEY_HINT),
+            ]));
         }
         if details && let Some(report) = &review.report {
             lines.push(Line::from(report.summary.clone()));

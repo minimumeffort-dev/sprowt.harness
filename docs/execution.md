@@ -60,6 +60,8 @@ Workers prepare project runtimes and dependencies; missing OS packages go throug
 
 Each task returns a short summary and runnable commands for every declared check. One check can need several commands; each uses that check's exact name. Rust groups them in plan order and reruns every command with a 30-second limit. Missing or undeclared checks, nonzero exits, timeouts or commands that change source files block completion. Commands skipped after failure or interruption stay saved as unrun.
 
+Checks start in their task folder with a fresh process environment. Temporary fixtures and import stubs belong under a unique `/tmp` directory or the worker's HOME. Browser URLs such as `/static` are not writable filesystem paths; tests use an HTTP server or module loader. Earlier shell exports, background processes and privileged setup are not part of a repeatable check.
+
 Passing tasks are merged into the integration branch one at a time, as they finish. A conflict pauses execution and keeps both versions. The saved draft includes non-conflicting changes and conflict markers. **Ctrl+R** asks the worker to resolve them, or send an edit request to replan.
 
 A late peer acknowledgement with no check commands keeps the last valid task report. A newer full report, blocker or repair request takes precedence. User steering clears the previous report and requires a fresh one. Live turns and recovered history follow the same rule; retained commands still run against the current source before completion.
@@ -140,7 +142,7 @@ Use the queue’s **s** action to steer an active turn immediately. Steering and
 
 **Ctrl+R** pauses both workers and any verification or setup command. Files and runtime remain. Reconnecting verifies confirmed turns without repeating their edits; uncertain delivery waits for explicit retry. Failed final checks can rerun without regenerating completed tasks.
 
-**Ctrl+E** requests [independent review](review.md) of a finished version. Findings return to existing owners; affected tasks and final checks rerun before a fresh review. **Ctrl+D** opens source changes while workers are idle. **Ctrl+S**, or **p** inside the diff, starts publication after verification. Confirm Git adoption or a GitHub destination if needed, then the PR. Publication commits and pushes to the codemod branch and retains the VM for more edits.
+**Ctrl+E** requests [independent review](review.md) of a finished version. Open findings with **Ctrl+G**, then **i**. **x · Fix issues** returns them to existing owners; affected tasks and final checks rerun before a fresh review. **Ctrl+D** opens source changes while workers are idle. **Ctrl+S**, or **p** inside the diff, starts publication after verification. Confirm Git adoption or a GitHub destination if needed, then the PR. Publication commits and pushes to the codemod branch and retains the VM for more edits.
 
 Closing stops both workers, saves each unfinished draft, then saves a local checkpoint and a Git bundle of the VM’s task branches before removing the VM. Reopening restores unfinished task source and branch relationships. Draft exports include edits from both tasks; overlapping text edits get conflict markers. Binary conflicts retain the VM until resolved. Installed runtimes and dependencies must be prepared again in the fresh VM. Missing executables in final checks use the bounded recovery above; other environment failures stay visible for retry or an edit request. Deleting discards local work. See [Worktrees and PRs](git-workflow.md) for retention and recovery.
 

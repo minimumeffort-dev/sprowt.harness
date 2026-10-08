@@ -1,7 +1,7 @@
 use super::*;
 use ratatui::widgets::ListItem;
 
-fn panel(frame: &mut Frame, area: Rect, title: String, keys: &[(&str, &str)]) -> Rect {
+pub(super) fn panel(frame: &mut Frame, area: Rect, title: String, keys: &[(&str, &str)]) -> Rect {
     let hints = key_hints(keys);
     let [panel, footer] = Layout::vertical([
         Constraint::Min(1),

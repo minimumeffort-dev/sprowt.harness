@@ -14,7 +14,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Planning and routing](docs/planning.md): describe the outcome. Astra xhigh defines tasks and contracts. Rust balances Codex and Muse; Jev chooses Sol 6.1 effort.
 - [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
 - [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders, independent checks, one recovery attempt and repair handoffs.
-- [Independent review](docs/review.md): a fresh Sol 6.1 xhigh reviewer inspects the combined result, returns defects to their owners and reviews verified fixes.
+- [Independent review](docs/review.md): a fresh Sol 6.1 xhigh reviewer inspects the combined result, shows findings for your approval, then returns defects to their owners and reviews verified fixes.
 - [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Workers choose runtimes and dependencies, request OS packages and ask you to approve blocked download domains.
 - [Workers and isolation](docs/workers.md): Codex planning and review, with separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
@@ -51,7 +51,8 @@ flowchart TB
     ready --> edits["Send edits · plan the next round"]
     edits --> planner
     ready -->|"Optional review"| reviewer["Sol 6.1 xhigh · inspect combined source"]
-    reviewer -->|"Findings"| repair
+    reviewer --> findings["View findings"]
+    findings -->|"You choose Fix issues"| repair
     reviewer -->|"No findings"| publish
     ready --> publish["Confirm publish · create or update PR"]
     publish --> ready
@@ -124,7 +125,7 @@ Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth lo
 4. Choose **Ask agent to review**, **View diff** or **Publish PR** in the dock or All actions. Review is optional; confirm the GitHub destination if needed, then the PR. Keep editing afterward to update the same PR.
 5. In **Ctrl+P**, **c** closes with a checkpoint, **Tab** shows closed mods, **r** reopens and **d** deletes local data.
 
-Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. Review fix rounds are capped at two per plan.
+Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. Review repairs wait for **Fix issues** and are capped at two rounds per plan.
 
 ### Jev routing
 
@@ -148,6 +149,7 @@ Setup saves the key in private local configuration, so the installed harness can
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
 | Ctrl+E | Ask an agent to review the finished version |
+| Ctrl+G, then i | View review findings; x starts fixes |
 | Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+T | Tasks and history; Enter inspects a task |

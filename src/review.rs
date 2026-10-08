@@ -65,7 +65,7 @@ impl State {
             "clean" => "✓ review passed".into(),
             "fixing" => format!("review fixes · round {}/2", self.rounds),
             "findings" => format!(
-                "! review · {} findings · send edits",
+                "! review · {} issues found",
                 self.report.as_ref().map_or(0, |r| r.findings.len())
             ),
             "stale" => "review outdated · changes need a fresh review".into(),
@@ -395,7 +395,7 @@ pub(crate) mod tests {
         (data, store, m, plan)
     }
 
-    fn finding() -> String {
+    pub(crate) fn finding() -> String {
         json!({"status":"findings","summary":"Empty names are accepted.","findings":[{
             "owner":"runtime","file":"greet.sh","line":2,"priority":"P2","title":"Reject empty names",
             "evidence":"Calling greet.sh without a name exits 0 and prints hello; the request requires a nonzero exit.",
