@@ -234,7 +234,6 @@ impl App {
             } else if let Some(activity) = self.git_activity() {
                 dock.status = activity.into();
                 dock.tone = Tone::Busy;
-                dock.guidance = Some("No action needed");
             } else if retry {
                 dock.status = "Git operation paused".into();
                 dock.tone = Tone::Attention;
@@ -254,10 +253,8 @@ impl App {
                     })
                 };
                 dock.tone = Tone::Busy;
-                dock.guidance = Some("No action needed");
             } else if busy {
                 dock.status = "Workers ready".into();
-                dock.guidance = Some("No action needed");
             } else if let Some(target) = self.targets.get(&m.id)
                 && matches!(target.pr_state.as_deref(), Some("MERGED" | "CLOSED"))
             {
@@ -310,6 +307,21 @@ impl App {
             } else {
                 dock.status = "Work paused".into();
                 dock.primary = worker_action;
+            }
+            if matches!(
+                dock.status.as_str(),
+                "Work paused" | "Changes ready" | "PR published" | "Review passed · changes ready"
+            ) && let Some(execution) = &m.execution
+            {
+                dock.status.push_str(&format!(
+                    " · {}/{} tasks done",
+                    execution
+                        .tasks
+                        .iter()
+                        .filter(|task| task.status == "done")
+                        .count(),
+                    execution.tasks.len()
+                ));
             }
             if !m.closed && self.git_activity().is_none() {
                 dock.actions.push(ActionItem::new(Close, "Close codemod"));

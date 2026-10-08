@@ -20,13 +20,15 @@ use crate::{
 };
 
 const ACCENT: Color = Color::Green;
-const MUTED: Color = Color::DarkGray;
+const MUTED: Color = Color::Rgb(161, 170, 160);
+const BORDER: Color = Color::Rgb(89, 99, 79);
 const CONTROL: Color = Color::Rgb(51, 59, 50);
 const SELECTED: Color = Color::Rgb(62, 73, 55);
 const USER_BACKGROUND: Color = Color::Rgb(43, 49, 43);
 const KEY_HINT: Color = Color::Rgb(161, 170, 160);
 const MOD_GLYPH: &str = "◇";
-const DIALOG_WIDTH: u16 = 100;
+const DIALOG_WIDTH: u16 = 68;
+const PROSE_WIDTH: u16 = 80;
 
 pub fn input() -> TextArea<'static> {
     field("message", "Describe a feature, a fix, or an idea...")
@@ -81,14 +83,32 @@ pub fn draw(
     let composer_view = app.composer_view();
     let show_dock = matches!(composer_view, View::Chat | View::NewMod);
     let dock = app.action_dock();
-    let dock_lines = dock_lines(&dock, area.width, elapsed);
+    let menu_open = matches!(app.view, View::Actions(_));
+    let dock_lines = dock_lines(&dock, area.width, elapsed, menu_open);
+    let mut identities: Vec<_> = app.active_workers().collect();
+    if identities.is_empty() {
+        identities.extend(app.current_worker());
+    }
+    let identities = Paragraph::new(
+        identities
+            .iter()
+            .map(|worker| {
+                Line::from(worker.label(worker.busy().then(|| activity_glyph(elapsed))))
+                    .fg(KEY_HINT)
+            })
+            .collect::<Vec<_>>(),
+    )
+    .wrap(Wrap { trim: false });
+    let header_height = (2 + identities.line_count(area.width.saturating_sub(10)) as u16).max(4);
     let mod_height = u16::from(!matches!(
         composer_view,
         View::NewMod | View::ProjectSetup(false, _)
     ));
     if area.width < 32
         || area.height
-            < 11 + mod_height
+            < header_height
+                + 5
+                + mod_height
                 + if show_dock {
                     dock_lines.len() as u16
                 } else {
@@ -106,7 +126,7 @@ pub fn draw(
     let gap = u16::from(area.height >= 26 + 2 * mod_height);
     let read_only = matches!(composer_view, View::Chat) && app.read_only();
     let [header, _, mod_row, _, content, _, dock_area, input, footer] = Layout::vertical([
-        Constraint::Length(4),
+        Constraint::Length(header_height),
         Constraint::Length(gap),
         Constraint::Length(mod_height),
         Constraint::Length(gap * mod_height),
@@ -117,7 +137,11 @@ pub fn draw(
         } else {
             0
         }),
-        Constraint::Length(if read_only { 0 } else { 5 }),
+        Constraint::Length(if read_only {
+            0
+        } else {
+            composer_height(&app.input, area.width)
+        }),
         Constraint::Length(1),
     ])
     .areas(area);
@@ -133,23 +157,20 @@ pub fn draw(
                 .map(|path| format!("~/{}", path.display()))
         })
         .unwrap_or_else(|| app.project.display().to_string());
-    let status = app.current_worker().map_or(String::new(), |worker| {
-        worker.label(worker.busy().then(|| activity_glyph(elapsed)))
-    });
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec!["sprowt".fg(ACCENT).bold(), " harness".bold()]),
             Line::from(fit_name(&project, heading.width)).fg(MUTED),
-            Line::from(fit_name(&status, heading.width)).fg(KEY_HINT),
-            Line::from(if !show_dock {
-                app.worker_error()
-                    .map_or(String::new(), |error| fit_name(error, heading.width))
-            } else {
-                String::new()
-            })
-            .fg(Color::Red),
         ]),
         heading,
+    );
+    frame.render_widget(
+        identities,
+        Rect {
+            y: heading.y + 2,
+            height: heading.height.saturating_sub(2),
+            ..heading
+        },
     );
 
     draw_mod_selector(
@@ -164,7 +185,7 @@ pub fn draw(
         ),
     );
     let mut can_scroll = false;
-    if matches!(composer_view, View::Chat | View::EditQueue(_)) {
+    if !menu_open && matches!(composer_view, View::Chat | View::EditQueue(_)) {
         let count = if read_only {
             0
         } else {
@@ -206,16 +227,36 @@ pub fn draw(
     }
     let dialog_area = Rect {
         y: mod_row.bottom() + gap,
-        width: area.width.min(DIALOG_WIDTH),
+        width: area.width.min(if matches!(app.view, View::Queue(_)) {
+            area.width
+        } else {
+            DIALOG_WIDTH
+        }),
         height: area.bottom().saturating_sub(mod_row.bottom() + gap),
         ..area
     };
     if let View::Actions(selected) = app.view {
         if !read_only {
-            frame.render_widget(&app.input, input);
-            app.scroll.input = input;
+            let mut draft = app.input.clone();
+            draft.set_cursor_style(Style::new());
+            draft.set_block(
+                Block::bordered()
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::new().fg(BORDER))
+                    .padding(Padding::horizontal(1)),
+            );
+            frame.render_widget(&draft, input);
         }
-        draw_actions(frame, app, &dock, selected, content);
+        draw_actions(
+            frame,
+            app,
+            &dock,
+            selected,
+            Rect {
+                width: dialog_area.width,
+                ..content
+            },
+        );
     } else if let View::Failure(scroll) = app.view {
         draw_failure(
             frame,
@@ -382,6 +423,11 @@ pub fn draw(
     heading
 }
 
+fn composer_height(input: &TextArea<'_>, width: u16) -> u16 {
+    let text = Paragraph::new(input.lines().join("\n")).wrap(Wrap { trim: false });
+    text.line_count(width.saturating_sub(4)).clamp(1, 4) as u16 + 2
+}
+
 fn queue_items(app: &App, width: u16) -> impl Iterator<Item = Line<'static>> + '_ {
     app.current_mod()
         .map_or(&[][..], |code_mod| code_mod.queue.as_slice())
@@ -442,7 +488,14 @@ fn draw_queue_preview(frame: &mut Frame, app: &App, area: Rect) {
     let count = app.current_mod().map_or(0, |code_mod| code_mod.queue.len());
     let [title, messages] =
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
-    frame.render_widget(Line::from(format!("queue ({count})")).fg(KEY_HINT), title);
+    frame.render_widget(
+        Line::from(vec![
+            format!("queue ({count})  ").fg(KEY_HINT),
+            "ctrl+q ".fg(ACCENT),
+            "manage".fg(KEY_HINT),
+        ]),
+        title,
+    );
     let selection = if let View::EditQueue(index) = app.view {
         Some(index)
     } else {
@@ -476,6 +529,14 @@ fn draw_queue_editor(frame: &mut Frame, app: &mut App, index: usize, area: Rect)
         hints.push(("t", &target));
     }
     hints.push(("esc", "back"));
+    let natural_width = 2 + hints
+        .iter()
+        .map(|(key, label)| Span::raw(*key).width() + Span::raw(*label).width() + 3)
+        .sum::<usize>();
+    let area = Rect {
+        width: area.width.min((natural_width as u16).max(DIALOG_WIDTH)),
+        ..area
+    };
     let title = if app.queue_selection.is_empty() {
         format!("queue ({count})")
     } else {
@@ -667,10 +728,20 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     let Some(review) = &app.review else {
         return;
     };
-    let [panel, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let mut keys = vec![("↑↓", "scroll"), (page_key(), "page")];
+    if app.can_publish() {
+        keys.extend([("r", "ask agent to review"), ("p", "publish PR")]);
+    }
+    keys.push(("esc", "back"));
+    let hints = key_hints(&keys);
+    let [panel, footer] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(hints.line_count(area.width) as u16),
+    ])
+    .areas(area);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(MUTED))
+        .border_style(Style::new().fg(BORDER))
         .padding(Padding::horizontal(1))
         .title(
             Line::from(format!(" diff · {} files ", review.count()))
@@ -710,31 +781,28 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     let scroll = scroll.min(max_scroll);
     app.view = View::Review(scroll);
     frame.render_widget(body.scroll((scroll, 0)), panel);
-    frame.render_widget(
-        Line::from(if app.can_publish() {
-            "↑↓ scroll  fn+↑/↓ page  r ask agent to review  p publish PR  esc back"
-        } else {
-            "↑↓ scroll  fn+↑/↓ page  esc back"
-        })
-        .fg(KEY_HINT),
-        footer,
-    );
+    frame.render_widget(hints, footer);
 }
 
 fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     let Some(code_mod) = app.current_mod() else {
         return;
     };
-    let [panel, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let hints = key_hints(&[("↑↓", "scroll"), (page_key(), "page"), ("esc", "back")]);
+    let [panel, footer] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(hints.line_count(area.width) as u16),
+    ])
+    .areas(area);
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(MUTED))
+        .border_style(Style::new().fg(BORDER))
         .padding(Padding::horizontal(1))
         .title(Line::from(" worker history ").fg(KEY_HINT).bold());
     let inner = block.inner(panel);
     let mut rows = Vec::new();
     let mut total: usize = 0;
-    for item in conversation_blocks(code_mod, false, true, inner.width, None, false, &[]) {
+    for item in conversation_blocks(code_mod, false, true, inner.width, None, &[]) {
         let paragraph = Paragraph::new(item.text).wrap(Wrap { trim: false });
         let height =
             paragraph.line_count(inner.width.saturating_sub(if item.user { 2 } else { 0 }));
@@ -751,15 +819,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     app.scroll.content = inner;
     app.page_size = inner.height.max(1);
     app.view = View::History(scroll);
-    frame.render_widget(
-        Line::from(if cfg!(target_os = "macos") {
-            "↑↓ scroll  fn+↑/↓ page  esc back"
-        } else {
-            "↑↓ scroll  pgup/pgdn page  esc back"
-        })
-        .fg(KEY_HINT),
-        footer,
-    );
+    frame.render_widget(hints, footer);
 }
 
 fn draw_project_setup(frame: &mut Frame, app: &mut App, saved: bool, scroll: u16, area: Rect) {
@@ -860,14 +920,7 @@ fn draw_scrollable_text(frame: &mut Frame, app: &mut App, text: Paragraph<'_>, a
     frame.render_widget(text.scroll((app.scroll.offset, 0)), area);
 }
 
-fn draw_dialog(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    rows: usize,
-    has_action: bool,
-    shortcuts: &[(&str, &str)],
-) -> (Rect, Rect) {
+fn key_hints(shortcuts: &[(&str, &str)]) -> Paragraph<'static> {
     let mut hints = Vec::new();
     for (index, (key, label)) in shortcuts.iter().enumerate() {
         if index > 0 {
@@ -877,7 +930,26 @@ fn draw_dialog(
         hints.push(format!("{key}\u{a0}").fg(Color::White).bold());
         hints.push(label.replace(' ', "\u{a0}").fg(KEY_HINT));
     }
-    let hints = Paragraph::new(Line::from(hints)).wrap(Wrap { trim: false });
+    Paragraph::new(Line::from(hints)).wrap(Wrap { trim: false })
+}
+
+fn page_key() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "fn+↑/↓"
+    } else {
+        "pgup/pgdn"
+    }
+}
+
+fn draw_dialog(
+    frame: &mut Frame,
+    area: Rect,
+    title: &str,
+    rows: usize,
+    has_action: bool,
+    shortcuts: &[(&str, &str)],
+) -> (Rect, Rect) {
+    let hints = key_hints(shortcuts);
     let hints_height = hints.line_count(area.width.saturating_sub(4)) as u16;
     let action_height = u16::from(has_action);
     let panel = Rect {
@@ -886,7 +958,7 @@ fn draw_dialog(
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
-        .border_style(Style::new().fg(MUTED))
+        .border_style(Style::new().fg(BORDER))
         .title(Line::from(format!(" {title} ")).fg(KEY_HINT).bold());
     let inner = block.inner(panel).inner(Margin::new(1, 0));
     frame.render_widget(block, panel);
@@ -902,7 +974,7 @@ fn draw_dialog(
             "├{}┤",
             "─".repeat(panel.width.saturating_sub(2) as usize)
         ))
-        .fg(MUTED),
+        .fg(BORDER),
         Rect {
             x: panel.x,
             width: panel.width,
@@ -933,6 +1005,53 @@ fn fit_name(name: &str, width: u16) -> String {
     }
     title.push('…');
     title
+}
+
+fn wrap_line(line: Line<'static>, width: u16, indent: usize) -> Vec<Line<'static>> {
+    if line.width() <= width as usize || width == 0 {
+        return vec![line];
+    }
+    let glyphs: Vec<_> = line
+        .styled_graphemes(Style::new())
+        .map(|g| Span::styled(g.symbol.to_owned(), g.style))
+        .collect();
+    let mut lines = Vec::new();
+    let mut start = 0;
+    while start < glyphs.len() {
+        let padding = if start == 0 {
+            0
+        } else {
+            indent.min(width.saturating_sub(2) as usize)
+        };
+        let mut used = padding;
+        let mut end = start;
+        while end < glyphs.len() && used + glyphs[end].width() <= width as usize {
+            used += glyphs[end].width();
+            end += 1;
+        }
+        if end < glyphs.len()
+            && let Some(space) = (start..end).rev().find(|i| {
+                glyphs[*i].content == " " && glyphs[start..*i].iter().any(|g| g.content != " ")
+            })
+        {
+            end = space;
+        }
+        end = end.max(start + 1);
+        let mut spans = vec![Span::raw(" ".repeat(padding))];
+        for glyph in &glyphs[start..end] {
+            if let Some(last) = spans.last_mut().filter(|last| last.style == glyph.style) {
+                last.content.to_mut().push_str(&glyph.content);
+            } else {
+                spans.push(glyph.clone());
+            }
+        }
+        lines.push(Line::from(spans));
+        start = end;
+        while start < glyphs.len() && glyphs[start].content == " " {
+            start += 1;
+        }
+    }
+    lines
 }
 
 fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
@@ -988,23 +1107,41 @@ fn action_control(item: &ActionItem, width: u16, menu: bool) -> Line<'static> {
         } else {
             0
         };
-        spans.push(format!("{shortcut:<column$} ").fg(ACCENT));
+        spans.push(format!("{shortcut:>column$} ").fg(ACCENT));
     }
     spans.push(item.label.clone().fg(KEY_HINT));
     Line::from(spans)
 }
 
-fn dock_lines(dock: &ActionDock, width: u16, elapsed: Option<Duration>) -> Vec<Line<'static>> {
+fn dock_lines(
+    dock: &ActionDock,
+    width: u16,
+    elapsed: Option<Duration>,
+    menu_open: bool,
+) -> Vec<Line<'static>> {
     let (glyph, color) = match dock.tone {
         Tone::Quiet => ("◇", KEY_HINT),
         Tone::Busy => (activity_glyph(elapsed), KEY_HINT),
         Tone::Attention => ("!", Color::Red),
         Tone::Ready => ("✓", ACCENT),
     };
-    let mut lines =
-        vec![Line::from(fit_name(&format!("{glyph} {}", dock.status), width)).fg(color)];
+    let mut lines = vec![
+        Line::from("─".repeat(width as usize)).fg(BORDER),
+        Line::from(fit_name(&format!("{glyph} {}", dock.status), width)).fg(color),
+    ];
+    if menu_open {
+        return lines;
+    }
     if let Some(error) = &dock.error {
-        lines.push(Line::from(fit_name(error, width)).fg(Color::Red));
+        let mut error = wrap_line(Line::from(error.clone()).fg(Color::Red), width, 0);
+        if error.len() > 2 {
+            error[1] = Line::from(format!(
+                "{}…",
+                fit_name(&error[1].to_string(), width.saturating_sub(1))
+            ))
+            .fg(Color::Red);
+        }
+        lines.extend(error.into_iter().take(2));
     }
     let mut next = Line::from("Next · ".fg(KEY_HINT));
     if let Some(primary) = dock
@@ -1022,34 +1159,38 @@ fn dock_lines(dock: &ActionDock, width: u16, elapsed: Option<Duration>) -> Vec<L
     } else {
         next = Line::default();
     }
-    // Secondary actions fit on the same row; the menu always has its own space.
+    let all = Line::from(vec![
+        format!("{}g ", if width < 60 { "^" } else { "ctrl+" }).fg(ACCENT),
+        "All actions".fg(KEY_HINT),
+    ]);
+    // Leave room for the menu; show at most one alternative to the recommendation.
     for action in [
+        Action::Stop,
+        Action::RetryGit,
+        Action::Retry,
+        Action::Run,
         Action::Queue,
         Action::Diff,
         Action::Publish,
-        Action::Stop,
-        Action::Retry,
-        Action::RetryGit,
-        Action::Run,
-        Action::Details,
     ] {
         if dock.primary == Some(action) {
             continue;
         }
         if let Some(item) = dock.actions.iter().find(|a| a.action == action) {
             let control = action_control(item, width, false);
-            if next.width() + control.width() + 2 <= width as usize {
-                next.spans.push(Span::raw("  "));
+            if next.width() + control.width() + all.width() + 4 <= width as usize {
+                if next.width() > 0 {
+                    next.spans.push(Span::raw("  "));
+                }
                 next.spans.extend(control.spans);
+                break;
             }
         }
     }
-    let all = Line::from(vec![
-        format!("{}g ", if width < 60 { "^" } else { "ctrl+" }).fg(ACCENT),
-        "All actions".fg(KEY_HINT),
-    ]);
     if next.width() + all.width() + 2 <= width as usize {
-        next.spans.push(Span::raw("  "));
+        if next.width() > 0 {
+            next.spans.push(Span::raw("  "));
+        }
         next.spans.extend(all.spans);
         lines.push(next);
     } else {
@@ -1090,7 +1231,12 @@ fn draw_actions(frame: &mut Frame, app: &mut App, dock: &ActionDock, selected: A
 }
 
 fn draw_failure(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
-    let [panel, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let hints = key_hints(&[("↑↓", "scroll"), ("esc", "back")]);
+    let [panel, footer] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(hints.line_count(area.width) as u16),
+    ])
+    .areas(area);
     app.scroll.content = panel;
     app.page_size = panel.height.saturating_sub(2).max(1);
     let body = Paragraph::new(app.action_error().unwrap_or("No current error."))
@@ -1098,9 +1244,9 @@ fn draw_failure(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
         .block(
             Block::bordered()
                 .border_type(BorderType::Rounded)
-                .border_style(Style::new().fg(MUTED))
+                .border_style(Style::new().fg(BORDER))
                 .padding(Padding::horizontal(1))
-                .title(" error details "),
+                .title(Line::from(" error details ").fg(KEY_HINT).bold()),
         );
     let maximum = body
         .line_count(panel.width.saturating_sub(4))
@@ -1108,7 +1254,7 @@ fn draw_failure(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
         .min(u16::MAX as usize) as u16;
     frame.render_widget(body.scroll((scroll.min(maximum), 0)), panel);
     app.view = View::Failure(scroll.min(maximum));
-    frame.render_widget(Line::from("↑↓ scroll  esc back").fg(KEY_HINT), footer);
+    frame.render_widget(hints, footer);
 }
 
 fn activity_glyph(elapsed: Option<Duration>) -> &'static str {
@@ -1150,7 +1296,7 @@ fn command_lines(argv: &[String], width: u16) -> Vec<Line<'static>> {
     let command = format!("$ {}", arguments.join(" "));
     let content =
         std::iter::once(command.as_str()).chain(blocks.iter().flat_map(|block| block.lines()));
-    let capacity = width.saturating_sub(7).max(1) as usize;
+    let capacity = width.saturating_sub(9).max(1) as usize;
     let mut lines = Vec::new();
     for line in content {
         let line = line.replace('\t', "    ");
@@ -1182,11 +1328,10 @@ fn command_lines(argv: &[String], width: u16) -> Vec<Line<'static>> {
     }
     lines
         .into_iter()
-        .map(|line| Line::from(vec!["     │ ".fg(MUTED), line.fg(KEY_HINT)]))
+        .map(|line| Line::from(vec!["       │ ".fg(BORDER), line.fg(KEY_HINT)]))
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn plan_lines(
     plan: &Plan,
     planning: &Planning,
@@ -1194,66 +1339,33 @@ fn plan_lines(
     details: bool,
     width: u16,
     activity: Option<&'static str>,
-    published: bool,
     network: &[crate::network::Access],
 ) -> Vec<Line<'static>> {
     let completed = execution
         .is_some_and(|e| e.complete() && matches!(e.status.as_str(), "review" | "applied"));
     let compact = completed && !details;
-    let mut lines = vec![
-        Line::from(if planning.source.starts_with("upstream:") {
-            "▤ integration plan"
+    let heading = if planning.source.starts_with("upstream:") {
+        "▤ Integration plan"
+    } else {
+        "▤ Plan"
+    };
+    let toggle = Line::from(vec![
+        "ctrl+o ".fg(ACCENT),
+        if details {
+            "▾ hide details"
         } else {
-            "▤ codex · planner"
-        })
-        .fg(ACCENT)
-        .bold(),
-        Line::from(if let Some(execution) = execution {
-            format!(
-                "{} · {}/{} tasks done",
-                match execution.status.as_str() {
-                    "review" | "applied" if published => "PR published",
-                    "review" => "changes ready",
-                    "applied" => "saved version",
-                    "blocked" if execution.tasks.iter().any(|run| run.status == "waiting") =>
-                        "waiting for reply",
-                    "blocked" => "execution paused",
-                    "verifying" => "final checks",
-                    "repairing"
-                        if execution
-                            .tasks
-                            .iter()
-                            .any(|run| run.status == "repair_paused") =>
-                        "repair paused",
-                    "repairing" => "repair requested",
-                    _ if execution
-                        .tasks
-                        .iter()
-                        .any(|run| run.repair.is_some() && run.status != "done") =>
-                        "repairing",
-                    _ => "execution",
-                },
-                execution
-                    .tasks
-                    .iter()
-                    .filter(|run| run.status == "done")
-                    .count(),
-                execution.tasks.len()
-            )
-        } else {
-            format!(
-                "plan ready · {} {}",
-                plan.tasks.len(),
-                if plan.tasks.len() == 1 {
-                    "task"
-                } else {
-                    "tasks"
-                }
-            )
-        })
-        .fg(ACCENT)
-        .bold(),
-    ];
+            "▸ show details"
+        }
+        .fg(KEY_HINT),
+    ]);
+    let mut title = Line::from(heading.fg(ACCENT).bold());
+    let mut lines = if title.width() + toggle.width() + 2 <= width as usize {
+        title.spans.push(Span::raw("  "));
+        title.spans.extend(toggle.spans);
+        vec![title]
+    } else {
+        vec![title, toggle]
+    };
     if completed && let Some(execution) = execution {
         lines.push(
             Line::from(format!(
@@ -1279,14 +1391,18 @@ fn plan_lines(
         ] {
             if !notes.is_empty() {
                 lines.push(Line::from(label).fg(KEY_HINT));
-                lines.extend(notes.iter().map(|note| Line::from(format!("   · {note}"))));
+                lines.extend(
+                    notes
+                        .iter()
+                        .flat_map(|note| wrap_line(Line::from(format!("     · {note}")), width, 7)),
+                );
             }
         }
     }
     for (index, task) in plan.tasks.iter().enumerate() {
         let run = execution
             .and_then(|execution| execution.tasks.iter().find(|run| run.task_id == task.id));
-        let marker = run.map_or("", |run| match run.status.as_str() {
+        let marker = run.map_or("○", |run| match run.status.as_str() {
             "done" => "✓",
             "running" | "sending" | "checking" if activity.is_some() => activity.unwrap(),
             "running" | "sending" => "●",
@@ -1296,22 +1412,15 @@ fn plan_lines(
             "repair_wait" => "↺",
             _ => "○",
         });
-        let prefix = if marker.is_empty() {
-            format!("{}. ", index + 1)
-        } else {
-            format!("{marker} {}. ", index + 1)
-        };
+        let number_width = plan.tasks.len().to_string().len();
+        let prefix = format!("{marker} {:>number_width$}. ", index + 1);
+        let indent = prefix.len() - marker.len() + 1;
+        let command_width = width.saturating_sub(number_width.saturating_sub(1) as u16);
+        let task_start = lines.len();
         if !compact {
             lines.push(Line::default());
         }
-        let title = if compact {
-            fit_name(
-                &task.title,
-                width.saturating_sub(Span::raw(&prefix).width() as u16),
-            )
-        } else {
-            task.title.clone()
-        };
+        let title = task.title.clone();
         lines.push(Line::from(vec![
             prefix
                 .fg(if marker == "!" { Color::Red } else { ACCENT })
@@ -1328,7 +1437,7 @@ fn plan_lines(
                 .fg(KEY_HINT),
         ]));
         if !compact {
-            lines.push(Line::from(format!("   {}", task.outcome)));
+            lines.push(Line::from(format!("     {}", task.outcome)));
         }
         if let Some(access) = run.and_then(|run| {
             network
@@ -1342,9 +1451,9 @@ fn plan_lines(
         }) {
             lines.push(
                 Line::from(match access.status.as_str() {
-                    "pending" => "   ! Network access needed",
-                    "denied" => "   ! Network access denied · task paused",
-                    _ => "   ◌ Access approved · reconnecting worker",
+                    "pending" => "     ! Network access needed",
+                    "denied" => "     ! Network access denied · task paused",
+                    _ => "     ◌ Access approved · reconnecting worker",
                 })
                 .fg(ACCENT)
                 .bold(),
@@ -1359,7 +1468,7 @@ fn plan_lines(
         if !compact && !dependencies.is_empty() {
             lines.push(
                 Line::from(format!(
-                    "   after {} {}",
+                    "     after {} {}",
                     if dependencies.len() == 1 {
                         "task"
                     } else {
@@ -1375,7 +1484,7 @@ fn plan_lines(
                 let reason = &run.unwrap().assignment_reason;
                 lines.push(
                     Line::from(format!(
-                        "   worker · {provider}{}",
+                        "     worker · {provider}{}",
                         if reason.is_empty() {
                             String::new()
                         } else {
@@ -1385,11 +1494,11 @@ fn plan_lines(
                     .fg(KEY_HINT),
                 );
             } else if task.worker == "auto" {
-                lines.push(Line::from("   worker · assigned when ready").fg(KEY_HINT));
+                lines.push(Line::from("     worker · assigned when ready").fg(KEY_HINT));
             } else {
                 lines.push(
                     Line::from(format!(
-                        "   worker · {}{}",
+                        "     worker · {}{}",
                         task.worker,
                         task.provider_reason
                             .as_ref()
@@ -1403,35 +1512,36 @@ fn plan_lines(
                 && let Some(repair) = &run.repair
                 && (run.task_id == repair.task || run.status == "repair_wait")
             {
-                lines.push(Line::from(format!("   repair check · {}", repair.check)).fg(ACCENT));
-                lines.extend(command_lines(&repair.command, width));
+                lines.push(Line::from(format!("     repair check · {}", repair.check)).fg(ACCENT));
+                lines.extend(command_lines(&repair.command, command_width));
                 lines.extend(
                     repair
                         .evidence
                         .lines()
                         .take(6)
-                        .map(|line| Line::from(format!("     {line}")).fg(KEY_HINT)),
+                        .map(|line| Line::from(format!("       {line}")).fg(KEY_HINT)),
                 );
             }
             if let Some(selection) = run.and_then(|run| run.selection.as_ref()) {
                 lines.push(
                     Line::from(format!(
-                        "   model · {} · {}",
+                        "     model · {} · {}",
                         selection.model, selection.effort
                     ))
                     .fg(KEY_HINT),
                 );
-                lines.push(Line::from(format!("   {}", selection.display_reason())).fg(MUTED));
+                lines.push(Line::from(format!("     {}", selection.display_reason())).fg(MUTED));
             }
             if !task.files.is_empty() {
-                lines
-                    .push(Line::from(format!("   files · {}", task.files.join(", "))).fg(KEY_HINT));
+                lines.push(
+                    Line::from(format!("     files · {}", task.files.join(", "))).fg(KEY_HINT),
+                );
             }
             for peer in plan.peers(task) {
                 let number = plan.tasks.iter().position(|t| t.id == peer.task).unwrap() + 1;
                 lines.push(
                     Line::from(format!(
-                        "   with task {number} · {}",
+                        "     with task {number} · {}",
                         peer.topics.join("; ")
                     ))
                     .fg(KEY_HINT),
@@ -1453,13 +1563,13 @@ fn plan_lines(
                     .count();
                 lines.push(
                     Line::from(format!(
-                        "   verification · {passed}/{total} passed · {failed} failed · {} not run",
+                        "     verification · {passed}/{total} passed · {failed} failed · {} not run",
                         total - passed - failed
                     ))
                     .fg(if passed == total { ACCENT } else { Color::Red }),
                 );
             }
-            lines.push(Line::from("   checks").fg(KEY_HINT));
+            lines.push(Line::from("     checks").fg(KEY_HINT));
             for check in &task.checks {
                 let results = run
                     .map(|run| {
@@ -1470,7 +1580,7 @@ fn plan_lines(
                     })
                     .unwrap_or_default();
                 lines.push(Line::from(format!(
-                    "   {} {check}{}",
+                    "     {} {check}{}",
                     if results.is_empty() {
                         "·"
                     } else if results.iter().all(|result| result.exit_code == Some(0)) {
@@ -1492,13 +1602,13 @@ fn plan_lines(
                     }
                 )));
                 for result in results {
-                    lines.extend(command_lines(&result.command, width));
+                    lines.extend(command_lines(&result.command, command_width));
                     if result.exit_code != Some(0) {
                         lines.extend(
                             result
                                 .evidence()
                                 .lines()
-                                .map(|line| Line::from(format!("     {line}")).fg(Color::Red)),
+                                .map(|line| Line::from(format!("       {line}")).fg(Color::Red)),
                         );
                     }
                 }
@@ -1506,30 +1616,46 @@ fn plan_lines(
             if let Some(run) = run
                 && !run.summary.is_empty()
             {
-                lines.push(Line::from(format!("   worker report · {}", run.summary)).fg(MUTED));
+                lines.push(Line::from(format!("     worker report · {}", run.summary)).fg(MUTED));
             }
             if let Some(run) = run
                 && run.status != "done"
                 && run.checks.is_empty()
                 && !run.verification_feedback.is_empty()
             {
-                lines.push(Line::from("   previous verification · recovery context").fg(KEY_HINT));
+                lines
+                    .push(Line::from("     previous verification · recovery context").fg(KEY_HINT));
                 for check in run
                     .verification_feedback
                     .iter()
                     .filter(|check| check.exit_code != Some(0))
                 {
-                    lines.push(Line::from(format!("   ! {}", check.check)).fg(Color::Red));
+                    lines.push(Line::from(format!("     ! {}", check.check)).fg(Color::Red));
                     lines.extend(
                         check
                             .evidence()
                             .lines()
-                            .map(|line| Line::from(format!("     {line}")).fg(Color::Red)),
+                            .map(|line| Line::from(format!("       {line}")).fg(Color::Red)),
                     );
                 }
             }
         }
+        let task_lines = lines.drain(task_start..).collect::<Vec<_>>();
+        for mut line in task_lines {
+            let text = line.to_string();
+            let leading = text.chars().take_while(|c| *c == ' ').count();
+            if leading > 0 && indent > 5 {
+                line.spans.insert(0, Span::raw(" ".repeat(indent - 5)));
+            }
+            let continuation = if leading == 0 {
+                indent
+            } else {
+                leading + indent - 5
+            };
+            lines.extend(wrap_line(line, width, continuation));
+        }
     }
+
     if details {
         if let Some(execution) = execution
             && !execution.checks.is_empty()
@@ -1565,7 +1691,7 @@ fn plan_lines(
         if let Some(model) = &planning.model {
             lines.push(
                 Line::from(format!(
-                    "model · {model} · {}",
+                    "planner · codex · {model} · {}",
                     planning.effort.as_deref().unwrap_or("medium")
                 ))
                 .fg(KEY_HINT),
@@ -1590,7 +1716,6 @@ fn conversation_blocks<'a>(
     history: bool,
     width: u16,
     activity: Option<&'static str>,
-    published: bool,
     network: &[crate::network::Access],
 ) -> Vec<ConversationBlock<'a>> {
     let saved = code_mod
@@ -1623,7 +1748,6 @@ fn conversation_blocks<'a>(
                         details,
                         width,
                         activity,
-                        published,
                         network,
                     )
                     .into(),
@@ -1796,6 +1920,10 @@ fn draw_conversation(
     area: Rect,
     elapsed: Option<Duration>,
 ) -> bool {
+    let area = Rect {
+        width: area.width.min(PROSE_WIDTH),
+        ..area
+    };
     app.page_size = area.height.max(1);
     if area.is_empty() {
         return false;
@@ -1817,7 +1945,6 @@ fn draw_conversation(
             false,
             area.width,
             activity,
-            app.published(),
             &app.network_requests,
         )
     });
@@ -1884,5 +2011,34 @@ fn draw_message_rows(
             ..visible
         };
         frame.render_widget(paragraph.scroll(((visible_start - top) as u16, 0)), body);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hanging_wrap_preserves_unicode_and_long_tokens() {
+        let source = "     café 界界 src/averylongfilename_without_spaces.rs";
+        let rows = wrap_line(Line::from(source).fg(ACCENT), 18, 5);
+        assert!(rows.len() > 1);
+        assert!(rows.iter().all(|row| row.width() <= 18));
+        assert!(rows.iter().all(|row| row.to_string().starts_with("     ")));
+        let compact = |text: String| {
+            text.chars()
+                .filter(|c| !c.is_whitespace())
+                .collect::<String>()
+        };
+        assert_eq!(
+            compact(rows.iter().map(ToString::to_string).collect()),
+            compact(source.into())
+        );
+        assert!(
+            rows.iter()
+                .flat_map(|row| row.styled_graphemes(Style::new()))
+                .filter(|g| g.symbol != " ")
+                .all(|g| g.style.fg == Some(ACCENT))
+        );
     }
 }

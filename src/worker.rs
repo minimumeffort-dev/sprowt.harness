@@ -164,27 +164,13 @@ impl Worker {
     }
 
     pub fn label(&self, activity: Option<&str>) -> String {
-        let state = match self.status {
-            Status::Routing => "choosing model",
-            Status::Complete if self.role == Role::Planner => "plan ready",
-            Status::Complete if self.role == Role::Reviewer => "review finished",
-            Status::Complete => "changes ready",
-            Status::Checking => "checking",
-            Status::Connecting => self.preparing.as_deref().unwrap_or("connecting"),
-            Status::Ready if self.enabled => "ready",
-            Status::Ready => "paused",
-            Status::Starting => "starting",
-            Status::Running => self.preparing.as_deref().unwrap_or("running"),
-            Status::Stopping => "stopping",
-            Status::Failed => "stopped",
-        };
         let glyph = activity.unwrap_or(if self.role == Role::Planner {
             "▤"
         } else {
             "◆"
         });
         format!(
-            "{glyph} {} · {}{}{} · {state} · {}",
+            "{glyph} {} · {}{}{}",
             self.provider,
             if self.role == Role::Executor {
                 format!("executor · w{}", self.id)
@@ -198,13 +184,6 @@ impl Worker {
                 .as_deref()
                 .or_else(|| self.model.as_ref().map(|_| "effort unknown"))
                 .map_or(String::new(), |effort| format!(" · {effort}")),
-            if self.role == Role::Reviewer {
-                "read-only · Linux VM"
-            } else if self.writable {
-                "Linux VM"
-            } else {
-                "read-only"
-            }
         )
     }
 
