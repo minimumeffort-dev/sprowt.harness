@@ -17,6 +17,34 @@ use crate::{
 
 pub const TOOL: &str = "run_task_checks";
 
+// Reuse only within this call. Each task keeps its own cwd, HOME and permissions.
+pub fn unique_results(
+    checks: &[Check],
+    cancelled: &AtomicBool,
+    mut run: impl FnMut(&Check) -> io::Result<CheckResult>,
+) -> io::Result<Vec<CheckResult>> {
+    let mut results: Vec<CheckResult> = Vec::new();
+    for check in checks {
+        if cancelled.load(Ordering::Relaxed) {
+            break;
+        }
+        let mut result = match results
+            .iter()
+            .find(|r| r.task == check.task && r.command == check.command)
+        {
+            Some(result) => result.clone(),
+            None => run(check)?,
+        };
+        result.check.clone_from(&check.check);
+        let passed = result.exit_code == Some(0);
+        results.push(result);
+        if !passed {
+            break;
+        }
+    }
+    Ok(results)
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Script {
@@ -107,14 +135,14 @@ impl Request {
         task_worktree::task_id(&self.source)?;
         if self.source.len() > 100
             || self.checks.is_empty()
-            || self.checks.len() > 12
+            || self.checks.len() > 32
             || self.checks.iter().any(|c| {
                 c.command.len() > 128
                     || c.command.iter().map(String::len).sum::<usize>() > 64 * 1024
             })
         {
             return Err(io::Error::other(
-                "Run 1–12 declared check commands with bounded arguments.",
+                "Run 1–32 declared check commands with bounded arguments.",
             ));
         }
         if let Some(scripts) = &self.scripts {
@@ -129,7 +157,7 @@ pub fn tool() -> Value {
         "description":"Run all declared task checks in the controller's actual verification environment before returning a completed report. Use your current task attempt source. Commands have absolute executables, run in your task folder with a fresh environment, and have 30 seconds each. Optional scripts replace the saved bundle at /opt/sprowt-checks/<task-run-id>/<name>; null preserves it. Scripts are read-only, survive retries and restart, and must create temporary fixtures under /tmp or HOME, never /static. Do not run concurrent source edits. Returns observed results and the tested source fingerprint; later edits require another run. This does not finish or merge the task; return the same commands in your final report.",
         "inputSchema":{"type":"object","additionalProperties":false,
             "properties":{"source":{"type":"string"},
-                "checks":{"type":"array","minItems":1,"maxItems":12,"items":{"type":"object","additionalProperties":false,"properties":{"check":{"type":"string"},"command":{"type":"array","minItems":1,"items":{"type":"string"}}},"required":["check","command"]}},
+                "checks":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","additionalProperties":false,"properties":{"check":{"type":"string"},"command":{"type":"array","minItems":1,"items":{"type":"string"}}},"required":["check","command"]}},
                 "scripts":{"type":["array","null"],"maxItems":16,"items":{"type":"object","additionalProperties":false,"properties":{"name":{"type":"string"},"content":{"type":"string"}},"required":["name","content"]}}},
             "required":["source","checks","scripts"]}})
 }
@@ -180,6 +208,7 @@ pub fn run(
     worker: i64,
     request: Request,
     cancelled: &AtomicBool,
+    progress: impl FnMut(&str),
 ) -> io::Result<String> {
     request.validate()?;
     let (id, task) = authorize(store, vm.root(), mod_id, worker, &request.source)?;
@@ -207,7 +236,7 @@ pub fn run(
     }
     bundle.receipt = None;
     save(vm.root(), id, &bundle)?;
-    let (before, results) = vm.verify(&checks, cancelled)?;
+    let (before, results) = vm.verify_with_progress(&checks, cancelled, progress)?;
     let after = vm.snapshot(&task_worktree::folder(id), &AtomicBool::new(false))?;
     // A stop or replacement attempt cannot save successful evidence for the old run.
     authorize(store, vm.root(), mod_id, worker, &request.source)?;
@@ -401,6 +430,69 @@ mod tests {
             .task_status(code_mod.id, &source, "checking", None)
             .unwrap();
         assert!(authorize(&store, &root, code_mod.id, worker, &source).is_err());
+    }
+
+    #[test]
+    fn duplicate_commands_run_once_per_pass_without_losing_coverage() {
+        let flag = AtomicBool::new(false);
+        let check = |task, name: &str, command: &str| Check {
+            task: Some(task),
+            check: name.into(),
+            command: vec![command.into()],
+        };
+        let checks = [
+            check(1, "First", "/a"),
+            check(1, "Other", "/b"),
+            check(1, "Regression", "/a"),
+            check(2, "Other environment", "/a"),
+        ];
+        let mut calls = Vec::new();
+        for _ in 0..2 {
+            let results = unique_results(&checks, &flag, |c| {
+                calls.push((c.task, c.command.clone()));
+                Ok(CheckResult {
+                    task: c.task,
+                    check: c.check.clone(),
+                    command: c.command.clone(),
+                    exit_code: Some(0),
+                    output: "observed".into(),
+                    missing_runtime: None,
+                })
+            })
+            .unwrap();
+            assert_eq!(results.len(), checks.len());
+            assert_eq!(
+                results.iter().map(|r| &r.check).collect::<Vec<_>>(),
+                checks.iter().map(|c| &c.check).collect::<Vec<_>>()
+            );
+            assert_eq!(results[2].output, "observed");
+        }
+        assert_eq!(
+            calls.len(),
+            6,
+            "No reuse across passes or task environments"
+        );
+        let mut calls = 0;
+        let failed = unique_results(&checks, &flag, |c| {
+            calls += 1;
+            Ok(CheckResult {
+                task: c.task,
+                check: c.check.clone(),
+                command: c.command.clone(),
+                exit_code: Some(1),
+                output: "regression".into(),
+                missing_runtime: None,
+            })
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(failed.len(), 1);
+        flag.store(true, Ordering::Relaxed);
+        assert!(
+            unique_results(&checks, &flag, |_| panic!("Stopped checks ran"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

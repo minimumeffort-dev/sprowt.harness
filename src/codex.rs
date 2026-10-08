@@ -695,7 +695,9 @@ fn serve(
                     .ok_or_else(|| io::Error::other("Verification requires the mod VM."))?
                     .lock()
                     .unwrap()
-                    .verify_execution(source, checks, &cancelled)?;
+                    .verify_execution_with_progress(source, checks, &cancelled, |label| {
+                        let _ = outgoing.send(Event::Preparing(label.into()));
+                    })?;
                 if let Some(vm) = &vm {
                     let vm = vm.lock().unwrap();
                     if source.starts_with("final:")

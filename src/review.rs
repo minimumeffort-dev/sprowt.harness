@@ -33,6 +33,10 @@ pub struct Report {
     pub findings: Vec<Finding>,
 }
 
+pub fn regression_check(index: usize, finding: &Finding) -> String {
+    format!("Review regression {} · {}", index + 1, finding.title)
+}
+
 #[derive(Clone)]
 pub struct State {
     pub source: String,
@@ -44,6 +48,14 @@ pub struct State {
 }
 
 impl State {
+    pub fn holds_updates(&self, code_mod: &CodeMod) -> bool {
+        code_mod
+            .planning
+            .as_ref()
+            .is_some_and(|p| p.source == self.plan_source)
+            && self.status != "clean"
+    }
+
     pub fn current(&self, code_mod: &CodeMod) -> bool {
         !code_mod.closed
             && code_mod.queue.is_empty()
@@ -263,7 +275,25 @@ impl Store {
             return Ok(false);
         }
         let report = state.report.as_ref().ok_or(rusqlite::Error::InvalidQuery)?;
-        let plan = code_mod.planning.as_ref().unwrap().plan.as_ref().unwrap();
+        let mut plan = code_mod
+            .planning
+            .as_ref()
+            .unwrap()
+            .plan
+            .as_ref()
+            .unwrap()
+            .clone();
+        for (index, finding) in report.findings.iter().enumerate().rev() {
+            let check = regression_check(index, finding);
+            let task = plan
+                .tasks
+                .iter_mut()
+                .find(|t| t.id == finding.owner)
+                .ok_or(rusqlite::Error::InvalidQuery)?;
+            if !task.checks.contains(&check) {
+                task.checks.insert(0, check);
+            }
+        }
         let mut affected: BTreeSet<_> = report.findings.iter().map(|f| f.owner.clone()).collect();
         loop {
             let before = affected.len();
@@ -281,6 +311,10 @@ impl Store {
         if changed == 0 {
             return Ok(false);
         }
+        tx.execute(
+            "UPDATE plans SET body=?2 WHERE mod_id=?1",
+            params![code_mod.id, serde_json::to_string(&plan).unwrap()],
+        )?;
         for run in execution
             .tasks
             .iter()
@@ -295,7 +329,7 @@ impl Store {
                 "Recheck this dependent task after review fixes. Preserve its original scope and checks.".into()
             } else {
                 format!(
-                    "Independent review findings: {}\nFix these defects within your existing scope. Add regression coverage within that scope and include it in the appropriate declared check command for independent verification. Preserve the original request and contracts; rerun every declared check.",
+                    "Independent review findings: {}\nAddress only these defects within your existing scope. First reproduce each finding, then fix it and run its Review regression check. Each finding has a required check in Current task.checks; include a focused command that asserts that finding's behavior. Preserve the original request and contracts and cover the remaining checks. Reuse the installed task runtime, browser and model downloads in your HOME cache; do not rebuild working environments or repeat downloads. Use run_task_checks for the repeatable verification instead of running the same full suites manually first. Give short progress updates when moving between fixing findings, downloading dependencies and running checks.",
                     serde_json::to_string(&findings).unwrap()
                 )
             };
@@ -429,6 +463,14 @@ pub(crate) mod tests {
         drop(store);
         let store = data.store();
         let after = store.execution(m.id).unwrap().unwrap();
+        let saved_plan = store.planning(m.id).unwrap().unwrap().plan.unwrap();
+        let task = &saved_plan.tasks[0];
+        assert_eq!(task.checks[0], "Review regression 1 · Reject empty names");
+        assert!(task.checks.contains(&plan.tasks[0].checks[0]));
+        let old_report = json!({"status":"completed","summary":"Broad tests pass", "checks":[
+            {"check":plan.tasks[0].checks[0],"command":["/bin/true"]}
+        ]});
+        assert!(crate::execution::Report::parse(&old_report.to_string(), task).is_err());
         for (now, old) in after.tasks.iter().zip(&before) {
             assert_eq!(now.worker, old.worker);
             assert_eq!(now.id, old.id);

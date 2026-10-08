@@ -9,23 +9,28 @@ flowchart TB
     ready["Version ready · checks passed"] -->|"Request review"| review["Fresh reviewer · read-only source in VM"]
     review -->|"No findings"| publish["You confirm publication · PR"]
     review -->|"Issues found"| findings["You inspect the findings"]
-    findings -->|"Fix issues"| fix["Original file owners repair them"]
-    fix --> checks["Affected tasks + final checks run again"]
+    findings -->|"Fix issues"| fix["Original owners · fix each finding"]
+    fix --> focused["Finding regressions + affected task checks"]
+    focused --> checks["Combined checks · duplicate commands run once"]
     checks -->|"Pass"| review
 ```
 
 ## Fixes and limits
 
 - **Fix issues** returns all current findings to the existing task owners. Their providers, file scopes and checks stay intact.
-- Owners include regression coverage in their check commands. Dependent tasks rerun after the fixes. Rust independently checks the combined result, then starts a fresh review.
+- Each finding adds a named **Review regression** check to its owner’s task. Owners reproduce and fix that case first; broad suite results alone cannot omit the finding’s check. Original checks remain required.
+- Dependent tasks rerun after the fixes. Rust independently checks the combined result, then starts a fresh review. A passing regression is shown as checked; the fresh reviewer decides whether defects remain.
+- Repair keeps the task folders, installed dependencies and worker download caches. Identical commands in one task verification pass run once, with results mapped to every covered check. New passes and changed source require fresh verification.
 - Each plan gets at most **two user-triggered review fix rounds**. Retrying review keeps that budget. Unresolved findings stay visible; send edits to revise the plan.
 - Invalid reports, unknown owners and paths outside the owner's scope pause review. They cannot start fixes.
 
 The reviewer cannot write source, call harness tools, publish or grant network access. Its commands run in the existing codemod VM with only its own home and temporary directory writable. Planning remains **Astra xhigh**; Jev still routes executor effort.
 
+Automatic target updates wait while the current plan has an unfinished review, open findings or repairs. A clean review releases the update. Local project sync continues. **Ctrl+U** can explicitly update a finished version; that changes the source and makes its previous review outdated.
+
 ## What you see
 
-The dock shows the issue count and recommends **View review findings** when a review finds defects.
+The dock shows the issue count and recommends **View review findings** when a review finds defects. During repair it shows checked issues, the current check and elapsed worker time. Target integration says **Verifying target update**; final verification has its own phase.
 
 1. Press **Ctrl+G**, then **i**, to open the findings. Each issue shows its priority, file and line, owner, evidence and proposed fix.
 2. Press **x · Fix issues** to start repairs. This action is also in All actions. Findings wait for your choice, including after restarting.

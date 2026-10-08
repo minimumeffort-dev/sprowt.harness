@@ -356,17 +356,28 @@ impl Sandbox {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn verify_execution(
         &mut self,
         source: &str,
         checks: &[crate::execution::Check],
         cancelled: &AtomicBool,
     ) -> io::Result<(Snapshot, Vec<crate::execution::CheckResult>)> {
+        self.verify_execution_with_progress(source, checks, cancelled, |_| {})
+    }
+
+    pub fn verify_execution_with_progress(
+        &mut self,
+        source: &str,
+        checks: &[crate::execution::Check],
+        cancelled: &AtomicBool,
+        mut progress: impl FnMut(&str),
+    ) -> io::Result<(Snapshot, Vec<crate::execution::CheckResult>)> {
         let keep = AtomicBool::new(false);
         if !source.starts_with("final:") {
             let id = task_id(source)?;
             self.activate_task(id, cancelled)?;
-            let (before, results) = self.verify(checks, cancelled)?;
+            let (before, results) = self.verify_with_progress(checks, cancelled, &mut progress)?;
             let unchanged = before == self.snapshot(&folder(id), &keep)?;
             let passed = unchanged
                 && !checks.is_empty()
@@ -395,7 +406,7 @@ impl Sandbox {
             } else {
                 self.tasks.active = None;
             }
-            let (_, mut checked) = self.verify(group, cancelled)?;
+            let (_, mut checked) = self.verify_with_progress(group, cancelled, &mut progress)?;
             if let Some(result) = checked.last_mut()
                 && self.snapshot(&self.task_folder(), &keep)? != combined
             {

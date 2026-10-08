@@ -50,7 +50,7 @@ Initial Git setup and the GitHub destination require confirmation. Setup checks 
 
 A shared VM controller serializes package installation, task checkpoints, verification and Git integration. Each worker has a separate conversation and runtime home; ordinary worker commands run concurrently. The VM adapter manages task Git worktrees internally. These operations use saved task identities and are not exposed as model tools. See [Plan execution](execution.md).
 
-Target updates wait for idle workers and a verified version. Publication fetches the target again and refuses pending or outdated integration. Workers cannot invoke these host operations; resolution and checks run through their existing VM tools. See [Worktrees and PRs](git-workflow.md#when-another-codemod-merges).
+Target updates wait for idle workers and a verified version. Automatic updates also wait for the current review and its repairs; explicit updates can replace a finished version’s review. Publication fetches the target again and refuses pending or outdated integration. Workers cannot invoke these host operations; resolution and checks run through their existing VM tools. See [Worktrees and PRs](git-workflow.md#when-another-codemod-merges).
 
 ## Progress and activity
 

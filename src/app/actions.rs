@@ -291,6 +291,7 @@ impl App {
                     || !active
                         && !self.auto_plans.contains(&m.id)
                         && !self.auto_runs.contains(&m.id)
+                        && !m.agent_review.as_ref().is_some_and(|r| r.holds_updates(m))
             }) {
                 dock.status = activity.into();
                 dock.tone = Tone::Busy;
@@ -308,6 +309,35 @@ impl App {
                         if e.status == "verifying" {
                             return "Final verification".into();
                         }
+                        if let Some(review) =
+                            m.agent_review.as_ref().filter(|r| r.status == "fixing")
+                        {
+                            let findings = review
+                                .report
+                                .as_ref()
+                                .map_or(&[][..], |r| r.findings.as_slice());
+                            let checked = findings
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, f)| {
+                                    e.tasks.iter().any(|t| {
+                                        t.task_id == f.owner
+                                            && t.status == "done"
+                                            && t.checks.iter().any(|c| {
+                                                c.check == crate::review::regression_check(*i, f)
+                                                    && c.exit_code == Some(0)
+                                            })
+                                    })
+                                })
+                                .count();
+                            return format!(
+                                "Review fixes · {checked}/{} issues checked",
+                                findings.len()
+                            );
+                        }
+                        if e.tasks.len() == 1 && e.tasks[0].task_id == "upstream" {
+                            return "Verifying target update".into();
+                        }
                         if e.tasks
                             .iter()
                             .any(|t| t.status != "done" && t.restoring_runtime())
@@ -321,6 +351,16 @@ impl App {
                         )
                     })
                 };
+                if let Some(worker) = worker.filter(|w| w.busy()) {
+                    if let Some(progress) = worker.progress() {
+                        dock.status.push_str(&format!(
+                            " · {}",
+                            progress.chars().take(100).collect::<String>()
+                        ));
+                    }
+                    dock.status
+                        .push_str(&format!(" · {}", worker.elapsed_label()));
+                }
                 dock.tone = Tone::Busy;
             } else if busy {
                 dock.status = "Workers ready".into();
@@ -334,7 +374,9 @@ impl App {
                 }
                 .into();
                 dock.primary = Some(NewMod);
-            } else if let Some(target) = changed {
+            } else if let Some(target) =
+                changed.filter(|_| !m.agent_review.as_ref().is_some_and(|r| r.holds_updates(m)))
+            {
                 dock.status = format!("{} changed · combined checks needed", target.branch);
                 dock.primary = Some(Update);
                 dock.tone = Tone::Attention;
@@ -565,6 +607,7 @@ impl App {
                 if let Some(index) = self.active {
                     let id = self.mods[index].id;
                     if self.store.review_fixes(&self.mods[index])? {
+                        self.mods[index].planning = self.store.planning(id)?;
                         self.mods[index].execution = self.store.execution(id)?;
                         self.executing_mods.insert(id);
                     }
@@ -589,7 +632,7 @@ impl App {
                     && !self.mods[index].closed
                     && self.mods[index].execution.is_some()
                 {
-                    self.check_target(index, false);
+                    self.check_target(index, false, true);
                 }
             }
             Action::Queue => self.view = View::Queue(0),

@@ -230,10 +230,14 @@ pub fn serve(
                 ),
                 Action::Stop { turn } => ("turn/interrupt", String::new(), json!({"turn":turn})),
                 Action::Verify { source, checks } => {
-                    let (before, checks) = vm
-                        .lock()
-                        .unwrap()
-                        .verify_execution(&source, &checks, &cancelled)?;
+                    let (before, checks) = vm.lock().unwrap().verify_execution_with_progress(
+                        &source,
+                        &checks,
+                        &cancelled,
+                        |label| {
+                            let _ = outgoing.send(Event::Preparing(label.into()));
+                        },
+                    )?;
                     let _ = outgoing.send(Event::Checked {
                         source,
                         checks,

@@ -1,4 +1,4 @@
-use std::{io, path::Path};
+use std::{io, path::Path, time::Instant};
 
 use serde_json::Value;
 
@@ -51,6 +51,7 @@ pub struct Worker {
     verification: Vec<Check>,
     verify_before: Option<workspace::Snapshot>,
     preparing: Option<String>,
+    activity_started: Instant,
 }
 
 impl Worker {
@@ -148,6 +149,7 @@ impl Worker {
             verification: Vec::new(),
             verify_before: None,
             preparing: None,
+            activity_started: Instant::now(),
         })
     }
 
@@ -575,6 +577,9 @@ impl Worker {
                 }
             }
             Event::Accepted { source, turn } => {
+                if !source.starts_with("00000005-") {
+                    self.activity_started = Instant::now();
+                }
                 self.preparing = None;
                 if let Some(input) = self.pending.take() {
                     if input.source != source {
@@ -712,6 +717,7 @@ impl Worker {
                 mut checks,
                 before,
             } if self.task_source.as_deref() == Some(&source) => {
+                self.preparing = None;
                 self.verify_before = Some(before);
                 let passed = self.checks_passed(code_mod, &checks);
                 let matched = checks.len() <= self.verification.len()
@@ -1232,6 +1238,19 @@ impl Worker {
             .map_or_else(|| "task".into(), |task| task.title.clone())
     }
 
+    pub fn progress(&self) -> Option<&str> {
+        self.busy().then_some(self.preparing.as_deref()).flatten()
+    }
+
+    pub fn elapsed_label(&self) -> String {
+        let seconds = self.activity_started.elapsed().as_secs();
+        if seconds >= 60 {
+            format!("{}m {:02}s", seconds / 60, seconds % 60)
+        } else {
+            format!("{seconds}s")
+        }
+    }
+
     pub fn activity(&self, code_mod: &CodeMod) -> String {
         let task = code_mod.execution.as_ref().and_then(|e| {
             e.tasks
@@ -1432,6 +1451,7 @@ impl Worker {
                 check.task = Some(id);
             }
         }
+        self.preparing = Some("Preparing checks".into());
         self.verify_before = None;
         self.verification = checks.clone();
         self.task_source = Some(source.clone());
@@ -2272,6 +2292,27 @@ mod tests {
             .unwrap();
         assert_eq!(reply.model.as_deref(), Some("gpt-6.1-sol"));
         assert_eq!(reply.effort.as_deref(), Some("xhigh"));
+    }
+
+    #[test]
+    fn current_check_progress_is_visible_only_while_busy() {
+        let (_data, mut store, mut m, mut worker) = executor();
+        worker.status = Status::Checking;
+        worker.activity_started = Instant::now() - std::time::Duration::from_secs(125);
+        worker
+            .receive(
+                Event::Preparing("Checking 2/4 · Review regression 1 · Preserve focus".into()),
+                &mut store,
+                &mut m,
+            )
+            .unwrap();
+        assert_eq!(
+            worker.progress(),
+            Some("Checking 2/4 · Review regression 1 · Preserve focus")
+        );
+        assert!(worker.elapsed_label().starts_with("2m "));
+        worker.status = Status::Complete;
+        assert_eq!(worker.progress(), None);
     }
 
     fn executor() -> (TestData, Store, CodeMod, Worker) {

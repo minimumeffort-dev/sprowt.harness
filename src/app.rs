@@ -924,7 +924,7 @@ impl App {
         if self.current_mod().is_some_and(|m| m.git_root.is_some())
             && git_mod::has_origin(&self.project)
         {
-            self.check_target(self.active.unwrap(), true);
+            self.check_target(self.active.unwrap(), true, true);
             return Ok(());
         }
         self.confirm_publication()
@@ -1289,7 +1289,7 @@ impl App {
         self.git_state().is_some_and(GitMod::published)
     }
 
-    fn check_target(&mut self, index: usize, publish: bool) {
+    fn check_target(&mut self, index: usize, publish: bool, explicit: bool) {
         let code_mod = &self.mods[index];
         if code_mod.closed
             || code_mod.git_root.is_none()
@@ -1309,7 +1309,11 @@ impl App {
                     crate::tools::Output::Target(target) => target,
                     _ => unreachable!(),
                 };
-                Ok(git_mod::Result::TargetChecked { target, publish })
+                Ok(git_mod::Result::TargetChecked {
+                    target,
+                    publish,
+                    explicit,
+                })
             }),
         );
     }
@@ -1418,6 +1422,10 @@ impl App {
                 continue;
             }
             if !busy
+                && !code_mod
+                    .agent_review
+                    .as_ref()
+                    .is_some_and(|r| r.holds_updates(code_mod))
                 && code_mod.execution.as_ref().is_some_and(|e| {
                     e.complete() && matches!(e.status.as_str(), "review" | "applied")
                 })
@@ -1438,7 +1446,7 @@ impl App {
                         && !s.closing
                 })
             {
-                self.check_target(index, false);
+                self.check_target(index, false, false);
             }
         }
         Ok(())
@@ -1609,7 +1617,7 @@ impl App {
                     .is_none_or(|u| !u.installed)
             })
         {
-            self.check_target(active, false);
+            self.check_target(active, false, false);
             return Ok(());
         }
         if self.mods[active].git_root.is_some() {
@@ -2623,7 +2631,25 @@ impl App {
                     self.auto_plans.insert(id);
                     self.notice = None;
                 }
-                Ok(git_mod::Result::TargetChecked { target, publish }) => {
+                Ok(git_mod::Result::TargetChecked {
+                    target,
+                    publish,
+                    explicit,
+                }) => {
+                    if explicit
+                        && let Some(target) = &target
+                        && self
+                            .git_states
+                            .get(&id)
+                            .is_some_and(|s| s.base != target.head)
+                        && self.mods[index]
+                            .execution
+                            .as_ref()
+                            .is_some_and(|e| e.complete() && e.status == "review")
+                        && target.pr_state.as_deref().is_none_or(|s| s == "OPEN")
+                    {
+                        self.start_update(index, target.clone());
+                    }
                     if let Some(target) = target {
                         self.targets.insert(id, target);
                     } else {
@@ -3017,67 +3043,103 @@ mod tests {
 
     #[test]
     fn upstream_updates_wait_for_workers_and_keep_drafts_and_queued_edits() {
-        let (data, repo, root, target, plan) = crate::mod_sync::tests::fixture();
-        let mut store = data.store();
-        let project = store.load_project(&repo).unwrap();
-        let code_mod = store.create_mod(project.id, "Improve deletion").unwrap();
-        let id = code_mod.id;
-        store.save_git_root(id, &root).unwrap();
-        store
-            .save_plan(id, &code_mod.planning.as_ref().unwrap().source, &plan)
-            .unwrap();
-        store.create_execution(id, &root, &plan).unwrap();
-        std::fs::write(root.join("work/delete.txt"), "codemod version\n").unwrap();
-        let run = store.execution(id).unwrap().unwrap().tasks[0]
-            .source
-            .clone();
-        let checks = vec![crate::execution::CheckResult {
-            missing_runtime: None,
-            task: None,
-            check: plan.tasks[0].checks[0].clone(),
-            command: vec!["/usr/bin/true".into()],
-            exit_code: Some(0),
-            output: String::new(),
-        }];
-        store
-            .finish_task(id, &run, "done", "Done", &checks)
-            .unwrap();
-        let fingerprint = workspace::review(&root).unwrap().fingerprint;
-        store
-            .execution_checks(id, "review", &checks, Some(&fingerprint))
-            .unwrap();
-        store.enqueue(id, "Later edit").unwrap();
-        store.save_draft(id, "Keep this draft").unwrap();
-        let mut app = App::load(repo, false, store).unwrap();
-        app.targets.insert(id, target);
-        app.target_checks.insert(id, Instant::now());
-        let record = app.store.worker_for(id, Role::Planner).unwrap();
-        let mut worker =
-            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
-        worker.status = Status::Running;
-        worker.enabled = true;
-        app.workers.insert(worker.id, worker);
-        app.maintain_updates().unwrap();
-        assert!(app.git_jobs.is_empty() && !root.join("main-update.json").exists());
-        assert!(!app.version_ready());
-        let worker = app.workers.values_mut().next().unwrap();
-        worker.enabled = false;
-        worker.status = Status::Ready;
-        app.maintain_updates().unwrap();
-        let job = app.git_jobs.remove(&id).unwrap();
-        let started = Instant::now();
-        loop {
-            if let Some(result) = job.poll() {
-                assert!(matches!(result.unwrap(), git_mod::Result::Updated));
-                break;
+        for explicit in [false, true] {
+            let (data, repo, root, target, plan) = crate::mod_sync::tests::fixture();
+            let mut store = data.store();
+            let project = store.load_project(&repo).unwrap();
+            let code_mod = store.create_mod(project.id, "Improve deletion").unwrap();
+            let id = code_mod.id;
+            store.save_git_root(id, &root).unwrap();
+            store
+                .save_plan(id, &code_mod.planning.as_ref().unwrap().source, &plan)
+                .unwrap();
+            store.create_execution(id, &root, &plan).unwrap();
+            std::fs::write(root.join("work/delete.txt"), "codemod version\n").unwrap();
+            let run = store.execution(id).unwrap().unwrap().tasks[0]
+                .source
+                .clone();
+            let checks = vec![crate::execution::CheckResult {
+                missing_runtime: None,
+                task: None,
+                check: plan.tasks[0].checks[0].clone(),
+                command: vec!["/usr/bin/true".into()],
+                exit_code: Some(0),
+                output: String::new(),
+            }];
+            store
+                .finish_task(id, &run, "done", "Done", &checks)
+                .unwrap();
+            let fingerprint = workspace::review(&root).unwrap().fingerprint;
+            store
+                .execution_checks(id, "review", &checks, Some(&fingerprint))
+                .unwrap();
+            store.enqueue(id, "Later edit").unwrap();
+            store.save_draft(id, "Keep this draft").unwrap();
+            let mut app = App::load(repo, false, store).unwrap();
+            app.targets.insert(id, target);
+            app.target_checks.insert(id, Instant::now());
+            let record = app.store.worker_for(id, Role::Planner).unwrap();
+            let mut worker =
+                Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+            worker.status = Status::Running;
+            worker.enabled = true;
+            app.workers.insert(worker.id, worker);
+            app.maintain_updates().unwrap();
+            assert!(app.git_jobs.is_empty() && !root.join("main-update.json").exists());
+            assert!(!app.version_ready());
+            let worker = app.workers.values_mut().next().unwrap();
+            worker.enabled = false;
+            worker.status = Status::Ready;
+            let source = app.mods[0].planning.as_ref().unwrap().source.clone();
+            for status in [
+                "pending", "running", "findings", "fixing", "paused", "blocked", "stale",
+            ] {
+                app.mods[0].agent_review = Some(crate::review::State {
+                    source: "review".into(),
+                    plan_source: source.clone(),
+                    fingerprint: fingerprint.clone(),
+                    status: status.into(),
+                    rounds: 1,
+                    report: None,
+                });
+                app.maintain_updates().unwrap();
+                assert!(app.git_jobs.is_empty(), "Update started during {status}");
+                assert!(!root.join("main-update.json").exists());
             }
-            assert!(started.elapsed() < Duration::from_secs(15));
-            std::thread::sleep(Duration::from_millis(10));
+            if explicit {
+                app.check_target(0, false, true);
+                let started = Instant::now();
+                loop {
+                    app.poll_git_jobs().unwrap();
+                    if app
+                        .git_jobs
+                        .get(&id)
+                        .is_some_and(|j| j.label == "updating from target branch")
+                    {
+                        break;
+                    }
+                    assert!(started.elapsed() < Duration::from_secs(15));
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            } else {
+                app.mods[0].agent_review.as_mut().unwrap().status = "clean".into();
+                app.maintain_updates().unwrap();
+            }
+            let job = app.git_jobs.remove(&id).unwrap();
+            let started = Instant::now();
+            loop {
+                if let Some(result) = job.poll() {
+                    assert!(matches!(result.unwrap(), git_mod::Result::Updated));
+                    break;
+                }
+                assert!(started.elapsed() < Duration::from_secs(15));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert_eq!(app.input.lines(), ["Keep this draft"]);
+            assert_eq!(app.mods[0].queue[0].body, "Later edit");
+            assert!(app.workers.is_empty() && root.join("main-update.json").exists());
+            assert!(matches!(app.view, View::Chat));
         }
-        assert_eq!(app.input.lines(), ["Keep this draft"]);
-        assert_eq!(app.mods[0].queue[0].body, "Later edit");
-        assert!(app.workers.is_empty() && root.join("main-update.json").exists());
-        assert!(matches!(app.view, View::Chat));
     }
 
     #[test]
@@ -4928,6 +4990,29 @@ mod tests {
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(matches!(app.view, View::Chat));
         assert_eq!(app.input.lines(), ["keep my draft"]);
+        let record = app.store.worker_for(m.id, Role::Planner).unwrap();
+        let mut worker =
+            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        worker.role = Role::Executor;
+        worker.status = Status::Running;
+        app.workers.insert(worker.id, worker);
+        assert!(
+            app.action_dock()
+                .status
+                .starts_with("Review fixes · 0/1 issues checked · ")
+        );
+        let task = &app.mods[0]
+            .planning
+            .as_ref()
+            .unwrap()
+            .plan
+            .as_ref()
+            .unwrap()
+            .tasks[0];
+        assert!(task.checks[0].starts_with("Review regression 1"));
+        let rendered = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(rendered.contains("Review fixes · 0/1 issues checked"));
+        assert_eq!(app.input.lines(), ["keep my draft"]);
     }
 
     #[test]
@@ -5787,7 +5872,11 @@ mod tests {
         let execution = app.mods[0].execution.as_mut().unwrap();
         execution.tasks[0].status = "done".into();
         execution.status = "verifying".into();
-        assert_eq!(app.action_dock().status, "Final verification");
+        assert!(
+            app.action_dock()
+                .status
+                .starts_with("Final verification · ")
+        );
         app.workers.values_mut().next().unwrap().status = Status::Ready;
         let idle = rows(&screen_at(
             &mut app,

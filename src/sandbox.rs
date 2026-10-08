@@ -88,7 +88,7 @@ impl Sandbox {
             json!({"path":{"type":"path","path":format!("file://{cwd}/.git")},"access":"read"}),
         );
         json!({"name":self.name,"executor": ["container", "exec", "--interactive", &self.name, "env", "-i", "HOME=/home/sprowt", "CODEX_HOME=/opt/codex-home", "PATH=/usr/local/bin:/usr/bin:/bin", "/usr/local/bin/codex", "exec-server", "--listen", "stdio"],
-            "cwd":cwd,"env":{"HOME":home,"PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1","MUSE_NO_AUTO_UPDATE":"1"},
+            "cwd":cwd,"env":{"HOME":home,"XDG_CACHE_HOME":format!("{home}/.cache"),"PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1","MUSE_NO_AUTO_UPDATE":"1"},
             "sandbox":{"permissions":{"type":"managed","file_system":{"type":"restricted","entries":entries},"network":"enabled"},"cwd":format!("file://{cwd}"),"workspaceRoots":[format!("file://{cwd}")],"windowsSandboxLevel":"disabled","useLegacyLandlock":false},
             "proxy":{"proxy":{"enabled":true,"enableSocks5":false,"enableSocks5Udp":false,"allowUpstreamProxy":false,"dangerouslyAllowAllUnixSockets":true,"mode":"full","domains":self.domains,"unixSockets":{},"allowLocalBinding":true},"auditMetadata":{}}})
     }
@@ -636,6 +636,10 @@ impl Sandbox {
             .collect();
         config.push(format!("permissions.sprowt_review={{filesystem={{\"/\"=\"read\",{}=\"write\",\"/tmp\"=\"write\"}},network={{enabled=false}}}}", json!(home)));
         config.push(format!("shell_environment_policy.set.HOME={}", json!(home)));
+        config.push(format!(
+            "shell_environment_policy.set.XDG_CACHE_HOME={}",
+            json!(format!("{home}/.cache"))
+        ));
         config
     }
 
@@ -681,7 +685,7 @@ impl Sandbox {
         let home = self.runtime_home();
         let rpc = self.rpc.as_mut().unwrap();
         let process = format!("sprowt-{}", PROCESS.fetch_add(1, Ordering::Relaxed));
-        let mut environment = json!({"HOME":home,"PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1"});
+        let mut environment = json!({"HOME":home,"XDG_CACHE_HOME":format!("{home}/.cache"),"PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1"});
         if installing {
             environment["PATH"] = json!("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
             environment["DEBIAN_FRONTEND"] = json!("noninteractive");
@@ -969,76 +973,80 @@ impl Sandbox {
         result
     }
 
+    #[cfg(test)]
     pub fn verify(
         &mut self,
         checks: &[Check],
         cancelled: &AtomicBool,
     ) -> io::Result<(Snapshot, Vec<CheckResult>)> {
+        self.verify_with_progress(checks, cancelled, |_| {})
+    }
+
+    pub fn verify_with_progress(
+        &mut self,
+        checks: &[Check],
+        cancelled: &AtomicBool,
+        mut progress: impl FnMut(&str),
+    ) -> io::Result<(Snapshot, Vec<CheckResult>)> {
         self.restore_check_scripts(cancelled)?;
         let before = self.snapshot(&self.task_folder(), cancelled)?;
-        let mut results = Vec::new();
-        for check in checks {
-            if cancelled.load(Ordering::Relaxed) {
-                break;
-            }
+        let total = checks
+            .iter()
+            .map(|c| (&c.task, &c.command))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let mut current = 0;
+        let results = crate::checks::unique_results(checks, cancelled, |check| {
+            current += 1;
+            progress(&format!("Checking {current}/{total} · {}", check.check));
             let executable = check
                 .command
                 .first()
                 .ok_or_else(|| io::Error::other("Verification requires an executable."))?;
             let probe = vec!["/usr/bin/test".into(), "-x".into(), executable.clone()];
-            let available = match self.run(&probe, cancelled, 30, 8192) {
-                Ok((Some(0), _, _)) => true,
-                Ok((Some(1), _, _)) => false,
-                result => {
-                    results.push(CheckResult {
-                        task: check.task,
-                        check: check.check.clone(),
-                        command: check.command.clone(),
-                        exit_code: None,
-                        output: match result {
-                            Err(error) => error.to_string(),
-                            Ok(_) => "Executable check was interrupted.".into(),
-                        },
-                        missing_runtime: None,
-                    });
-                    break;
-                }
-            };
-            let missing_runtime = (!available).then(|| executable.clone());
-            if let Some(path) = &missing_runtime {
-                results.push(CheckResult {
-                    task: check.task,
-                    check: check.check.clone(),
-                    command: check.command.clone(),
-                    exit_code: None,
-                    output: format!("Check executable is unavailable: {path}. Its task environment needs rebuilding."),
-                    missing_runtime,
-                });
-                break;
-            }
-            let (exit_code, output) = match self.run(&check.command, cancelled, 30, 8192) {
-                Ok((exit, stdout, stderr)) => (
-                    exit,
-                    format!(
-                        "{}{}",
-                        String::from_utf8_lossy(&stdout),
-                        String::from_utf8_lossy(&stderr)
-                    ),
-                ),
-                Err(error) => (None, error.to_string()),
-            };
-            results.push(CheckResult {
+            let mut result = CheckResult {
                 task: check.task,
                 check: check.check.clone(),
                 command: check.command.clone(),
-                exit_code,
-                output,
+                exit_code: None,
+                output: String::new(),
                 missing_runtime: None,
-            });
-            if exit_code != Some(0) {
-                break;
+            };
+            match self.run(&probe, cancelled, 30, 8192) {
+                Ok((Some(0), _, _)) => {}
+                Ok((Some(1), _, _)) => {
+                    result.missing_runtime = Some(executable.clone());
+                    result.output = format!(
+                        "Check executable is unavailable: {executable}. Its task environment needs rebuilding."
+                    );
+                    return Ok(result);
+                }
+                other => {
+                    result.output = match other {
+                        Err(error) => error.to_string(),
+                        Ok(_) => "Executable check was interrupted.".into(),
+                    };
+                    return Ok(result);
+                }
             }
-        }
+            match self.run(&check.command, cancelled, 30, 8192) {
+                Ok((exit, stdout, stderr)) => {
+                    result.exit_code = exit;
+                    result.output = format!(
+                        "{}{}",
+                        String::from_utf8_lossy(&stdout),
+                        String::from_utf8_lossy(&stderr)
+                    );
+                }
+                Err(error) => result.output = error.to_string(),
+            }
+            if self.snapshot(&self.task_folder(), &AtomicBool::new(false))? != before {
+                result.exit_code = None;
+                result.output =
+                    "Verification changed source files. Fix the check before retrying.".into();
+            }
+            Ok(result)
+        })?;
         // Cancellation stops checks, but still exports partial edits for review.
         self.export(&AtomicBool::new(false))?;
         Ok((before, results))
@@ -1501,8 +1509,8 @@ mod tests {
         let setup = command(
             "mkdir -p .venv/bin; printf '#!/bin/sh\ntest -s source.txt\n' > .venv/bin/check; chmod +x .venv/bin/check",
         );
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
                 let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
                 vm.prepare_tasks(&[1, 2], &flag)?;
                 for id in [1, 2] {
@@ -1524,8 +1532,45 @@ mod tests {
                 let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
                 // A review reopens only task 2; task 1 must still be runnable afterward.
                 vm.assign_task(2, 102, &flag)?;
+                assert_eq!(vm.run(&command("mkdir -p \"$XDG_CACHE_HOME\"; printf model-fixture > \"$XDG_CACHE_HOME/model\""), &flag, 30, 8192)?.0, Some(0));
                 let retry = crate::store::task_source(2, 2);
                 vm.refresh_for_repair(2, &retry, &flag)?;
+                assert_eq!(vm.run(&command("test \"$(cat \"$XDG_CACHE_HOME/model\")\" = model-fixture && test -x .venv/bin/check"), &flag, 30, 8192)?.0, Some(0));
+                let repeated = command("printf x >> \"$XDG_CACHE_HOME/runs\"; test -s source.txt");
+                let duplicate_checks = ["Smoke", "Review regression"].map(|name| Check {
+                    task: Some(2),
+                    check: name.into(),
+                    command: repeated.clone(),
+                });
+                let mut progress = Vec::new();
+                let (_, observed) = vm.verify_with_progress(&duplicate_checks, &flag, |p| {
+                    progress.push(p.to_owned())
+                })?;
+                assert_eq!(observed.len(), 2);
+                assert!(observed.iter().all(|r| r.exit_code == Some(0)));
+                assert_eq!(progress.len(), 1);
+                assert!(progress[0].starts_with("Checking 1/1"));
+                assert_eq!(
+                    vm.run(
+                        &command("test \"$(cat \"$XDG_CACHE_HOME/runs\")\" = x"),
+                        &flag,
+                        30,
+                        8192
+                    )?
+                    .0,
+                    Some(0)
+                );
+                vm.verify(&duplicate_checks, &flag)?;
+                assert_eq!(
+                    vm.run(
+                        &command("test \"$(cat \"$XDG_CACHE_HOME/runs\")\" = xx"),
+                        &flag,
+                        30,
+                        8192
+                    )?
+                    .0,
+                    Some(0)
+                );
                 assert_eq!(
                     vm.run(&command("printf reviewed > source.txt"), &flag, 30, 8192)?
                         .0,
@@ -1559,7 +1604,8 @@ mod tests {
                 vm.prepare_tasks(&[3], &flag)?;
                 assert!(!vm.guest_exists("/tasks/1")? && !vm.guest_exists("/tasks/2")?);
                 Ok(())
-            }));
+            },
+        ));
         delete(&root).unwrap();
         result.unwrap().unwrap();
     }

@@ -48,7 +48,7 @@ The dock has three parts:
 - **Middle:** your message, growing from four to eight rows.
 - **Bottom:** Enter and newline hints on the left, **Ctrl+G · Actions** on the right.
 
-Narrow terminals stack controls with their labels intact. There is no separate “Next” row or footer. Background target checks keep active worker progress visible; publication and other foreground operations show their own status.
+Narrow terminals stack controls with their labels intact. There is no separate “Next” row or footer. The dock shows elapsed worker time and the current check while verifying. Review repairs show how many findings have passed their owner checks. Background target checks keep active worker and review progress visible; publication and other foreground operations show their own status.
 
 Rust chooses the next action from current state:
 

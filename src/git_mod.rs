@@ -56,6 +56,7 @@ pub enum Result {
     TargetChecked {
         target: Option<crate::mod_sync::Target>,
         publish: bool,
+        explicit: bool,
     },
     Updated,
     UpdateFinished,

@@ -428,6 +428,7 @@ impl<'a> Dispatcher<'a> {
                         self.context.worker_id(),
                         request,
                         self.cancelled,
+                        &mut progress,
                     )
                     .map(Output::Text)
                 }

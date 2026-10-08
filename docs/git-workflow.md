@@ -65,7 +65,7 @@ flowchart TB
     ready --> merge["Merge B on GitHub"]
 ```
 
-An open PR becomes a draft as soon as a newer target is detected. Its workers finish before source changes. Finished versions update automatically; paused or failed work waits for retry or edits. This updates B's branch and VM source separately from the project's fast-forward above.
+An open PR becomes a draft as soon as a newer target is detected. Its workers finish before source changes. Finished versions update automatically once their review is clear. An unfinished review, open findings or repairs hold the automatic update; paused or failed work waits for retry or edits. **Ctrl+U** explicitly updates a finished version and invalidates its previous review. This updates B's branch and VM source separately from the project's fast-forward above.
 
 The integration plan carries the codemod's checks and adds combined regression checks. A resolution worker receives the original goals, upstream commit messages and conflicting versions. Technical text conflicts are resolved in B's existing VM. Conflicting product intent pauses with a question; answer through the composer. Clean merges get the same verification.
 

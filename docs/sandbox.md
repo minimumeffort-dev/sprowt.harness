@@ -55,7 +55,7 @@ codex -c 'cli_auth_credentials_store="file"' login
 
 Create a mod; its valid plan starts execution automatically. The first execution builds the shared development image; later runs reuse it. **Ctrl+D** opens the diff. New codemods publish PRs. Existing snapshot mods can be adopted into Git. See [Worktrees and PRs](git-workflow.md).
 
-The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Each executor reads your manifests, installs a compatible runtime under its own `/home/sprowt/workers/<worker-id>` (HOME), then installs project dependencies in its task worktree. Git objects are shared inside the VM; task dependencies remain available through final verification, review and repairs.
+The image contains general build tools, Bubblewrap, Codex and mise. No project language is selected in advance. Each executor reads your manifests, installs a compatible runtime under its own `/home/sprowt/workers/<worker-id>` (HOME), then installs project dependencies in its task worktree. Git objects are shared inside the VM; task dependencies remain available through final verification, review and repairs. Codex, Muse and the check runner use `XDG_CACHE_HOME=$HOME/.cache` for reusable downloads. Workers keep model/browser assets there and temporary fixtures elsewhere.
 
 ## System packages
 

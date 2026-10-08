@@ -59,7 +59,7 @@ Workers prepare project runtimes and dependencies; missing OS packages go throug
 
 Before reporting completion, Codex and Muse call `run_task_checks`. It runs their declared commands through the controller, so setup failures return while the worker can still fix them. The worker then returns a short summary and the same commands. Rust reruns them before combining source and again against the finished version.
 
-One check can need several commands; each uses that check's exact name. Rust groups them in plan order with a 30-second limit per command. Missing or undeclared checks, nonzero exits, timeouts or commands that change source files block completion. Commands skipped after failure or interruption stay saved as unrun.
+One check can need several commands; each uses that check's exact name. Within a single task verification pass, identical argument arrays run once and their observed result covers each matching check. Reuse never crosses task folders, worker homes, retries or verification passes. Source changes during a check stop the pass. Rust groups them in plan order with a 30-second limit per command. Missing or undeclared checks, nonzero exits, timeouts or commands that change source files block completion. Commands skipped after failure or interruption stay saved as unrun.
 
 Checks start in their task folder with a fresh process environment. Temporary fixtures and import stubs belong under a unique `/tmp` directory or the worker's HOME. Browser URLs such as `/static` are not writable filesystem paths; tests use an HTTP server or module loader. Earlier shell exports, background processes and privileged setup are not part of a repeatable check.
 
@@ -75,7 +75,7 @@ flowchart TB
     fix --> gate["Controller · rerun before accepting source"]
 ```
 
-The tool accepts all declared checks, up to 12 commands per call. A script array replaces the saved bundle; `null` retains it. Bundles hold up to 16 plain filenames and 256 KiB of text. Results record the task attempt, commands, output, source fingerprint and script fingerprint. They are evidence for that version; later edits require a fresh run, and saved success never skips the independent checks.
+The tool accepts all declared checks, up to 32 check entries per call. A script array replaces the saved bundle; `null` retains it. Bundles hold up to 16 plain filenames and 256 KiB of text. Results record the task attempt, commands, output, source fingerprint and script fingerprint. They are evidence for that version; later edits require a fresh run, and saved success never skips the independent checks.
 
 Scripts survive retries, review and harness restart, including restoration after VM recreation. Runtimes still need installation in a fresh VM. A replacement plan removes retired task scripts and their receipts; deleting the codemod removes all of them. Existing checks that reference `/tmp` must be resubmitted as saved scripts on retry.
 
@@ -83,7 +83,7 @@ Passing tasks are merged into the integration branch one at a time, as they fini
 
 A late peer acknowledgement with no check commands keeps the last valid task report. A newer full report, blocker or repair request takes precedence. User steering clears the previous report and requires a fresh one. Live turns and recovered history follow the same rule; retained commands still run against the current source before completion.
 
-After all tasks finish, the harness updates each task folder to the combined source and reruns its checks there. Commands keep their original paths and installed dependencies. Task folders stay through final verification, review and repairs. A replacement plan removes the previous task folders; closing or deleting the codemod removes the VM.
+After all tasks finish, the harness updates each task folder to the combined source and reruns its checks there. Commands keep their original paths and installed dependencies. Task folders stay through final verification, review and repairs. Both providers and the controller use the worker’s retained `XDG_CACHE_HOME` under HOME for reusable downloads; temporary fixtures stay separate. A replacement plan removes the previous task folders; closing or deleting the codemod removes the VM.
 
 Each active task has a spinner and worker ID through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide workers; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.
 
@@ -145,7 +145,7 @@ Missing access, environment blockers, uncertainty and product decisions still pa
 
 ## Updates from merged work
 
-When the PR target changes, a finished codemod saves a checkpoint and runs an integration plan in the same VM. The assigned Codex or Muse worker resolves text conflicts; Rust independently reruns the original and combined checks. Current workers finish first. Publication waits for verification. See [Worktrees and PRs](git-workflow.md#when-another-codemod-merges).
+When the PR target changes, a finished codemod saves a checkpoint and runs an integration plan in the same VM. The assigned Codex or Muse worker resolves text conflicts; Rust independently reruns the original and combined checks. Current workers finish first. Automatic updates also wait for open review findings and repairs; a clean review releases them. Explicit updates remain available for a finished version. Publication waits for verification. See [Worktrees and PRs](git-workflow.md#when-another-codemod-merges).
 
 ## Request edits
 
