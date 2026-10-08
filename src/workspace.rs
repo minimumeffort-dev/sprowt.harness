@@ -360,7 +360,7 @@ fn generated(path: &Path) -> bool {
         let name = part.as_os_str().to_string_lossy();
         matches!(
             name.as_ref(),
-            ".pytest_cache" | ".mypy_cache" | ".ruff_cache"
+            "dist" | ".pytest_cache" | ".mypy_cache" | ".ruff_cache"
         ) || name.ends_with(".egg-info")
     }) || path.file_name().is_some_and(|name| {
         let name = name.to_string_lossy();
@@ -781,6 +781,61 @@ mod tests {
             .unwrap()
             .1 = b"requested edit".to_vec();
         assert_eq!(source_state(&root.join("work")).unwrap(), expected);
+    }
+
+    #[test]
+    fn dist_output_is_runtime_but_tracked_distribution_files_remain_source() {
+        let data = TestData::new();
+        let project = project(&data);
+        fs::create_dir_all(project.join("dist")).unwrap();
+        fs::write(project.join("dist/library.js"), "tracked").unwrap();
+        fs::write(project.join("dist/obsolete.js"), "tracked").unwrap();
+        for args in [
+            vec!["init"],
+            vec!["add", "."],
+            vec!["commit", "-m", "Baseline"],
+        ] {
+            checked(
+                &trusted_git()
+                    .arg("-C")
+                    .arg(&project)
+                    .args(args)
+                    .output()
+                    .unwrap(),
+            )
+            .unwrap();
+        }
+        fs::write(project.join("dist/asset-manifest.json"), "generated").unwrap();
+        let root = data.0.join("workspace");
+        create(&project, &root).unwrap();
+        assert!(!root.join("before/dist/asset-manifest.json").exists());
+        fs::write(root.join("work/dist/library.js"), "updated").unwrap();
+        fs::remove_file(root.join("work/dist/obsolete.js")).unwrap();
+        fs::create_dir_all(root.join("work/packages/ui/dist")).unwrap();
+        for path in ["dist/asset-manifest.json", "packages/ui/dist/index.js"] {
+            fs::write(root.join("work").join(path), "generated").unwrap();
+        }
+        fs::write(root.join("work/a.txt"), "requested edit").unwrap();
+        // An older review index may already contain generated outputs.
+        run_git(&root, &["add", "--force", "--all"]).unwrap();
+        let review = review(&root).unwrap();
+        assert_eq!(
+            review.paths().collect::<Vec<_>>(),
+            [
+                Path::new("a.txt"),
+                Path::new("dist/library.js"),
+                Path::new("dist/obsolete.js")
+            ]
+        );
+        assert_eq!(
+            source_state(&root.join("work")).unwrap(),
+            vec![
+                (PathBuf::from("a.txt"), b"requested edit".to_vec(), 0o644),
+                (PathBuf::from("dist/library.js"), b"updated".to_vec(), 0o644)
+            ]
+        );
+        assert!(root.join("work/dist/asset-manifest.json").exists());
+        assert!(root.join("work/packages/ui/dist/index.js").exists());
     }
 
     #[test]

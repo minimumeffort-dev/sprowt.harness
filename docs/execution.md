@@ -33,16 +33,16 @@ Each worker’s runtimes and download caches stay in the VM across edit rounds a
 
 ### Source and generated files
 
-New test caches (`.pytest_cache`, `.mypy_cache`, `.ruff_cache`), `.egg-info` metadata and local database files stay out of checkpoints and PR diffs. This includes DuckDB, SQLite and `.db` files with their WAL, shared-memory and journal sidecars. Tracked database fixtures remain source. Already committed `.egg-info` files keep their baseline contents: dependency installation can regenerate them in the VM without changing source, failing checks or creating worker merge conflicts.
+New `dist/` build output, test caches (`.pytest_cache`, `.mypy_cache`, `.ruff_cache`), `.egg-info` metadata and local database files stay out of checkpoints and PR diffs. This includes nested `dist/` folders, DuckDB, SQLite and `.db` files with their WAL, shared-memory and journal sidecars. Distribution files and database fixtures tracked in the starting project remain source: their edits and deletions are checked normally. Already committed `.egg-info` files keep their baseline contents: dependency installation can regenerate them in the VM without changing source, failing checks or creating worker merge conflicts.
 
 Private save copies preserve the checked files instead of filtering them against an older baseline. Saving checks their contents and permissions; changed source or outside worktree edits pause the save.
 
-Guest Git checkpoints contain the filtered source snapshot. Runtime files remain on the VM's disk. Reconnecting repairs older checkpoint indexes and saved drafts before retrying, including conflicts confined to regenerated package metadata. Runtime files are retained; committed source conflicts still need resolution. Newly created database files are treated as runtime data.
+Guest Git checkpoints contain the filtered source snapshot. Runtime files remain on the VM's disk. Reconnecting repairs older checkpoint indexes and saved drafts before retrying, including conflicts confined to generated `dist/` output or regenerated package metadata. Runtime files are retained; committed source conflicts still need resolution. Newly created database files are treated as runtime data.
 
 ```mermaid
 flowchart TB
     files["Worker files"] --> source["Code + committed fixtures"]
-    files --> runtime["Generated caches + runtime databases"]
+    files --> runtime["Build output + caches + runtime databases"]
     source --> checkpoint["Source checkpoint · checks · PR diff"]
     runtime --> disk["Stay on VM disk"]
 ```

@@ -84,7 +84,7 @@ Other codemods finish their current work, save a checkpoint and update in their 
 
 When integration finds a regression in a completed task, it sends failure evidence back to that owner. The harness preserves work, reopens affected tasks and reruns final checks. Each plan allows two automatic repair attempts; unresolved failures stop with the next action. File ownership and network approvals stay in place.
 
-New test caches, package metadata and runtime databases stay out of source checkpoints. Committed database fixtures remain source; committed `.egg-info` metadata keeps its baseline contents, so parallel dependency installs do not create merge conflicts. Runtime data stays in the VM, separate from the PR.
+New `dist/` build output, test caches, package metadata and runtime databases stay out of source checkpoints. Distribution files and database fixtures tracked in the starting project remain source; committed `.egg-info` metadata keeps its baseline contents. Parallel builds and dependency installs can keep their generated output in the VM without creating source merge conflicts.
 
 ## Get started
 

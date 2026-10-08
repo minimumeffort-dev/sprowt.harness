@@ -1386,6 +1386,96 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "recovers a saved build-output conflict in a disposable Apple Container VM"]
+    fn generated_dist_conflicts_are_repaired_on_reconnect() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("first.txt"), "before").unwrap();
+        let root = data.0.join(format!("dist-conflict-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let flag = AtomicBool::new(false);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.prepare_tasks(&[1, 2], &flag)?;
+                vm.activate_task(1, &flag)?;
+                vm.activate_task(2, &flag)?;
+                // Reproduce older checkpoints that included each worker's build output.
+                vm.guest(&["/bin/sh", "-c", r#"set -eu
+                    saved_git() { /usr/bin/git -c user.name=Sprowt -c user.email=sprowt@localhost "$@"; }
+                    cd /tasks/1
+                    mkdir -p dist
+                    printf repository > repository.mjs
+                    printf 'repository-build\n' > dist/asset-manifest.json
+                    saved_git add .; saved_git commit -m repository
+                    cd /tasks/2
+                    mkdir -p dist
+                    printf interface > interface.mjs
+                    printf 'interface-build\n' > dist/asset-manifest.json
+                    saved_git add .; saved_git commit -m interface
+                    cd /workspace
+                    saved_git merge --no-ff --no-edit task/2
+                    if saved_git merge --no-ff --no-edit task/1; then exit 1; fi
+                    saved_git merge --abort
+                    cd /tasks/1
+                    if saved_git merge --no-ff --no-edit integration; then exit 1; fi
+                    saved_git add .; saved_git commit -m conflict
+                    grep -q '<<<<<<<' dist/asset-manifest.json
+                "#], &flag)?;
+                vm.tasks.integrated.insert(2);
+                vm.tasks.active = Some(1);
+                fs::write(root.join("tasks.json"), serde_json::to_vec(&vm.tasks)?)?;
+                vm.checkpoint_tasks(&flag)?;
+                drop(vm);
+
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.guest(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        r#"set -eu
+                    grep -q '<<<<<<<' /tasks/1/dist/asset-manifest.json
+                    for folder in /workspace /tasks/1; do
+                        cd "$folder"
+                        test -z "$(git ls-files dist)"
+                        test -f dist/asset-manifest.json
+                    done
+                "#,
+                    ],
+                    &flag,
+                )?;
+                let check = Check {
+                    task: Some(1),
+                    check: "Combined source builds".into(),
+                    command: vec![
+                        "/bin/sh".into(), "-c".into(),
+                        "test \"$(cat repository.mjs)\" = repository && test \"$(cat interface.mjs)\" = interface && printf rebuilt > dist/asset-manifest.json".into(),
+                    ],
+                };
+                let (_, checks) = vm.verify_execution(
+                    &crate::store::task_source(1, 2),
+                    std::slice::from_ref(&check),
+                    &flag,
+                )?;
+                assert_eq!(checks[0].exit_code, Some(0));
+                assert!(vm.tasks.integrated.contains(&1));
+                let source = vm.snapshot("/workspace", &flag)?;
+                assert_eq!(source, workspace::source_state(&root.join("work"))?);
+                assert_eq!(
+                    workspace::review(&root)?.paths().collect::<Vec<_>>(),
+                    [Path::new("interface.mjs"), Path::new("repository.mjs")]
+                );
+                let (_, checks) = vm.verify_execution("final:1", &[check], &flag)?;
+                assert_eq!(checks[0].exit_code, Some(0));
+                Ok(())
+            },
+        ));
+        delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
+
+    #[test]
     #[ignore = "checks repair handoff, retained drafts, restart and verification in a disposable VM"]
     fn repair_handoff_preserves_drafts_and_rechecks_in_vm() {
         let data = TestData::new();
