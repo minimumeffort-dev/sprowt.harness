@@ -367,14 +367,89 @@ class Broker:
             emit({"status": 502, "done": True})
 
 
-def guest(start_client):
+FRAME_BYTES = 32 * 1024
+MESSAGE_BYTES = 4 * 1024 * 1024
+
+
+class FramedOutput:
+    """Backpressure keeps unread output below exec-server's retention limit."""
+    def __init__(self):
+        self.writer = threading.Lock()
+        self.condition = threading.Condition()
+        self.sequence = self.acknowledged = 0
+        self.stopped = False
+
+    def acknowledge(self, sequence):
+        with self.condition:
+            if type(sequence) is int and sequence == self.sequence:
+                self.acknowledged = sequence
+                self.condition.notify_all()
+
+    def close(self):
+        with self.condition:
+            self.stopped = True
+            self.condition.notify_all()
+
+    def send(self, value):
+        data = json.dumps(value).encode()
+        if len(data) > MESSAGE_BYTES:
+            raise BridgeFailure("Muse guest message exceeded the 4 MiB limit.", stage="guest output")
+        with self.writer:
+            for offset in range(0, len(data), FRAME_BYTES):
+                with self.condition:
+                    if self.stopped:
+                        raise BridgeFailure("Muse output transport closed.", stage="guest output")
+                    self.sequence += 1
+                    print(json.dumps({"channel": "frame", "seq": self.sequence,
+                        "chunk": base64.b64encode(data[offset:offset + FRAME_BYTES]).decode(),
+                        "last": offset + FRAME_BYTES >= len(data)}), flush=True)
+                    if not self.condition.wait_for(
+                            lambda: self.acknowledged == self.sequence or self.stopped, timeout=45):
+                        raise BridgeFailure("Muse output acknowledgment timed out.", stage="guest output")
+                    if self.stopped:
+                        raise BridgeFailure("Muse output transport closed.", stage="guest output")
+
+
+class FrameReader:
+    def __init__(self):
+        self.sequence = 0
+        self.pending = bytearray()
+
+    def receive(self, frame):
+        if (frame.get("channel") != "frame" or type(frame.get("seq")) is not int
+                or frame["seq"] != self.sequence + 1 or type(frame.get("last")) is not bool
+                or not isinstance(frame.get("chunk"), str)
+                or len(frame["chunk"]) > 4 * ((FRAME_BYTES + 2) // 3)):
+            raise BridgeFailure("Muse VM output frame is missing or invalid.", stage="VM transport")
+        try:
+            chunk = base64.b64decode(frame["chunk"], validate=True)
+            if not chunk or len(chunk) > FRAME_BYTES or len(self.pending) + len(chunk) > MESSAGE_BYTES:
+                raise ValueError()
+            self.pending.extend(chunk)
+            self.sequence = frame["seq"]
+            if not frame["last"]:
+                return None
+            value = json.loads(self.pending)
+            self.pending.clear()
+            if not isinstance(value, dict):
+                raise ValueError()
+            return value
+        except (ValueError, TypeError):
+            raise BridgeFailure("Muse VM message is incomplete, invalid or too large.", stage="VM transport") from None
+
+
+def guest(start_client, acknowledged=False):
     """A credential-free HTTP tunnel and CLI share the isolated network namespace."""
     replies = {}
     lock = threading.Lock()
+    output = FramedOutput() if acknowledged else None
 
     def emit(value):
-        with lock:
-            print(json.dumps(value), flush=True)
+        if output:
+            output.send(value)
+        else:
+            with lock:
+                print(json.dumps(value), flush=True)
 
     class Tunnel(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -421,15 +496,37 @@ def guest(start_client):
         try:
             for line in client.stdout:
                 emit({"channel": "rpc", "value": json.loads(line)})
-        except (OSError, ValueError) as error:
-            emit({"channel": "failed", **failure(error, "guest output").details})
-        else:
             emit({"channel": "ended", "exit_code": client.wait()})
+        except (OSError, ValueError, BridgeFailure) as error:
+            try:
+                emit({"channel": "failed", **failure(error, "guest output").details})
+            except (OSError, BridgeFailure):
+                pass
 
     threading.Thread(target=read, daemon=True).start()
+    incoming = queue.Queue()
+
+    def read_input():
+        try:
+            for line in sys.stdin:
+                message = json.loads(line)
+                if output and message.get("channel") == "ack":
+                    output.acknowledge(message.get("seq"))
+                else:
+                    incoming.put(message)
+                    if message.get("channel") == "stop":
+                        break
+        except (OSError, ValueError, AttributeError):
+            incoming.put({"channel": "stop"})
+        finally:
+            if output:
+                output.close()
+            incoming.put(None)
+
+    # Acknowledgments must flow even when a large request blocks CLI stdin.
+    threading.Thread(target=read_input, daemon=True).start()
     try:
-        for line in sys.stdin:
-            message = json.loads(line)
+        while (message := incoming.get()) is not None:
             if message.get("channel") == "stop":
                 break
             if message.get("channel") == "rpc":
@@ -438,6 +535,8 @@ def guest(start_client):
             elif message.get("channel") == "http" and message["id"] in replies:
                 replies[message["id"]].put(message)
     finally:
+        if output:
+            output.close()
         client.kill()
         client.wait()
         server.shutdown()

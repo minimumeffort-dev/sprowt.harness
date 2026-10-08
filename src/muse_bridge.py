@@ -15,7 +15,7 @@ import threading
 import time
 import urllib.request
 
-from muse_transport import (BridgeFailure, Broker, CHECKSUM, MODEL, VERSION, Rpc, RpcError,
+from muse_transport import (BridgeFailure, Broker, CHECKSUM, MODEL, VERSION, FrameReader, Rpc, RpcError,
                             command_id, failure, guest, host_login, private_json, read_account, settings)
 
 
@@ -209,10 +209,12 @@ class ManagedRpc(Rpc):
 
     def read(self):
         cursor, pending = 0, b""
+        frames = FrameReader()
         try:
             while not self.stopped:
                 with self.executor_lock:
                     read = self.executor.call("process/read", {"processId": self.process_id, "afterSeq": cursor, "maxBytes": 65536, "waitMs": 20})
+                    self.executor.buffered.clear()
                 for chunk in read["chunks"]:
                     if chunk["stream"] != "stdout":
                         continue
@@ -221,9 +223,16 @@ class ManagedRpc(Rpc):
                         raise BridgeFailure("Muse guest output exceeded the 4 MiB frame limit.", stage="guest output")
                     while b"\n" in pending:
                         line, pending = pending.split(b"\n", 1)
-                        value = json.loads(line)
-                        if not isinstance(value, dict):
-                            raise ValueError("Expected a guest envelope")
+                        try:
+                            frame = json.loads(line)
+                        except ValueError:
+                            raise BridgeFailure("Muse VM output was truncated or malformed.", stage="VM transport") from None
+                        if not isinstance(frame, dict):
+                            raise BridgeFailure("Muse VM output frame is invalid.", stage="VM transport")
+                        value = frames.receive(frame)
+                        self.envelope({"channel": "ack", "seq": frame["seq"]})
+                        if value is None:
+                            continue
                         if value.get("channel") == "http":
                             if not self.pool.acquire(blocking=False):
                                 self.envelope({"channel": "http", "id": value["id"], "status": 429, "done": True})
@@ -236,11 +245,14 @@ class ManagedRpc(Rpc):
                             code = code if type(code) is int else None
                             self.fail(BridgeFailure(f"Muse guest exited (code {code}).", stage="guest exit", exit_code=code))
                             return
+                        elif value.get("channel") == "failed":
+                            self.fail(BridgeFailure("Muse CLI returned invalid output inside the VM.", stage="guest output"))
+                            return
                         else:
                             self.fail(BridgeFailure("Muse guest sent invalid protocol output.", stage="guest output"))
                             return
                 cursor = max(cursor, read.get("nextSeq", 1) - 1)
-                if read.get("closed"):
+                if read.get("closed") and not read["chunks"]:
                     self.fail(BridgeFailure("Muse VM process stream closed before the turn finished.", stage="VM transport"))
                     return
                 time.sleep(0.01)
@@ -596,7 +608,7 @@ def host():
 if __name__ == "__main__":
     try:
         if sys.argv[1:] == ["--guest"]:
-            guest(guest_client)
+            guest(guest_client, acknowledged=True)
         elif sys.argv[1:] == ["--mcp"]:
             mcp()
         elif sys.argv[1:2] == ["--account"]:

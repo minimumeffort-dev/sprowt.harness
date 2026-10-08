@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from muse_bridge import ManagedRpc, SessionState, connect, recovered_thread, normalize, final_report, host
-from muse_transport import BridgeFailure, Broker, provider_failure, failure
+from muse_transport import BridgeFailure, Broker, FrameReader, FramedOutput, FRAME_BYTES, provider_failure, failure
 import muse_transport
 
 
@@ -28,6 +28,7 @@ def bridge_fixture():
     bridge.executor_lock = threading.Lock()
     bridge.process_id = "fixture-process"
     bridge.executor = Mock()
+    bridge.executor.buffered = []
     bridge.incoming = queue.Queue()
     bridge.buffered = []
     bridge.pool = threading.BoundedSemaphore(1)
@@ -37,6 +38,110 @@ def bridge_fixture():
 def rejected(status=400, code="invalid_request_error", message="Invalid request"):
     body = json.dumps({"error": {"code": code, "message": message}}).encode()
     return urllib.error.HTTPError("https://api.meta.ai/v1/responses", status, "rejected", {}, io.BytesIO(body))
+
+
+def wire_frames(value):
+    data = json.dumps(value, ensure_ascii=False).encode()
+    return [{"channel": "frame", "seq": index + 1,
+             "chunk": base64.b64encode(data[offset:offset + FRAME_BYTES]).decode(),
+             "last": offset + FRAME_BYTES >= len(data)}
+            for index, offset in enumerate(range(0, len(data), FRAME_BYTES))]
+
+
+class StreamTests(unittest.TestCase):
+    def test_large_message_waits_for_each_ack_and_round_trips(self):
+        value = {"channel": "rpc", "value": "π\\\"\n" * 150_000}
+        output, reader, wire = FramedOutput(), FrameReader(), queue.Queue()
+        errors = []
+
+        def send():
+            try:
+                output.send(value)
+            except Exception as error:
+                errors.append(error)
+
+        with patch("builtins.print", side_effect=lambda text, **_: wire.put(text)):
+            producer = threading.Thread(target=send, daemon=True)
+            producer.start()
+            try:
+                frame = json.loads(wire.get(timeout=1))
+                output.acknowledge(frame["seq"] + 1)
+                with self.assertRaises(queue.Empty):
+                    wire.get(timeout=0.02)
+                while True:
+                    self.assertLess(len(json.dumps(frame)), 65536)
+                    result = reader.receive(frame)
+                    output.acknowledge(frame["seq"])
+                    if result is not None:
+                        break
+                    frame = json.loads(wire.get(timeout=1))
+                producer.join(timeout=1)
+                self.assertFalse(producer.is_alive())
+                self.assertEqual(errors, [])
+                self.assertEqual(result, value)
+                self.assertGreater(reader.sequence, 32)
+            finally:
+                output.close()
+                producer.join(timeout=1)
+
+    def test_closed_transport_releases_waiting_sender(self):
+        output, wire, errors = FramedOutput(), queue.Queue(), []
+
+        def send():
+            try:
+                output.send({"fixture": "payload"})
+            except BridgeFailure as error:
+                errors.append(str(error))
+
+        with patch("builtins.print", side_effect=lambda text, **_: wire.put(text)):
+            producer = threading.Thread(target=send, daemon=True)
+            producer.start()
+            wire.get(timeout=1)
+            output.close()
+            producer.join(timeout=1)
+            self.assertFalse(producer.is_alive())
+            self.assertEqual(errors, ["Muse output transport closed."])
+
+    def test_invalid_missing_and_oversized_frames_do_not_expose_payloads(self):
+        frame = wire_frames({"private": "synthetic-private-value"})[0]
+        for change in ({"seq": 2}, {"seq": True}, {"chunk": "private-not-base64"},
+                       {"last": "yes"}, {"chunk": base64.b64encode(b"private-not-json").decode()}):
+            with self.assertRaises(BridgeFailure) as caught:
+                FrameReader().receive({**frame, **change})
+            self.assertNotIn("private", str(caught.exception))
+        reader = FrameReader()
+        reader.receive(frame)
+        with self.assertRaises(BridgeFailure):
+            reader.receive(frame)
+        with patch("muse_transport.MESSAGE_BYTES", 10):
+            with self.assertRaises(BridgeFailure):
+                FrameReader().receive(frame)
+            with self.assertRaises(BridgeFailure):
+                FramedOutput().send({"private": "synthetic-private-value"})
+
+    def test_closed_process_is_drained_across_pages_before_exit(self):
+        bridge = bridge_fixture()
+        bridge.executor.buffered.append({"method": "process/output"})
+        value = {"method": "item/completed", "params": {"text": "λ" * 80_000}}
+        frames = wire_frames({"channel": "rpc", "value": value})
+        wire = b"".join(json.dumps(frame).encode() + b"\n" for frame in frames)
+        pages = iter([{"chunks": [{"stream": "stdout", "chunk": base64.b64encode(wire[i:i + 10001]).decode()}],
+                       "closed": True, "nextSeq": n + 2}
+                      for n, i in enumerate(range(0, len(wire), 10001))] + [{"chunks": [], "closed": True}])
+        acks = []
+
+        def call(method, params):
+            if method == "process/read":
+                return next(pages)
+            acks.append(json.loads(base64.b64decode(params["chunk"])))
+            return {"status": "accepted"}
+
+        bridge.executor.call.side_effect = call
+        bridge.read()
+        self.assertEqual(bridge.incoming.get_nowait(), value)
+        self.assertEqual([ack["seq"] for ack in acks], list(range(1, len(frames) + 1)))
+        self.assertEqual(bridge.executor.buffered, [])
+        self.assertIn("stream closed", str(bridge.failure))
 
 
 class FailureTests(unittest.TestCase):
@@ -101,8 +206,8 @@ class FailureTests(unittest.TestCase):
 
     def test_guest_exit_and_broken_transport_keep_their_cause(self):
         bridge = bridge_fixture()
-        frame = json.dumps({"channel": "ended", "exit_code": -9}).encode() + b"\n"
-        bridge.executor.call.return_value = {"chunks": [{"stream": "stdout", "chunk": base64.b64encode(frame).decode()}]}
+        frame = json.dumps(wire_frames({"channel": "ended", "exit_code": -9})[0]).encode() + b"\n"
+        bridge.executor.call.side_effect = [{"chunks": [{"stream": "stdout", "chunk": base64.b64encode(frame).decode()}]}, {"status": "accepted"}]
         bridge.read()
         with self.assertRaisesRegex(BridgeFailure, "code -9"):
             bridge.next()

@@ -115,6 +115,8 @@ An interrupted turn waits for **Ctrl+R**. A completed turn reruns independent ch
 
 Error details distinguish provider rejections, guest exit codes and VM transport failures. Provider details are bounded and redact credentials and URLs. Raw response bodies, headers and process stderr are not saved. The original cause survives cleanup failures and is saved beside the worker's delivery state.
 
+The VM sends messages in small, acknowledged chunks. It waits for the Mac before sending the next chunk, so large requests and session histories cannot overrun the process output buffer. Messages are assembled and validated before use; final output is drained even after the process exits.
+
 - Permanent HTTP 4xx rejections stop automatic retries. **401** points to `muse login` on your Mac.
 - **408**, **429** and server failures keep the native CLI's bounded retry behavior.
 - A confirmed context-limit code permits a fresh conversation on the next safe reconnect. The task brief, saved source and accepted instructions rebuild context; the previous session ID and receipts remain saved. Unknown request failures do not reset conversations.

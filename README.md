@@ -67,7 +67,7 @@ Each codemod has two active slots: two Codex, two Muse or one of each. Both prov
 
 Muse resumes its native task conversation after a stop or harness restart while the VM disk remains. Saved delivery IDs are checked against native receipts before any retry. Completed work goes straight to verification; unknown delivery stays paused. Starting another task creates a separate conversation.
 
-Muse failures show the provider's redacted rejection or the guest/transport cause. Permanent request rejections stop automatic retries. A confirmed context limit can rebuild the conversation from saved work on a safe retry; uncertain delivery stays paused.
+Muse sends large messages in acknowledged chunks so the VM's output buffer cannot drop them. Failures show the provider's redacted rejection or the guest/transport cause. Permanent request rejections stop automatic retries. A confirmed context limit can rebuild the conversation from saved work on a safe retry; uncertain delivery stays paused.
 
 Late handoff acknowledgements keep the worker's valid task report. New blockers take precedence, and user steering requires a fresh report. Each planned check can have several commands. Rust requires every declared check and reruns every command against current files before accepting completion.
 
