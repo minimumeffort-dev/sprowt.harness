@@ -60,6 +60,8 @@ Workers prepare project runtimes and dependencies; missing OS packages go throug
 
 Each task returns a short summary and runnable commands for every declared check. Rust reruns them with a 30-second limit per command. Missing checks, nonzero exits, timeouts or checks that change source files block completion. Passing tasks are merged into the integration branch one at a time, as they finish. A conflict pauses execution and keeps both versions. The saved draft includes non-conflicting changes and conflict markers. **Ctrl+R** asks the worker to resolve them, or send an edit request to replan.
 
+A late peer acknowledgement with no check commands keeps the last valid task report. A newer full report, blocker or repair request takes precedence. User steering clears the previous report and requires a fresh one. Live turns and recovered history follow the same rule; retained commands still run against the current source before completion.
+
 After all tasks finish, the harness updates each task folder to the combined source and reruns its checks there. Commands keep their original paths and installed dependencies. Successful final verification removes the task folders. Failed checks retain them for retry.
 
 Each active task has a spinner and worker ID through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide workers; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.

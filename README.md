@@ -63,6 +63,8 @@ The two active slots follow ready tasks: two Codex, two Muse or one of each. Sav
 
 Muse resumes its native task conversation after a stop or harness restart while the VM disk remains. Saved delivery IDs are checked against native receipts before any retry. Completed work goes straight to verification; unknown delivery stays paused. Starting another task creates a separate conversation.
 
+Late handoff acknowledgements keep the worker's valid task report. New blockers take precedence, and user steering requires a fresh report. Rust reruns the selected checks against current files before accepting completion.
+
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
 You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows plan details; **Ctrl+T** opens worker history. Finished versions show tasks, check counts and the publish action. Small changes can stay with one worker.

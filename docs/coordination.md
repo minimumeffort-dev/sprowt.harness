@@ -42,6 +42,8 @@ Replies reference the original ask. Stable keys make repeated sends idempotent. 
 
 Messages are saved before delivery. **Delivered** means the target provider accepted the injection; **acknowledged** means the recipient called the receipt tool; **answered** means a reply was saved. None means the source passed verification. Both providers check native conversation receipts on reconnect. Confirmed injections are not repeated; uncertain delivery pauses for explicit retry. Rejected injections stay in the inbox for a later read.
 
+Acknowledging a late handoff does not replace a valid task report with an empty result. Workers retain all declared check commands in their final report, or report a blocker. Rust selects the task result and independently verifies it. See [Tasks and checks](execution.md#tasks-and-checks).
+
 ## Boundaries
 
 Messages stay within one codemod. Task IDs follow current ownership, including tasks not yet assigned. Asks to unavailable tasks or asks that create a wait cycle are rejected. Workers read at useful checkpoints and continue independent work; they do not poll for replies.

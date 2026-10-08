@@ -5,7 +5,7 @@ use serde_json::Value;
 use crate::{
     codex::{Action, Client, Event, Resume},
     execution::{Check, Report},
-    plan::{Plan, Role},
+    plan::{Plan, Role, Task},
     router::Selection,
     store::{CodeMod, Message, Store, Submission, WorkerRecord},
     tools::Context,
@@ -45,6 +45,7 @@ pub struct Worker {
     recovery: Option<String>,
     task_source: Option<String>,
     task_report: Option<String>,
+    task_mail: bool,
     task_summary: String,
     writable: bool,
     verification: Vec<Check>,
@@ -133,6 +134,7 @@ impl Worker {
             recovery: record.pending,
             task_source: None,
             task_report: None,
+            task_mail: false,
             task_summary: String::new(),
             writable: workspace.is_some(),
             verification: Vec::new(),
@@ -398,7 +400,7 @@ impl Worker {
                 self.status = Status::Starting;
                 if input.source.starts_with("00000004-") {
                     self.task_source = Some(input.source.clone());
-                    self.task_report = None;
+                    self.report_input(&input.source);
                 }
             }
             self.pending = Some(input);
@@ -545,6 +547,7 @@ impl Worker {
                     }
                     self.acknowledge(store, code_mod, &input)?;
                 }
+                self.report_input(&source);
                 if self.role == Role::Planner && source.starts_with("00000003-") {
                     self.final_plan = None;
                 }
@@ -868,10 +871,35 @@ impl Worker {
     ) -> rusqlite::Result<()> {
         if self.role == Role::Executor
             && self.task_source.is_some()
+            && item["type"] == "userMessage"
+            && let Some(source) = item["clientId"].as_str()
+        {
+            self.report_input(source);
+        }
+        if self.role == Role::Executor
+            && self.task_source.is_some()
             && item["type"] == "agentMessage"
             && item["phase"] != "commentary"
         {
-            self.task_report = item["text"].as_str().map(str::to_owned);
+            let text = item["text"].as_str();
+            let acknowledgement = self.task_mail
+                && text
+                    .and_then(|text| serde_json::from_str::<Report>(text).ok())
+                    .is_some_and(|report| {
+                        report.status == "completed"
+                            && !report.summary.trim().is_empty()
+                            && report.checks.is_empty()
+                            && report.repair.is_none()
+                    });
+            let keep_report = acknowledgement
+                && self
+                    .task_report
+                    .as_deref()
+                    .zip(self.current_task(code_mod))
+                    .is_some_and(|(text, task)| Report::parse(text, task).is_ok());
+            if !keep_report {
+                self.task_report = text.map(str::to_owned);
+            }
             return Ok(());
         }
         if item["clientId"].as_str().is_some_and(|source| {
@@ -968,26 +996,34 @@ impl Worker {
         Ok(())
     }
 
-    fn task_name(&self, code_mod: &CodeMod) -> String {
-        code_mod
+    fn report_input(&mut self, source: &str) {
+        if source.starts_with("00000004-") || source.starts_with("00000002-") {
+            self.task_report = None;
+            self.task_mail = false;
+        } else if source.starts_with("00000005-") {
+            self.task_mail = true;
+        }
+    }
+
+    fn current_task<'a>(&self, code_mod: &'a CodeMod) -> Option<&'a Task> {
+        let run = code_mod
             .execution
-            .as_ref()
-            .and_then(|execution| {
-                execution
-                    .tasks
-                    .iter()
-                    .find(|run| Some(run.source.as_str()) == self.task_source.as_deref())
-            })
-            .and_then(|run| {
-                code_mod
-                    .planning
-                    .as_ref()?
-                    .plan
-                    .as_ref()?
-                    .tasks
-                    .iter()
-                    .find(|task| task.id == run.task_id)
-            })
+            .as_ref()?
+            .tasks
+            .iter()
+            .find(|run| Some(run.source.as_str()) == self.task_source.as_deref())?;
+        code_mod
+            .planning
+            .as_ref()?
+            .plan
+            .as_ref()?
+            .tasks
+            .iter()
+            .find(|task| task.id == run.task_id)
+    }
+
+    fn task_name(&self, code_mod: &CodeMod) -> String {
+        self.current_task(code_mod)
             .map_or_else(|| "task".into(), |task| task.title.clone())
     }
 
@@ -1067,17 +1103,7 @@ impl Worker {
                 },
             );
         }
-        let task = code_mod
-            .planning
-            .as_ref()
-            .unwrap()
-            .plan
-            .as_ref()
-            .unwrap()
-            .tasks
-            .iter()
-            .find(|task| task.id == run.task_id)
-            .unwrap();
+        let task = self.current_task(code_mod).unwrap();
         let report = self
             .task_report
             .as_deref()
@@ -1141,6 +1167,8 @@ impl Worker {
             return Ok(());
         };
         self.task_source = Some(run.source.clone());
+        self.task_report = None;
+        self.task_mail = false;
         let turn = thread["turns"].as_array().and_then(|turns| {
             turns.iter().find(|turn| {
                 run.turn
@@ -2065,6 +2093,244 @@ mod tests {
         }
     }
 
+    fn reported_task() -> (TestData, Store, CodeMod, Worker, Value) {
+        let (data, mut store, mut code_mod, mut worker) = executor();
+        let mut plan = code_mod.planning.as_ref().unwrap().plan.clone().unwrap();
+        plan.tasks[0].checks = vec![
+            "API passes".into(),
+            "Runtime passes".into(),
+            "Backfill passes".into(),
+        ];
+        store
+            .save_plan(
+                code_mod.id,
+                &code_mod.planning.as_ref().unwrap().source,
+                &plan,
+            )
+            .unwrap();
+        code_mod.planning = store.planning(code_mod.id).unwrap();
+        store
+            .task_status(
+                code_mod.id,
+                worker.task_source.as_ref().unwrap(),
+                "running",
+                Some("task-turn"),
+            )
+            .unwrap();
+        code_mod.execution = store.execution(code_mod.id).unwrap();
+        worker.status = Status::Running;
+        worker.turn = Some("task-turn".into());
+        let report = json!({"status":"completed","summary":"Task implemented","repair":null,
+            "checks":plan.tasks[0].checks.iter().map(|check| json!({"check":check,"command":["/bin/true"]})).collect::<Vec<_>>()});
+        (data, store, code_mod, worker, report)
+    }
+
+    fn report_item(text: &Value) -> Value {
+        json!({"type":"agentMessage","phase":"final_answer","text":text.to_string()})
+    }
+
+    #[test]
+    fn late_handoff_ack_keeps_checks_live_and_on_recovery() {
+        for provider in ["codex", "muse"] {
+            for historical in [false, true] {
+                for exit_code in [0, 1] {
+                    let (_data, mut store, mut m, mut worker, report) = reported_task();
+                    worker.provider = provider.into();
+                    let (client, actions) = Client::recording();
+                    worker.client = Some(client);
+                    let source = worker.task_source.clone().unwrap();
+                    let items = vec![
+                        json!({"type":"userMessage","clientId":source,"content":[]}),
+                        report_item(&report),
+                        json!({"type":"userMessage","clientId":"00000005-0000-0000-0000-000000000001","content":[]}),
+                        json!({"type":"agentMessage","phase":"commentary","text":"Acknowledging the handoff"}),
+                        report_item(
+                            &json!({"status":"completed","summary":"Handoff acknowledged","checks":[],"repair":null}),
+                        ),
+                    ];
+                    if historical {
+                        worker.task_source = None;
+                        worker.recover_task(&mut store, &mut m, &json!({"turns":[{"id":"task-turn","status":"completed","items":items}]})).unwrap();
+                    } else {
+                        for item in items {
+                            if provider == "muse"
+                                && item["clientId"]
+                                    .as_str()
+                                    .is_some_and(|id| id.starts_with("00000005-"))
+                            {
+                                worker
+                                    .receive(
+                                        Event::Accepted {
+                                            source: item["clientId"].as_str().unwrap().into(),
+                                            turn: "task-turn".into(),
+                                        },
+                                        &mut store,
+                                        &mut m,
+                                    )
+                                    .unwrap();
+                                continue;
+                            }
+                            worker.item(&store, &mut m, &item, false).unwrap();
+                        }
+                        worker.receive(Event::Notification(json!({"method":"turn/completed","params":{"turn":{"id":"task-turn","status":"completed"}}})), &mut store, &mut m).unwrap();
+                    }
+                    assert!(worker.status == Status::Checking);
+                    assert_eq!(m.execution.as_ref().unwrap().tasks[0].status, "checking");
+                    let Action::Verify {
+                        source: verified_source,
+                        checks,
+                    } = actions.try_recv().unwrap()
+                    else {
+                        panic!("Task must go through independent verification")
+                    };
+                    assert_eq!(verified_source, source);
+                    assert_eq!(checks.len(), 3);
+                    worker
+                        .receive(
+                            Event::Checked {
+                                source,
+                                before: worker.verify_before.clone().unwrap_or_else(|| {
+                                    workspace::source_state(
+                                        &m.execution.as_ref().unwrap().workspace.join("work"),
+                                    )
+                                    .unwrap()
+                                }),
+                                checks: checks
+                                    .into_iter()
+                                    .map(|check| crate::execution::CheckResult {
+                                        task: check.task,
+                                        check: check.check,
+                                        command: check.command,
+                                        exit_code: Some(exit_code),
+                                        output: String::new(),
+                                    })
+                                    .collect(),
+                            },
+                            &mut store,
+                            &mut m,
+                        )
+                        .unwrap();
+                    assert_eq!(
+                        m.execution.as_ref().unwrap().tasks[0].status,
+                        if exit_code == 0 { "done" } else { "blocked" }
+                    );
+                    assert_eq!(
+                        m.execution.as_ref().unwrap().tasks[0].summary,
+                        "Task implemented"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn handoff_ack_never_supplies_missing_task_checks() {
+        for case in [
+            "missing",
+            "invalid",
+            "no mail",
+            "accepted steering",
+            "replayed steering",
+        ] {
+            let (_data, mut store, mut m, mut worker, mut report) = reported_task();
+            let (client, actions) = Client::recording();
+            worker.client = Some(client);
+            if case == "invalid" {
+                report["checks"].as_array_mut().unwrap().pop();
+            }
+            if case != "missing" {
+                worker
+                    .item(&store, &mut m, &report_item(&report), false)
+                    .unwrap();
+            }
+            if case != "no mail" {
+                worker
+                    .item(
+                        &store,
+                        &mut m,
+                        &json!({"type":"userMessage","clientId":"00000005-peer"}),
+                        false,
+                    )
+                    .unwrap();
+            }
+            if case == "accepted steering" {
+                worker
+                    .receive(
+                        Event::Accepted {
+                            source: "00000002-user".into(),
+                            turn: "task-turn".into(),
+                        },
+                        &mut store,
+                        &mut m,
+                    )
+                    .unwrap();
+            }
+            if case == "replayed steering" {
+                worker
+                    .item(
+                        &store,
+                        &mut m,
+                        &json!({"type":"userMessage","clientId":"00000002-user","content":[]}),
+                        true,
+                    )
+                    .unwrap();
+            }
+            worker.item(&store, &mut m, &report_item(&json!({"status":"completed","summary":"Acknowledged","checks":[],"repair":null})), false).unwrap();
+            worker.complete_task(&mut store, &mut m).unwrap();
+            let run = &m.execution.as_ref().unwrap().tasks[0];
+            assert_eq!(run.status, "blocked", "{case}");
+            assert_eq!(
+                run.summary,
+                "Task returned 0 completion checks; expected 3."
+            );
+            assert!(actions.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn later_full_reports_and_blockers_replace_prior_success() {
+        for status in ["completed", "blocked"] {
+            let (_data, mut store, mut m, mut worker, mut report) = reported_task();
+            let (client, actions) = Client::recording();
+            worker.client = Some(client);
+            worker
+                .item(&store, &mut m, &report_item(&report), false)
+                .unwrap();
+            worker
+                .item(
+                    &store,
+                    &mut m,
+                    &json!({"type":"userMessage","clientId":"00000005-peer"}),
+                    false,
+                )
+                .unwrap();
+            report["status"] = json!(status);
+            report["summary"] = json!("Updated task result");
+            for check in report["checks"].as_array_mut().unwrap() {
+                check["command"] = json!(["/bin/false"]);
+            }
+            worker
+                .item(&store, &mut m, &report_item(&report), false)
+                .unwrap();
+            worker.item(&store, &mut m, &report_item(&json!({"status":"completed","summary":"Acknowledged","checks":[],"repair":null})), false).unwrap();
+            worker.complete_task(&mut store, &mut m).unwrap();
+            if status == "blocked" {
+                assert_eq!(m.execution.as_ref().unwrap().tasks[0].status, "blocked");
+                assert_eq!(
+                    m.execution.as_ref().unwrap().tasks[0].summary,
+                    "Updated task result"
+                );
+                assert!(actions.try_recv().is_err());
+            } else {
+                assert_eq!(worker.task_summary, "Updated task result");
+                let Action::Verify { checks, .. } = actions.try_recv().unwrap() else {
+                    panic!("Expected fresh verification")
+                };
+                assert!(checks.iter().all(|check| check.command == ["/bin/false"]));
+            }
+        }
+    }
+
     #[test]
     fn integration_report_requests_repair_without_claiming_completion() {
         let (_data, mut store, mod_id, _plan, ids, _) = crate::repair::tests::fixture();
@@ -2085,10 +2351,28 @@ mod tests {
         worker.role = Role::Executor;
         worker.status = Status::Ready;
         worker.task_source = Some(crate::store::task_source(ids[2], 1));
-        worker.task_report = Some(json!({"status":"blocked","summary":"Retry is broken","checks":[],"repair":{
+        let checks = &worker.current_task(&code_mod).unwrap().checks;
+        let success = json!({"status":"completed","summary":"Previously passed","repair":null,
+            "checks":checks.iter().map(|check| json!({"check":check,"command":["/bin/true"]})).collect::<Vec<_>>()});
+        worker
+            .item(&store, &mut code_mod, &report_item(&success), false)
+            .unwrap();
+        let repair = json!({"status":"blocked","summary":"Retry is broken","checks":[],"repair":{
             "task":"runtime","files":["app/runtime.js"],"check":"Retry works",
             "command":["/usr/bin/node","/tasks/3/tests/retry.mjs"],"evidence":"Rejected download leaves Loading disabled."
-        }}).to_string());
+        }});
+        worker
+            .item(&store, &mut code_mod, &report_item(&repair), false)
+            .unwrap();
+        worker
+            .item(
+                &store,
+                &mut code_mod,
+                &json!({"type":"userMessage","clientId":"00000005-peer"}),
+                false,
+            )
+            .unwrap();
+        worker.item(&store, &mut code_mod, &report_item(&json!({"status":"completed","summary":"Acknowledged","checks":[],"repair":null})), false).unwrap();
         worker.complete_task(&mut store, &mut code_mod).unwrap();
         let execution = code_mod.execution.as_ref().unwrap();
         assert_eq!(execution.tasks[2].status, "repair_wait");

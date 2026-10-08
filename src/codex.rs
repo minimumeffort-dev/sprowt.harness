@@ -125,6 +125,25 @@ pub struct Client {
 }
 
 impl Client {
+    #[cfg(test)]
+    pub(crate) fn recording() -> (Self, Receiver<Action>) {
+        let (actions, inbox) = mpsc::channel();
+        let (_, events) = mpsc::channel();
+        (
+            Self {
+                actions,
+                events,
+                child: Arc::new(Mutex::new(None)),
+                task: None,
+                closed: true,
+                vm: Arc::new(Mutex::new(None)),
+                active_task: Arc::new(AtomicI64::new(0)),
+                cancelled: Arc::new(AtomicBool::new(false)),
+            },
+            inbox,
+        )
+    }
+
     pub fn start(
         project: &Path,
         resume: Option<Resume>,
