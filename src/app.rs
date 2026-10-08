@@ -3366,10 +3366,9 @@ mod tests {
         store.save_draft(m.id, "Keep the current behavior").unwrap();
         let mut app = App::load(data.0.join("project"), false, store).unwrap();
         let compact = rows(&screen(&mut app, 110, 40)).join("\n");
-        assert!(app.action_dock().guidance == Some("Answer in the composer"));
         assert!(compact.contains("Message decision"));
-        assert!(compact.contains(&format!("answer #{ask}")));
-        assert!(compact.contains("↵ answer"));
+        assert!(compact.contains(&format!("Answer #{ask}")));
+        assert!(compact.contains("↵ Answer"));
         assert!(!compact.contains("Message contract"));
         assert_eq!(app.input.lines(), ["Keep the current behavior"]);
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
@@ -3693,7 +3692,6 @@ mod tests {
         state.phase = "published".into();
         state.pr = Some("https://github.com/fixture/project/pull/1".into());
         assert_eq!(app.action_dock().status, "PR published · 1/1 tasks done");
-        assert!(app.action_dock().guidance == Some("Send edits to this PR"));
         app.targets.get_mut(&id).unwrap().pr_state = Some("MERGED".into());
         assert!(app.action_dock().primary == Some(Action::NewMod));
         app.mods[0].closed = true;
@@ -3821,7 +3819,6 @@ mod tests {
         let mut worker = Worker::start(&app.project, m, record, Role::Planner, None).unwrap();
         worker.status = Status::Running;
         app.workers.insert(worker.id, worker);
-        assert!(app.action_dock().guidance.is_none());
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
         app.view = View::Actions(Action::Stop);
         let worker = app.workers.values_mut().next().unwrap();
@@ -3856,22 +3853,47 @@ mod tests {
     }
 
     #[test]
-    fn action_dock_stays_above_the_composer_and_errors_remain_inspectable() {
+    fn unified_dock_groups_progress_composer_and_actions_without_clipping() {
         let (_data, mut app, _root) = execution_app();
         for width in [36, 48, 116] {
             let rendered = rows(&screen(&mut app, width, 30));
-            let menu = rendered
-                .iter()
-                .position(|r| r.contains("All actions"))
-                .unwrap();
-            let composer = rendered
-                .iter()
-                .position(|r| r.contains("╭ message"))
-                .unwrap();
-            assert!(menu < composer);
+            let position = |text: &str| rendered.iter().position(|r| r.contains(text)).unwrap();
+            let top = position("╭");
+            let status = position("Changes ready");
+            let action = position("Ask agent to review");
+            let divider = position("├");
+            let composer = position("keep this draft");
+            let hints = position("Request edits");
+            let menu = position("Actions");
+            let bottom = position("╰");
+            assert!(top < status && status <= action && action < divider);
+            assert!(divider < composer && composer < hints && hints <= menu && menu < bottom);
+            assert_eq!(rendered.iter().filter(|r| r.contains('╭')).count(), 1);
+            for row in &rendered[top + 1..bottom] {
+                assert_eq!(
+                    row.chars().nth(2),
+                    Some(if row.contains('├') { '├' } else { '│' })
+                );
+                assert_eq!(
+                    row.chars().nth(width as usize - 3),
+                    Some(if row.contains('┤') { '┤' } else { '│' })
+                );
+            }
+            assert!(rendered[menu].contains(if width < 68 {
+                "^g Actions"
+            } else {
+                "ctrl+g Actions"
+            }));
+            assert!(rendered[bottom + 1..].iter().all(|r| r.trim().is_empty()));
+            if width == 116 {
+                assert_eq!(status, action);
+                assert_eq!(hints, menu);
+                assert_eq!(bottom - top + 1, 6);
+                assert!(rendered[menu].ends_with("ctrl+g Actions │  "));
+            }
             let text = rendered.join("\n");
             assert!(text.contains("ctrl+o ▸ show details"));
-            assert!(text.contains("Ask agent to review"), "{text}");
+            assert!(!text.contains("Next ·") && !text.contains("message ╶"));
         }
         let error = "AssertionError: expected a successful response.\nFull evidence\n".repeat(30);
         app.notice = Some(error.clone());
@@ -3890,12 +3912,61 @@ mod tests {
     }
 
     #[test]
+    fn unified_dock_keeps_worker_progress_during_target_checks() {
+        let (_data, mut app, _root) = execution_app();
+        let m = &app.mods[0];
+        let id = m.id;
+        let record = app.store.worker_for(id, Role::Planner).unwrap();
+        let mut worker = Worker::start(&app.project, m, record, Role::Planner, None).unwrap();
+        worker.role = Role::Executor;
+        worker.status = Status::Running;
+        app.workers.insert(worker.id, worker);
+        let working = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(working.contains("Working · 1/1 tasks done"));
+        assert!(working.contains("ctrl+r Stop workers") && working.contains("↵ Queue message"));
+        app.git_jobs.insert(
+            id,
+            Job::start("checking target branch", |_| {
+                Ok(git_mod::Result::ProjectSynced)
+            }),
+        );
+        let polling = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(polling.contains("Working · 1/1 tasks done"));
+        assert!(!polling.contains("checking target branch"));
+        app.git_jobs.clear();
+        app.workers.clear();
+        let ready = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(ready.contains("Changes ready") && ready.contains("↵ Request edits"));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(matches!(app.view, View::Chat));
+
+        app.notice = Some("The request failed. ".repeat(30));
+        let failed = rows(&screen(&mut app, 48, 30));
+        let divider = failed.iter().position(|r| r.contains('├')).unwrap();
+        assert!(failed[divider - 1].contains('…'));
+        assert!(failed.iter().any(|r| r.contains("^g f Show full error")));
+        assert!(failed.iter().any(|r| r.contains("keep this draft")));
+
+        app.notice = None;
+        app.mods[0].closed = true;
+        let closed = rows(&screen(&mut app, 48, 30)).join("\n");
+        assert!(closed.contains("Closed · work saved") && closed.contains("^g Actions"));
+        assert!(!closed.contains("Newline") && !closed.contains("keep this draft"));
+        assert_eq!(app.scroll.input, ratatui::layout::Rect::default());
+        app.view = View::NewMod;
+        app.input = ui::name_input();
+        let new_mod = rows(&screen(&mut app, 48, 30)).join("\n");
+        assert!(new_mod.contains("New codemod") && new_mod.contains("↵ Create codemod"));
+        assert!(app.scroll.input.height > 0);
+    }
+
+    #[test]
     fn open_outline_keeps_focus_and_room_for_dialog_actions() {
         let (_data, mut app, _root) = execution_app();
         for width in [36, 80, 160] {
             screen(&mut app, width, 36);
-            assert_eq!(app.scroll.input.x, 2);
-            assert_eq!(app.scroll.input.height, 3);
+            assert_eq!(app.scroll.input.x, 4);
+            assert_eq!(app.scroll.input.height, 1);
             app.open_actions();
             let buffer = screen(&mut app, width, 36);
             let rendered = rows(&buffer).join("\n");
@@ -3913,7 +3984,7 @@ mod tests {
         }
         app.input.insert_str("\nsecond\nthird\nfourth\nfifth");
         screen(&mut app, 160, 36);
-        assert_eq!(app.scroll.input.height, 6);
+        assert_eq!(app.scroll.input.height, 4);
         let id = app.mods[0].id;
         app.mods[0]
             .queue
@@ -3950,7 +4021,7 @@ mod tests {
                 .unwrap();
             let end = rendered
                 .iter()
-                .position(|r| r.trim_start().starts_with('─'))
+                .position(|r| r.trim_start().starts_with('╭'))
                 .unwrap();
             for row in &rendered[start + 1..end] {
                 let text = row.trim();
@@ -4936,7 +5007,7 @@ mod tests {
         drop(app);
         let mut app = App::load(project.clone(), false, data.store()).unwrap();
         let display = rows(&screen(&mut app, 116, 40)).join("\n");
-        assert!(display.contains("PR published") && display.contains("request edits"));
+        assert!(display.contains("PR published") && display.contains("Request edits"));
         assert!(
             display.contains("PR published · 1/1 tasks done") && !display.contains("changes ready")
         );
@@ -5563,7 +5634,7 @@ mod tests {
             let compact = rows(&screen(&mut app, width, 40));
             let text = compact.join("\n");
             assert!(text.contains("Changes ready · 3/3 tasks done"));
-            assert!(text.contains("✓ 3/3 checks passed") && text.contains("All actions"));
+            assert!(text.contains("✓ 3/3 checks passed") && text.contains("Actions"));
             assert!(app.action_dock().primary == Some(Action::Review));
             assert!(
                 app.action_dock()
@@ -5639,7 +5710,7 @@ mod tests {
                     .iter()
                     .any(|a| a.action == Action::Details && a.label == "Hide plan details")
             );
-            assert!(expanded.iter().any(|row| row.contains("All actions")));
+            assert!(expanded.iter().any(|row| row.contains("Actions")));
             assert!(expanded.iter().any(|row| row.contains("│     response")));
             let start = expanded
                 .iter()
@@ -5661,7 +5732,7 @@ mod tests {
             );
             key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
             let collapsed = rows(&screen(&mut app, width, 42)).join("\n");
-            assert!(collapsed.contains("All actions"));
+            assert!(collapsed.contains("Actions"));
             assert!(
                 app.action_dock()
                     .actions
@@ -5879,7 +5950,7 @@ mod tests {
         assert!(compact.contains("1. Build the API"));
         assert!(!compact.contains("app/main.py") && !compact.contains("gpt-6-astra"));
         assert!(!compact.contains("I'll inspect"));
-        assert!(compact.contains("ctrl+q Manage queue"));
+        assert!(compact.contains("ctrl+q manage"));
 
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         let expanded = rows(&screen(&mut app, 100, 48)).join("\n");

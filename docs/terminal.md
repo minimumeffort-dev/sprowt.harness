@@ -1,6 +1,6 @@
 # Terminal and companion
 
-The open outline keeps project context at the top, work in the middle and actions beside the composer. The conversation stays left aligned.
+The open outline keeps project context at the top and work in the middle. One dock groups progress, actions and your message. The conversation stays left aligned.
 
 ```text
 [sprowt companion]  project
@@ -21,24 +21,33 @@ The open outline keeps project context at the top, work in the middle and action
 
 queue / waiting steering, when present
 
-──────────────────────────────────────────────────────────────
-⠋ Working · 1/2 tasks done
-ctrl+r Stop workers   ctrl+g All actions
-[message composer]
-↵ request edits   ctrl+j newline   esc quit
+╭──────────────────────────────────────────────────────────────────────╮
+│ ⠋ Working · 1/2 tasks done                       ctrl+r Stop workers │
+├──────────────────────────────────────────────────────────────────────┤
+│ Add an instruction…                                                  │
+│ ↵ Queue message   ctrl+j Newline                      ctrl+g Actions │
+╰──────────────────────────────────────────────────────────────────────╯
 ```
 
 ## Layout
 
-- Messages and plans use up to 80 columns. They share the composer's left edge; one blank row separates messages.
+- Messages and plans use up to 80 columns. The transcript and dock share the left edge; the dock has one column of inner padding. One blank row separates messages.
 - Task markers and numbers have their own column. Titles, outcomes and wrapped text line up beneath each other.
 - Menus and confirmations use up to 68 columns. The queue widens to fit its actions on one row when space allows. Diffs, history and full errors use the terminal width.
 - The composer starts with one text row and grows to four, then scrolls. Opening All actions keeps the draft visible and moves focus to the menu.
 - Active workers each get a header row with provider, role, model and effort. Long identities wrap. Progress belongs in the dock.
 
-## Action dock
+## Unified dock
 
-The dock stays in one place. Rust chooses the recommendation from current state:
+The dock has three parts:
+
+- **Top:** progress on the left, one useful action on the right.
+- **Middle:** your message, growing from one to four rows.
+- **Bottom:** Enter and newline hints on the left, **Ctrl+G · Actions** on the right.
+
+Narrow terminals stack controls with their labels intact. There is no separate “Next” row or footer. Background target checks keep active worker progress visible; publication and other foreground operations show their own status.
+
+Rust chooses the next action from current state:
 
 | State | Next step |
 | --- | --- |
@@ -53,15 +62,15 @@ The dock stays in one place. Rust chooses the recommendation from current state:
 | PR published | Send edits to update the same PR |
 | Closed codemod | Reopen saved work |
 
-The dock shows one recommendation, at most one alternative and **Ctrl+G · All actions**. While work runs, it shows progress and available controls. Opening the menu hides the background action row.
+While work runs, **Stop workers** appears when available. Other actions stay in **Ctrl+G · Actions**. The Enter hint describes what sending does: **Queue message**, **Request edits**, **Answer #ID** or **Create codemod**. Opening the menu keeps the draft visible and hides the composer shortcuts until you return.
 
-**Ctrl+G · All actions** lists the available actions and shortcuts in aligned columns. Use ↑/↓ and Enter; Esc returns to the same draft. Its selection keeps its meaning as workers finish; unavailable actions cannot run.
+**Ctrl+G · Actions** lists the available actions and shortcuts in aligned columns. Use ↑/↓ and Enter; Esc returns to the same draft. Its selection keeps its meaning as workers finish; unavailable actions cannot run.
 
 Every menu item shows its shortcut. Inside All actions, **n** starts a new codemod, **c** closes the current one, **d** deletes it and **f** opens full error details when available. Close and delete still require confirmation. These letters remain ordinary text in the composer; the dock shows **Ctrl+G** followed by the letter for menu actions.
 
 **View diff**, **Ask agent to review** and **Publish PR** are separate actions. Review remains optional, and publication keeps its confirmations. Enter in the composer sends your message; it never triggers the dock's recommendation. Workers finishing do not move focus from your draft.
 
-Errors use up to two wrapped rows in the dock. **Show full error** in All actions opens scrollable evidence. The footer keeps message entry and scrolling hints; the codemod selector stays at the top. Panel shortcuts wrap together with their labels on narrow screens.
+Errors use up to two wrapped rows inside the dock. **Show full error** in Actions opens scrollable evidence. The codemod selector stays at the top; mouse and keyboard scrolling keep working independently of the dock.
 
 ## Conversation
 
@@ -77,9 +86,9 @@ Plans show task titles, outcomes and dependencies first. **Ctrl+O · Show/Hide d
 
 Check details count passed, failed and unrun commands. Several commands can belong to one planned check; all appear beneath it, and all must pass. Failed output starts at the assertion or error; summaries are labelled **worker report**. During automatic recovery, the previous failure stays in details. Controller results decide whether work is complete.
 
-**Ctrl+T** opens a separate worker history panel with saved narration, model and effort, and [worker messages](coordination.md). Scroll with ↑/↓ or Fn+↑/↓ on Mac; Esc returns to the same draft, queue and plan view. Questions for you stay visible in the conversation with the sender and message ID; the composer says **answer #ID** and Enter saves your reply.
+**Ctrl+T** opens a separate worker history panel with saved narration, model and effort, and [worker messages](coordination.md). Scroll with ↑/↓ or Fn+↑/↓ on Mac; Esc returns to the same draft, queue and plan view. Questions for you stay visible in the conversation with the sender and message ID; the Enter hint says **Answer #ID** and saves your reply.
 
-Finished versions show one row per task and the final check count. The dock offers review, diff and publication. **Ctrl+E** starts an independent reviewer; its result stays compact and **Ctrl+O** expands findings. Outcomes, contracts, commands and routing stay behind **Ctrl+O**; routine worker chatter stays in history. **Ctrl+D** opens a full-width diff. Use **p** there, or **Ctrl+S** from the conversation, to review and confirm publication. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
+Finished versions show one row per task and the final check count. The dock recommends review; diff and publication remain in Actions. **Ctrl+E** starts an independent reviewer; its result stays compact and **Ctrl+O** expands findings. Outcomes, contracts, commands and routing stay behind **Ctrl+O**; routine worker chatter stays in history. **Ctrl+D** opens a full-width diff. Use **p** there, or **Ctrl+S** from the conversation, to review and confirm publication. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
 
 ```mermaid
 flowchart TB

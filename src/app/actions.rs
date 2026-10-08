@@ -84,7 +84,6 @@ pub struct ActionDock {
     pub error: Option<String>,
     pub tone: Tone,
     pub primary: Option<Action>,
-    pub guidance: Option<&'static str>,
     pub actions: Vec<ActionItem>,
 }
 
@@ -117,7 +116,6 @@ impl App {
             error: None,
             tone: Tone::Quiet,
             primary: None,
-            guidance: None,
             actions: Vec::new(),
         };
         let new_mod = matches!(self.composer_view(), View::NewMod);
@@ -231,12 +229,16 @@ impl App {
             } else if m.question().is_some() {
                 dock.status = "Worker needs your answer".into();
                 dock.tone = Tone::Attention;
-                dock.guidance = Some("Answer in the composer");
             } else if self.pending_network().is_some() {
                 dock.status = "Network access needed".into();
                 dock.tone = Tone::Attention;
                 dock.primary = Some(Network);
-            } else if let Some(activity) = self.git_activity() {
+            } else if let Some(activity) = self.git_activity().filter(|activity| {
+                *activity != "checking target branch"
+                    || !active
+                        && !self.auto_plans.contains(&m.id)
+                        && !self.auto_runs.contains(&m.id)
+            }) {
                 dock.status = activity.into();
                 dock.tone = Tone::Busy;
             } else if retry {
@@ -304,7 +306,6 @@ impl App {
             } else if self.published() {
                 dock.status = "PR published".into();
                 dock.tone = Tone::Ready;
-                dock.guidance = Some("Send edits to this PR");
             } else if self.version_ready() {
                 let review = m.agent_review.as_ref().filter(|r| r.current(m));
                 match review.map(|r| r.status.as_str()) {
@@ -314,7 +315,6 @@ impl App {
                     }
                     Some("findings") => {
                         dock.status = "Review found issues".into();
-                        dock.guidance = Some("Send edits to fix findings");
                     }
                     Some("paused" | "blocked") => {
                         dock.status = "Review paused".into();
@@ -353,7 +353,6 @@ impl App {
             }
         } else {
             dock.status = "New codemod".into();
-            dock.guidance = Some("Describe your goal below");
             if let Some(activity) = self.project_activity() {
                 dock.status = activity.into();
                 dock.tone = Tone::Busy;
@@ -363,7 +362,6 @@ impl App {
                 dock.actions
                     .push(ActionItem::new(Failure, "Show full error"));
                 dock.primary = Some(Failure);
-                dock.guidance = None;
             }
         }
         let update_label = code_mod

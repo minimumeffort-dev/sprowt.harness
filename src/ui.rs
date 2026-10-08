@@ -84,7 +84,16 @@ pub fn draw(
     let show_dock = matches!(composer_view, View::Chat | View::NewMod);
     let dock = app.action_dock();
     let menu_open = matches!(app.view, View::Actions(_));
-    let dock_lines = dock_lines(&dock, area.width, elapsed, menu_open);
+    let dock_width = area.width.saturating_sub(4);
+    let dock_header = dock_header(&dock, dock_width, elapsed, menu_open);
+    let dock_hints = dock_hints(app, dock_width, menu_open);
+    let read_only = matches!(composer_view, View::Chat) && app.read_only();
+    let dock_input_height = if read_only {
+        0
+    } else {
+        composer_height(&app.input, area.width).saturating_sub(2)
+    };
+    let dock_height = dock_header.len() as u16 + dock_input_height + dock_hints.len() as u16 + 3;
     let mut identities: Vec<_> = app.active_workers().collect();
     if identities.is_empty() {
         identities.extend(app.current_worker());
@@ -105,15 +114,7 @@ pub fn draw(
         View::NewMod | View::ProjectSetup(false, _)
     ));
     if area.width < 32
-        || area.height
-            < header_height
-                + 5
-                + mod_height
-                + if show_dock {
-                    dock_lines.len() as u16
-                } else {
-                    0
-                }
+        || area.height < header_height + 5 + mod_height + if show_dock { dock_height } else { 0 }
     {
         frame.render_widget(
             Paragraph::new("Make the terminal a little larger.\nCtrl+C to quit.")
@@ -124,7 +125,6 @@ pub fn draw(
     }
 
     let gap = u16::from(area.height >= 26 + 2 * mod_height);
-    let read_only = matches!(composer_view, View::Chat) && app.read_only();
     let [header, _, mod_row, _, content, _, dock_area, input, footer] = Layout::vertical([
         Constraint::Length(header_height),
         Constraint::Length(gap),
@@ -132,17 +132,13 @@ pub fn draw(
         Constraint::Length(gap * mod_height),
         Constraint::Min(1),
         Constraint::Length(gap),
-        Constraint::Length(if show_dock {
-            dock_lines.len() as u16
-        } else {
-            0
-        }),
-        Constraint::Length(if read_only {
+        Constraint::Length(if show_dock { dock_height } else { 0 }),
+        Constraint::Length(if read_only || show_dock {
             0
         } else {
             composer_height(&app.input, area.width)
         }),
-        Constraint::Length(1),
+        Constraint::Length(u16::from(!show_dock)),
     ])
     .areas(area);
 
@@ -184,7 +180,6 @@ pub fn draw(
             View::Mods(_) | View::DeleteMod(_) | View::CloseMod(_)
         ),
     );
-    let mut can_scroll = false;
     if !menu_open && matches!(composer_view, View::Chat | View::EditQueue(_)) {
         let count = if read_only {
             0
@@ -220,7 +215,7 @@ pub fn draw(
             Constraint::Length(steering_height),
         ])
         .areas(content);
-        can_scroll = draw_conversation(frame, app, conversation, elapsed);
+        draw_conversation(frame, app, conversation, elapsed);
         app.scroll.content = conversation;
         draw_queue_preview(frame, app, queue);
         draw_steering_preview(frame, app, steering);
@@ -236,17 +231,6 @@ pub fn draw(
         ..area
     };
     if let View::Actions(selected) = app.view {
-        if !read_only {
-            let mut draft = app.input.clone();
-            draft.set_cursor_style(Style::new());
-            draft.set_block(
-                Block::bordered()
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::new().fg(BORDER))
-                    .padding(Padding::horizontal(1)),
-            );
-            frame.render_widget(&draft, input);
-        }
         draw_actions(
             frame,
             app,
@@ -371,53 +355,63 @@ pub fn draw(
             &[("↵", "publish"), ("esc", "cancel")],
         );
         draw_scrollable_text(frame, app, text, body);
-    } else {
-        if !read_only {
-            let title = app
-                .current_mod()
-                .and_then(|m| m.question())
-                .map_or("message".to_owned(), |q| format!("answer #{}", q.id));
-            if matches!(app.view, View::Chat) {
-                app.input.set_block(
-                    Block::bordered()
-                        .border_type(BorderType::Rounded)
-                        .border_style(Style::new().fg(ACCENT))
-                        .padding(Padding::horizontal(1))
-                        .title(format!(" {title} ")),
-                );
-                app.input.set_placeholder_text(if title == "message" {
-                    "Describe a feature, a fix, or an idea..."
-                } else {
-                    "Answer the highlighted question..."
-                });
-            }
-            frame.render_widget(&app.input, input);
-            app.scroll.input = input;
-        }
-        let shortcuts = match composer_view {
-            View::NewMod => format!(
-                "↵ create + build{}   esc {}",
-                if footer.width >= 48 {
-                    "   ctrl+j newline"
-                } else {
-                    ""
-                },
-                if app.current_mod().is_some() {
-                    "back"
-                } else {
-                    "quit"
-                }
-            ),
-            View::EditQueue(_) if footer.width >= 40 => {
-                "enter save   ctrl+j newline   esc cancel".into()
-            }
-            View::EditQueue(_) => "↵ save  esc cancel".into(),
-            _ => chat_hints(app, footer.width, can_scroll),
+    } else if matches!(app.view, View::EditQueue(_)) {
+        frame.render_widget(&app.input, input);
+        app.scroll.input = input;
+        let shortcuts = if footer.width >= 40 {
+            "enter save   ctrl+j newline   esc cancel"
+        } else {
+            "↵ save  esc cancel"
         };
         frame.render_widget(Line::from(shortcuts).fg(MUTED), footer);
     }
     if show_dock {
-        frame.render_widget(Paragraph::new(dock_lines), dock_area);
+        let block = Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(BORDER))
+            .padding(Padding::horizontal(1));
+        let inner = block.inner(dock_area);
+        frame.render_widget(block, dock_area);
+        let [status, separator, input, hints] = Layout::vertical([
+            Constraint::Length(dock_header.len() as u16),
+            Constraint::Length(1),
+            Constraint::Length(dock_input_height),
+            Constraint::Length(dock_hints.len() as u16),
+        ])
+        .areas(inner);
+        frame.render_widget(Paragraph::new(dock_header), status);
+        frame.render_widget(
+            Line::from(format!(
+                "├{}┤",
+                "─".repeat(dock_area.width.saturating_sub(2) as usize)
+            ))
+            .fg(BORDER),
+            Rect {
+                x: dock_area.x,
+                width: dock_area.width,
+                ..separator
+            },
+        );
+        if !read_only {
+            app.input.set_block(Block::default());
+            app.input
+                .set_placeholder_text(if matches!(composer_view, View::NewMod) {
+                    "Describe your codemod…"
+                } else if app.current_mod().and_then(|m| m.question()).is_some() {
+                    "Answer the question…"
+                } else {
+                    "Add an instruction…"
+                });
+            if menu_open {
+                let mut draft = app.input.clone();
+                draft.set_cursor_style(Style::new());
+                frame.render_widget(&draft, input);
+            } else {
+                frame.render_widget(&app.input, input);
+                app.scroll.input = input;
+            }
+        }
+        frame.render_widget(Paragraph::new(dock_hints), hints);
     }
     app.scroll.finish(app.view);
     heading
@@ -1054,37 +1048,6 @@ fn wrap_line(line: Line<'static>, width: u16, indent: usize) -> Vec<Line<'static
     lines
 }
 
-fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
-    let mut hints = if app.read_only() {
-        String::new()
-    } else if app.current_mod().and_then(|m| m.question()).is_some() {
-        "↵ answer".to_owned()
-    } else if app.published() || app.version_ready() {
-        "↵ request edits".to_owned()
-    } else {
-        "↵ queue".to_owned()
-    };
-    let ctrl = if width < 60 { "^" } else { "ctrl+" };
-    let mut options = Vec::new();
-    if !app.read_only() {
-        options.push(format!("{ctrl}j newline"));
-    }
-    if can_scroll {
-        options.push(if cfg!(target_os = "macos") {
-            "fn+↑/↓ scroll".into()
-        } else {
-            "pgup/pgdn scroll".into()
-        });
-    }
-    for option in options {
-        let candidate = format!("{hints}  {option}");
-        if Span::raw(&candidate).width() + "  esc quit".len() <= width as usize {
-            hints = candidate;
-        }
-    }
-    format!("{hints}  esc quit")
-}
-
 fn action_control(item: &ActionItem, width: u16, menu: bool) -> Line<'static> {
     let mut spans = Vec::new();
     let ctrl = if width < 60 { "^" } else { "ctrl+" };
@@ -1113,7 +1076,7 @@ fn action_control(item: &ActionItem, width: u16, menu: bool) -> Line<'static> {
     Line::from(spans)
 }
 
-fn dock_lines(
+fn dock_header(
     dock: &ActionDock,
     width: u16,
     elapsed: Option<Duration>,
@@ -1125,14 +1088,29 @@ fn dock_lines(
         Tone::Attention => ("!", Color::Red),
         Tone::Ready => ("✓", ACCENT),
     };
-    let mut lines = vec![
-        Line::from("─".repeat(width as usize)).fg(BORDER),
-        Line::from(fit_name(&format!("{glyph} {}", dock.status), width)).fg(color),
-    ];
-    if menu_open {
-        return lines;
-    }
-    if let Some(error) = &dock.error {
+    let status = Line::from(format!("{glyph} {}", dock.status)).fg(color);
+    let primary = (!menu_open)
+        .then(|| {
+            dock.primary
+                .or_else(|| {
+                    dock.actions
+                        .iter()
+                        .any(|a| a.action == Action::Stop)
+                        .then_some(Action::Stop)
+                })
+                .and_then(|id| dock.actions.iter().find(|a| a.action == id))
+        })
+        .flatten()
+        .map(|item| {
+            let mut control = action_control(item, width, false);
+            for span in &mut control.spans {
+                span.style = span.style.bold().bg(CONTROL);
+            }
+            control
+        })
+        .unwrap_or_default();
+    let mut lines = dock_row(status, primary, width);
+    if !menu_open && let Some(error) = &dock.error {
         let mut error = wrap_line(Line::from(error.clone()).fg(Color::Red), width, 0);
         if error.len() > 2 {
             error[1] = Line::from(format!(
@@ -1143,62 +1121,62 @@ fn dock_lines(
         }
         lines.extend(error.into_iter().take(2));
     }
-    let mut next = Line::from("Next · ".fg(KEY_HINT));
-    if let Some(primary) = dock
-        .primary
-        .and_then(|id| dock.actions.iter().find(|a| a.action == id))
-    {
-        next.spans.extend(
-            action_control(primary, width, false)
-                .spans
-                .into_iter()
-                .map(|s| s.bold().bg(CONTROL)),
-        );
-    } else if let Some(guidance) = dock.guidance {
-        next.spans.push(guidance.to_owned().fg(KEY_HINT));
+    lines
+}
+
+fn dock_hints(app: &App, width: u16, menu_open: bool) -> Vec<Line<'static>> {
+    let hint = |key: &str, label: String| {
+        Line::from(vec![format!("{key} ").fg(ACCENT), label.fg(KEY_HINT)])
+    };
+    if menu_open {
+        return vec![hint("esc", "Back".into())];
+    }
+    let new_mod = matches!(app.composer_view(), View::NewMod);
+    let ctrl = if width < 60 { "^" } else { "ctrl+" };
+    let actions = hint(&format!("{ctrl}g"), "Actions".into());
+    if !new_mod && app.read_only() {
+        return dock_row(Line::default(), actions, width);
+    }
+    let send = if new_mod {
+        "Create codemod".into()
+    } else if let Some(question) = app.current_mod().and_then(|m| m.question()) {
+        format!("Answer #{}", question.id)
+    } else if app.published() || app.version_ready() {
+        "Request edits".into()
     } else {
-        next = Line::default();
-    }
-    let all = Line::from(vec![
-        format!("{}g ", if width < 60 { "^" } else { "ctrl+" }).fg(ACCENT),
-        "All actions".fg(KEY_HINT),
-    ]);
-    // Leave room for the menu; show at most one alternative to the recommendation.
-    for action in [
-        Action::Stop,
-        Action::RetryGit,
-        Action::Retry,
-        Action::Run,
-        Action::Queue,
-        Action::Diff,
-        Action::Publish,
-    ] {
-        if dock.primary == Some(action) {
-            continue;
-        }
-        if let Some(item) = dock.actions.iter().find(|a| a.action == action) {
-            let control = action_control(item, width, false);
-            if next.width() + control.width() + all.width() + 4 <= width as usize {
-                if next.width() > 0 {
-                    next.spans.push(Span::raw("  "));
-                }
-                next.spans.extend(control.spans);
-                break;
-            }
-        }
-    }
-    if next.width() + all.width() + 2 <= width as usize {
-        if next.width() > 0 {
-            next.spans.push(Span::raw("  "));
-        }
-        next.spans.extend(all.spans);
-        lines.push(next);
+        "Queue message".into()
+    };
+    let mut input = hint("↵", send);
+    let newline = hint(&format!("{ctrl}j"), "Newline".into());
+    let mut lines = Vec::new();
+    if input.width() + newline.width() + 3 <= width as usize {
+        input.spans.push(Span::raw("   "));
+        input.spans.extend(newline.spans);
     } else {
-        if next.width() > 0 {
-            lines.push(next);
-        }
-        lines.push(all);
+        lines.extend(wrap_line(input, width, 0));
+        input = newline;
     }
+    lines.extend(dock_row(input, actions, width));
+    lines
+}
+
+fn dock_row(left: Line<'static>, right: Line<'static>, width: u16) -> Vec<Line<'static>> {
+    if right.width() == 0 {
+        return wrap_line(left, width, 0);
+    }
+    if left.width() + right.width() + 3 <= width as usize {
+        let gap = width as usize - left.width() - right.width();
+        let mut row = left;
+        row.spans.push(Span::raw(" ".repeat(gap)));
+        row.spans.extend(right.spans);
+        return vec![row];
+    }
+    let mut lines = wrap_line(left, width, 0);
+    lines.extend(
+        wrap_line(right, width, 0)
+            .into_iter()
+            .map(Line::right_aligned),
+    );
     lines
 }
 
@@ -1913,19 +1891,14 @@ fn conversation_blocks<'a>(
     blocks
 }
 
-fn draw_conversation(
-    frame: &mut Frame,
-    app: &mut App,
-    area: Rect,
-    elapsed: Option<Duration>,
-) -> bool {
+fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option<Duration>) {
     let area = Rect {
         width: area.width.min(PROSE_WIDTH),
         ..area
     };
     app.page_size = area.height.max(1);
     if area.is_empty() {
-        return false;
+        return;
     }
     let activity = app
         .current_worker()
@@ -1971,7 +1944,6 @@ fn draw_conversation(
     draw_message_rows(frame, rows, area, scroll);
     app.history_offset = history_offset;
     app.focus_plan = false;
-    max_scroll > 0
 }
 
 fn draw_message_rows(
