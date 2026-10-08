@@ -26,6 +26,7 @@ use crate::{
 
 mod actions;
 mod scroll;
+mod tasks;
 pub use actions::{Action, ActionDock, ActionItem, Tone};
 pub use scroll::Scroll;
 
@@ -42,6 +43,9 @@ pub enum View {
     EditQueue(usize),
     Review(u16),
     History(u16),
+    Tasks(usize),
+    Task(i64, u16),
+    TaskHistory(i64, u16),
     Publish,
     ProjectSetup(bool, u16),
     Repository(bool),
@@ -58,6 +62,7 @@ pub struct App {
     pub view: View,
     pub scroll: Scroll,
     action_origin: Option<View>,
+    history_origin: Option<View>,
     pub history_offset: u16,
     pub page_size: u16,
     pub plan_details: bool,
@@ -138,6 +143,7 @@ impl App {
                     .any(|message| message.item_id.as_deref() == Some(&item_id))
                 {
                     let message = crate::store::Message {
+                        task: None,
                         item_id: Some(item_id),
                         role: "harness".into(),
                         body: format!("PR ready · {url}"),
@@ -172,6 +178,7 @@ impl App {
                 View::NewMod
             },
             action_origin: None,
+            history_origin: None,
             scroll: Scroll::default(),
             history_offset: 0,
             page_size: 1,
@@ -317,6 +324,9 @@ impl App {
                 | View::Queue(_)
                 | View::Review(_)
                 | View::History(_)
+                | View::Tasks(_)
+                | View::Task(_, _)
+                | View::TaskHistory(_, _)
                 | View::Publish
                 | View::ProjectSetup(_, _)
                 | View::Network(_, _)
@@ -430,8 +440,13 @@ impl App {
                         }
                         _ => {}
                     },
+                    View::Tasks(selected) => self.tasks_key(key, selected),
+                    View::Task(id, scroll) => self.task_key(key, id, scroll, false)?,
+                    View::TaskHistory(id, scroll) => self.task_key(key, id, scroll, true)?,
                     View::History(scroll) => match key.code {
-                        KeyCode::Esc => self.view = View::Chat,
+                        KeyCode::Esc => {
+                            self.view = self.history_origin.take().unwrap_or(View::Chat)
+                        }
                         KeyCode::Char('t') if ctrl => self.view = View::Chat,
                         KeyCode::Down => self.view = View::History(scroll.saturating_add(1)),
                         KeyCode::Up => self.view = View::History(scroll.saturating_sub(1)),
@@ -2551,6 +2566,7 @@ impl App {
                         .any(|message| message.item_id.as_deref() == Some(&item_id))
                     {
                         let message = crate::store::Message {
+                            task: None,
                             item_id: Some(item_id),
                             role: "harness".into(),
                             body: format!("PR ready · {url}"),
@@ -3378,8 +3394,12 @@ mod tests {
                 .contains("Message contract")
         );
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        let task = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
+        assert_eq!(app.inspect_task(task).unwrap().state, "Needs your answer");
+        key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
         let expanded = rows(&screen(&mut app, 110, 50)).join("\n");
         assert!(expanded.contains("Message contract"));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(queued(&app).is_empty());
@@ -3461,6 +3481,7 @@ mod tests {
         app.mods[0]
             .messages
             .extend((0..40).map(|i| crate::store::Message {
+                task: None,
                 item_id: None,
                 role: "user".into(),
                 body: format!("Message {i}"),
@@ -3560,7 +3581,9 @@ mod tests {
     #[test]
     fn mouse_scrolling_clamps_panels_and_preserves_confirmation_actions() {
         let (_data, mut app, root) = execution_app();
+        let task = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
         app.mods[0].messages.push(crate::store::Message {
+            task: Some(task),
             item_id: None,
             role: "codex:executor:1".into(),
             body: (0..60)
@@ -3584,6 +3607,8 @@ mod tests {
         );
         app.setup_files = (0..60).map(|i| format!("source/file-{i}.rs")).collect();
         for view in [
+            View::Task(task, 0),
+            View::TaskHistory(task, 0),
             View::History(0),
             View::Review(0),
             View::Failure(0),
@@ -3607,7 +3632,12 @@ mod tests {
             screen(&mut app, 100, 100);
             assert!(matches!(
                 app.view,
-                View::History(0) | View::Review(0) | View::Failure(0) | View::ProjectSetup(true, _)
+                View::Task(_, 0)
+                    | View::TaskHistory(_, 0)
+                    | View::History(0)
+                    | View::Review(0)
+                    | View::Failure(0)
+                    | View::ProjectSetup(true, _)
             ));
             assert_eq!(app.input.lines(), ["keep this draft"]);
         }
@@ -3755,9 +3785,10 @@ mod tests {
         app.notice = Some("Check failed".into());
         for width in [36, 80, 120] {
             app.open_actions();
-            let rendered = rows(&screen(&mut app, width, 36));
             let mut columns = Vec::new();
-            for item in &app.action_dock().actions {
+            for item in app.action_dock().actions {
+                app.view = View::Actions(item.action);
+                let rendered = rows(&screen(&mut app, width, 36));
                 assert!(item.action.shortcut().is_some() || item.action.menu_shortcut().is_some());
                 let line = rendered
                     .iter()
@@ -3897,8 +3928,7 @@ mod tests {
         }
         let error = "AssertionError: expected a successful response.\nFull evidence\n".repeat(30);
         app.notice = Some(error.clone());
-        app.mods[0].execution.as_mut().unwrap().tasks[0].checks[0].exit_code = Some(1);
-        assert!(app.action_dock().primary == Some(Action::Details));
+        assert!(app.action_dock().primary == Some(Action::Failure));
         app.perform_action(Action::Failure).unwrap();
         assert!(matches!(app.view, View::Failure(_)));
         let first = rows(&screen(&mut app, 48, 24)).join("\n");
@@ -4102,6 +4132,7 @@ mod tests {
             }
         }
         app.mods[0].messages.push(crate::store::Message {
+            task: None,
             item_id: None,
             role: "user".into(),
             body: "café 界 ".repeat(25),
@@ -4115,6 +4146,121 @@ mod tests {
         assert!((82..158).any(|x| buffer[(x, user as u16)].symbol() != " "));
         assert_ne!(buffer[(157, user as u16)].bg, ratatui::style::Color::Reset);
         assert_eq!(buffer[(158, user as u16)].bg, ratatui::style::Color::Reset);
+    }
+
+    #[test]
+    fn task_inspection_keeps_histories_scoped_and_returns_to_the_draft() {
+        let (_data, mut app, _root) = execution_app();
+        let m = &mut app.mods[0];
+        let plan = m.planning.as_mut().unwrap().plan.as_mut().unwrap();
+        let mut second = plan.tasks[0].clone();
+        second.id = "two".into();
+        second.title = "Build the interface".into();
+        second.depends_on = vec!["one".into()];
+        plan.tasks.push(second);
+        let execution = m.execution.as_mut().unwrap();
+        execution.checks.clear();
+        execution.status = "blocked".into();
+        let first = &mut execution.tasks[0];
+        first.worker = Some(12);
+        first.provider = Some("muse".into());
+        first.selection = Some(crate::router::Selection {
+            model: "muse-spark-1.3".into(),
+            effort: "high".into(),
+            reason: String::new(),
+            evidence: None,
+        });
+        first.status = "blocked".into();
+        first.checks[0].exit_code = Some(1);
+        first.checks[0].output = "AssertionError: expected greeting".into();
+        let first_id = first.id;
+        let mut second = first.clone();
+        second.id += 1;
+        second.task_id = "two".into();
+        second.status = "pending".into();
+        second.checks.clear();
+        let second_id = second.id;
+        execution.tasks.push(second);
+        for (task, text) in [
+            (Some(first_id), "First task update"),
+            (Some(second_id), "Second task update"),
+            (None, "Legacy worker update"),
+        ] {
+            m.messages.push(crate::store::Message {
+                task,
+                item_id: None,
+                role: "muse:12".into(),
+                body: text.into(),
+                model: Some("muse-spark-1.3".into()),
+                effort: Some("high".into()),
+            });
+        }
+        assert_eq!(app.inspect_task(second_id).unwrap().state, "Waiting");
+        assert_eq!(
+            app.inspect_task(second_id).unwrap().note,
+            "Waiting for task 1."
+        );
+        assert!(app.action_dock().primary == Some(Action::Failure));
+        app.perform_action(Action::Failure).unwrap();
+        assert!(matches!(app.view, View::Task(id, 0) if id == first_id));
+        for width in [36, 100, 160] {
+            let text = rows(&screen(&mut app, width, 40)).join("\n");
+            assert!(text.contains("Check failed") && text.contains("AssertionError:"));
+            assert!(text.contains("/usr/bin/true"));
+            assert!(!text.contains("Second task update") && !text.contains("Legacy worker update"));
+        }
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Tasks(0)));
+        let text = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(text.contains("muse · w12 · muse-spark-1.3 · high"));
+        let content = app.scroll.content;
+        wheel(&mut app, false, content);
+        assert!(matches!(app.view, View::Tasks(1)));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
+        let text = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(text.contains("Second task update"));
+        assert!(!text.contains("First task update") && !text.contains("Legacy worker update"));
+        key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
+        let text = rows(&screen(&mut app, 100, 40)).join("\n");
+        assert!(text.contains("First task update") && text.contains("Legacy worker update"));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::TaskHistory(id, _) if id == second_id));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Tasks(1)));
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert!(matches!(app.view, View::Chat));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(!app.plan_details);
+        assert!(app.current_mod().unwrap().queue.is_empty());
+    }
+
+    #[test]
+    fn task_inspection_prioritizes_final_failures_and_handles_replaced_plans() {
+        let (_data, mut app, _root) = execution_app();
+        let execution = app.mods[0].execution.as_mut().unwrap();
+        let id = execution.tasks[0].id;
+        execution.status = "blocked".into();
+        execution.checks[0].task = Some(id);
+        execution.checks[0].exit_code = Some(1);
+        execution.checks[0].output = "final check failed".into();
+        assert_eq!(app.inspect_task(id).unwrap().state, "Final checks failed");
+        assert!(app.action_dock().primary == Some(Action::Failure));
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert!(matches!(app.view, View::Tasks(0)));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        let text = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(
+            text.contains("final check failed")
+                && text.replace('\u{a0}', " ").contains("Retry final checks"),
+            "{text}"
+        );
+        app.mods[0].execution.as_mut().unwrap().tasks.clear();
+        screen(&mut app, 100, 30);
+        assert!(matches!(app.view, View::Tasks(0)));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 
     #[test]
@@ -5471,6 +5617,7 @@ mod tests {
         execution.status = "running".into();
         execution.tasks[0].status = "running".into();
         app.mods[0].messages.push(crate::store::Message {
+            task: None,
             item_id: Some("previous-reply".into()),
             role: "codex".into(),
             body: "Previous reply.".into(),
@@ -5523,9 +5670,11 @@ mod tests {
         )));
         assert!(!idle.contains('⠙'));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
         let history = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(history.contains("◆ codex · executor · previous-model · low"));
         assert!(history.contains("Previous reply."));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         app.workers.values_mut().next().unwrap().role = Role::Planner;
         let planner = rows(&screen(&mut app, 116, 40)).join("\n");
@@ -5649,6 +5798,7 @@ mod tests {
     fn missing_recorded_effort_is_visible_without_guessing_a_level() {
         let (_data, mut app, _root) = execution_app();
         app.mods[0].messages.push(crate::store::Message {
+            task: None,
             item_id: Some("old-reply".into()),
             role: "codex".into(),
             body: "Earlier reply.".into(),
@@ -5656,6 +5806,7 @@ mod tests {
             effort: None,
         });
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
         let screen = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(screen.contains("◆ codex · executor · gpt-6.1-sol · effort unknown"));
     }
@@ -5665,6 +5816,7 @@ mod tests {
         let (data, mut app, root) = execution_app();
         let id = app.mods[0].id;
         let message = crate::store::Message {
+            task: None,
             item_id: Some("saved-worker-reply".into()),
             role: "codex:45".into(),
             body: "I will inspect the saved edits.".into(),
@@ -5719,7 +5871,7 @@ mod tests {
             assert!(!text.contains("Keep task order") && !text.contains("/usr/bin/true"));
             key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
             let actions = rows(&screen(&mut app, width, 40)).join("\n");
-            assert!(actions.contains("Worker history") && actions.contains("Publish PR"));
+            assert!(actions.contains("Tasks and history") && actions.contains("Publish PR"));
             key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         }
         let instruction = app.store.enqueue(id, "Keep the current icons").unwrap();
@@ -5733,15 +5885,18 @@ mod tests {
         assert!(details.contains("risk confidence 0.47 < 0.80"));
         assert!(!details.contains("I will inspect"));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert!(matches!(app.view, View::Tasks(0)));
+        key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
         let history = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(
-            history.contains("worker history")
-                && history.contains("I will inspect the saved edits.")
+            history.contains("all history") && history.contains("I will inspect the saved edits.")
         );
         assert!(history.contains("w45 · gpt-6.1-sol · xhigh"));
         assert!(!history.contains("/usr/bin/true") && !history.contains("Keep task order"));
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Tasks(0)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(matches!(app.view, View::Chat) && app.plan_details);
         assert_eq!(app.input.lines(), ["keep this draft"]);
@@ -5864,7 +6019,7 @@ mod tests {
             app.plan_details = true;
             let dock = app.action_dock();
             assert_eq!(dock.status, "Final verification blocked");
-            assert!(dock.primary == Some(Action::Retry));
+            assert!(dock.primary == Some(Action::Failure));
             assert!(dock.actions.iter().any(|a| a.label == "Retry final checks"));
             assert!(dock.error.unwrap().contains("executable is unavailable"));
             let buffer = screen(&mut app, width, 55);
@@ -5991,6 +6146,7 @@ mod tests {
             .save_message(
                 code_mod.id,
                 &Message {
+                    task: None,
                     item_id: Some("preface".into()),
                     role: "planner".into(),
                     body: "I'll inspect the source.".into(),
@@ -6064,6 +6220,7 @@ mod tests {
                 .save_message(
                     code_mod.id,
                     &Message {
+                        task: None,
                         item_id: None,
                         role: role.into(),
                         body: body.into(),

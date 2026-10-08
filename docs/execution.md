@@ -70,7 +70,7 @@ Each active task has a spinner and worker ID through implementation and checks. 
 
 Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Final verification stops at the first failure: details show that command and its evidence, with skipped commands summarized in muted text. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
 
-Finished versions show compact task rows, the final check count and the publish action. **Ctrl+T** opens saved worker narration and handoffs separately from plan details. Questions for you stay visible in the conversation.
+Finished versions show compact task rows, the final check count and the publish action. **Ctrl+T** opens [task inspection](terminal.md#inspect-a-task): status, owner, checks and focused history. **Inspect failure** in the dock opens the affected task directly. Questions for you stay visible in the conversation.
 
 ### Verification feedback
 

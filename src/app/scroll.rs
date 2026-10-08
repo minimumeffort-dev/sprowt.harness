@@ -70,6 +70,12 @@ impl App {
             View::Actions(selected) => return self.actions_key(key, selected),
             View::Mods(index) => return self.picker_key(key, index),
             View::Queue(index) => return self.queue_key(key, index),
+            View::Tasks(index) => {
+                self.tasks_key(key, index);
+                return Ok(());
+            }
+            View::Task(id, offset) => View::Task(id, shift(offset)),
+            View::TaskHistory(id, offset) => View::TaskHistory(id, shift(offset)),
             View::Failure(offset) => View::Failure(shift(offset)),
             View::Review(offset) => View::Review(shift(offset)),
             View::History(offset) => View::History(shift(offset)),

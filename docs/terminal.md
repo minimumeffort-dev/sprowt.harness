@@ -36,7 +36,7 @@ queue / waiting steering, when present
 
 - Messages and plans use the available terminal width, with two columns of margin on each side. The transcript and dock share the left edge; the dock has one column of inner padding. One blank row separates messages.
 - Task markers and numbers have their own column. Titles, outcomes and wrapped text line up beneath each other.
-- Menus and confirmations use up to 68 columns. The queue widens to fit its actions on one row when space allows. Diffs, history and full errors use the terminal width.
+- Menus and confirmations use up to 68 columns. The queue widens to fit its actions on one row when space allows. Task inspection, diffs, history and full errors use the terminal width.
 - The composer starts with four text rows and grows to eight, then scrolls. Blank lines and wrapped text count toward its height; the cursor stays visible. Short terminals use fewer rows to keep the controls on screen. Opening All actions keeps the draft visible and moves focus to the menu.
 - Active workers each get a header row with provider, role, model and effort. Long identities wrap. Progress belongs in the dock.
 
@@ -69,11 +69,27 @@ While work runs, **Stop workers** appears when available. Other actions stay in 
 
 **Ctrl+G · Actions** lists the available actions and shortcuts in aligned columns. Use ↑/↓ and Enter; Esc returns to the same draft. Its selection keeps its meaning as workers finish; unavailable actions cannot run.
 
-Every menu item shows its shortcut. Inside All actions, **n** starts a new codemod, **c** closes the current one, **d** deletes it and **f** opens full error details when available. Close and delete still require confirmation. These letters remain ordinary text in the composer; the dock shows **Ctrl+G** followed by the letter for menu actions.
+Every menu item shows its shortcut. Inside All actions, **n** starts a new codemod, **c** closes the current one, **d** deletes it and **f** inspects a failure when available. Close and delete still require confirmation. These letters remain ordinary text in the composer; the dock shows **Ctrl+G** followed by the letter for menu actions.
 
 **View diff**, **Ask agent to review** and **Publish PR** are separate actions. Review remains optional, and publication keeps its confirmations. Enter in the composer sends your message; it never triggers the dock's recommendation. Workers finishing do not move focus from your draft.
 
-Errors use up to two wrapped rows inside the dock. **Show full error** in Actions opens scrollable evidence. The codemod selector stays at the top; mouse and keyboard scrolling keep working independently of the dock.
+Errors use up to two wrapped rows inside the dock. **Inspect failure** opens the affected task directly. Errors without a task, such as Git failures, use **Show full error**. The codemod selector stays at the top; mouse and keyboard scrolling keep working independently of the dock.
+
+## Inspect a task
+
+**Ctrl+T · Tasks and history** lists the current tasks with their status, worker, model and effort. Select one with ↑/↓ and press Enter.
+
+- The task view shows its latest update, checks and failure evidence. Working, waiting for prerequisites, waiting for an answer, failed checks and stopped workers have distinct labels.
+- **h** opens that task's messages and handoffs. **a** opens All history from there. From the task list, **h** opens All history directly.
+- **Esc** goes back one view; **Ctrl+T** returns to the conversation. Your draft, queue and plan toggle stay unchanged.
+- Retry and network shortcuts appear when available and use the existing codemod actions. Inspecting a task does not restart it.
+
+New worker messages save their task identity. Older unlinked messages remain in All history; they are not guessed from a reused worker ID. Without a task list, Ctrl+T opens All history directly.
+
+```text
+Ctrl+T → Tasks → Enter → Task details → h → Task history
+             └─ h → All history              └─ a → All history
+```
 
 ## Conversation
 
@@ -81,7 +97,7 @@ User messages have a `>` prefix and a subtle background. Agent messages show the
 
 The worker status uses a small dot spinner during connection, execution and verification. Each running task shows its worker ID and uses the same spinner in the plan, including while its checks run. Completed tasks and replies stay still. `--no-motion` uses a static activity glyph.
 
-The codemod row lists each active provider, worker ID and numbered task. During combined checks the dock says **Final verification**; a failure says **Final verification blocked** with **Retry final checks**. Details show the first failed command and a muted skipped count. Missing-runtime recovery says **Restoring task environment**. Narrow terminals show the active worker count instead; task rows retain their worker IDs.
+The codemod row lists each active provider, worker ID and numbered task. During combined checks the dock says **Final verification**; a failure says **Final verification blocked** with **Inspect failure** when its task is known. The task view shows the failed command and evidence; **Retry final checks** remains available. Missing-runtime recovery says **Restoring task environment**. Narrow terminals show the active worker count instead; task rows retain their worker IDs.
 
 Codex’s configured effort is used when available. When unset, the harness reads the model’s default from Codex’s catalog and sends it explicitly with new turns. Replies save that effort for reopening. Older replies without recorded effort show **effort unknown**.
 
@@ -89,14 +105,14 @@ Plans show task titles, outcomes and dependencies first. **Ctrl+O · Show/Hide d
 
 Check details count passed, failed and unrun commands. Several commands can belong to one planned check; all appear beneath it, and all must pass. Failed output starts at the assertion or error; summaries are labelled **worker report**. During automatic recovery, the previous failure stays in details. Controller results decide whether work is complete.
 
-**Ctrl+T** opens a separate worker history panel with saved narration, model and effort, and [worker messages](coordination.md). Scroll with ↑/↓ or Fn+↑/↓ on Mac; Esc returns to the same draft, queue and plan view. Questions for you stay visible in the conversation with the sender and message ID; the Enter hint says **Answer #ID** and saves your reply.
+Task history includes saved narration, model and effort, and [worker messages](coordination.md). Questions for you stay visible in the conversation with the sender and message ID; the Enter hint says **Answer #ID** and saves your reply.
 
 Finished versions show one row per task and the final check count. The dock recommends review; diff and publication remain in Actions. **Ctrl+E** starts an independent reviewer; its result stays compact and **Ctrl+O** expands findings. Outcomes, contracts, commands and routing stay behind **Ctrl+O**; routine worker chatter stays in history. **Ctrl+D** opens a full-width diff. Use **p** there, or **Ctrl+S** from the conversation, to review and confirm publication. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
 
 ```mermaid
 flowchart TB
     result["Tasks + check count"] -->|"Ctrl+O"| details["Plan details · contracts, checks, routing"]
-    result -->|"Ctrl+T"| history["Worker history · narration and handoffs"]
+    result -->|"Ctrl+T"| tasks["Tasks · inspect one task and its history"]
     result -->|"Ctrl+E"| review["Independent review · scoped fixes and fresh checks"]
     result -->|"Ctrl+S"| publish["Review changes · confirm PR"]
 ```
@@ -111,7 +127,7 @@ Git setup shows the starting file list. GitHub setup uses Tab to choose connect 
 
 ## Scrolling
 
-Use the mouse wheel or trackpad over the conversation, plan, diff, worker history or dialog to scroll it. Hover over the composer to scroll a long draft instead. Codemod, queue and All actions lists move the selection and keep it visible; Enter still opens or confirms it. Scrolling preserves drafts and queued instructions. Dialogs capture their own scrolling, and the view adjusts when the terminal resizes. Keyboard scrolling stays available.
+Use the mouse wheel or trackpad over the conversation, plan, task details, diff, history or dialog to scroll it. Hover over the composer to scroll a long draft instead. Codemod, task, queue and All actions lists move the selection and keep it visible; Enter still opens or confirms it. Scrolling preserves drafts and queued instructions. Dialogs capture their own scrolling, and the view adjusts when the terminal resizes. Keyboard scrolling stays available.
 
 ## Commands
 
@@ -138,7 +154,7 @@ Use the mouse wheel or trackpad over the conversation, plan, diff, worker histor
 | Ctrl+E | Ask an agent to review; r inside the diff |
 | Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide plan details |
-| Ctrl+T | Open worker history; Esc returns |
+| Ctrl+T | Tasks and history; also returns to the conversation from those views |
 | Ctrl+N | Review a pending network request |
 | Ctrl+D | View diff |
 | Mouse wheel / trackpad | Scroll the view under the pointer; move selection in lists |

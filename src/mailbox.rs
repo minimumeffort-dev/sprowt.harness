@@ -437,6 +437,7 @@ impl Store {
         tx.execute("INSERT INTO worker_messages(mod_id,recipient_task,from_task,to_task,kind,body,reply_to,request_key)
             VALUES (?1,?2,'user',?3,'reply',?4,?5,?6)", params![mod_id,task,to,body,id,format!("user:{id}")])?;
         let reply = Message {
+            task: Some(task),
             item_id: Some(format!("answer:{id}")),
             role: "user".into(),
             body: format!("Reply to #{id} · {body}"),
@@ -444,8 +445,8 @@ impl Store {
             effort: None,
         };
         tx.execute(
-            "INSERT INTO messages(mod_id,item_id,role,body) VALUES (?1,?2,?3,?4)",
-            params![mod_id, reply.item_id, reply.role, reply.body],
+            "INSERT INTO messages(mod_id,item_id,role,body,task_run_id) VALUES (?1,?2,?3,?4,?5)",
+            params![mod_id, reply.item_id, reply.role, reply.body, task],
         )?;
         tx.execute("UPDATE code_mods SET draft='' WHERE id=?1", [mod_id])?;
         tx.commit()?;

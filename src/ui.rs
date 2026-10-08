@@ -1,3 +1,5 @@
+mod tasks;
+
 use std::time::Duration;
 
 use ratatui::{
@@ -328,6 +330,38 @@ pub fn draw(
                 ..dialog_area
             },
         );
+    } else if let View::Tasks(selected) = app.view {
+        tasks::draw_tasks(
+            frame,
+            app,
+            selected,
+            Rect {
+                width: area.width,
+                ..dialog_area
+            },
+        );
+    } else if let View::Task(id, scroll) = app.view {
+        tasks::draw_task(
+            frame,
+            app,
+            id,
+            scroll,
+            Rect {
+                width: area.width,
+                ..dialog_area
+            },
+        );
+    } else if let View::TaskHistory(id, scroll) = app.view {
+        draw_history(
+            frame,
+            app,
+            scroll,
+            Rect {
+                width: area.width,
+                ..dialog_area
+            },
+            Some(id),
+        );
     } else if let View::History(scroll) = app.view {
         draw_history(
             frame,
@@ -337,6 +371,7 @@ pub fn draw(
                 width: area.width,
                 ..dialog_area
             },
+            None,
         );
     } else if matches!(app.view, View::Publish) {
         let count = app.review.as_ref().map_or(0, |review| review.count());
@@ -789,11 +824,20 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     frame.render_widget(hints, footer);
 }
 
-fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
+fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect, task: Option<i64>) {
+    if task.is_some_and(|id| app.inspect_task(id).is_none()) {
+        tasks::draw_tasks(frame, app, 0, area);
+        return;
+    }
     let Some(code_mod) = app.current_mod() else {
         return;
     };
-    let hints = key_hints(&[("↑↓", "scroll"), (page_key(), "page"), ("esc", "back")]);
+    let mut keys = vec![("↑↓", "scroll"), (page_key(), "page")];
+    if task.is_some() {
+        keys.push(("a", "all history"));
+    }
+    keys.extend([("esc", "back"), ("ctrl+t", "conversation")]);
+    let hints = key_hints(&keys);
     let [panel, footer] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(hints.line_count(area.width) as u16),
@@ -803,16 +847,34 @@ fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(BORDER))
         .padding(Padding::horizontal(1))
-        .title(Line::from(" worker history ").fg(KEY_HINT).bold());
+        .title(
+            Line::from(task.and_then(|id| app.inspect_task(id)).map_or_else(
+                || " all history ".into(),
+                |task| format!(" task {} · history ", task.number),
+            ))
+            .fg(KEY_HINT)
+            .bold(),
+        );
     let inner = block.inner(panel);
     let mut rows = Vec::new();
     let mut total: usize = 0;
-    for item in conversation_blocks(code_mod, false, true, inner.width, None, &[]) {
+    for item in conversation_blocks(code_mod, false, true, inner.width, None, &[], task) {
         let paragraph = Paragraph::new(item.text).wrap(Wrap { trim: false });
         let height =
             paragraph.line_count(inner.width.saturating_sub(if item.user { 2 } else { 0 }));
         rows.push((total, height, item.user, paragraph));
         total += height + 1;
+    }
+    if total == 0 {
+        let paragraph = Paragraph::new(if task.is_some() {
+            "No messages linked to this task yet. Older messages are in All history."
+        } else {
+            "No worker history yet."
+        })
+        .wrap(Wrap { trim: false });
+        let height = paragraph.line_count(inner.width);
+        rows.push((0, height, false, paragraph));
+        total = height;
     }
     let max_scroll = total
         .saturating_sub(1)
@@ -823,7 +885,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     draw_message_rows(frame, rows, inner, scroll as usize);
     app.scroll.content = inner;
     app.page_size = inner.height.max(1);
-    app.view = View::History(scroll);
+    app.view = task.map_or(View::History(scroll), |id| View::TaskHistory(id, scroll));
     frame.render_widget(hints, footer);
 }
 
@@ -1705,6 +1767,7 @@ fn conversation_blocks<'a>(
     width: u16,
     activity: Option<&'static str>,
     network: &[crate::network::Access],
+    task_filter: Option<i64>,
 ) -> Vec<ConversationBlock<'a>> {
     let saved = code_mod
         .planning
@@ -1716,6 +1779,9 @@ fn conversation_blocks<'a>(
         .messages
         .iter()
         .filter_map(|message| {
+            if task_filter.is_some() && message.task != task_filter {
+                return None;
+            }
             let is_plan = plan_id.is_some() && message.item_id == plan_id;
             if history
                 && message
@@ -1849,6 +1915,18 @@ fn conversation_blocks<'a>(
         });
     }
     for message in &code_mod.coordination {
+        if let Some(id) = task_filter {
+            let relevant = message.task == Some(id)
+                || message.active
+                    && code_mod.execution.as_ref().is_some_and(|e| {
+                        e.tasks
+                            .iter()
+                            .any(|run| run.id == id && message.to_task == run.task_id)
+                    });
+            if !relevant {
+                continue;
+            }
+        }
         let question = code_mod.needs_answer(message);
         if !question && !history {
             continue;
@@ -1925,6 +2003,7 @@ fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Opti
             area.width,
             activity,
             &app.network_requests,
+            None,
         )
     });
     let mut rows = Vec::new();

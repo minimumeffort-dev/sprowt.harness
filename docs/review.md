@@ -24,7 +24,7 @@ The reviewer cannot write source, call harness tools, publish or grant network a
 
 ## What you see
 
-The dock recommends review when changes are ready, then publication when the current review passes. **Ctrl+G** lists available actions. The conversation keeps the review result. **Ctrl+O** expands the summary, findings, file locations and proposed fixes. **Ctrl+T** keeps the reviewer’s narration and previous reports alongside worker history.
+The dock recommends review when changes are ready, then publication when the current review passes. **Ctrl+G** lists available actions. The conversation keeps the review result. **Ctrl+O** expands the summary, findings, file locations and proposed fixes. **Ctrl+T**, then **h · All history**, shows reviewer narration and previous reports alongside worker messages.
 
 Reviews are tied to a source fingerprint and plan. New instructions or changed source invalidate the result. An old turn cannot replace a newer review or trigger repairs. Publishing still checks the current source against the verified fingerprint.
 

@@ -66,6 +66,8 @@ Before Git setup is confirmed, its file preview uses a temporary workspace. Canc
 
 State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Replies save model and effort; plans save routing. Execution saves task ownership, provider assignment reasons and order, attempts, checks, the current routing decision and evidence, and the verified source fingerprint. Routing inputs are stored as plain text; they exclude env files and the API key. SQLite stores each Git mod’s folder; `git-mod.json` records its branch, base, exported fingerprint, commit, PR URL and publication, close, edit or removal intent. Closing also saves a timestamp for retention.
 
+Worker replies and answers to worker questions also save their task-run ID. Replaying history keeps the original association, even when the worker handles another task. Older messages without that ID remain in All history. See [Task inspection](terminal.md#inspect-a-task).
+
 The [tool dispatcher](tools.md) records call IDs, callers, duration and outcomes in `tools.jsonl`. Inputs and outputs are omitted. Tool logs stay on the Mac and are removed with the mod; recovery uses saved execution state and Git checkpoints.
 
 Apple Container manages each VM’s disk separately. Per-worker runtimes and download caches persist across publication and edit rounds. Task folders and their local dependencies stay through final checks, review and repairs; a replacement plan removes the old task folders. Closing or deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.

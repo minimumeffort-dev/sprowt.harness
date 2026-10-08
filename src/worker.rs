@@ -626,6 +626,7 @@ impl Worker {
                         store,
                         code_mod,
                         Message {
+                            task: None,
                             item_id: Some(format!("rejected:{source}:{}", self.id)),
                             role: "harness".into(),
                             body: format!(
@@ -766,6 +767,7 @@ impl Worker {
                     };
                     if recover {
                         save_message(store, code_mod, Message {
+                            task: None,
                             item_id: Some(format!("runtime:{source}:{}", checks.iter().find_map(|c| c.missing_runtime.as_ref()).unwrap())),
                             role: "system".into(),
                             body: "Restoring a missing task environment, then rerunning final checks.".into(),
@@ -820,6 +822,7 @@ impl Worker {
                     store,
                     code_mod,
                     Message {
+                        task: crate::task_worktree::task_id(&source).ok(),
                         item_id: Some(format!("result:{source}")),
                         role: format!("{}:{}", self.provider, self.id),
                         body: summary,
@@ -868,6 +871,7 @@ impl Worker {
                                 .find(|message| message.item_id.as_deref() == Some(id))
                                 .cloned()
                                 .unwrap_or(Message {
+                                    task: None,
                                     item_id: Some(id.into()),
                                     role: format!("{}:{}", self.provider, self.id),
                                     body: String::new(),
@@ -966,6 +970,7 @@ impl Worker {
             store,
             code_mod,
             Message {
+                task: None,
                 item_id: Some(input.source.clone()),
                 role: "user".into(),
                 body: input.texts.join("\n\n"),
@@ -978,6 +983,7 @@ impl Worker {
                 store,
                 code_mod,
                 Message {
+                    task: None,
                     item_id: Some(format!("delivered:{}:{}", input.source, self.id)),
                     role: "harness".into(),
                     body: format!("Steering delivered · w{}", self.id),
@@ -1089,6 +1095,7 @@ impl Worker {
             store,
             code_mod,
             Message {
+                task: if historical { None } else { self.task_run_id() },
                 item_id: Some(id.into()),
                 role: if role == "codex" {
                     format!("{}:{}", self.provider, self.id)
@@ -1150,6 +1157,7 @@ impl Worker {
                 store,
                 code_mod,
                 Message {
+                    task: None,
                     item_id: Some(format!("review:{source}")),
                     role: "reviewer".into(),
                     body,
@@ -1194,6 +1202,12 @@ impl Worker {
         } else if source.starts_with("00000005-") {
             self.task_mail = true;
         }
+    }
+
+    pub fn task_run_id(&self) -> Option<i64> {
+        self.task_source
+            .as_deref()
+            .and_then(|source| crate::task_worktree::task_id(source).ok())
     }
 
     fn current_task<'a>(&self, code_mod: &'a CodeMod) -> Option<&'a Task> {
@@ -1314,6 +1328,7 @@ impl Worker {
                             store,
                             code_mod,
                             Message {
+                                task: crate::task_worktree::task_id(&source).ok(),
                                 item_id: Some(format!("repair:{source}")),
                                 role: "harness".into(),
                                 body: report.repair.as_ref().unwrap().notice(),
@@ -1480,6 +1495,7 @@ fn remember_message(code_mod: &mut CodeMod, mut message: Message) {
         .iter_mut()
         .find(|existing| existing.item_id == message.item_id)
     {
+        message.task = existing.task.or(message.task);
         if message.model.is_none() {
             message.model.clone_from(&existing.model);
         }
@@ -3353,6 +3369,35 @@ mod tests {
     }
 
     #[test]
+    fn task_messages_keep_their_owner_when_workers_are_reused_or_history_replayed() {
+        let (data, store, mut code_mod, mut worker) = planner();
+        worker.role = Role::Executor;
+        for task in [101, 102] {
+            worker.task_source = Some(crate::store::task_source(task, 1));
+            worker.item(&store, &mut code_mod, &json!({"type":"agentMessage", "id":format!("task-{task}"), "phase":"commentary", "text":format!("Task {task} update")}), false).unwrap();
+        }
+        for task in [101, 102, 103] {
+            worker.item(&store, &mut code_mod, &json!({"type":"agentMessage", "id":format!("task-{task}"), "phase":"commentary", "text":format!("Task {task} update")}), true).unwrap();
+        }
+        let saved = data
+            .store()
+            .load_project(Path::new("/planner-project"))
+            .unwrap();
+        for messages in [&code_mod.messages, &saved.mods[0].messages] {
+            for (id, expected) in [(101, Some(101)), (102, Some(102)), (103, None)] {
+                assert_eq!(
+                    messages
+                        .iter()
+                        .find(|message| message.item_id.as_deref() == Some(&format!("task-{id}")))
+                        .unwrap()
+                        .task,
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
     fn live_replies_save_model_and_effort_without_relabeling_history() {
         let (data, mut store, mut code_mod, mut worker) = planner();
         worker.role = Role::Executor;
@@ -3360,6 +3405,7 @@ mod tests {
             &store,
             &mut code_mod,
             Message {
+                task: None,
                 item_id: Some("model-only".into()),
                 role: "codex".into(),
                 body: "Reply saved before effort labels.".into(),

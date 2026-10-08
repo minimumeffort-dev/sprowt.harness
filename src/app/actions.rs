@@ -194,16 +194,20 @@ impl App {
                     Details,
                     if self.plan_details {
                         "Hide plan details"
-                    } else if failed_checks {
-                        "Inspect failed checks"
                     } else {
                         "Show plan details"
                     },
                 ));
             }
-            if self.worker_error().is_some() {
-                dock.actions
-                    .push(ActionItem::new(Failure, "Show full error"));
+            if self.worker_error().is_some() || failed_checks || self.failed_task().is_some() {
+                dock.actions.push(ActionItem::new(
+                    Failure,
+                    if self.failed_task().is_some() {
+                        "Inspect failure"
+                    } else {
+                        "Show full error"
+                    },
+                ));
             }
             if m.execution.is_some() && !busy {
                 dock.actions.push(ActionItem::new(Diff, "View diff"));
@@ -219,9 +223,9 @@ impl App {
                     format!("Manage queue ({})", m.queue.len()),
                 ));
             }
-            if m.has_worker_history() {
+            if m.has_worker_history() || !self.task_ids().is_empty() {
                 dock.actions
-                    .push(ActionItem::new(History, "Worker history"));
+                    .push(ActionItem::new(History, "Tasks and history"));
             }
             if m.closed {
                 dock.status = "Closed · work saved".into();
@@ -287,20 +291,23 @@ impl App {
                 dock.tone = Tone::Attention;
             } else if final_blocked {
                 dock.status = "Final verification blocked".into();
-                dock.primary = worker_action;
+                dock.primary = if self.failed_task().is_some() {
+                    Some(Failure)
+                } else {
+                    worker_action
+                };
                 dock.tone = Tone::Attention;
                 dock.error = m
                     .execution
                     .as_ref()
                     .and_then(|e| e.checks.iter().find(|c| c.failed()).map(|c| c.brief()));
-            } else if self.worker_error().is_some() || failed_checks {
+            } else if self.worker_error().is_some() || failed_checks || self.failed_task().is_some()
+            {
                 dock.status = "Work paused".into();
-                dock.primary = if failed_checks && details && !self.plan_details {
-                    Some(Details)
-                } else if self.worker_error().is_none() {
-                    worker_action
-                } else {
+                dock.primary = if self.failed_task().is_some() || self.worker_error().is_some() {
                     Some(Failure)
+                } else {
+                    worker_action
                 };
                 dock.tone = Tone::Attention;
             } else if self.published() {
@@ -485,7 +492,9 @@ impl App {
             }
             Action::Failure => {
                 self.action_origin = Some(self.view);
-                self.view = View::Failure(0);
+                self.view = self
+                    .failed_task()
+                    .map_or(View::Failure(0), |id| View::Task(id, 0));
             }
             Action::Diff => self.open_review()?,
             Action::Review => {
@@ -514,7 +523,14 @@ impl App {
                 }
             }
             Action::Queue => self.view = View::Queue(0),
-            Action::History => self.view = View::History(0),
+            Action::History => {
+                self.history_origin = None;
+                self.view = if self.task_ids().is_empty() {
+                    View::History(0)
+                } else {
+                    View::Tasks(0)
+                };
+            }
             Action::Mods => {
                 self.show_closed = self.current_mod().is_some_and(|m| m.closed);
                 self.view = View::Mods(

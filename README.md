@@ -20,7 +20,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Workers and isolation](docs/workers.md): Codex planning and review, with separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
-- [Terminal and companion](docs/terminal.md): a full-width outline with aligned tasks, compact menus and a unified dock with a growing message area. Shortcuts, mouse scrolling and a Sprowt pet that reacts to work.
+- [Terminal and companion](docs/terminal.md): a full-width outline with aligned tasks, compact menus and a unified dock with a growing message area. Task inspection, shortcuts, mouse scrolling and a Sprowt pet that reacts to work.
 
 ### Current limits
 
@@ -73,7 +73,7 @@ Late handoff acknowledgements keep the worker's valid task report. New blockers 
 
 Publishing keeps the VM and worktree for further edits. Task environments stay through checks, review and repairs; a new plan removes the old task folders. Missing check executables return to their original worker for one bounded recovery attempt. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
-You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows plan details; **Ctrl+T** opens worker history. Finished versions show tasks and check counts. A shared action model drives the dock, menu and shortcuts from current state. One dock groups progress, the next action and message entry; **Ctrl+G** lists all available actions. Small changes can stay with one worker.
+You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows plan details; **Ctrl+T** opens tasks with focused checks and history. The dock’s **Inspect failure** action opens the affected task. Finished versions show tasks and check counts. A shared action model drives the dock, menu and shortcuts from current state. One dock groups progress, the next action and message entry; **Ctrl+G** lists all available actions. Small changes can stay with one worker.
 
 Blocked downloads show **Network access needed** beside the task. **Ctrl+N** shows the exact domains and reason: **a** allows them for this codemod; **d** denies. Approval reconnects the affected worker and retries its saved task. Other workers continue; the global allowlist stays unchanged.
 
@@ -150,7 +150,7 @@ Setup saves the key in private local configuration, so the installed harness can
 | Ctrl+E | Ask an agent to review the finished version |
 | Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide plan details |
-| Ctrl+T | Open worker history; Esc returns |
+| Ctrl+T | Tasks and history; Enter inspects a task |
 | Ctrl+N | Review a pending network request |
 | Ctrl+D | View diff |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |

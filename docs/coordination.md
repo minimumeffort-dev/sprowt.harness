@@ -26,7 +26,7 @@ sequenceDiagram
 
 ## What you see
 
-**Ctrl+O** shows peer topics in the plan. **Ctrl+T** opens saved narration and routine messages in worker history. Questions for you stay visible, with the sender and message ID. The composer changes to **answer #ID**; Enter answers that question instead of queueing an edit. If several workers ask, answer them in order. Your draft stays intact when a question arrives.
+**Ctrl+O** shows peer topics in the plan. **Ctrl+T** opens [task inspection](terminal.md#inspect-a-task), including saved narration and routine messages. Questions for you stay visible, with the sender and message ID. The composer changes to **answer #ID**; Enter answers that question instead of queueing an edit. If several workers ask, answer them in order. Your draft stays intact when a question arrives.
 
 An executor can finish independent work before pausing for a reply. Unanswered asks prevent task completion. After its questions are answered, Rust resumes a waiting task in its existing folder. Other independent tasks keep running. Reopened projects wait for **Ctrl+R** to reconnect workers.
 

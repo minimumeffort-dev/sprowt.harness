@@ -58,6 +58,7 @@ impl CodeMod {
 
 #[derive(Clone)]
 pub struct Message {
+    pub task: Option<i64>,
     pub item_id: Option<String>,
     pub role: String,
     pub body: String,
@@ -173,6 +174,10 @@ impl Store {
             ("item_id", "ALTER TABLE messages ADD COLUMN item_id TEXT"),
             ("model", "ALTER TABLE messages ADD COLUMN model TEXT"),
             ("effort", "ALTER TABLE messages ADD COLUMN effort TEXT"),
+            (
+                "task_run_id",
+                "ALTER TABLE messages ADD COLUMN task_run_id INTEGER",
+            ),
         ] {
             if !columns.iter().any(|column| column == name) {
                 connection.execute_batch(sql).map_err(io::Error::other)?;
@@ -388,11 +393,12 @@ impl Store {
             code_mod.git_root = self.git_root(code_mod.id)?;
             code_mod.coordination = self.mailbox(code_mod.id)?;
             let mut statement = self.0.prepare(
-                "SELECT item_id, role, body, model, effort FROM messages WHERE mod_id = ?1 ORDER BY id",
+                "SELECT item_id, role, body, model, effort, task_run_id FROM messages WHERE mod_id = ?1 ORDER BY id",
             )?;
             code_mod.messages = statement
                 .query_map([code_mod.id], |row| {
                     Ok(Message {
+                        task: row.get(5)?,
                         item_id: row.get(0)?,
                         role: row.get(1)?,
                         body: row.get(2)?,
@@ -461,6 +467,7 @@ impl Store {
             params![id, project_id],
         )?;
         let message = Message {
+            task: None,
             item_id: Some(format!("description:{id}")),
             role: "user".into(),
             body: name.to_owned(),
@@ -1215,6 +1222,7 @@ impl Store {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
         let message = Message {
+            task: None,
             item_id: Some(format!("plan:{source}")),
             role: "planner".into(),
             body: plan.display(),
@@ -1227,7 +1235,7 @@ impl Store {
     }
 
     pub fn save_message(&self, mod_id: i64, message: &Message) -> Result<()> {
-        self.0.execute("INSERT INTO messages(mod_id,item_id,role,body,model,effort) VALUES (?1,?2,?3,?4,?5,?6) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body,model=COALESCE(excluded.model,messages.model),effort=COALESCE(excluded.effort,messages.effort)", params![mod_id,message.item_id,message.role,message.body,message.model,message.effort])?;
+        self.0.execute("INSERT INTO messages(mod_id,item_id,role,body,model,effort,task_run_id) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body,model=COALESCE(excluded.model,messages.model),effort=COALESCE(excluded.effort,messages.effort),task_run_id=COALESCE(messages.task_run_id,excluded.task_run_id)", params![mod_id,message.item_id,message.role,message.body,message.model,message.effort,message.task])?;
         Ok(())
     }
 
@@ -2526,6 +2534,7 @@ mod tests {
                 .save_message(
                     a.id,
                     &Message {
+                        task: None,
                         item_id: Some("agent-1".into()),
                         role: "codex".into(),
                         body: body.into(),
@@ -2556,7 +2565,7 @@ mod tests {
         history(&store, code_mod.id, "old conversation");
         store.enqueue(code_mod.id, "existing instruction").unwrap();
         store.save_draft(code_mod.id, "unfinished draft").unwrap();
-        store.0.execute_batch("DROP INDEX message_items; ALTER TABLE messages DROP COLUMN item_id; ALTER TABLE messages DROP COLUMN role; ALTER TABLE messages DROP COLUMN effort; DROP TABLE workers;").unwrap();
+        store.0.execute_batch("DROP INDEX message_items; ALTER TABLE messages DROP COLUMN item_id; ALTER TABLE messages DROP COLUMN role; ALTER TABLE messages DROP COLUMN effort; ALTER TABLE messages DROP COLUMN task_run_id; DROP TABLE workers;").unwrap();
         drop(store);
         let store = data.store();
         let state = store.load_project(project).unwrap();
@@ -2564,6 +2573,7 @@ mod tests {
         assert_eq!(state.mods[0].messages[0].role, "user");
         assert!(state.mods[0].messages[0].item_id.is_none());
         assert!(state.mods[0].messages[0].effort.is_none());
+        assert!(state.mods[0].messages[0].task.is_none());
         assert_eq!(state.mods[0].queue[0].body, "existing instruction");
         assert_eq!(state.mods[0].draft, "unfinished draft");
         assert!(store.worker(code_mod.id).unwrap().thread_id.is_none());

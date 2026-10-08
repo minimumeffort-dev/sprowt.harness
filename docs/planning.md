@@ -96,7 +96,7 @@ These checks validate structure and declared scopes. They do not prove the plan 
 
 While work runs, the conversation shows a numbered outline: task titles, outcomes and dependencies such as **after task 1**. Finished versions show compact task rows and the final check count. The numbering matches the displayed order, even when the saved task IDs are words.
 
-Press **Ctrl+O** for outcomes, dependencies, contracts, assumptions, file scopes, peer topics, completion checks and model details. Press it again to collapse them. **Ctrl+T** opens worker history separately. Display controls preserve the plan, draft and queue.
+Press **Ctrl+O** for outcomes, dependencies, contracts, assumptions, file scopes, peer topics, completion checks and model details. Press it again to collapse them. **Ctrl+T** opens [tasks and history](terminal.md#inspect-a-task) separately. Display controls preserve the plan, draft and queue.
 
 Once a valid plan is saved, execution begins automatically. **Ctrl+R** stops work or retries; **Ctrl+D** reviews source when workers are idle.
 
