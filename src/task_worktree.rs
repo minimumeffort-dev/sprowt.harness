@@ -443,7 +443,7 @@ impl Sandbox {
                 cancelled,
             )?;
         }
-        Ok(())
+        self.remove_check_scripts(id, cancelled)
     }
 
     pub(crate) fn save_draft(&self, source: &Snapshot) -> io::Result<()> {

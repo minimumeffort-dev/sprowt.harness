@@ -14,8 +14,7 @@ flowchart TB
     checks --> merge["Combine verified changes · one at a time"]
     merge -->|"Tasks remain"| task
     merge -->|"All tasks done"| final["Rerun every check against the combined source"]
-    final --> cleanup["Remove completed task folders"]
-    cleanup --> ready["Version ready · send edits or publish"]
+    final --> ready["Version ready · send edits or publish"]
 ```
 
 A failed task check returns its evidence to the same worker for one recovery attempt. A repeated failure pauses that task and its dependents. The other worker can finish independent work. **Ctrl+R** retries unfinished work; completed tasks stay done.
@@ -58,9 +57,27 @@ One controller owns VM startup and shutdown, task checkpoints, Git integration a
 
 Workers prepare project runtimes and dependencies; missing OS packages go through the [VM setup tool](sandbox.md#system-packages).
 
-Each task returns a short summary and runnable commands for every declared check. One check can need several commands; each uses that check's exact name. Rust groups them in plan order and reruns every command with a 30-second limit. Missing or undeclared checks, nonzero exits, timeouts or commands that change source files block completion. Commands skipped after failure or interruption stay saved as unrun.
+Before reporting completion, Codex and Muse call `run_task_checks`. It runs their declared commands through the controller, so setup failures return while the worker can still fix them. The worker then returns a short summary and the same commands. Rust reruns them before combining source and again against the finished version.
+
+One check can need several commands; each uses that check's exact name. Rust groups them in plan order with a 30-second limit per command. Missing or undeclared checks, nonzero exits, timeouts or commands that change source files block completion. Commands skipped after failure or interruption stay saved as unrun.
 
 Checks start in their task folder with a fresh process environment. Temporary fixtures and import stubs belong under a unique `/tmp` directory or the worker's HOME. Browser URLs such as `/static` are not writable filesystem paths; tests use an HTTP server or module loader. Earlier shell exports, background processes and privileged setup are not part of a repeatable check.
+
+### Saved check scripts
+
+Standalone scripts go through `run_task_checks` into `/opt/sprowt-checks/<task-run-id>/`. The harness keeps a private host copy, restores it before checks, and makes guest scripts read-only. Commands use an absolute interpreter and script path; scripts resolve project files from the task working folder and put generated fixtures in `/tmp` or HOME.
+
+```mermaid
+flowchart TB
+    worker["Worker · commands + optional scripts"] --> runner["Shared check runner · current task and VM"]
+    runner --> evidence["Save output + tested source fingerprint"]
+    evidence --> fix["Worker · correct failures or return commands"]
+    fix --> gate["Controller · rerun before accepting source"]
+```
+
+The tool accepts all declared checks, up to 12 commands per call. A script array replaces the saved bundle; `null` retains it. Bundles hold up to 16 plain filenames and 256 KiB of text. Results record the task attempt, commands, output, source fingerprint and script fingerprint. They are evidence for that version; later edits require a fresh run, and saved success never skips the independent checks.
+
+Scripts survive retries, review and harness restart, including restoration after VM recreation. Runtimes still need installation in a fresh VM. A replacement plan removes retired task scripts and their receipts; deleting the codemod removes all of them. Existing checks that reference `/tmp` must be resubmitted as saved scripts on retry.
 
 Passing tasks are merged into the integration branch one at a time, as they finish. A conflict pauses execution and keeps both versions. The saved draft includes non-conflicting changes and conflict markers. **Ctrl+R** asks the worker to resolve them, or send an edit request to replan.
 
@@ -158,6 +175,7 @@ These checks use disposable VMs and remove them afterward. The provider test use
 cargo test repair_handoff_preserves_drafts_and_rechecks_in_vm -- --ignored
 cargo test codex_verifier_hands_a_regression_back_to_muse -- --ignored
 cargo test verification_feedback_recovers_both_vm_workers -- --ignored
+cargo test shared_check_runner_recovers_and_survives_restart -- --ignored
 ```
 
 Scheduling tests cover load balancing, provider combinations, dependencies and saved owners. The VM checks verify automatic mixed assignment and fixed provider waves, including real overlap and dependent integration.

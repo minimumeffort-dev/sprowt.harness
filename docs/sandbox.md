@@ -92,6 +92,8 @@ Chromium needs local Unix sockets to start. Worker commands and independent chec
 
 Start the app and browser in the same check command so they share the command's loopback network. Use a free port and stop both afterward. Missing browser libraries go through `install_system_packages`; runtimes and browser downloads remain the worker's choice.
 
+Workers use `run_task_checks` to test in the controller's environment before reporting success. Standalone scripts are saved outside source at `/opt/sprowt-checks/<task-run-id>/`, read-only to workers. The harness restores them from private host copies before every check run. Temporary fixtures still belong in `/tmp` or HOME; `/static` is a browser URL, not a writable root folder. See [Saved check scripts](execution.md#saved-check-scripts).
+
 Restart the harness after upgrading, then use **Ctrl+R** to retry a blocked task. Its saved source and completed tasks are retained.
 
 ## The boundary
@@ -155,7 +157,7 @@ It is a JSON list of hostnames; `*.example.org` allows that domain’s subdomain
 
 Quitting stops VMs and retains unfinished mods’ disks. Reopening and **Ctrl+R** reconnect without losing dependencies. Reconnecting clears guest processes left by a crash. Shared images and the container service remain for reuse.
 
-Publication saves the PR URL and retains the VM and worktree. Edit rounds reuse the same VM and per-worker runtime/download caches. Task folders and their local dependencies are removed when a replacement plan starts. Review and repair reuse them. Failed operations keep source and offer **Ctrl+R** to retry.
+Publication saves the PR URL and retains the VM and worktree. Edit rounds reuse the same VM and per-worker runtime/download caches. Task folders, their local dependencies and saved check scripts are removed when a replacement plan starts. Review and repair reuse them. Failed operations keep source and offer **Ctrl+R** to retry.
 
 Closing exports source and task branches, commits a local checkpoint and removes the VM; the worktree and history remain. Reopening creates a fresh VM when execution resumes, restoring task branches from a local Git bundle. Runtime installations are not part of that bundle. Deleting discards local source and history. Closed worktree retention removes only the host worktree, retaining the branch and exports. See [Worktrees and PRs](git-workflow.md).
 

@@ -18,7 +18,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Workers choose runtimes and dependencies, request OS packages and ask you to approve blocked download domains.
 - [Workers and isolation](docs/workers.md): Codex planning and review, with separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
-- [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
+- [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup, VM setup and task checks, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
 - [Terminal and companion](docs/terminal.md): a full-width outline with aligned tasks, compact menus and a unified dock with a growing message area. Task inspection, shortcuts, mouse scrolling and a Sprowt pet that reacts to work.
 
@@ -62,7 +62,7 @@ flowchart TB
     verify --> ready
 ```
 
-Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse uses Spark 1.3 high. Jev routes Codex effort.
+Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Codex and Muse share a check runner, with saved scripts and results tied to the tested source. Rust reruns checks independently before accepting changes. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse uses Spark 1.3 high. Jev routes Codex effort.
 
 Each codemod has two active slots: two Codex, two Muse or one of each. Both providers can implement, test and integrate. Rust picks the least loaded suitable provider across active codemods and alternates ties. Existing plans keep their assignments; retries and repairs keep their owner. The codemod row shows active workers. **Ctrl+O** shows each task's assignment reason.
 

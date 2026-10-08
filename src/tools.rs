@@ -12,7 +12,7 @@ use std::{
 use serde_json::{Value, json};
 
 use crate::{
-    git_mod, mailbox, mod_sync, network, packages,
+    checks, git_mod, mailbox, mod_sync, network, packages,
     plan::{Plan, Role},
     sandbox::Sandbox,
     store::CodeMod,
@@ -37,13 +37,14 @@ enum Tool {
     ReopenMod,
     PruneMod,
     InstallPackages,
+    RunTaskChecks,
     RequestNetwork,
     SendMessage,
     ReadMessages,
     AckMessages,
 }
 
-const REGISTRY: [Tool; 20] = [
+const REGISTRY: [Tool; 21] = [
     Tool::SyncProject,
     Tool::InitializeProject,
     Tool::AdoptSnapshot,
@@ -60,6 +61,7 @@ const REGISTRY: [Tool; 20] = [
     Tool::ReopenMod,
     Tool::PruneMod,
     Tool::InstallPackages,
+    Tool::RunTaskChecks,
     Tool::RequestNetwork,
     Tool::SendMessage,
     Tool::ReadMessages,
@@ -86,6 +88,7 @@ impl Tool {
             Self::ReopenMod => "reopen_mod",
             Self::PruneMod => "prune_mod",
             Self::InstallPackages => packages::TOOL,
+            Self::RunTaskChecks => checks::TOOL,
             Self::RequestNetwork => network::TOOL,
             Self::SendMessage => mailbox::SEND,
             Self::ReadMessages => mailbox::READ,
@@ -95,7 +98,11 @@ impl Tool {
 
     fn permitted(self, context: &Context) -> bool {
         match self {
-            Self::SendMessage | Self::ReadMessages | Self::AckMessages | Self::RequestNetwork => {
+            Self::SendMessage
+            | Self::ReadMessages
+            | Self::AckMessages
+            | Self::RequestNetwork
+            | Self::RunTaskChecks => {
                 context
                     .worker
                     .is_some_and(|(_, role)| role == Role::Executor)
@@ -242,6 +249,7 @@ pub enum Request {
     ReopenMod,
     PruneMod,
     InstallPackages(packages::Request),
+    RunTaskChecks(checks::Request),
     NetworkAccess(network::Request),
     Message(mailbox::Request),
 }
@@ -265,6 +273,7 @@ impl Request {
             Self::ReopenMod => Tool::ReopenMod,
             Self::PruneMod => Tool::PruneMod,
             Self::InstallPackages(_) => Tool::InstallPackages,
+            Self::RunTaskChecks(_) => Tool::RunTaskChecks,
             Self::NetworkAccess(_) => Tool::RequestNetwork,
             Self::Message(mailbox::Request::Send(_)) => Tool::SendMessage,
             Self::Message(mailbox::Request::Read) => Tool::ReadMessages,
@@ -299,6 +308,7 @@ pub fn advertised(context: &Context) -> Vec<Value> {
     if Tool::SendMessage.permitted(context) {
         tools.extend(mailbox::tools());
         tools.push(network::tool());
+        tools.push(checks::tool());
     }
     tools
 }
@@ -338,6 +348,7 @@ impl<'a> Dispatcher<'a> {
         self.dispatch(
             tool,
             || match name {
+                checks::TOOL => checks::Request::parse(arguments).map(Request::RunTaskChecks),
                 network::TOOL => network::Request::parse(arguments).map(Request::NetworkAccess),
                 mailbox::SEND | mailbox::READ | mailbox::ACK => {
                     mailbox::Request::parse(name, arguments).map(Request::Message)
@@ -396,6 +407,30 @@ impl<'a> Dispatcher<'a> {
             }
             let root = self.context.root()?;
             match request {
+                Request::RunTaskChecks(request) => {
+                    let store =
+                        crate::store::Store::open(self.context.database.as_deref().unwrap())?;
+                    let vm = self
+                        .vm
+                        .as_mut()
+                        .ok_or_else(|| io::Error::other("Task checks require the mod VM."))?;
+                    if vm.root().canonicalize()? != root.canonicalize()? {
+                        return Err(io::Error::new(
+                            io::ErrorKind::PermissionDenied,
+                            "Tool cannot access another mod's VM.",
+                        ));
+                    }
+                    progress("running task checks");
+                    checks::run(
+                        &store,
+                        vm,
+                        self.context.mod_id.unwrap(),
+                        self.context.worker_id(),
+                        request,
+                        self.cancelled,
+                    )
+                    .map(Output::Text)
+                }
                 Request::NetworkAccess(request) => {
                     let store =
                         crate::store::Store::open(self.context.database.as_deref().unwrap())?;

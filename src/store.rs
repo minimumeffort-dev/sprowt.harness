@@ -894,6 +894,7 @@ impl Store {
                 .find(|task| task.id == run.task_id)
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             let mut prompt = crate::execution::task_prompt(&plan, task, run.id);
+            prompt.push_str(&format!("\nCheck runner task attempt source: {}. Use run_task_checks before returning completed. Save any standalone check scripts with that tool at {}/<name>; use an absolute interpreter and that script path in the reported commands. Keep scripts self-contained, resolve project files from /tasks/{}, and use /tmp or HOME for generated fixtures. scripts=null reuses the saved bundle; an array replaces it. Failed or skipped checks need correction and a fresh run. Source edits after a passing run also require fresh checks. The controller will independently rerun the same commands before integration.", run.source, crate::checks::folder(run.id), run.id));
             if let Some(repair) = &run.repair {
                 prompt.push_str(&format!(
                     "\nAutomatic repair context: {}\n{} Preserve saved edits. The harness refreshed this task from the combined source. Reproduce the failure using the evidence and command (adapt task paths to /tasks/{}); keep any temporary reproduction scripts outside source. The repair's failing check is supplemental: do not replace your original task checks with it. The report checks array must cover every current task check using its exact text; repeat the name when that check needs several commands. Integration and all final checks must pass again.",

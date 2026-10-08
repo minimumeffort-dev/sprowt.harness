@@ -308,8 +308,9 @@ pub fn serve(
                     continue;
                 }
                 let params = &message["params"];
-                let mut guard =
-                    (params["name"] == crate::packages::TOOL).then(|| vm.lock().unwrap());
+                let mut guard = (params["name"] == crate::packages::TOOL
+                    || params["name"] == crate::checks::TOOL)
+                    .then(|| vm.lock().unwrap());
                 if let Some(vm) = &mut guard {
                     vm.tasks.active = task;
                 }

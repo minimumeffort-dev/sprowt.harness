@@ -63,7 +63,10 @@ impl Sandbox {
             },
             cancelled,
         )?;
-        self.guest(&["/bin/mkdir", "-p", "/opt/sprowt-muse"], cancelled)?;
+        self.guest(
+            &["/bin/mkdir", "-p", "/opt/sprowt-muse", "/opt/sprowt-checks"],
+            cancelled,
+        )?;
         for (path, name) in [
             (binary.to_owned(), "muse"),
             (helper.join("bridge.py"), "bridge.py"),
@@ -79,7 +82,7 @@ impl Sandbox {
         let home = crate::task_worktree::worker_home(worker);
         let mut entries =
             vec![json!({"path":{"type":"special","value":{"kind":"minimal"}},"access":"read"})];
-        entries.extend([("/proc", "read"), ("/opt/sprowt-muse", "read"), (cwd.as_str(), "write"), (home.as_str(), "write"), ("/tmp", "write")]
+        entries.extend([("/proc", "read"), ("/opt/sprowt-muse", "read"), ("/opt/sprowt-checks", "read"), (cwd.as_str(), "write"), (home.as_str(), "write"), ("/tmp", "write")]
             .map(|(path,access)| json!({"path":{"type":"path","path":format!("file://{path}")},"access":access})));
         entries.push(
             json!({"path":{"type":"path","path":format!("file://{cwd}/.git")},"access":"read"}),
@@ -971,6 +974,7 @@ impl Sandbox {
         checks: &[Check],
         cancelled: &AtomicBool,
     ) -> io::Result<(Snapshot, Vec<CheckResult>)> {
+        self.restore_check_scripts(cancelled)?;
         let before = self.snapshot(&self.task_folder(), cancelled)?;
         let mut results = Vec::new();
         for check in checks {

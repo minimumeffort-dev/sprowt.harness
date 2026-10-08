@@ -1,5 +1,6 @@
 mod agents;
 mod app;
+mod checks;
 mod codex;
 mod execution;
 mod git_mod;

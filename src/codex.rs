@@ -451,7 +451,10 @@ fn flush(
                 }
                 let mut guard = vm
                     .as_ref()
-                    .filter(|_| params["tool"] == crate::packages::TOOL)
+                    .filter(|_| {
+                        params["tool"] == crate::packages::TOOL
+                            || params["tool"] == crate::checks::TOOL
+                    })
                     .map(|vm| vm.lock().unwrap());
                 if let Some(vm) = &mut guard {
                     vm.tasks.active = task;
@@ -613,7 +616,7 @@ fn serve(
         .as_ref()
         .map(|vm| vm.lock().unwrap().worker_home(context.worker_id()))
         .transpose()?
-        .map(|home| home.join("worker-network-v1-thread"));
+        .map(|home| home.join("worker-checks-v1-thread"));
     let resume = resume.filter(|resume| {
         marker
             .as_ref()
