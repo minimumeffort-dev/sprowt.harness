@@ -1,6 +1,6 @@
 # Independent review
 
-When a version is ready, **Ctrl+E · request review** starts a fresh **Sol 6.1 xhigh** Codex conversation. In the diff, press **r**. Review is optional; **Ctrl+S** still publishes directly after checks pass.
+When a version is ready, **Ctrl+E · Ask agent to review** starts a fresh **Sol 6.1 xhigh** Codex conversation. In the diff, press **r**. Review is optional; **Ctrl+S** still publishes directly after checks pass.
 
 The reviewer inspects the combined diff, source, original request, shared contracts and recorded check results. It looks for concrete defects, with a file, line, evidence and proposed fix.
 
@@ -24,7 +24,7 @@ The reviewer cannot write source, call harness tools, publish or grant network a
 
 ## What you see
 
-The conversation shows review activity or its result. **Ctrl+O** expands the summary, findings, file locations and proposed fixes. **Ctrl+T** keeps the reviewer’s narration and previous reports alongside worker history.
+The dock recommends review when changes are ready, then publication when the current review passes. **Ctrl+G** lists available actions. The conversation keeps the review result. **Ctrl+O** expands the summary, findings, file locations and proposed fixes. **Ctrl+T** keeps the reviewer’s narration and previous reports alongside worker history.
 
 Reviews are tied to a source fingerprint and plan. New instructions or changed source invalidate the result. An old turn cannot replace a newer review or trigger repairs. Publishing still checks the current source against the verified fingerprint.
 

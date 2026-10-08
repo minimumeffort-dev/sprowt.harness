@@ -1,26 +1,50 @@
 # Terminal and companion
 
-The interface keeps the project and worker status at the top, the conversation left aligned and the composer at the bottom.
+The project and worker identity stay at the top. The conversation stays left aligned. One action dock above the composer shows status, the next useful action and alternatives.
 
 ```text
-[sprowt companion]  project + worker model + effort + activity
+[sprowt companion]  project + worker model + effort
 
 <codemod/>  ◇ selected mod    codex w1 · task 1 │ muse w2 · task 2
 
 > your message
 
 ▤ codex · planner
-ctrl+o ▸ show plan details
-execution · numbered tasks
-
-◆ codex · executor · w1 · model · effort
-reply
+numbered tasks + check results
 
 queue / waiting steering, when present
 
+✓ Changes ready
+Next · ctrl+e Ask agent to review   ctrl+d View diff   ctrl+s Publish PR
+ctrl+g All actions
 [message composer]
-keyboard hints
+↵ request edits   ctrl+j newline   esc quit
 ```
+
+## Action dock
+
+The dock stays in one place. Rust chooses the recommendation from current state:
+
+| State | Next step |
+| --- | --- |
+| New codemod | Describe your goal in the composer |
+| Working | No action needed; queue instructions or stop workers |
+| Worker question | Answer in the composer |
+| Blocked download | Review the requested domains |
+| Failed check | Inspect failed checks before retrying |
+| Changes ready | Ask an agent to review; viewing the diff and publishing are also available |
+| Review passed | Publish PR |
+| Target branch changed | Update from the target and recheck |
+| PR published | Send edits to update the same PR |
+| Closed codemod | Reopen saved work |
+
+**Ctrl+G · All actions** lists the available actions and shortcuts. Use ↑/↓ and Enter; Esc returns to the same draft. Secondary actions that do not fit remain in the menu. Its selection keeps its meaning as workers finish; unavailable actions cannot run.
+
+**View diff**, **Ask agent to review** and **Publish PR** are separate actions. Review remains optional, and publication keeps its confirmations. Enter in the composer sends your message; it never triggers the dock's recommendation. Workers finishing do not move focus from your draft.
+
+Errors show a short cause in the dock. **Show full error** in All actions opens scrollable evidence. The footer keeps message entry and scrolling hints; the codemod selector stays at the top.
+
+## Conversation
 
 User messages have a `>` prefix and a subtle background. Agent messages show their provider, role, worker ID, model and configured reasoning effort when reported by Codex. One blank row separates messages.
 
@@ -30,13 +54,13 @@ The codemod row lists each active provider, worker ID and numbered task. Final v
 
 Codex’s configured effort is used when available. When unset, the harness reads the model’s default from Codex’s catalog and sends it explicitly with new turns. Replies save that effort for reopening. Older replies without recorded effort show **effort unknown**.
 
-Plans show task titles, outcomes and dependencies first. **Ctrl+O · show/hide plan details** sits beside the heading. It expands file scopes, completion checks and planner model details. Check commands appear in indented blocks; multiline code keeps its source indentation, and wrapped lines stay inside the block. Expanding keeps the heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
+Plans show task titles, outcomes and dependencies first. **Ctrl+O · Show/Hide plan details** is available through the dock and All actions. It expands file scopes, completion checks and planner model details. Check commands appear in indented blocks; multiline code keeps its source indentation, and wrapped lines stay inside the block. Expanding keeps the heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
 
 Check details count passed, failed and unrun checks. Failed output starts at the assertion or error; summaries are labelled **worker report**. During automatic recovery, the previous failure stays in details. Controller results decide whether work is complete.
 
 **Ctrl+T** opens a separate worker history panel with saved narration, model and effort, and [worker messages](coordination.md). Scroll with ↑/↓ or Fn+↑/↓ on Mac; Esc returns to the same draft, queue and plan view. Questions for you stay visible in the conversation with the sender and message ID; the composer says **answer #ID** and Enter saves your reply.
 
-Finished versions show one row per task, the final check count, request review and publish actions. **Ctrl+E** starts an independent reviewer; its result stays compact and **Ctrl+O** expands findings. Outcomes, contracts, commands and routing stay behind **Ctrl+O**; routine worker chatter stays in history. **Ctrl+D** opens a full-width diff. Use **p** there, or **Ctrl+S** from the conversation, to review and confirm publication. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
+Finished versions show one row per task and the final check count. The dock offers review, diff and publication. **Ctrl+E** starts an independent reviewer; its result stays compact and **Ctrl+O** expands findings. Outcomes, contracts, commands and routing stay behind **Ctrl+O**; routine worker chatter stays in history. **Ctrl+D** opens a full-width diff. Use **p** there, or **Ctrl+S** from the conversation, to review and confirm publication. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
 
 ```mermaid
 flowchart TB
@@ -46,11 +70,11 @@ flowchart TB
     result -->|"Ctrl+S"| publish["Review changes · confirm PR"]
 ```
 
-Worktree creation, diff loading, publication and removal show a spinner in the header. A saved PR link appears in the conversation. Failed operations put Git's error before progress output and show **Ctrl+R · retry Git operation**. A published mod keeps its composer for requesting edits on the same PR.
+Worktree creation, diff loading, publication and removal show progress in the dock. A saved PR link appears in the conversation. Failed Git operations show their cause and **Ctrl+R · Retry Git operation**. A published mod keeps its composer for requesting edits on the same PR.
 
 Codemod, queue and project setup dialogs share spacing and keyboard hints. Empty codemod lists say **No active codemods** or **No closed codemods**, with a new-codemod action. Hints adapt to the available actions and terminal width. Plans and publish confirmations omit repeated VM guidance; the conversation keeps room for tasks and replies.
 
-Blocked downloads show **Network access needed · Ctrl+N** beside the affected task. The matching dialog lists exact domains and the worker's reason. **a** allows access for this codemod and retries its saved task; **d** denies and leaves the task paused. **Esc** returns without deciding. Opening or dismissing it preserves your draft; it never opens over your typing. Long requests scroll with ↑/↓. See [Downloads](sandbox.md#downloads).
+Blocked downloads mark the affected task. The dock highlights **Ctrl+N · Review domains**. The matching dialog lists exact domains and the worker's reason. **a** allows access for this codemod and retries its saved task; **d** denies and leaves the task paused. **Esc** returns without deciding. Opening or dismissing it preserves your draft; it never opens over your typing. Long requests scroll with ↑/↓. See [Downloads](sandbox.md#downloads).
 
 Git setup shows the starting file list. GitHub setup uses Tab to choose connect existing or create private, then confirms `owner/repository` before contacting GitHub. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
 
@@ -71,16 +95,17 @@ Git setup shows the starting file list. GitHub setup uses Tab to choose connect 
 | --- | --- |
 | Enter | Create a described mod, answer a highlighted question, queue a message or save an edit |
 | Ctrl+J | Add a newline |
+| Ctrl+G | All available actions; Esc returns |
 | Ctrl+P | Switch, create, close, reopen or delete a codemod |
 | Ctrl+Q | Manage queued instructions |
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
-| Ctrl+E | Request independent review; r inside the diff |
+| Ctrl+E | Ask an agent to review; r inside the diff |
 | Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+T | Open worker history; Esc returns |
 | Ctrl+N | Review a pending network request |
-| Ctrl+D | Review working-folder changes |
+| Ctrl+D | View diff |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
 | Page Up / Page Down | Scroll on keyboards with those keys |
 | Esc | Back from a dialog; quit from the conversation |
@@ -90,7 +115,7 @@ Pasted text keeps its line breaks. Dialog actions are covered in [Codemods and m
 
 Target updates show an **integration plan** with the same task progress and details toggle. The status names target changes or a merged PR; publication stays unavailable until combined checks pass. See [Worktrees and PRs](git-workflow.md#when-another-codemod-merges).
 
-Project sync runs independently on startup and every 30 seconds, including with no codemods and `--no-motion`. **Ctrl+U** also works in the new-mod screen and picker. An unsafe update leaves files intact and shows the cause beside the project heading.
+Project sync runs independently on startup and every 30 seconds, including with no codemods and `--no-motion`. **Ctrl+U** also works in the new-mod screen and picker. An unsafe update leaves files intact and shows the cause in the dock.
 
 ## Sprowt companion
 
@@ -106,6 +131,6 @@ Sprowt follows the selected codemod:
 | Changes ready | One short bounce and wink, then a happy face |
 | Blocked or failed | A concerned face, held still |
 
-The body keeps its shape and footprint. Switching codemods resets the animation to that mod’s state. Queueing or editing an instruction can trigger a brief idle celebration; it never overrides active work or an error. Closing or stopping returns Sprowt to idle. Worker progress remains in the status text beside it.
+The body keeps its shape and footprint. Switching codemods resets the animation to that mod’s state. Queueing or editing an instruction can trigger a brief idle celebration; it never overrides active work or an error. Closing or stopping returns Sprowt to idle. Worker identity stays beside it; the dock shows workflow progress.
 
 Run `sprowt-harness --no-motion` for a still companion and no entrance animation. On exit, the harness restores normal terminal input, paste handling and the previous screen.

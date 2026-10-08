@@ -20,7 +20,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Workers and isolation](docs/workers.md): Codex planning and review, with separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
-- [Terminal and companion](docs/terminal.md): compact results, separate plan details and worker history, task spinners and a Sprowt pet that reacts to work.
+- [Terminal and companion](docs/terminal.md): one action dock with the next useful step, an All actions menu, compact results and a Sprowt pet that reacts to work.
 
 ### Current limits
 
@@ -71,7 +71,7 @@ Late handoff acknowledgements keep the worker's valid task report. New blockers 
 
 Publishing keeps the VM and worktree for further edits. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
-You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows plan details; **Ctrl+T** opens worker history. Finished versions show tasks, check counts and the publish action. Small changes can stay with one worker.
+You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows plan details; **Ctrl+T** opens worker history. Finished versions show tasks and check counts. A shared action model drives the dock, menu and shortcuts from current state. The dock suggests the next step; **Ctrl+G** lists available actions. Small changes can stay with one worker.
 
 Blocked downloads show **Network access needed** beside the task. **Ctrl+N** shows the exact domains and reason: **a** allows them for this codemod; **d** denies. Approval reconnects the affected worker and retries its saved task. Other workers continue; the global allowlist stays unchanged.
 
@@ -117,9 +117,9 @@ Start in an empty folder, an existing project or a Git repository. If Git has no
 Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth login` and `gh auth setup-git`.
 
 1. Describe a codemod and press **Enter**. Confirm Git setup if offered. Planning and execution start automatically.
-2. Workers prepare a first version. **Ctrl+O** expands plan details; **Ctrl+R** stops or retries work.
+2. Workers prepare a first version. The dock shows progress and the next useful action. **Ctrl+G** opens All actions; existing shortcuts still work.
 3. Send a message to request edits. Messages sent during work wait for the next round; the queue also supports steering.
-4. **Ctrl+E** requests an independent review and scoped fixes. **Ctrl+D** opens the diff. **Ctrl+S** starts publication; confirm the GitHub destination if needed, then the PR. Keep editing afterward to update the same PR.
+4. Choose **Ask agent to review**, **View diff** or **Publish PR** in the dock or All actions. Review is optional; confirm the GitHub destination if needed, then the PR. Keep editing afterward to update the same PR.
 5. In **Ctrl+P**, **c** closes with a checkpoint, **Tab** shows closed mods, **r** reopens and **d** deletes local data.
 
 Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. Review fix rounds are capped at two per plan.
@@ -140,16 +140,17 @@ Setup saves the key in private local configuration, so the installed harness can
 | --- | --- |
 | Enter | Answer a highlighted question, send edits or queue an instruction |
 | Ctrl+J | Newline |
+| Ctrl+G | All available actions; Esc returns |
 | Ctrl+P | Switch, create, close, reopen or delete a codemod |
 | Ctrl+Q | Open the queue |
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
-| Ctrl+E | Request independent review of the finished version |
+| Ctrl+E | Ask an agent to review the finished version |
 | Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+T | Open worker history; Esc returns |
 | Ctrl+N | Review a pending network request |
-| Ctrl+D | Review working-folder changes |
+| Ctrl+D | View diff |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
 | Esc | Back, or quit from the conversation |
 | Ctrl+C | Quit |

@@ -24,9 +24,14 @@ use crate::{
     workspace::{self, Review},
 };
 
+mod actions;
+pub use actions::{Action, ActionDock, ActionItem, Tone};
+
 #[derive(Clone, Copy)]
 pub enum View {
     Chat,
+    Actions(Action),
+    Failure(u16),
     Mods(usize),
     DeleteMod(usize),
     CloseMod(usize),
@@ -49,6 +54,7 @@ pub struct App {
     pub input: TextArea<'static>,
     pub mods: Vec<CodeMod>,
     pub view: View,
+    action_origin: Option<View>,
     pub history_offset: u16,
     pub page_size: u16,
     pub plan_details: bool,
@@ -162,6 +168,7 @@ impl App {
             } else {
                 View::NewMod
             },
+            action_origin: None,
             history_offset: 0,
             page_size: 1,
             plan_details: false,
@@ -298,6 +305,8 @@ impl App {
                         .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                 }
                 View::Mods(_)
+                | View::Actions(_)
+                | View::Failure(_)
                 | View::DeleteMod(_)
                 | View::CloseMod(_)
                 | View::Queue(_)
@@ -318,18 +327,23 @@ impl App {
                     && key.code == KeyCode::Char('u')
                     && matches!(self.view, View::Chat | View::NewMod | View::Mods(_))
                 {
-                    self.project_check = None;
-                    self.maintain_project();
-                    if matches!(self.view, View::Chat)
-                        && let Some(index) = self.active
-                        && !self.mods[index].closed
-                        && self.mods[index].execution.is_some()
-                    {
-                        self.check_target(index, false);
-                    }
+                    self.perform_action(Action::Update)?;
                     return Ok(());
                 }
                 match self.view {
+                    View::Actions(selected) => self.actions_key(key, selected)?,
+                    View::Failure(scroll) => match key.code {
+                        KeyCode::Esc => self.view = self.action_origin.take().unwrap_or(View::Chat),
+                        KeyCode::Down => self.view = View::Failure(scroll.saturating_add(1)),
+                        KeyCode::Up => self.view = View::Failure(scroll.saturating_sub(1)),
+                        KeyCode::PageDown => {
+                            self.view = View::Failure(scroll.saturating_add(self.page_size))
+                        }
+                        KeyCode::PageUp => {
+                            self.view = View::Failure(scroll.saturating_sub(self.page_size))
+                        }
+                        _ => {}
+                    },
                     View::Network(id, scroll) => match key.code {
                         KeyCode::Down => self.view = View::Network(id, scroll.saturating_add(1)),
                         KeyCode::Up => self.view = View::Network(id, scroll.saturating_sub(1)),
@@ -355,25 +369,31 @@ impl App {
                     View::Mods(index) => self.picker_key(key, index)?,
                     View::DeleteMod(index) => match key.code {
                         KeyCode::Esc => {
-                            self.view = View::Mods(
-                                self.picker_indices()
-                                    .iter()
-                                    .position(|i| *i == index)
-                                    .unwrap_or(0),
-                            )
+                            self.view = self.action_origin.take().unwrap_or_else(|| {
+                                View::Mods(
+                                    self.picker_indices()
+                                        .iter()
+                                        .position(|i| *i == index)
+                                        .unwrap_or(0),
+                                )
+                            });
                         }
                         KeyCode::Enter
                             if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
                         {
+                            self.action_origin = None;
                             self.delete_mod(index)?;
                         }
                         _ => {}
                     },
                     View::CloseMod(index) => match key.code {
-                        KeyCode::Esc => self.view = View::Mods(0),
+                        KeyCode::Esc => {
+                            self.view = self.action_origin.take().unwrap_or(View::Mods(0))
+                        }
                         KeyCode::Enter
                             if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
                         {
+                            self.action_origin = None;
                             self.finish_mod(index, false, false)?
                         }
                         _ => {}
@@ -503,6 +523,7 @@ impl App {
                         _ => {}
                     },
                     View::NewMod => match key.code {
+                        KeyCode::Char('g') if ctrl => self.open_actions(),
                         KeyCode::Char('p') if ctrl => self.view = View::Mods(0),
                         KeyCode::Esc => {
                             if self.active.is_some() {
@@ -531,60 +552,10 @@ impl App {
     fn chat_key(&mut self, key: KeyEvent) -> Result<()> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
-            KeyCode::Char('n') if ctrl => {
-                if let Some(request) = self.pending_network() {
-                    self.view = View::Network(request.id, 0);
-                }
-            }
             KeyCode::Esc => self.quit = true,
-            KeyCode::Char('p') if ctrl => {
-                self.show_closed = self.current_mod().is_some_and(|m| m.closed);
-                self.view = View::Mods(
-                    self.picker_indices()
-                        .iter()
-                        .position(|i| Some(*i) == self.active)
-                        .unwrap_or(0),
-                );
-            }
-            KeyCode::Char('q')
-                if ctrl
-                    && self
-                        .current_mod()
-                        .is_some_and(|code_mod| !code_mod.queue.is_empty()) =>
-            {
-                self.view = View::Queue(0)
-            }
-            KeyCode::Char('q') if ctrl => {}
-            KeyCode::Char('r') if ctrl => self.toggle_worker()?,
-            KeyCode::Char('d') if ctrl => self.open_review()?,
-            KeyCode::Char('e') if ctrl && self.version_ready() => {
-                if let Some(index) = self.active {
-                    self.begin_agent_review(index)?;
-                }
-            }
-            KeyCode::Char('s') if ctrl && self.version_ready() => {
-                self.review = None;
-                self.publish_after_review = true;
-                self.open_review()?;
-                if self.review.is_some() && self.can_publish() {
-                    self.publish_after_review = false;
-                    self.open_publication()?;
-                }
-            }
-            KeyCode::Char('o') if ctrl => {
-                if self
-                    .current_mod()
-                    .and_then(|code_mod| code_mod.planning.as_ref())
-                    .is_some_and(|planning| planning.status == "ready" && planning.plan.is_some())
-                {
-                    self.plan_details = !self.plan_details;
-                    self.focus_plan = true;
-                }
-            }
-            KeyCode::Char('t') if ctrl => {
-                if self.current_mod().is_some_and(CodeMod::has_worker_history) {
-                    self.view = View::History(0);
-                }
+            KeyCode::Char('g') if ctrl => self.open_actions(),
+            KeyCode::Char(c) if ctrl && Action::has_shortcut(c) => {
+                self.action_shortcut(c)?;
             }
             KeyCode::Char('j') if ctrl => self.input.insert_newline(),
             KeyCode::Enter if key.modifiers.is_empty() => self.submit()?,
@@ -1293,20 +1264,6 @@ impl App {
 
     pub fn published(&self) -> bool {
         self.git_state().is_some_and(GitMod::published)
-    }
-
-    pub fn upstream_status(&self) -> Option<String> {
-        let code_mod = self.current_mod()?;
-        let target = self.targets.get(&code_mod.id)?;
-        match target.pr_state.as_deref() {
-            Some("MERGED") => Some("✓ PR merged · start a new codemod for more changes".into()),
-            Some("CLOSED") => Some("□ PR closed · start a new codemod for more changes".into()),
-            _ if self.git_state().is_some_and(|s| s.base != target.head) => Some(format!(
-                "{} changed · update and recheck after current work finishes",
-                target.branch
-            )),
-            _ => None,
-        }
     }
 
     fn check_target(&mut self, index: usize, publish: bool) {
@@ -3396,6 +3353,7 @@ mod tests {
         store.save_draft(m.id, "Keep the current behavior").unwrap();
         let mut app = App::load(data.0.join("project"), false, store).unwrap();
         let compact = rows(&screen(&mut app, 110, 40)).join("\n");
+        assert!(app.action_dock().guidance == Some("Answer in the composer"));
         assert!(compact.contains("Message decision"));
         assert!(compact.contains(&format!("answer #{ask}")));
         assert!(compact.contains("↵ answer"));
@@ -3470,6 +3428,174 @@ mod tests {
     }
 
     #[test]
+    fn action_dock_recommends_review_publish_and_target_updates_from_state() {
+        let (_data, mut app, root) = execution_app();
+        assert!(app.action_dock().primary == Some(Action::Review));
+        assert!(
+            app.action_dock()
+                .actions
+                .iter()
+                .any(|a| a.action == Action::Diff && a.label == "View diff")
+        );
+        let m = &mut app.mods[0];
+        m.agent_review = Some(crate::review::State {
+            source: "review:test".into(),
+            plan_source: m.planning.as_ref().unwrap().source.clone(),
+            fingerprint: m.execution.as_ref().unwrap().fingerprint.clone().unwrap(),
+            status: "clean".into(),
+            rounds: 0,
+            report: None,
+        });
+        assert!(app.action_dock().primary == Some(Action::Publish));
+        commit_project(&app.project);
+        git_mod::prepare(
+            &app.project,
+            &root,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let state = git_mod::load(&root).unwrap();
+        let id = app.mods[0].id;
+        app.mods[0].git_root = Some(root);
+        app.targets.insert(
+            id,
+            crate::mod_sync::Target {
+                branch: "main".into(),
+                head: "new-head".into(),
+                pr_state: Some("OPEN".into()),
+            },
+        );
+        app.git_states.insert(id, state);
+        assert!(app.action_dock().primary == Some(Action::Update));
+        assert!(
+            !app.action_dock()
+                .actions
+                .iter()
+                .any(|a| a.action == Action::Publish)
+        );
+        let state = app.git_states.get_mut(&id).unwrap();
+        state.base = "new-head".into();
+        state.phase = "published".into();
+        state.pr = Some("https://github.com/fixture/project/pull/1".into());
+        assert_eq!(app.action_dock().status, "PR published");
+        assert!(app.action_dock().guidance == Some("Send edits to this PR"));
+        app.targets.get_mut(&id).unwrap().pr_state = Some("MERGED".into());
+        assert!(app.action_dock().primary == Some(Action::NewMod));
+        app.mods[0].closed = true;
+        assert!(app.action_dock().primary == Some(Action::Reopen));
+        assert!(
+            !app.action_dock()
+                .actions
+                .iter()
+                .any(|a| a.action == Action::Publish || a.action == Action::Review)
+        );
+    }
+
+    #[test]
+    fn all_actions_preserves_drafts_and_revalidates_selected_actions() {
+        let (_data, mut app, _root) = execution_app();
+        let draft = app.input.lines().to_vec();
+        let history_offset = app.history_offset;
+        key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        assert!(matches!(app.view, View::Actions(Action::Review)));
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Chat));
+        assert_eq!(app.input.lines(), draft);
+        assert_eq!(app.history_offset, history_offset);
+        key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        let id = app.mods[0].id;
+        app.mods[0]
+            .queue
+            .push(app.store.enqueue(id, "Keep these edits").unwrap());
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Actions(Action::Review)));
+        assert!(app.workers.is_empty() && app.mods[0].agent_review.is_none());
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(matches!(app.view, View::Chat));
+        assert!(app.git_jobs.is_empty() && app.review.is_none());
+        assert_eq!(app.input.lines(), draft);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(queued(&app), ["Keep these edits", "keep this draft"]);
+    }
+
+    #[test]
+    fn a_stop_selection_cannot_turn_into_a_restart_when_worker_state_changes() {
+        let (_data, mut app, _root) = execution_app();
+        let m = &app.mods[0];
+        let record = app.store.worker_for(m.id, Role::Planner).unwrap();
+        let mut worker = Worker::start(&app.project, m, record, Role::Planner, None).unwrap();
+        worker.status = Status::Running;
+        app.workers.insert(worker.id, worker);
+        assert!(app.action_dock().guidance == Some("No action needed"));
+        key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        app.view = View::Actions(Action::Stop);
+        let worker = app.workers.values_mut().next().unwrap();
+        worker.enabled = false;
+        worker.status = Status::Ready;
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Actions(Action::Stop)));
+        assert!(app.workers.values().all(|w| !w.enabled));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
+    fn actions_return_to_new_mod_and_confirmation_cancellation_keeps_the_draft() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let mut app = App::load(project, false, data.store()).unwrap();
+        paste(&mut app, "Describe a new app");
+        key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::NewMod));
+        assert_eq!(app.input.lines(), ["Describe a new app"]);
+        let (_data, mut app, _root) = execution_app();
+        key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        app.view = View::Actions(Action::Delete);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::DeleteMod(_)));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Chat));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(app.mods.len() == 1 && !app.quit);
+    }
+
+    #[test]
+    fn action_dock_stays_above_the_composer_and_errors_remain_inspectable() {
+        let (_data, mut app, _root) = execution_app();
+        for width in [36, 48, 116] {
+            let rendered = rows(&screen(&mut app, width, 30));
+            let menu = rendered
+                .iter()
+                .position(|r| r.contains("All actions"))
+                .unwrap();
+            let composer = rendered
+                .iter()
+                .position(|r| r.contains("╭ message"))
+                .unwrap();
+            assert!(menu < composer);
+            let text = rendered.join("\n");
+            assert!(!text.contains("ctrl+t ▸") && !text.contains("ctrl+o ▸"));
+            assert!(text.contains("Ask agent to review"), "{text}");
+        }
+        let error = "AssertionError: expected a successful response.\nFull evidence\n".repeat(30);
+        app.notice = Some(error.clone());
+        app.mods[0].execution.as_mut().unwrap().tasks[0].checks[0].exit_code = Some(1);
+        assert!(app.action_dock().primary == Some(Action::Details));
+        app.perform_action(Action::Failure).unwrap();
+        assert!(matches!(app.view, View::Failure(_)));
+        let first = rows(&screen(&mut app, 48, 24)).join("\n");
+        assert!(first.contains("error details") && first.contains("AssertionError"));
+        key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Failure(scroll) if scroll > 0));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Chat));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert_eq!(app.worker_error(), Some(error.as_str()));
+    }
+
+    #[test]
     fn network_dialog_preserves_drafts_and_requires_an_explicit_decision() {
         let (data, store, m, root, workers) = crate::network::tests::fixture();
         let project = data.0.join("project");
@@ -3481,8 +3607,9 @@ mod tests {
         app.input.insert_str("keep this draft");
         app.refresh_network_requests().unwrap();
         let notice = rows(&screen(&mut app, 120, 36)).join("\n");
+        assert!(app.action_dock().primary == Some(Action::Network));
         assert!(
-            notice.contains("Network access needed") && notice.contains("ctrl+n review domains")
+            notice.contains("Network access needed") && notice.contains("ctrl+n Review domains")
         );
         app.handle(Event::Key(KeyEvent::new(
             KeyCode::Char('n'),
@@ -3633,7 +3760,7 @@ mod tests {
                             .contains_key("example.com")
                     );
                     let screen = rows(&screen(&mut app, 120, 36)).join("\n");
-                    assert!(screen.contains("ctrl+n review domains"));
+                    assert!(screen.contains("ctrl+n Review domains"));
                     app.handle(Event::Key(KeyEvent::new(
                         KeyCode::Char('n'),
                         KeyModifiers::CONTROL,
@@ -4072,7 +4199,14 @@ mod tests {
         let mut app = App::load(data.0.join("project"), false, store).unwrap();
         app.input.insert_str("keep draft");
         let compact = rows(&screen(&mut app, 120, 36)).join("\n");
-        assert!(compact.contains("request review") && compact.contains("review passed"));
+        assert!(compact.contains("Publish PR") && compact.contains("review passed"));
+        assert!(app.action_dock().primary == Some(Action::Publish));
+        assert!(
+            app.action_dock()
+                .actions
+                .iter()
+                .any(|a| a.action == Action::Review)
+        );
         assert!(!compact.contains("Inspected greeting"));
         app.plan_details = true;
         let expanded = rows(&screen(&mut app, 120, 36)).join("\n");
@@ -4491,7 +4625,7 @@ mod tests {
             history
         );
         let display = rows(&screen(&mut app, 100, 30)).join("\n");
-        assert!(display.contains("closed · history saved"));
+        assert!(display.contains("Closed · work saved"));
         assert!(!display.contains("Describe a feature"));
         paste(&mut app, "ignored in closed history");
         assert_eq!(app.mods[0].draft, "keep this draft");
@@ -4748,7 +4882,7 @@ mod tests {
         assert!(
             rows(&screen(&mut app, 116, 40))
                 .join("\n")
-                .contains("ctrl+r run")
+                .contains("ctrl+r Retry work")
         );
     }
 
@@ -5032,7 +5166,14 @@ mod tests {
             let compact = rows(&screen(&mut app, width, 40));
             let text = compact.join("\n");
             assert!(text.contains("changes ready · 3/3 tasks done"));
-            assert!(text.contains("✓ 3/3 checks passed") && text.contains("ctrl+s publish PR"));
+            assert!(text.contains("✓ 3/3 checks passed") && text.contains("All actions"));
+            assert!(app.action_dock().primary == Some(Action::Review));
+            assert!(
+                app.action_dock()
+                    .actions
+                    .iter()
+                    .any(|a| a.action == Action::Publish)
+            );
             let first = compact
                 .iter()
                 .position(|r| r.contains("✓ 1. Greeting"))
@@ -5041,11 +5182,10 @@ mod tests {
             assert!(compact[first + 2].contains("✓ 3. Verify together"));
             assert!(!text.contains("Print hello") && !text.contains("I will inspect"));
             assert!(!text.contains("Keep task order") && !text.contains("/usr/bin/true"));
-            assert!(text.contains(if width < 80 {
-                "ctrl+t ▸ history"
-            } else {
-                "ctrl+t ▸ worker history"
-            }));
+            key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+            let actions = rows(&screen(&mut app, width, 40)).join("\n");
+            assert!(actions.contains("Worker history") && actions.contains("Publish PR"));
+            key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         }
         let instruction = app.store.enqueue(id, "Keep the current icons").unwrap();
         app.mods[0].queue.push(instruction);
@@ -5097,10 +5237,12 @@ mod tests {
             app.focus_plan = true;
             let expanded = rows(&screen(&mut app, width, 42));
             assert!(
-                expanded
+                app.action_dock()
+                    .actions
                     .iter()
-                    .any(|row| row.contains("ctrl+o ▾ hide plan details"))
+                    .any(|a| a.action == Action::Details && a.label == "Hide plan details")
             );
+            assert!(expanded.iter().any(|row| row.contains("All actions")));
             assert!(expanded.iter().any(|row| row.contains("│     response")));
             let start = expanded
                 .iter()
@@ -5122,7 +5264,13 @@ mod tests {
             );
             key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
             let collapsed = rows(&screen(&mut app, width, 42)).join("\n");
-            assert!(collapsed.contains("ctrl+o ▸ show plan details"));
+            assert!(collapsed.contains("All actions"));
+            assert!(
+                app.action_dock()
+                    .actions
+                    .iter()
+                    .any(|a| a.action == Action::Details && a.label == "Show plan details")
+            );
             assert!(!collapsed.contains("/workspace/.venv"));
             assert!(!collapsed.contains("execution stays"));
             assert_eq!(app.input.lines(), ["keep this draft"]);
@@ -5234,7 +5382,7 @@ mod tests {
         assert!(compact.contains("1. Build the API"));
         assert!(!compact.contains("app/main.py") && !compact.contains("gpt-6-astra"));
         assert!(!compact.contains("I'll inspect"));
-        assert!(compact.contains("ctrl+q manage"));
+        assert!(compact.contains("ctrl+q Manage queue"));
 
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         let expanded = rows(&screen(&mut app, 100, 48)).join("\n");

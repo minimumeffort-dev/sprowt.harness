@@ -11,7 +11,7 @@ use ratatui_textarea::{TextArea, WrapMode};
 use tachyonfx::{Effect, Interpolation, fx};
 
 use crate::{
-    app::{App, View},
+    app::{Action, ActionDock, ActionItem, App, Tone, View},
     execution::Execution,
     plan::{Plan, Planning, Role},
     sprout,
@@ -77,11 +77,23 @@ pub fn draw(
     elapsed: Option<Duration>,
 ) -> Rect {
     let area = frame.area().inner(Margin::new(2, 1));
+    let composer_view = app.composer_view();
+    let show_dock = matches!(composer_view, View::Chat | View::NewMod);
+    let dock = app.action_dock();
+    let dock_lines = dock_lines(&dock, area.width, elapsed);
     let mod_height = u16::from(!matches!(
-        app.view,
+        composer_view,
         View::NewMod | View::ProjectSetup(false, _)
     ));
-    if area.width < 32 || area.height < 11 + mod_height {
+    if area.width < 32
+        || area.height
+            < 11 + mod_height
+                + if show_dock {
+                    dock_lines.len() as u16
+                } else {
+                    0
+                }
+    {
         frame.render_widget(
             Paragraph::new("Make the terminal a little larger.\nCtrl+C to quit.")
                 .wrap(Wrap { trim: false }),
@@ -90,15 +102,20 @@ pub fn draw(
         return Rect::default();
     }
 
-    let gap = u16::from(area.height >= 13 + 2 * mod_height);
-    let read_only = matches!(app.view, View::Chat) && app.read_only();
-    let [header, _, mod_row, _, content, _, input, footer] = Layout::vertical([
+    let gap = u16::from(area.height >= 26 + 2 * mod_height);
+    let read_only = matches!(composer_view, View::Chat) && app.read_only();
+    let [header, _, mod_row, _, content, _, dock_area, input, footer] = Layout::vertical([
         Constraint::Length(4),
         Constraint::Length(gap),
         Constraint::Length(mod_height),
         Constraint::Length(gap * mod_height),
         Constraint::Min(1),
         Constraint::Length(gap),
+        Constraint::Length(if show_dock {
+            dock_lines.len() as u16
+        } else {
+            0
+        }),
         Constraint::Length(if read_only { 0 } else { 5 }),
         Constraint::Length(1),
     ])
@@ -115,59 +132,19 @@ pub fn draw(
                 .map(|path| format!("~/{}", path.display()))
         })
         .unwrap_or_else(|| app.project.display().to_string());
-    let status = app
-        .git_activity()
-        .map(|activity| format!("{} {activity}", activity_glyph(elapsed)))
-        .unwrap_or_else(|| {
-            if app.current_mod().is_some_and(|m| m.closed) {
-                return "□ closed · history saved".into();
-            }
-            if let Some(status) = app.upstream_status()
-                && app.current_worker().is_none_or(|w| !w.busy())
-            {
-                return status;
-            }
-            if let Some(state) = app.git_state() {
-                if state.published() {
-                    return "◇ PR published · send a message to request edits".into();
-                }
-                if app.git_retry_pending() {
-                    return "◇ Git operation paused · ctrl+r retry".into();
-                }
-            }
-            app.current_worker().map_or_else(
-                || {
-                    app.current_mod()
-                        .and_then(|code_mod| code_mod.planning.as_ref())
-                        .filter(|planning| planning.status != "ready")
-                        .map_or(String::new(), |_| "▤ planning paused".into())
-                },
-                |worker| {
-                    if worker.status == Status::Complete {
-                        String::new()
-                    } else {
-                        worker.label(worker.busy().then(|| activity_glyph(elapsed)))
-                    }
-                },
-            )
-        });
-    let status = if status.is_empty() {
-        app.project_activity().map_or(status, |activity| {
-            format!("{} {activity}", activity_glyph(elapsed))
-        })
-    } else {
-        status
-    };
+    let status = app.current_worker().map_or(String::new(), |worker| {
+        worker.label(worker.busy().then(|| activity_glyph(elapsed)))
+    });
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(vec!["sprowt".fg(ACCENT).bold(), " harness".bold()]),
             Line::from(fit_name(&project, heading.width)).fg(MUTED),
             Line::from(fit_name(&status, heading.width)).fg(KEY_HINT),
-            Line::from(if app.pending_network().is_some() {
-                "! Network access needed · ctrl+n".into()
-            } else {
+            Line::from(if !show_dock {
                 app.worker_error()
                     .map_or(String::new(), |error| fit_name(error, heading.width))
+            } else {
+                String::new()
             })
             .fg(Color::Red),
         ]),
@@ -186,7 +163,7 @@ pub fn draw(
         ),
     );
     let mut can_scroll = false;
-    if matches!(app.view, View::Chat | View::EditQueue(_)) {
+    if matches!(composer_view, View::Chat | View::EditQueue(_)) {
         let count = if read_only {
             0
         } else {
@@ -231,7 +208,22 @@ pub fn draw(
         height: area.bottom().saturating_sub(mod_row.bottom() + gap),
         ..area
     };
-    if let View::ProjectSetup(saved, scroll) = app.view {
+    if let View::Actions(selected) = app.view {
+        if !read_only {
+            frame.render_widget(&app.input, input);
+        }
+        draw_actions(frame, &dock, selected, content);
+    } else if let View::Failure(scroll) = app.view {
+        draw_failure(
+            frame,
+            app,
+            scroll,
+            Rect {
+                width: area.width,
+                ..dialog_area
+            },
+        );
+    } else if let View::ProjectSetup(saved, scroll) = app.view {
         draw_project_setup(frame, app, saved, scroll, dialog_area);
     } else if let View::Repository(create) = app.view {
         let choices = Paragraph::new(vec![
@@ -356,7 +348,7 @@ pub fn draw(
             }
             frame.render_widget(&app.input, input);
         }
-        let shortcuts = match app.view {
+        let shortcuts = match composer_view {
             View::NewMod => format!(
                 "↵ create + build{}   esc {}",
                 if footer.width >= 48 {
@@ -377,6 +369,9 @@ pub fn draw(
             _ => chat_hints(app, footer.width, can_scroll),
         };
         frame.render_widget(Line::from(shortcuts).fg(MUTED), footer);
+    }
+    if show_dock {
+        frame.render_widget(Paragraph::new(dock_lines), dock_area);
     }
     heading
 }
@@ -670,7 +665,7 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
         .border_style(Style::new().fg(MUTED))
         .padding(Padding::horizontal(1))
         .title(
-            Line::from(format!(" changes · {} files ", review.count()))
+            Line::from(format!(" diff · {} files ", review.count()))
                 .fg(KEY_HINT)
                 .bold(),
         );
@@ -708,7 +703,7 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     frame.render_widget(body.scroll((scroll, 0)), panel);
     frame.render_widget(
         Line::from(if app.can_publish() {
-            "↑↓ scroll  fn+↑/↓ page  r request review  p publish PR  esc back"
+            "↑↓ scroll  fn+↑/↓ page  r ask agent to review  p publish PR  esc back"
         } else {
             "↑↓ scroll  fn+↑/↓ page  esc back"
         })
@@ -918,66 +913,17 @@ fn fit_name(name: &str, width: u16) -> String {
 }
 
 fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
-    let queued = app.current_mod().is_some_and(|m| !m.queue.is_empty());
-    let worker = app.current_worker();
-    let run = if app.git_activity().is_some() {
-        None
-    } else if app.git_retry_pending() {
-        Some("retry Git operation")
-    } else if app
-        .current_mod()
-        .is_some_and(|m| m.closed && m.git_root.is_some())
-    {
-        Some("reopen")
-    } else if app.read_only() {
-        None
-    } else if worker.is_some_and(|w| w.enabled) {
-        Some("stop")
-    } else if app
-        .current_mod()
-        .and_then(|m| m.planning.as_ref())
-        .is_some_and(|p| p.status != "ready")
-    {
-        Some("retry")
-    } else if queued
-        || worker.is_some_and(|w| w.status != Status::Complete)
-        || app.current_mod().is_some_and(|m| {
-            m.planning.as_ref().is_some_and(|p| p.status == "ready")
-                && m.execution.as_ref().is_none_or(|execution| {
-                    !["review", "applied"].contains(&execution.status.as_str())
-                })
-        })
-    {
-        Some("run")
+    let mut hints = if app.read_only() {
+        String::new()
+    } else if app.current_mod().and_then(|m| m.question()).is_some() {
+        "↵ answer".to_owned()
+    } else if app.published() || app.version_ready() {
+        "↵ request edits".to_owned()
     } else {
-        None
+        "↵ queue".to_owned()
     };
     let ctrl = if width < 60 { "^" } else { "ctrl+" };
     let mut options = Vec::new();
-    if app.version_ready() && app.plan_details {
-        options.push(format!("{ctrl}e request review"));
-        options.push(format!("{ctrl}s publish PR"));
-    }
-    if app
-        .current_mod()
-        .is_some_and(|m| !m.closed && m.git_root.is_some() && m.execution.is_some())
-    {
-        options.push(format!("{ctrl}u update base"));
-    }
-    if let Some(action) = run {
-        options.push(format!("{ctrl}r {action}"));
-    }
-    if queued && !app.read_only() {
-        options.push(format!("{ctrl}q manage"));
-    }
-    if app
-        .current_mod()
-        .is_some_and(|m| m.execution.is_some() && !m.closed)
-        && !app.execution_busy()
-        && (!app.version_ready() || app.plan_details)
-    {
-        options.push(format!("{ctrl}d changes"));
-    }
     if !app.read_only() {
         options.push(format!("{ctrl}j newline"));
     }
@@ -988,15 +934,6 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
             "pgup/pgdn scroll".into()
         });
     }
-    let mut hints = if app.read_only() {
-        format!("{ctrl}p mods")
-    } else if app.current_mod().and_then(|m| m.question()).is_some() {
-        "↵ answer".to_owned()
-    } else if app.published() || app.version_ready() {
-        "↵ request edits".to_owned()
-    } else {
-        "↵ queue".to_owned()
-    };
     for option in options {
         let candidate = format!("{hints}  {option}");
         if Span::raw(&candidate).width() + "  esc quit".len() <= width as usize {
@@ -1004,6 +941,130 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
         }
     }
     format!("{hints}  esc quit")
+}
+
+fn action_control(item: &ActionItem, width: u16) -> Line<'static> {
+    let mut spans = Vec::new();
+    if let Some(key) = item.action.shortcut() {
+        spans.push(format!("{}{key} ", if width < 60 { "^" } else { "ctrl+" }).fg(ACCENT));
+    }
+    spans.push(item.label.clone().fg(KEY_HINT));
+    Line::from(spans)
+}
+
+fn dock_lines(dock: &ActionDock, width: u16, elapsed: Option<Duration>) -> Vec<Line<'static>> {
+    let (glyph, color) = match dock.tone {
+        Tone::Quiet => ("◇", KEY_HINT),
+        Tone::Busy => (activity_glyph(elapsed), KEY_HINT),
+        Tone::Attention => ("!", Color::Red),
+        Tone::Ready => ("✓", ACCENT),
+    };
+    let mut lines =
+        vec![Line::from(fit_name(&format!("{glyph} {}", dock.status), width)).fg(color)];
+    if let Some(error) = &dock.error {
+        lines.push(Line::from(fit_name(error, width)).fg(Color::Red));
+    }
+    let mut next = Line::from("Next · ".fg(KEY_HINT));
+    if let Some(primary) = dock
+        .primary
+        .and_then(|id| dock.actions.iter().find(|a| a.action == id))
+    {
+        next.spans.extend(
+            action_control(primary, width)
+                .spans
+                .into_iter()
+                .map(|s| s.bold().bg(CONTROL)),
+        );
+    } else if let Some(guidance) = dock.guidance {
+        next.spans.push(guidance.to_owned().fg(KEY_HINT));
+    } else {
+        next = Line::default();
+    }
+    // Secondary actions fit on the same row; the menu always has its own space.
+    for action in [
+        Action::Queue,
+        Action::Diff,
+        Action::Publish,
+        Action::Stop,
+        Action::Retry,
+        Action::RetryGit,
+        Action::Run,
+        Action::Details,
+    ] {
+        if dock.primary == Some(action) {
+            continue;
+        }
+        if let Some(item) = dock.actions.iter().find(|a| a.action == action) {
+            let control = action_control(item, width);
+            if next.width() + control.width() + 2 <= width as usize {
+                next.spans.push(Span::raw("  "));
+                next.spans.extend(control.spans);
+            }
+        }
+    }
+    let all = Line::from(vec![
+        format!("{}g ", if width < 60 { "^" } else { "ctrl+" }).fg(ACCENT),
+        "All actions".fg(KEY_HINT),
+    ]);
+    if next.width() + all.width() + 2 <= width as usize {
+        next.spans.push(Span::raw("  "));
+        next.spans.extend(all.spans);
+        lines.push(next);
+    } else {
+        if next.width() > 0 {
+            lines.push(next);
+        }
+        lines.push(all);
+    }
+    lines
+}
+
+fn draw_actions(frame: &mut Frame, dock: &ActionDock, selected: Action, area: Rect) {
+    frame.render_widget(ratatui::widgets::Clear, area);
+    let (body, _) = draw_dialog(
+        frame,
+        area,
+        "all actions",
+        dock.actions.len(),
+        false,
+        &[("↑↓", "select"), ("↵", "choose"), ("esc", "back")],
+    );
+    let items = dock.actions.iter().map(|item| {
+        let mut line = action_control(item, body.width);
+        if dock.primary == Some(item.action) {
+            line.spans.insert(0, "› ".fg(ACCENT));
+        } else {
+            line.spans.insert(0, Span::raw("  "));
+        }
+        line
+    });
+    let index = dock.actions.iter().position(|a| a.action == selected);
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(dialog_selection()),
+        body,
+        &mut ListState::default().with_selected(index),
+    );
+}
+
+fn draw_failure(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
+    let [panel, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    app.page_size = panel.height.saturating_sub(2).max(1);
+    let body = Paragraph::new(app.action_error().unwrap_or("No current error."))
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::bordered()
+                .border_type(BorderType::Rounded)
+                .border_style(Style::new().fg(MUTED))
+                .padding(Padding::horizontal(1))
+                .title(" error details "),
+        );
+    let maximum = body
+        .line_count(panel.width.saturating_sub(4))
+        .saturating_sub(panel.height.saturating_sub(2) as usize)
+        .min(u16::MAX as usize) as u16;
+    frame.render_widget(body.scroll((scroll.min(maximum), 0)), panel);
+    app.view = View::Failure(scroll.min(maximum));
+    frame.render_widget(Line::from("↑↓ scroll  esc back").fg(KEY_HINT), footer);
 }
 
 fn activity_glyph(elapsed: Option<Duration>) -> &'static str {
@@ -1103,15 +1164,6 @@ fn plan_lines(
         })
         .fg(ACCENT)
         .bold(),
-        Line::from(vec![
-            "  ctrl+o ".fg(ACCENT),
-            if details {
-                "▾ hide plan details"
-            } else {
-                "▸ show plan details"
-            }
-            .fg(KEY_HINT),
-        ]),
         Line::from(if let Some(execution) = execution {
             format!(
                 "{} · {}/{} tasks done",
@@ -1249,7 +1301,7 @@ fn plan_lines(
         }) {
             lines.push(
                 Line::from(match access.status.as_str() {
-                    "pending" => "   ! Network access needed · ctrl+n review domains",
+                    "pending" => "   ! Network access needed",
                     "denied" => "   ! Network access denied · task paused",
                     _ => "   ◌ Access approved · reconnecting worker",
                 })
@@ -1719,44 +1771,7 @@ fn draw_conversation(
     let mut rows = Vec::new();
     let mut total = 0;
     let mut plan_top = 0;
-    let has_history = app.current_mod().is_some_and(CodeMod::has_worker_history);
-    let mut has_plan = false;
-    for mut block in blocks {
-        if block.plan {
-            has_plan = true;
-            if has_history {
-                let control = history_control();
-                let heading = &mut block.text.lines[1];
-                if heading.width() + control.width() + 2 <= area.width as usize {
-                    heading.spans.push(Span::raw("  "));
-                    heading.spans.extend(control.spans);
-                } else {
-                    let ctrl = if area.width < 40 { "^" } else { "ctrl+" };
-                    *heading = Line::from(vec![
-                        format!("{ctrl}o ").fg(ACCENT),
-                        if app.plan_details {
-                            "▾ details"
-                        } else {
-                            "▸ details"
-                        }
-                        .fg(KEY_HINT),
-                        format!("  {ctrl}t ").fg(ACCENT),
-                        "▸ history".fg(KEY_HINT),
-                    ]);
-                }
-            }
-        }
-        if block.plan && app.version_ready() && !app.plan_details {
-            block.text.lines.push(Line::default());
-            block.text.lines.push(Line::from(vec![
-                "ctrl+s ".fg(ACCENT),
-                "publish PR".fg(KEY_HINT),
-                "  ctrl+e ".fg(ACCENT),
-                "request review".fg(KEY_HINT),
-                "  ctrl+d ".fg(ACCENT),
-                "view diff".fg(KEY_HINT),
-            ]));
-        }
+    for block in blocks {
         let width = area.width.saturating_sub(if block.user { 2 } else { 0 });
         let paragraph = Paragraph::new(block.text).wrap(Wrap { trim: false });
         let height = paragraph.line_count(width);
@@ -1764,12 +1779,6 @@ fn draw_conversation(
             plan_top = total;
         }
         rows.push((total, height, block.user, paragraph));
-        total += height + 1;
-    }
-    if has_history && !has_plan {
-        let paragraph = Paragraph::new(history_control()).wrap(Wrap { trim: false });
-        let height = paragraph.line_count(area.width);
-        rows.push((total, height, false, paragraph));
         total += height + 1;
     }
     let max_scroll = total.saturating_sub(1).saturating_sub(area.height as usize);
@@ -1784,10 +1793,6 @@ fn draw_conversation(
     app.history_offset = history_offset;
     app.focus_plan = false;
     max_scroll > 0
-}
-
-fn history_control() -> Line<'static> {
-    Line::from(vec!["ctrl+t ".fg(ACCENT), "▸ worker history".fg(KEY_HINT)])
 }
 
 fn draw_message_rows(
