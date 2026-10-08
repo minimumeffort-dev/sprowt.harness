@@ -20,7 +20,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Workers and isolation](docs/workers.md): Codex planning and review, with separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
-- [Terminal and companion](docs/terminal.md): an open outline with aligned tasks, compact menus and a unified message dock. Shortcuts, mouse scrolling and a Sprowt pet that reacts to work.
+- [Terminal and companion](docs/terminal.md): an open outline with aligned tasks, compact menus and a unified dock with a growing message area. Shortcuts, mouse scrolling and a Sprowt pet that reacts to work.
 
 ### Current limits
 

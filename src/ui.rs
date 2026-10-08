@@ -88,12 +88,6 @@ pub fn draw(
     let dock_header = dock_header(&dock, dock_width, elapsed, menu_open);
     let dock_hints = dock_hints(app, dock_width, menu_open);
     let read_only = matches!(composer_view, View::Chat) && app.read_only();
-    let dock_input_height = if read_only {
-        0
-    } else {
-        composer_height(&app.input, area.width).saturating_sub(2)
-    };
-    let dock_height = dock_header.len() as u16 + dock_input_height + dock_hints.len() as u16 + 3;
     let mut identities: Vec<_> = app.active_workers().collect();
     if identities.is_empty() {
         identities.extend(app.current_worker());
@@ -113,6 +107,17 @@ pub fn draw(
         composer_view,
         View::NewMod | View::ProjectSetup(false, _)
     ));
+    let dock_chrome = dock_header.len() as u16 + dock_hints.len() as u16 + 3;
+    let available_rows = area
+        .height
+        .saturating_sub(header_height + 5 + mod_height + dock_chrome)
+        .max(1);
+    let dock_input_height = if read_only {
+        0
+    } else {
+        (composer_rows(&app.input, dock_width).clamp(4, 8) as u16).min(available_rows)
+    };
+    let dock_height = dock_chrome + dock_input_height;
     if area.width < 32
         || area.height < header_height + 5 + mod_height + if show_dock { dock_height } else { 0 }
     {
@@ -136,7 +141,7 @@ pub fn draw(
         Constraint::Length(if read_only || show_dock {
             0
         } else {
-            composer_height(&app.input, area.width)
+            composer_rows(&app.input, dock_width).clamp(1, 4) as u16 + 2
         }),
         Constraint::Length(u16::from(!show_dock)),
     ])
@@ -417,9 +422,16 @@ pub fn draw(
     heading
 }
 
-fn composer_height(input: &TextArea<'_>, width: u16) -> u16 {
-    let text = Paragraph::new(input.lines().join("\n")).wrap(Wrap { trim: false });
-    text.line_count(width.saturating_sub(4)).clamp(1, 4) as u16 + 2
+fn composer_rows(input: &TextArea<'_>, width: u16) -> usize {
+    // Keep the trailing empty row where a newline puts the cursor.
+    let lines: Vec<_> = input
+        .lines()
+        .iter()
+        .map(|line| Line::raw(line.as_str()))
+        .collect();
+    Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .line_count(width)
 }
 
 fn queue_items(app: &App, width: u16) -> impl Iterator<Item = Line<'static>> + '_ {

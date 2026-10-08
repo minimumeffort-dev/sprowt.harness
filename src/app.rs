@@ -3888,7 +3888,7 @@ mod tests {
             if width == 116 {
                 assert_eq!(status, action);
                 assert_eq!(hints, menu);
-                assert_eq!(bottom - top + 1, 6);
+                assert_eq!(bottom - top + 1, 9);
                 assert!(rendered[menu].ends_with("ctrl+g Actions │  "));
             }
             let text = rendered.join("\n");
@@ -3909,6 +3909,68 @@ mod tests {
         assert!(matches!(app.view, View::Chat));
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert_eq!(app.worker_error(), Some(error.as_str()));
+    }
+
+    #[test]
+    fn composer_grows_for_blank_lines_and_keeps_the_cursor_visible() {
+        let (_data, mut app, _root) = execution_app();
+        app.input.clear();
+        for line in 0..8u16 {
+            paste(&mut app, &format!("Draft line {line}"));
+            key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+            let buffer = screen(&mut app, 100, 40);
+            let input = app.scroll.input;
+            assert_eq!(input.height, (line + 2).clamp(4, 8));
+            let cursor_row = (line + 1).min(7);
+            assert!(
+                buffer[(input.x, input.y + cursor_row)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            );
+            if line < 7 {
+                assert!(rows(&buffer).iter().any(|r| r.contains("Draft line 0")));
+            }
+            assert_eq!(app.input.cursor(), (line as usize + 1, 0));
+            assert!(app.current_mod().unwrap().queue.is_empty());
+        }
+        let draft = app.input.lines().to_vec();
+        app.open_actions();
+        screen(&mut app, 100, 40);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        let buffer = screen(&mut app, 100, 40);
+        let input = app.scroll.input;
+        assert!(
+            buffer[(input.x, input.bottom() - 1)]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+        assert_eq!(app.input.lines(), draft);
+
+        for (width, height) in [(36, 24), (80, 24), (100, 40)] {
+            let buffer = screen(&mut app, width, height);
+            let input = app.scroll.input;
+            assert!(input.height > 0 && input.height <= 8);
+            assert!(rows(&buffer).iter().any(|r| r.contains("Actions")));
+            assert!((input.y..input.bottom()).any(|y| {
+                buffer[(input.x, y)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)
+            }));
+            assert_eq!(app.input.lines(), draft);
+        }
+        app.input.clear();
+        screen(&mut app, 48, 40);
+        paste(&mut app, &"a".repeat(200));
+        key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
+        let buffer = screen(&mut app, 48, 40);
+        let input = app.scroll.input;
+        assert_eq!(input.height, 6);
+        assert!(
+            buffer[(input.x, input.y + 5)]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        );
+        assert_eq!(app.input.cursor(), (1, 0));
     }
 
     #[test]
@@ -3966,7 +4028,7 @@ mod tests {
         for width in [36, 80, 160] {
             screen(&mut app, width, 36);
             assert_eq!(app.scroll.input.x, 4);
-            assert_eq!(app.scroll.input.height, 1);
+            assert_eq!(app.scroll.input.height, 4);
             app.open_actions();
             let buffer = screen(&mut app, width, 36);
             let rendered = rows(&buffer).join("\n");
@@ -3984,7 +4046,7 @@ mod tests {
         }
         app.input.insert_str("\nsecond\nthird\nfourth\nfifth");
         screen(&mut app, 160, 36);
-        assert_eq!(app.scroll.input.height, 4);
+        assert_eq!(app.scroll.input.height, 5);
         let id = app.mods[0].id;
         app.mods[0]
             .queue
