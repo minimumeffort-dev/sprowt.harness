@@ -29,6 +29,7 @@ pub struct TaskRun {
     pub summary: String,
     pub checks: Vec<CheckResult>,
     pub verification_feedback: Vec<CheckResult>,
+    pub review_feedback: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

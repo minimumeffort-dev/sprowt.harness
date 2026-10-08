@@ -36,12 +36,13 @@ Check details count passed, failed and unrun checks. Failed output starts at the
 
 **Ctrl+T** opens a separate worker history panel with saved narration, model and effort, and [worker messages](coordination.md). Scroll with ↑/↓ or Fn+↑/↓ on Mac; Esc returns to the same draft, queue and plan view. Questions for you stay visible in the conversation with the sender and message ID; the composer says **answer #ID** and Enter saves your reply.
 
-Finished versions show one row per task, the final check count and the publish action. Outcomes, contracts, commands and routing stay behind **Ctrl+O**; routine worker chatter stays in history. **Ctrl+D** opens a full-width diff. Use **p** there, or **Ctrl+S** from the conversation, to review and confirm publication. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
+Finished versions show one row per task, the final check count, request review and publish actions. **Ctrl+E** starts an independent reviewer; its result stays compact and **Ctrl+O** expands findings. Outcomes, contracts, commands and routing stay behind **Ctrl+O**; routine worker chatter stays in history. **Ctrl+D** opens a full-width diff. Use **p** there, or **Ctrl+S** from the conversation, to review and confirm publication. Snapshot mods first offer Git adoption. See [Plan execution](execution.md).
 
 ```mermaid
 flowchart TB
     result["Tasks + check count"] -->|"Ctrl+O"| details["Plan details · contracts, checks, routing"]
     result -->|"Ctrl+T"| history["Worker history · narration and handoffs"]
+    result -->|"Ctrl+E"| review["Independent review · scoped fixes and fresh checks"]
     result -->|"Ctrl+S"| publish["Review changes · confirm PR"]
 ```
 
@@ -74,6 +75,7 @@ Git setup shows the starting file list. GitHub setup uses Tab to choose connect 
 | Ctrl+Q | Manage queued instructions |
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
+| Ctrl+E | Request independent review; r inside the diff |
 | Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+T | Open worker history; Esc returns |

@@ -14,6 +14,8 @@ flowchart TB
     execute --> checks["Rust · combine changes and rerun checks"]
 ```
 
+The optional [independent reviewer](review.md) uses Sol 6.1 xhigh. It keeps a fresh conversation separate from the Astra planner and executor routing.
+
 ## Planning
 
 The planner inspects relevant source, manifests, tests, docs and project rules. Its starting brief includes up to 120 file paths across three levels, short root rules and manifest excerpts, and up to three documentation excerpts. Dependencies, hidden files and external symlinks are excluded from that brief. The brief guides inspection; the planner still reads the source.

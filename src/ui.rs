@@ -708,7 +708,7 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     frame.render_widget(body.scroll((scroll, 0)), panel);
     frame.render_widget(
         Line::from(if app.can_publish() {
-            "↑↓ scroll  fn+↑/↓ page  p publish PR  esc back"
+            "↑↓ scroll  fn+↑/↓ page  r request review  p publish PR  esc back"
         } else {
             "↑↓ scroll  fn+↑/↓ page  esc back"
         })
@@ -955,6 +955,7 @@ fn chat_hints(app: &App, width: u16, can_scroll: bool) -> String {
     let ctrl = if width < 60 { "^" } else { "ctrl+" };
     let mut options = Vec::new();
     if app.version_ready() && app.plan_details {
+        options.push(format!("{ctrl}e request review"));
         options.push(format!("{ctrl}s publish PR"));
     }
     if app
@@ -1529,6 +1530,7 @@ fn conversation_blocks<'a>(
                 && (message.role == "codex"
                     || message.role.starts_with("codex:")
                     || message.role.starts_with("muse:")
+                    || message.role == "reviewer"
                     || saved.is_some() && message.role == "planner")
             {
                 return None;
@@ -1542,6 +1544,8 @@ fn conversation_blocks<'a>(
                         "{}{}{}",
                         if message.role == "harness" {
                             "◇ sprowt".to_owned()
+                        } else if message.role == "reviewer" {
+                            "◇ codex · reviewer".to_owned()
                         } else if message.role == "planner" {
                             "▤ codex · planner".to_owned()
                         } else {
@@ -1571,6 +1575,62 @@ fn conversation_blocks<'a>(
             })
         })
         .collect();
+    if !history && let Some(review) = &code_mod.agent_review {
+        let stale = review.status != "fixing" && !review.current(code_mod);
+        let mut lines = vec![
+            Line::from(format!(
+                "{} codex · reviewer · gpt-6.1-sol · xhigh",
+                if matches!(review.status.as_str(), "pending" | "running") {
+                    activity.unwrap_or("◇")
+                } else {
+                    "◇"
+                }
+            ))
+            .fg(ACCENT)
+            .bold(),
+            Line::from(if stale {
+                "review outdated".into()
+            } else if review.status == "fixing"
+                && code_mod
+                    .execution
+                    .as_ref()
+                    .is_some_and(|e| e.status == "blocked")
+            {
+                "review fixes paused · ctrl+r retry".into()
+            } else {
+                review.label()
+            })
+            .fg(KEY_HINT),
+        ];
+        if !details
+            && !stale
+            && review.status == "blocked"
+            && let Some(report) = &review.report
+        {
+            lines.push(Line::from(report.summary.clone()).fg(Color::Red));
+        }
+        if details && let Some(report) = &review.report {
+            lines.push(Line::from(report.summary.clone()));
+            for finding in &report.findings {
+                lines.push(Line::default());
+                lines.push(Line::from(format!("{} · {}", finding.priority, finding.title)).bold());
+                lines.push(
+                    Line::from(format!(
+                        "{}:{} · {}",
+                        finding.file, finding.line, finding.owner
+                    ))
+                    .fg(KEY_HINT),
+                );
+                lines.push(Line::from(finding.evidence.clone()));
+                lines.push(Line::from(format!("Fix: {}", finding.fix)));
+            }
+        }
+        blocks.push(ConversationBlock {
+            text: lines.into(),
+            user: false,
+            plan: false,
+        });
+    }
     for message in &code_mod.coordination {
         let question = code_mod.needs_answer(message);
         if !question && !history {
@@ -1638,7 +1698,7 @@ fn draw_conversation(
     let activity = app
         .current_worker()
         .filter(|worker| {
-            worker.role == Role::Executor
+            worker.role != Role::Planner
                 && matches!(
                     worker.status,
                     Status::Starting | Status::Running | Status::Checking | Status::Stopping
@@ -1691,8 +1751,10 @@ fn draw_conversation(
             block.text.lines.push(Line::from(vec![
                 "ctrl+s ".fg(ACCENT),
                 "publish PR".fg(KEY_HINT),
+                "  ctrl+e ".fg(ACCENT),
+                "request review".fg(KEY_HINT),
                 "  ctrl+d ".fg(ACCENT),
-                "review changes".fg(KEY_HINT),
+                "view diff".fg(KEY_HINT),
             ]));
         }
         let width = area.width.saturating_sub(if block.user { 2 } else { 0 });

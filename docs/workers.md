@@ -113,6 +113,10 @@ An interrupted turn waits for **Ctrl+R**. A completed turn reruns independent ch
 
 Another task or edit round starts a new session with its own folder and permissions. Closing or deleting removes the VM and its native logs. After reopening a closed mod, explicit retry rebuilds context from the saved plan, source and accepted instructions; the old native tool history is unavailable.
 
+## Independent reviewer
+
+**Ctrl+E** starts a fresh Codex conversation using Sol 6.1 xhigh. It reads the combined source inside the existing VM with no source writes or harness tools. Findings return to existing owners; verified fixes receive another fresh review. See [Independent review](review.md).
+
 ## Lifecycle
 
 Publishing keeps the VM and worktree for edits. Closing checkpoints source and removes the VM. Reopening creates a fresh VM when needed. Quitting stops workers and VMs but retains their disks. Deletion discards local codemod data. See [Local Linux sandbox](sandbox.md) for disk locations and cleanup.

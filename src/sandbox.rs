@@ -285,6 +285,17 @@ impl Sandbox {
         Ok(vm)
     }
 
+    pub fn prepare_reviewer(&self, worker: i64, cancelled: &AtomicBool) -> io::Result<()> {
+        self.guest(
+            &[
+                "/bin/mkdir",
+                "-p",
+                &crate::task_worktree::worker_home(worker),
+            ],
+            cancelled,
+        )
+    }
+
     pub fn worker_home(&self, id: i64) -> io::Result<PathBuf> {
         let home = self.home.join(format!("worker-{id}"));
         fs::create_dir_all(&home)?;
@@ -620,6 +631,7 @@ impl Sandbox {
                 )
             })
             .collect();
+        config.push(format!("permissions.sprowt_review={{filesystem={{\"/\"=\"read\",{}=\"write\",\"/tmp\"=\"write\"}},network={{enabled=false}}}}", json!(home)));
         config.push(format!("shell_environment_policy.set.HOME={}", json!(home)));
         config
     }

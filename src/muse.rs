@@ -186,10 +186,9 @@ pub fn serve(
                     let config = {
                         let mut vm = vm.lock().unwrap();
                         vm.assign_muse_task(id, context.worker_id(), &cancelled)?;
-                        if routing
-                            .as_ref()
-                            .is_some_and(|state| !state["repair"].is_null())
-                        {
+                        if routing.as_ref().is_some_and(|state| {
+                            !state["repair"].is_null() || state["review_fix"] == true
+                        }) {
                             vm.refresh_for_repair(id, &source, &cancelled)?;
                         }
                         vm.muse_configuration(context.worker_id())

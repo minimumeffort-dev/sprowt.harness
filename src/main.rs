@@ -11,6 +11,7 @@ mod network;
 mod packages;
 mod plan;
 mod repair;
+mod review;
 mod router;
 mod rpc;
 mod sandbox;

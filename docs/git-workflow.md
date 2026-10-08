@@ -127,4 +127,4 @@ Interrupted repository setup retains its request. **Ctrl+R** retries; **Ctrl+D**
 
 ## Current limits
 
-Up to two Codex or Muse executors per codemod. Review workers come later. Symlinks, submodules, GitHub Enterprise and other Git hosts are unsupported.
+Up to two Codex or Muse executors per codemod, plus an optional [independent reviewer](review.md) once a version is ready. Symlinks, submodules, GitHub Enterprise and other Git hosts are unsupported.

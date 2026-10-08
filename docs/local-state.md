@@ -11,6 +11,7 @@ flowchart TB
     mod --> pending["Queue and waiting steering"]
     mod --> mail["Task mailboxes · asks, replies and receipt state"]
     mod --> network["Network requests · decisions and exact domain grants"]
+    mod --> review["Review · source fingerprint, findings and bounded fix rounds"]
     mod --> execution["Execution · working folder, task status and check results"]
     mod --> workers["Workers · provider, role, conversation and pending delivery"]
     mod --> git["Worktree path · publication, close and retention checkpoints"]

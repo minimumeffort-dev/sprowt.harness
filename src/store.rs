@@ -16,6 +16,7 @@ pub struct CodeMod {
     pub closed: bool,
     pub planning: Option<Planning>,
     pub execution: Option<Execution>,
+    pub agent_review: Option<crate::review::State>,
     pub git_root: Option<std::path::PathBuf>,
     pub draft: String,
     pub messages: Vec<Message>,
@@ -28,6 +29,7 @@ impl CodeMod {
     pub fn has_worker_history(&self) -> bool {
         self.messages.iter().any(|m| {
             m.role == "codex"
+                || m.role == "reviewer"
                 || m.role.starts_with("codex:")
                 || m.role.starts_with("muse:")
                 || m.role == "planner"
@@ -333,6 +335,7 @@ impl Store {
             }
         }
         crate::repair::migrate(&connection).map_err(io::Error::other)?;
+        crate::review::migrate(&connection).map_err(io::Error::other)?;
         connection
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS steering_deliveries (
@@ -368,6 +371,7 @@ impl Store {
                     closed: row.get(4)?,
                     planning: None,
                     execution: None,
+                    agent_review: None,
                     git_root: None,
                     draft: row.get(2)?,
                     messages: Vec::new(),
@@ -380,6 +384,7 @@ impl Store {
         for code_mod in &mut mods {
             code_mod.planning = self.planning(code_mod.id)?;
             code_mod.execution = self.execution(code_mod.id)?;
+            code_mod.agent_review = self.review_state(code_mod.id)?;
             code_mod.git_root = self.git_root(code_mod.id)?;
             code_mod.coordination = self.mailbox(code_mod.id)?;
             let mut statement = self.0.prepare(
@@ -480,6 +485,7 @@ impl Store {
             closed: false,
             planning: self.planning(id)?,
             execution: None,
+            agent_review: None,
             git_root: None,
             draft: String::new(),
             messages: if planned { vec![message] } else { Vec::new() },
@@ -527,6 +533,7 @@ impl Store {
         for table in [
             "network_requests",
             "network_grants",
+            "reviews",
             "task_runs",
             "executions",
             "steering_requests",
@@ -564,6 +571,7 @@ impl Store {
         if changed != 1 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
+        transaction.execute("UPDATE reviews SET status='paused' WHERE mod_id=?1 AND status IN ('pending','running','fixing')", [mod_id])?;
         transaction.execute("UPDATE task_runs SET status='paused' WHERE mod_id=?1 AND status IN ('sending','running','checking')", [mod_id])?;
         transaction.execute("UPDATE executions SET status='blocked' WHERE mod_id=?1 AND status IN ('running','verifying')", [mod_id])?;
         transaction.execute("UPDATE plans SET status='paused' WHERE mod_id=?1 AND status IN ('pending','running','sending')", [mod_id])?;
@@ -586,6 +594,10 @@ impl Store {
         let (description, attempt): (String, i64) = transaction.query_row("SELECT COALESCE(m.description,m.name),COALESCE(p.attempt,0) FROM code_mods m LEFT JOIN plans p ON p.mod_id=m.id WHERE m.id=?1", [mod_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
         let source = plan_source(mod_id, attempt + 1);
         transaction.execute("UPDATE code_mods SET closed=0,closed_at=NULL,description=?2 WHERE id=?1", params![mod_id, format!("{description}\n\nUse the current source and finish any incomplete work. Plan this edit, including checks for the new behavior and regressions:\n{request}")])?;
+        transaction.execute(
+            "UPDATE reviews SET status='stale' WHERE mod_id=?1",
+            [mod_id],
+        )?;
         transaction.execute("DELETE FROM network_requests WHERE mod_id=?1", [mod_id])?;
         transaction.execute("DELETE FROM task_runs WHERE mod_id=?1", [mod_id])?;
         transaction.execute(
@@ -795,7 +807,7 @@ impl Store {
         slot: usize,
         provider: &str,
     ) -> Result<WorkerRecord> {
-        if !["codex", "muse"].contains(&provider) || role == Role::Planner && provider != "codex" {
+        if !["codex", "muse"].contains(&provider) || role != Role::Executor && provider != "codex" {
             return Err(rusqlite::Error::InvalidQuery);
         }
         let read = || {
@@ -882,6 +894,9 @@ impl Store {
                     if task.id == repair.task { "Fix this regression within your original file scope." } else { "Rerun this affected task after the owner fixed the regression; keep your original file scope." },
                     run.id
                 ));
+            }
+            if let Some(feedback) = &run.review_feedback {
+                prompt.push_str(&format!("\n{feedback} The harness refreshed this task from combined source. Preserve all other completed work."));
             }
             if !run.verification_feedback.is_empty() {
                 prompt.push_str(&format!(
@@ -1331,7 +1346,7 @@ impl Store {
         let Some((workspace, status, checks, fingerprint, backend)) = result else {
             return Ok(None);
         };
-        let mut statement = self.0.prepare("SELECT t.id,t.task_id,t.status,t.source,t.turn_id,t.summary,t.checks,t.worker_id,t.routing,t.repair,w.provider,t.assignment_reason,t.verification_feedback FROM task_runs t LEFT JOIN workers w ON w.id=t.worker_id WHERE t.mod_id=?1 ORDER BY t.id")?;
+        let mut statement = self.0.prepare("SELECT t.id,t.task_id,t.status,t.source,t.turn_id,t.summary,t.checks,t.worker_id,t.routing,t.repair,w.provider,t.assignment_reason,t.verification_feedback,t.review_feedback FROM task_runs t LEFT JOIN workers w ON w.id=t.worker_id WHERE t.mod_id=?1 ORDER BY t.id")?;
         let tasks = statement
             .query_map([mod_id], |row| {
                 let checks: String = row.get(6)?;
@@ -1364,6 +1379,7 @@ impl Store {
                             Box::new(error),
                         )
                     })?,
+                    review_feedback: row.get(13)?,
                     verification_feedback: serde_json::from_str(&row.get::<_, String>(12)?)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 })
@@ -1481,7 +1497,7 @@ impl Store {
     ) -> Result<()> {
         let transaction = self.0.transaction()?;
         let changed = transaction.execute(
-            "UPDATE task_runs SET status=?3,summary=?4,checks=?5,verification_feedback=CASE WHEN ?3='blocked' AND ?5!='[]' THEN ?5 WHEN ?3='done' THEN '[]' ELSE verification_feedback END WHERE mod_id=?1 AND source=?2",
+            "UPDATE task_runs SET status=?3,summary=?4,checks=?5,verification_feedback=CASE WHEN ?3='blocked' AND ?5!='[]' THEN ?5 WHEN ?3='done' THEN '[]' ELSE verification_feedback END,review_feedback=CASE WHEN ?3='done' THEN NULL ELSE review_feedback END WHERE mod_id=?1 AND source=?2",
             params![
                 mod_id,
                 source,

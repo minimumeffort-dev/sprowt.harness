@@ -106,6 +106,10 @@ impl App {
             })
             .collect::<BTreeMap<_, _>>();
         for code_mod in &mut state.mods {
+            if let Some(review) = &code_mod.agent_review {
+                store.review_status(code_mod.id, &review.source, "paused")?;
+                code_mod.agent_review = store.review_state(code_mod.id)?;
+            }
             if let Some(git) = git_states.get(&code_mod.id)
                 && git.published()
                 && let Some(url) = &git.pr
@@ -390,6 +394,12 @@ impl App {
                         KeyCode::PageUp => {
                             self.view = View::Review(scroll.saturating_sub(self.page_size))
                         }
+                        KeyCode::Char('r') if key.modifiers.is_empty() && self.version_ready() => {
+                            if let Some(index) = self.active {
+                                self.begin_agent_review(index)?;
+                            }
+                            self.view = View::Chat;
+                        }
                         KeyCode::Char('p') if key.modifiers.is_empty() && self.can_publish() => {
                             self.open_publication()?
                         }
@@ -547,6 +557,11 @@ impl App {
             KeyCode::Char('q') if ctrl => {}
             KeyCode::Char('r') if ctrl => self.toggle_worker()?,
             KeyCode::Char('d') if ctrl => self.open_review()?,
+            KeyCode::Char('e') if ctrl && self.version_ready() => {
+                if let Some(index) = self.active {
+                    self.begin_agent_review(index)?;
+                }
+            }
             KeyCode::Char('s') if ctrl && self.version_ready() => {
                 self.review = None;
                 self.publish_after_review = true;
@@ -1498,6 +1513,7 @@ impl App {
         };
         workers()
             .find(|worker| worker.role == Role::Planner && worker.enabled)
+            .or_else(|| workers().find(|worker| worker.role == Role::Reviewer && worker.busy()))
             .or_else(|| workers().find(|worker| worker.role == Role::Executor && worker.busy()))
             .or_else(|| {
                 workers().find(|worker| worker.role == Role::Executor && worker.error.is_some())
@@ -1585,6 +1601,18 @@ impl App {
         };
         let id = self.mods[active].id;
         if self.git_jobs.contains_key(&id) {
+            return Ok(());
+        }
+        if let Some(worker) = self
+            .workers
+            .values_mut()
+            .find(|w| w.mod_id == id && w.role == Role::Reviewer && (w.enabled || w.busy()))
+        {
+            worker.toggle();
+            if let Some(review) = &self.mods[active].agent_review {
+                self.store.review_status(id, &review.source, "paused")?;
+                self.mods[active].agent_review = self.store.review_state(id)?;
+            }
             return Ok(());
         }
         if self.update_errors.remove(&id)
@@ -1843,6 +1871,7 @@ impl App {
         self.mods[index].execution = self.store.execution(id)?;
         self.update_errors.remove(&id);
         self.notice = None;
+        self.maintain_reviews()?;
         self.maintain_updates()?;
         Ok(true)
     }
@@ -2205,6 +2234,100 @@ impl App {
         self.notice = None;
     }
 
+    fn begin_agent_review(&mut self, index: usize) -> Result<()> {
+        let code_mod = &self.mods[index];
+        if code_mod.closed
+            || !code_mod.queue.is_empty()
+            || !code_mod.steering.is_empty()
+            || self.git_jobs.contains_key(&code_mod.id)
+            || self
+                .workers
+                .values()
+                .any(|w| w.mod_id == code_mod.id && (w.enabled || w.busy()))
+        {
+            return Ok(());
+        }
+        let Some(execution) = code_mod
+            .execution
+            .as_ref()
+            .filter(|e| e.complete() && e.status == "review")
+        else {
+            return Ok(());
+        };
+        let fingerprint = workspace::review(&execution.workspace)
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+            .fingerprint;
+        if execution.fingerprint.as_deref() != Some(&fingerprint) {
+            self.store.execution_status(code_mod.id, "blocked")?;
+            self.mods[index].execution = self.store.execution(self.mods[index].id)?;
+            self.notice =
+                Some("Source changed after checks. Ctrl+R reruns checks before review.".into());
+            return Ok(());
+        }
+        self.store.begin_review(code_mod.id, &fingerprint)?;
+        let id = self.mods[index].id;
+        self.mods[index].agent_review = self.store.review_state(id)?;
+        let record = self.store.worker_provider(id, Role::Reviewer, 0, "codex")?;
+        self.start_worker_record(index, Role::Reviewer, record)
+    }
+
+    fn maintain_reviews(&mut self) -> Result<()> {
+        for index in 0..self.mods.len() {
+            let code_mod = &self.mods[index];
+            let Some(review) = code_mod.agent_review.as_ref() else {
+                continue;
+            };
+            let id = code_mod.id;
+            if code_mod.closed || self.git_jobs.contains_key(&id) {
+                continue;
+            }
+            let same_plan = code_mod
+                .planning
+                .as_ref()
+                .is_some_and(|p| p.source == review.plan_source);
+            let stale = !same_plan
+                || !code_mod.queue.is_empty()
+                || !code_mod.steering.is_empty()
+                || (review.status != "fixing" && !review.current(code_mod));
+            if stale && review.status != "stale" {
+                self.store
+                    .0
+                    .execute("UPDATE reviews SET status='stale' WHERE mod_id=?1", [id])?;
+                self.mods[index].agent_review = self.store.review_state(id)?;
+                for worker in self
+                    .workers
+                    .values_mut()
+                    .filter(|w| w.mod_id == id && w.role == Role::Reviewer && w.enabled)
+                {
+                    worker.toggle();
+                }
+                continue;
+            }
+            if self
+                .workers
+                .values()
+                .any(|w| w.mod_id == id && (w.enabled || w.busy()))
+            {
+                continue;
+            }
+            if review.status == "findings" {
+                if self.store.review_fixes(code_mod)? {
+                    self.mods[index].execution = self.store.execution(id)?;
+                    self.executing_mods.insert(id);
+                }
+                self.mods[index].agent_review = self.store.review_state(id)?;
+            } else if review.status == "fixing"
+                && code_mod
+                    .execution
+                    .as_ref()
+                    .is_some_and(|e| e.complete() && e.status == "review")
+            {
+                self.begin_agent_review(index)?;
+            }
+        }
+        Ok(())
+    }
+
     fn poll_workers(&mut self) -> Result<()> {
         self.refresh_network_requests()?;
         self.poll_git_jobs()?;
@@ -2266,7 +2389,7 @@ impl App {
                 &mut self.store,
                 code_mod,
                 editing_mod != Some(code_mod.id)
-                    && (worker.role == Role::Planner
+                    && (worker.role != Role::Executor
                         || self.executing_mods.contains(&code_mod.id) && worker.enabled)
                     && deleting_mod != Some(code_mod.id)
                     && reviewing_mod != Some(code_mod.id)
@@ -2287,6 +2410,7 @@ impl App {
             self.auto_runs.remove(&self.mods[index].id);
             self.start_execution(index)?;
         }
+        self.maintain_reviews()?;
         self.maintain_updates()?;
         let edits = self
             .mods
@@ -3929,6 +4053,200 @@ mod tests {
         }));
         crate::sandbox::delete(&root).unwrap();
         if let Err(error) = outcome {
+            std::panic::resume_unwind(error);
+        }
+    }
+
+    #[test]
+    fn review_status_is_compact_details_are_explicit_and_edits_invalidate_it() {
+        let (data, mut store, mut m, _plan) = crate::review::tests::fixture();
+        store
+            .begin_review(
+                m.id,
+                m.execution.as_ref().unwrap().fingerprint.as_ref().unwrap(),
+            )
+            .unwrap();
+        m.agent_review = store.review_state(m.id).unwrap();
+        let source = m.agent_review.as_ref().unwrap().source.clone();
+        store.finish_review(&m,&source,r#"{"status":"clean","summary":"Inspected greeting and usage; no findings.","findings":[]}"#).unwrap();
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        app.input.insert_str("keep draft");
+        let compact = rows(&screen(&mut app, 120, 36)).join("\n");
+        assert!(compact.contains("request review") && compact.contains("review passed"));
+        assert!(!compact.contains("Inspected greeting"));
+        app.plan_details = true;
+        let expanded = rows(&screen(&mut app, 120, 36)).join("\n");
+        assert!(expanded.contains("Inspected greeting"));
+        assert_eq!(app.input.lines().join("\n"), "keep draft");
+        let id = app.mods[0].id;
+        app.mods[0]
+            .queue
+            .push(app.store.enqueue(id, "Request changes").unwrap());
+        app.maintain_reviews().unwrap();
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().status, "stale");
+        assert!(
+            rows(&screen(&mut app, 120, 36))
+                .join("\n")
+                .contains("review outdated")
+        );
+    }
+
+    #[test]
+    fn stopping_a_review_before_dispatch_preserves_ready_changes_and_draft() {
+        let (data, store, _, _) = crate::review::tests::fixture();
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        let id = app.mods[0].id;
+        let fingerprint = app.mods[0]
+            .execution
+            .as_ref()
+            .unwrap()
+            .fingerprint
+            .clone()
+            .unwrap();
+        app.store.begin_review(id, &fingerprint).unwrap();
+        app.mods[0].agent_review = app.store.review_state(id).unwrap();
+        let record = app.store.worker_for(id, Role::Reviewer).unwrap();
+        let mut worker =
+            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        worker.role = Role::Reviewer;
+        worker.status = Status::Ready;
+        app.workers.insert(worker.id, worker);
+        app.input.insert_str("keep draft");
+        app.toggle_worker().unwrap();
+        assert!(app.workers.values().all(|w| !w.enabled));
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().status, "paused");
+        assert!(app.mods[0].execution.as_ref().unwrap().complete());
+        assert!(app.version_ready());
+        assert_eq!(app.input.lines().join("\n"), "keep draft");
+    }
+
+    #[test]
+    #[ignore = "Reviews a seeded bug, repairs its owner and reviews again in a disposable VM"]
+    fn independent_review_repairs_a_seeded_bug_and_rechecks_in_vm() {
+        use std::sync::atomic::AtomicBool;
+        let (data, mut store, m, plan) = crate::review::tests::fixture();
+        let root = m.execution.as_ref().unwrap().workspace.clone();
+        let project = data.0.join("project");
+        let original = workspace::source_state(&project).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let flag = AtomicBool::new(false);
+            let mut vm =
+                crate::sandbox::Sandbox::prepare(&root, &flag, |label| eprintln!("{label}"))
+                    .unwrap();
+            let runs = m.execution.as_ref().unwrap().tasks.clone();
+            vm.prepare_tasks(&runs.iter().map(|r| r.id).collect::<Vec<_>>(), &flag)
+                .unwrap();
+            let mut final_checks = Vec::new();
+            for run in &runs {
+                vm.assign_task(run.id, run.worker.unwrap(), &flag).unwrap();
+                let checks: Vec<_> = run
+                    .checks
+                    .iter()
+                    .map(|r| crate::execution::Check {
+                        task: Some(run.id),
+                        check: r.check.clone(),
+                        command: r.command.clone(),
+                    })
+                    .collect();
+                let (_, results) = vm.verify_execution(&run.source, &checks, &flag).unwrap();
+                assert!(results.iter().all(|r| r.exit_code == Some(0)));
+                store
+                    .finish_task(m.id, &run.source, "done", "Smoke checks pass", &results)
+                    .unwrap();
+                final_checks.extend(checks);
+            }
+            let (_, checks) = vm
+                .verify_execution(&format!("final:{}", m.id), &final_checks, &flag)
+                .unwrap();
+            assert!(checks.iter().all(|r| r.exit_code == Some(0)));
+            let fingerprint = workspace::review(&root).unwrap().fingerprint;
+            store
+                .execution_checks(m.id, "review", &checks, Some(&fingerprint))
+                .unwrap();
+            store
+                .0
+                .execute(
+                    "UPDATE executions SET backend='apple-container' WHERE mod_id=?1",
+                    [m.id],
+                )
+                .unwrap();
+            drop(vm);
+            let mut app = App::load(project.clone(), false, store).unwrap();
+            app.begin_agent_review(0).unwrap();
+            let mut saw_fix = false;
+            let mut previous = String::new();
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(360) {
+                app.poll_workers().unwrap();
+                let state = app.mods[0].agent_review.as_ref().unwrap();
+                saw_fix |= state.status == "fixing";
+                if previous != state.status {
+                    eprintln!(
+                        "Review: {} · {}",
+                        state.status,
+                        state.report.as_ref().map_or("", |r| r.summary.as_str())
+                    );
+                    previous = state.status.clone();
+                }
+                if state.status == "clean"
+                    || state.status == "blocked"
+                    || state.status == "findings" && state.rounds >= 2
+                {
+                    break;
+                }
+                assert!(
+                    app.workers.values().all(|w| w.status != Status::Failed),
+                    "{}",
+                    app.worker_error().unwrap_or("")
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let state = app.mods[0].agent_review.as_ref().unwrap();
+            assert!(
+                saw_fix,
+                "Review did not identify the seeded defect: {} · {}",
+                state.status,
+                state.report.as_ref().map_or_else(
+                    || app.worker_error().unwrap_or("").to_owned(),
+                    |r| r.summary.clone()
+                )
+            );
+            assert_eq!(
+                state.status,
+                "clean",
+                "{}",
+                state.report.as_ref().map_or_else(
+                    || app.worker_error().unwrap_or("").to_owned(),
+                    |r| r.summary.clone()
+                )
+            );
+            let execution = app.mods[0].execution.as_ref().unwrap();
+            assert!(
+                execution.complete() && execution.checks.iter().all(|r| r.exit_code == Some(0))
+            );
+            assert_eq!(execution.tasks[0].worker, runs[0].worker);
+            assert_eq!(
+                app.mods[0]
+                    .planning
+                    .as_ref()
+                    .unwrap()
+                    .plan
+                    .as_ref()
+                    .unwrap()
+                    .tasks[0]
+                    .files,
+                plan.tasks[0].files
+            );
+            let source = std::fs::read_to_string(root.join("work/greet.sh")).unwrap();
+            assert!(source.contains("exit") || source.contains("return"));
+            assert_eq!(workspace::source_state(&project).unwrap(), original);
+            app.workers.clear();
+            eprintln!(
+                "Independent reviewer found the bug; its owner repaired it, checks and fresh review passed."
+            );
+        }));
+        crate::sandbox::delete(&root).unwrap();
+        if let Err(error) = result {
             std::panic::resume_unwind(error);
         }
     }

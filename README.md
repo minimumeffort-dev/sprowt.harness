@@ -14,16 +14,17 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Planning and routing](docs/planning.md): describe the outcome. Astra xhigh defines tasks and contracts. Rust balances Codex and Muse; Jev chooses Sol 6.1 effort.
 - [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
 - [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders, independent checks, one recovery attempt and repair handoffs.
+- [Independent review](docs/review.md): a fresh Sol 6.1 xhigh reviewer inspects the combined result, returns defects to their owners and reviews verified fixes.
 - [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Workers choose runtimes and dependencies, request OS packages and ask you to approve blocked download domains.
-- [Workers and isolation](docs/workers.md): Codex planning and separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
+- [Workers and isolation](docs/workers.md): Codex planning and review, with separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup and VM package setup, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
 - [Terminal and companion](docs/terminal.md): compact results, separate plan details and worker history, task spinners and a Sprowt pet that reacts to work.
 
 ### Current limits
 
-The planner uses a read-only host sandbox. Execution uses a Linux VM; PR publication needs your confirmation. Downloads use a host-controlled domain allowlist; extra access needs your approval for that codemod. iOS and macOS builds need a later macOS VM backend. Existing snapshot mods can be adopted into Git.
+The planner uses a read-only host sandbox. Execution and independent review use a Linux VM; PR publication needs your confirmation. Downloads use a host-controlled domain allowlist; extra access needs your approval for that codemod. iOS and macOS builds need a later macOS VM backend. Existing snapshot mods can be adopted into Git.
 
 Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
 
@@ -31,7 +32,7 @@ Startup detects Codex and Muse from your installed CLIs and account logins. Muse
 
 ## Architecture today
 
-Rust owns the interface, scheduling, workers, task mailboxes and saved state. Startup checks the available agents. Astra defines the work; Rust assigns ready tasks to the least loaded suitable provider. A shared tool dispatcher validates operations and routes them to host or VM adapters. Codex plans; Codex and Muse execute. Jev evaluates task difficulty and risk through a host-only API adapter.
+Rust owns the interface, scheduling, workers, task mailboxes and saved state. Startup checks the available agents. Astra defines the work; Rust assigns ready tasks to the least loaded suitable provider. A shared tool dispatcher validates operations and routes them to host or VM adapters. Codex plans and reviews; Codex and Muse execute. Jev evaluates task difficulty and risk through a host-only API adapter.
 
 ```mermaid
 flowchart TB
@@ -49,6 +50,9 @@ flowchart TB
     repair --> schedule
     ready --> edits["Send edits · plan the next round"]
     edits --> planner
+    ready -->|"Optional review"| reviewer["Sol 6.1 xhigh · inspect combined source"]
+    reviewer -->|"Findings"| repair
+    reviewer -->|"No findings"| publish
     ready --> publish["Confirm publish · create or update PR"]
     publish --> ready
     upstream["Another PR merges"] --> update["Save checkpoint · combine latest target branch"]
@@ -115,10 +119,10 @@ Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth lo
 1. Describe a codemod and press **Enter**. Confirm Git setup if offered. Planning and execution start automatically.
 2. Workers prepare a first version. **Ctrl+O** expands plan details; **Ctrl+R** stops or retries work.
 3. Send a message to request edits. Messages sent during work wait for the next round; the queue also supports steering.
-4. **Ctrl+D** reviews the diff. **Ctrl+S** starts publication; confirm the GitHub destination if needed, then the PR. Keep editing afterward to update the same PR.
+4. **Ctrl+E** requests an independent review and scoped fixes. **Ctrl+D** opens the diff. **Ctrl+S** starts publication; confirm the GitHub destination if needed, then the PR. Keep editing afterward to update the same PR.
 5. In **Ctrl+P**, **c** closes with a checkpoint, **Tab** shows closed mods, **r** reopens and **d** deletes local data.
 
-Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. A review worker comes later.
+Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. Review fix rounds are capped at two per plan.
 
 ### Jev routing
 
@@ -140,6 +144,7 @@ Setup saves the key in private local configuration, so the installed harness can
 | Ctrl+Q | Open the queue |
 | Ctrl+R | Run, stop, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
+| Ctrl+E | Request independent review of the finished version |
 | Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide plan details |
 | Ctrl+T | Open worker history; Esc returns |
@@ -153,7 +158,7 @@ Dialog actions and steering are covered in [Codemods and messages](docs/codemods
 
 ## Local data
 
-Mods, plans, task progress, check results, conversations, queues and drafts save automatically in SQLite. Worktrees and source exports live beside the database. On macOS:
+Mods, plans, task progress, check results, reviews, conversations, queues and drafts save automatically in SQLite. Worktrees and source exports live beside the database. On macOS:
 
 ```text
 ~/Library/Application Support/sprowt-harness/state.db
@@ -165,7 +170,7 @@ Git ignores local environment files, credentials, logs and databases. Use placeh
 
 ## What’s next
 
-Login refresh and review workers. Shared context, memory, external MCPs and skills follow in small batches.
+Login refresh, shared context, memory, external MCPs and skills follow in small batches.
 
 ## Development
 

@@ -39,7 +39,7 @@ flowchart TB
 | `read_worker_messages` | Executor | Read its mailbox, live assignments and relevant peer scopes and topics |
 | `ack_worker_messages` | Executor | Acknowledge its inbox messages |
 
-Package installation, network requests and [worker messaging](coordination.md) are advertised to executors using JSON input schemas; Muse receives them through the guest MCP bridge. Unknown tools, host Git operations requested by workers and these tools requested by planners are rejected. JSON and typed Rust calls share input validation. The VM workspace must match the one bound to that worker. Mailboxes and network requests use its host-bound database, codemod and current task assignment; arguments cannot choose them.
+Package installation, network requests and [worker messaging](coordination.md) are advertised to executors using JSON input schemas; Muse receives them through the guest MCP bridge. Unknown tools, host Git operations requested by workers and these tools requested by planners or reviewers are rejected. JSON and typed Rust calls share input validation. The VM workspace must match the one bound to that worker. Mailboxes and network requests use its host-bound database, codemod and current task assignment; arguments cannot choose them.
 
 Network requests accept 1–8 exact public hostnames and a short reason. URLs, ports, IPs, wildcards and control characters are rejected. The tool records a request; only the host UI can approve or deny it. Approval is scoped to one codemod and reconnects the requesting worker after its turn stops. Saved files and other workers stay. See [Downloads](sandbox.md#downloads).
 

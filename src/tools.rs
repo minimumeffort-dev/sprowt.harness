@@ -179,7 +179,7 @@ impl Context {
                 .map_or_else(Vec::new, |e| e.tasks.iter().map(|t| t.id).collect()),
             mod_id: Some(code_mod.id),
             worker: Some((id, role)),
-            root: if role == Role::Executor {
+            root: if role != Role::Planner {
                 code_mod
                     .execution
                     .as_ref()
@@ -194,6 +194,10 @@ impl Context {
         }
     }
 
+    pub fn is_executor(&self) -> bool {
+        self.worker.is_some_and(|(_, role)| role == Role::Executor)
+    }
+
     pub fn worker_id(&self) -> i64 {
         self.worker.map_or(0, |(id, _)| id)
     }
@@ -205,7 +209,7 @@ impl Context {
 
     pub fn workspace(&self) -> Option<&Path> {
         self.worker
-            .filter(|(_, role)| *role == Role::Executor)
+            .filter(|(_, role)| *role != Role::Planner)
             .and(self.root.as_deref())
     }
 
@@ -764,15 +768,17 @@ mod tests {
             log.iter()
                 .all(|entry| entry["worker_id"] == 9 && entry["mod_id"] == json!(context.mod_id))
         );
-        let planner = worker_context(&context, Role::Planner);
-        assert!(advertised(&planner).is_empty());
-        assert_eq!(
-            Dispatcher::new(&planner, None, &flag)
-                .worker_call(packages::TOOL, json!({}), |_| {})
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
+        for role in [Role::Planner, Role::Reviewer] {
+            let reader = worker_context(&context, role);
+            assert!(advertised(&reader).is_empty());
+            assert_eq!(
+                Dispatcher::new(&reader, None, &flag)
+                    .worker_call(packages::TOOL, json!({}), |_| {})
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::PermissionDenied
+            );
+        }
     }
 
     #[test]

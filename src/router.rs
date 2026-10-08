@@ -32,6 +32,15 @@ impl Selection {
         }
     }
 
+    pub fn reviewer() -> Self {
+        Self {
+            model: "gpt-6.1-sol".into(),
+            effort: "xhigh".into(),
+            reason: "Independent review".into(),
+            evidence: None,
+        }
+    }
+
     pub fn fallback(reason: &str) -> Self {
         Self {
             model: "gpt-6.1-sol".into(),

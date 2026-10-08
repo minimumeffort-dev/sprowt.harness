@@ -100,6 +100,7 @@ Restart the harness after upgrading, then use **Ctrl+R** to retry a blocked task
 - No host folders, login files, SSH agent, service sockets or ports are mounted or forwarded.
 - Codex’s guest sandbox keeps system files read-only for normal worker commands and forces network traffic through its domain proxy. The harness’s package installer uses a separate writable setup command in the VM. Direct connections and private network destinations are blocked. Guest loopback is available for local app checks.
 - Each task writes only its assigned worktree, its own runtime home and temporary files. The harness owns the combined source and guest Git metadata; task workers cannot commit or merge.
+- The independent reviewer reads combined source in the same VM. Only its own home and `/tmp` are writable; source stays read-only and network access is disabled. It has no harness tools.
 - Source exports preserve regular files, modes and deletions. Dependency folders and common credential files are excluded. Links and special files are rejected. Exports are limited to 512 MiB, with 64 MiB per source file.
 
 The planner inspects the mod worktree through a read-only host OS sandbox. Legacy mods inspect the project. Host MCPs, apps, plugins and hooks stay disabled. VM execution needs a file-backed ChatGPT login; Keychain-only login is unsupported.

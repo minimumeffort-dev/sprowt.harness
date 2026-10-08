@@ -81,30 +81,38 @@ impl Worker {
         let mut context = Context::worker(code_mod, record.id, role).with_mailbox(&record.database);
         context.provider = record.provider.clone();
         context.muse = muse;
-        let client = if role == Role::Executor {
+        let client = if role != Role::Planner {
             Some(Client::start(
                 project,
-                record.thread_id.clone().map(|id| Resume {
-                    id,
-                    accepted_instructions: code_mod
-                        .messages
-                        .iter()
-                        .filter(|message| message.role == "user")
-                        .map(|message| message.body.clone())
-                        .collect(),
-                    restart_if_missing: record.pending.is_none()
-                        && code_mod.execution.as_ref().is_none_or(|execution| {
-                            !execution.tasks.iter().any(|run| {
-                                run.worker == Some(record.id)
-                                    && ["sending", "running", "checking"]
-                                        .contains(&run.status.as_str())
-                            })
-                        }),
-                }),
+                record
+                    .thread_id
+                    .clone()
+                    .filter(|_| role != Role::Reviewer)
+                    .map(|id| Resume {
+                        id,
+                        accepted_instructions: code_mod
+                            .messages
+                            .iter()
+                            .filter(|message| message.role == "user")
+                            .map(|message| message.body.clone())
+                            .collect(),
+                        restart_if_missing: record.pending.is_none()
+                            && code_mod.execution.as_ref().is_none_or(|execution| {
+                                !execution.tasks.iter().any(|run| {
+                                    run.worker == Some(record.id)
+                                        && ["sending", "running", "checking"]
+                                            .contains(&run.status.as_str())
+                                })
+                            }),
+                    }),
                 role,
                 &code_mod.description,
                 code_mod.planning.as_ref().and_then(|p| p.plan.as_ref()),
-                None,
+                if role == Role::Reviewer {
+                    Some(Selection::reviewer())
+                } else {
+                    None
+                },
                 context,
             )?)
         } else {
@@ -136,7 +144,7 @@ impl Worker {
             task_report: None,
             task_mail: false,
             task_summary: String::new(),
-            writable: workspace.is_some(),
+            writable: workspace.is_some() && role == Role::Executor,
             verification: Vec::new(),
             verify_before: None,
             preparing: None,
@@ -159,6 +167,7 @@ impl Worker {
         let state = match self.status {
             Status::Routing => "choosing model",
             Status::Complete if self.role == Role::Planner => "plan ready",
+            Status::Complete if self.role == Role::Reviewer => "review finished",
             Status::Complete => "changes ready",
             Status::Checking => "checking",
             Status::Connecting => self.preparing.as_deref().unwrap_or("connecting"),
@@ -189,7 +198,9 @@ impl Worker {
                 .as_deref()
                 .or_else(|| self.model.as_ref().map(|_| "effort unknown"))
                 .map_or(String::new(), |effort| format!(" · {effort}")),
-            if self.writable {
+            if self.role == Role::Reviewer {
+                "read-only · Linux VM"
+            } else if self.writable {
                 "Linux VM"
             } else {
                 "read-only"
@@ -201,7 +212,7 @@ impl Worker {
         if self.enabled {
             self.enabled = false;
             if self.status == Status::Checking
-                || (self.writable && self.status == Status::Connecting)
+                || (self.role != Role::Planner && self.status == Status::Connecting)
             {
                 self.client.as_ref().unwrap().cancel_checks();
             }
@@ -278,6 +289,44 @@ impl Worker {
             .unwrap_or_default();
         for event in events {
             self.receive(event, store, code_mod)?;
+        }
+        if self.role == Role::Reviewer {
+            if dispatch && self.enabled && self.status == Status::Ready && self.pending.is_none() {
+                if let Some(input) = store.review_input(code_mod)? {
+                    store.pending(self.id, Some(&input.source))?;
+                    self.task_source = Some(input.source.clone());
+                    self.task_report = None;
+                    let action = Action::Run {
+                        source: input.source.clone(),
+                        text: input.texts.join("\n\n"),
+                        routing: code_mod
+                            .planning
+                            .as_ref()
+                            .and_then(|p| p.plan.as_ref())
+                            .map(|p| serde_json::to_value(p).unwrap()),
+                    };
+                    self.pending = Some(input);
+                    self.status = Status::Starting;
+                    if let Err(error) = self.client.as_ref().unwrap().send(action) {
+                        store.review_status(
+                            self.mod_id,
+                            &self.task_source.clone().unwrap(),
+                            "blocked",
+                        )?;
+                        store.pending(self.id, None)?;
+                        code_mod.agent_review = store.review_state(self.mod_id)?;
+                        self.fail(error.to_string());
+                    }
+                } else {
+                    if let Some(review) = &code_mod.agent_review {
+                        store.review_status(self.mod_id, &review.source, "stale")?;
+                    }
+                    code_mod.agent_review = store.review_state(self.mod_id)?;
+                    self.enabled = false;
+                    self.status = Status::Complete;
+                }
+            }
+            return Ok(());
         }
         if dispatch
             && self.role == Role::Executor
@@ -426,6 +475,7 @@ impl Worker {
         state["previous_result"] = serde_json::json!({"summary":run.summary,"checks":run.checks});
         state["verification_feedback"] = serde_json::json!(run.verification_feedback);
         state["repair"] = serde_json::json!(run.repair);
+        state["review_fix"] = serde_json::json!(run.review_feedback.is_some());
         Some(state)
     }
 
@@ -441,8 +491,10 @@ impl Worker {
             }
             Event::Preparing(label) => self.preparing = (!label.is_empty()).then_some(label),
             Event::Configured(selection) => {
-                store.planning_model(self.mod_id, &selection)?;
-                code_mod.planning = store.planning(self.mod_id)?;
+                if self.role == Role::Planner {
+                    store.planning_model(self.mod_id, &selection)?;
+                    code_mod.planning = store.planning(self.mod_id)?;
+                }
                 self.selection = Some(selection);
             }
             Event::TaskConfigured { source, selection } => {
@@ -606,6 +658,10 @@ impl Worker {
                     )?;
                     return Ok(());
                 }
+                if self.role == Role::Reviewer {
+                    store.review_status(self.mod_id, &source, "blocked")?;
+                    code_mod.agent_review = store.review_state(self.mod_id)?;
+                }
                 self.enabled = false;
                 self.error = Some(message);
                 if self.turn.is_none() {
@@ -625,6 +681,13 @@ impl Worker {
                     client.shutdown();
                 }
                 self.fail(message);
+                if self.role == Role::Reviewer {
+                    if let Some(review) = &code_mod.agent_review {
+                        store.review_status(self.mod_id, &review.source, "blocked")?;
+                    }
+                    code_mod.agent_review = store.review_state(self.mod_id)?;
+                    return Ok(());
+                }
                 if self.role == Role::Planner {
                     store.planning_status(self.mod_id, "failed")?;
                     code_mod.planning = store.planning(self.mod_id)?;
@@ -803,6 +866,13 @@ impl Worker {
                     "turn/completed" if self.turn.as_deref() == params["turn"]["id"].as_str() => {
                         self.turn = None;
                         self.status = Status::Ready;
+                        if self.role == Role::Reviewer {
+                            self.complete_review(
+                                store,
+                                code_mod,
+                                params["turn"]["status"] == "completed",
+                            )?;
+                        }
                         if self.role == Role::Planner {
                             if params["turn"]["status"] == "completed" {
                                 self.complete_plan(store, code_mod)?;
@@ -851,6 +921,12 @@ impl Worker {
         code_mod: &mut CodeMod,
         input: &Submission,
     ) -> rusqlite::Result<()> {
+        if self.role == Role::Reviewer {
+            store.pending(self.id, None)?;
+            store.review_status(self.mod_id, &input.source, "running")?;
+            code_mod.agent_review = store.review_state(self.mod_id)?;
+            return Ok(());
+        }
         store.acknowledge(self.id, input)?;
         if input.source.starts_with("00000005-") {
             code_mod.coordination = store.mailbox(self.mod_id)?;
@@ -904,6 +980,15 @@ impl Worker {
         item: &Value,
         historical: bool,
     ) -> rusqlite::Result<()> {
+        if self.role == Role::Reviewer {
+            if item["type"] == "userMessage" {
+                return Ok(());
+            }
+            if item["type"] == "agentMessage" && item["phase"] != "commentary" {
+                self.task_report = item["text"].as_str().map(str::to_owned);
+                return Ok(());
+            }
+        }
         if self.role == Role::Executor
             && self.task_source.is_some()
             && item["type"] == "userMessage"
@@ -959,6 +1044,8 @@ impl Worker {
             Some("agentMessage") => (
                 if self.role == Role::Planner {
                     "planner"
+                } else if self.role == Role::Reviewer {
+                    "reviewer"
                 } else {
                     "codex"
                 },
@@ -1005,6 +1092,59 @@ impl Worker {
                 },
             },
         )
+    }
+
+    fn complete_review(
+        &mut self,
+        store: &mut Store,
+        code_mod: &mut CodeMod,
+        completed: bool,
+    ) -> rusqlite::Result<()> {
+        if let Some(source) = self.task_source.take() {
+            if completed {
+                store.finish_review(
+                    code_mod,
+                    &source,
+                    self.task_report.as_deref().unwrap_or(""),
+                )?;
+            } else {
+                store.review_status(self.mod_id, &source, "paused")?;
+            }
+            code_mod.agent_review = store.review_state(self.mod_id)?;
+            let review = code_mod.agent_review.as_ref().unwrap();
+            if review.source != source {
+                self.enabled = false;
+                self.status = Status::Complete;
+                return Ok(());
+            }
+            let body = review.report.as_ref().map_or_else(
+                || review.label(),
+                |r| {
+                    let mut text = format!("{}\n{}", review.label(), r.summary);
+                    for f in &r.findings {
+                        text.push_str(&format!(
+                            "\n{} · {} · {}:{}\n{}\nFix: {}",
+                            f.priority, f.title, f.file, f.line, f.evidence, f.fix
+                        ));
+                    }
+                    text
+                },
+            );
+            save_message(
+                store,
+                code_mod,
+                Message {
+                    item_id: Some(format!("review:{source}")),
+                    role: "reviewer".into(),
+                    body,
+                    model: self.model.clone(),
+                    effort: self.effort.clone(),
+                },
+            )?;
+        }
+        self.enabled = false;
+        self.status = Status::Complete;
+        Ok(())
     }
 
     fn complete_plan(&mut self, store: &mut Store, code_mod: &mut CodeMod) -> rusqlite::Result<()> {
@@ -1664,6 +1804,41 @@ mod tests {
         )
         .unwrap();
         (data, store, code_mod, worker)
+    }
+
+    #[test]
+    fn review_completion_preserves_execution_and_cannot_relabel_a_newer_review() {
+        let (data, mut store, mut m, _) = crate::review::tests::fixture();
+        let fingerprint = m.execution.as_ref().unwrap().fingerprint.clone().unwrap();
+        let checks = serde_json::to_string(&m.execution.as_ref().unwrap().checks).unwrap();
+        store.begin_review(m.id, &fingerprint).unwrap();
+        let old = store.review_state(m.id).unwrap().unwrap().source;
+        let record = store.worker_for(m.id, Role::Reviewer).unwrap();
+        let mut worker =
+            Worker::start(&data.0.join("project"), &m, record, Role::Planner, None).unwrap();
+        worker.role = Role::Reviewer;
+        worker.task_source = Some(old);
+        worker.task_report =
+            Some(r#"{"status":"clean","summary":"Inspected source.","findings":[]}"#.into());
+        store.begin_review(m.id, &fingerprint).unwrap();
+        m.agent_review = store.review_state(m.id).unwrap();
+        let current = m.agent_review.as_ref().unwrap().source.clone();
+        worker.complete_review(&mut store, &mut m, true).unwrap();
+        assert_eq!(m.agent_review.as_ref().unwrap().status, "pending");
+        assert!(!m.messages.iter().any(|m| m.role == "reviewer"));
+        worker.task_source = Some(current.clone());
+        worker.complete_review(&mut store, &mut m, false).unwrap();
+        assert_eq!(m.agent_review.as_ref().unwrap().status, "paused");
+        assert!(m.has_worker_history());
+        store.begin_review(m.id, &fingerprint).unwrap();
+        m.agent_review = store.review_state(m.id).unwrap();
+        worker.task_source = Some(m.agent_review.as_ref().unwrap().source.clone());
+        worker.complete_review(&mut store, &mut m, true).unwrap();
+        assert_eq!(m.agent_review.as_ref().unwrap().status, "clean");
+        let execution = store.execution(m.id).unwrap().unwrap();
+        assert!(execution.complete());
+        assert_eq!(execution.fingerprint.as_deref(), Some(fingerprint.as_str()));
+        assert_eq!(serde_json::to_string(&execution.checks).unwrap(), checks);
     }
 
     #[test]

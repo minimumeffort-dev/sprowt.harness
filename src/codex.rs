@@ -192,6 +192,13 @@ impl Client {
                         })
                     })
                     .transpose()?;
+                if role == Role::Reviewer
+                    && let Some(vm) = &vm
+                {
+                    vm.lock()
+                        .unwrap()
+                        .prepare_reviewer(context.worker_id(), &stopped)?;
+                }
                 *shared.lock().unwrap() = vm.clone();
                 if stopped.load(Ordering::Relaxed) {
                     return Err(io::Error::new(
@@ -210,7 +217,9 @@ impl Client {
                         &outgoing,
                     );
                 }
-                let permissions = if vm.is_some() {
+                let permissions = if role == Role::Reviewer {
+                    "sprowt_review"
+                } else if vm.is_some() {
                     "sprowt_vm"
                 } else {
                     "sprowt_readonly"
@@ -476,7 +485,9 @@ fn flush(
             stop_terminals(rpc, thread)?;
             let mut vm = vm.lock().unwrap();
             vm.tasks.active = task;
-            vm.export(&AtomicBool::new(false))?;
+            if context.is_executor() {
+                vm.export(&AtomicBool::new(false))?;
+            }
         }
         let _ = outgoing.send(Event::Notification(message));
     }
@@ -567,6 +578,15 @@ fn serve(
     let selection = selection
         .map(|selection| resolve_model(&catalog, selection))
         .transpose()?;
+    if role == Role::Reviewer
+        && selection
+            .as_ref()
+            .is_none_or(|s| s.model != "gpt-6.1-sol" || s.effort != "xhigh")
+    {
+        return Err(io::Error::other(
+            "Review requires Sol 6.1 with xhigh effort in the Codex model catalog.",
+        ));
+    }
     if let Some(selection) = &selection {
         overrides.insert("model_reasoning_effort".into(), json!(selection.effort));
         let _ = outgoing.send(Event::Configured(selection.clone()));
@@ -708,9 +728,9 @@ fn serve(
                     }
                     if source.starts_with("00000004-") {
                         let report_schema = crate::execution::task_schema(routing.as_ref());
-                        let repair = routing
-                            .as_ref()
-                            .is_some_and(|state| !state["repair"].is_null());
+                        let repair = routing.as_ref().is_some_and(|state| {
+                            !state["repair"].is_null() || state["review_fix"] == true
+                        });
                         let _ = outgoing.send(Event::Preparing("choosing task model".into()));
                         let chosen = match (&router, routing) {
                             (Some(Ok(router)), Some(state)) => router.route(state),
@@ -746,6 +766,19 @@ fn serve(
                         params["environments"] =
                             json!([{"environmentId":"vm","cwd":vm.task_folder()}]);
                         params["outputSchema"] = report_schema;
+                    } else if role == Role::Reviewer {
+                        let owners: Vec<String> = routing
+                            .as_ref()
+                            .and_then(|p| p["tasks"].as_array())
+                            .ok_or_else(|| {
+                                io::Error::other("Review requires the current plan's file owners.")
+                            })?
+                            .iter()
+                            .filter_map(|t| t["id"].as_str().map(str::to_owned))
+                            .collect();
+                        params["outputSchema"] = crate::review::schema(&owners);
+                        params["environments"] =
+                            json!([{ "environmentId":"vm", "cwd":"/workspace" }]);
                     } else if vm.is_some() {
                         return Err(io::Error::other(
                             "Execution requires an assigned task worktree.",
@@ -774,7 +807,9 @@ fn serve(
                             rpc.call("turn/interrupt", json!({"threadId":thread,"turnId":turn}));
                     }
                     stop_terminals(rpc, &thread)?;
-                    if let Some(vm) = &mut vm {
+                    if context.is_executor()
+                        && let Some(vm) = &mut vm
+                    {
                         let mut vm = vm.lock().unwrap();
                         vm.tasks.active = task;
                         vm.export(&AtomicBool::new(false))?;
