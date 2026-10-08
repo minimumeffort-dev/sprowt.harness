@@ -37,17 +37,12 @@ fn state_style(state: &str) -> Style {
 pub(super) fn draw_tasks(frame: &mut Frame, app: &mut App, selected: usize, area: Rect) {
     let ids = app.task_ids();
     let selected = selected.min(ids.len().saturating_sub(1));
-    let inner = panel(
-        frame,
-        area,
-        format!("tasks ({})", ids.len()),
-        &[
-            ("↑↓", "select"),
-            ("↵", "inspect"),
-            ("h", "all history"),
-            ("esc", "back"),
-        ],
-    );
+    let mut keys = vec![("↑↓", "select"), ("↵", "inspect")];
+    if ids.get(selected).is_some_and(|id| app.can_retry_task(*id)) {
+        keys.push(("r", "retry task"));
+    }
+    keys.extend([("h", "all history"), ("esc", "back")]);
+    let inner = panel(frame, area, format!("tasks ({})", ids.len()), &keys);
     let items: Vec<_> = ids
         .iter()
         .filter_map(|id| app.inspect_task(*id))
@@ -92,9 +87,15 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
     };
     let mut keys = vec![("↑↓", "scroll"), ("h", "task history")];
     let actions = app.action_dock();
+    let retry_task = app.can_retry_task(id);
+    if retry_task {
+        keys.push(("ctrl+r", "retry task"));
+    }
     for action in &actions.actions {
         match action.action {
-            Action::Run | Action::Retry => keys.push(("ctrl+r", action.label.as_str())),
+            Action::Run | Action::Retry if !retry_task => {
+                keys.push(("ctrl+r", action.label.as_str()))
+            }
             Action::RetryGit => keys.push(("ctrl+r", action.label.as_str())),
             Action::Network => keys.push(("ctrl+n", "review domains")),
             _ => {}

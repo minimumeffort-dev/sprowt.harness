@@ -1600,6 +1600,28 @@ impl Store {
         Ok(true)
     }
 
+    pub fn retry_task(&mut self, mod_id: i64, id: i64) -> Result<bool> {
+        let tx = self.0.transaction()?;
+        let task = tx.query_row(
+            "SELECT attempt,source FROM task_runs WHERE id=?1 AND mod_id=?2 AND status IN ('paused','blocked')",
+            params![id,mod_id], |row| Ok((row.get::<_,i64>(0)?,row.get::<_,String>(1)?)),
+        ).optional()?;
+        let Some((attempt, source)) = task else {
+            return Ok(false);
+        };
+        tx.execute("UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,summary='',verification_feedback=CASE WHEN checks!='[]' THEN checks ELSE verification_feedback END,checks='[]' WHERE id=?1", params![id,attempt+1,task_source(id,attempt+1)])?;
+        tx.execute(
+            "UPDATE workers SET pending=NULL WHERE mod_id=?1 AND pending=?2",
+            params![mod_id, source],
+        )?;
+        tx.execute(
+            "UPDATE executions SET status='running',checks='[]',fingerprint=NULL WHERE mod_id=?1",
+            [mod_id],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
     pub fn retry_tasks(&mut self, mod_id: i64) -> Result<()> {
         let execution = self
             .execution(mod_id)?

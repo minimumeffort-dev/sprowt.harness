@@ -21,6 +21,54 @@ pub struct TaskInspection<'a> {
 }
 
 impl App {
+    pub fn can_retry_task(&self, id: i64) -> bool {
+        self.current_mod().is_some_and(|m| {
+            !m.closed
+                && !self.git_jobs.contains_key(&m.id)
+                && m.execution.as_ref().is_some_and(|e| {
+                    e.tasks.iter().any(|r| {
+                        r.id == id
+                            && matches!(r.status.as_str(), "paused" | "blocked")
+                            && !self
+                                .workers
+                                .values()
+                                .any(|w| w.task_run_id() == Some(id) && w.busy())
+                    })
+                })
+                && !self
+                    .network_requests
+                    .iter()
+                    .any(|r| r.task == id && r.status == "pending")
+        })
+    }
+
+    pub(super) fn retry_task(&mut self, id: i64) -> rusqlite::Result<()> {
+        if !self.can_retry_task(id) {
+            return Ok(());
+        }
+        let index = self.active.unwrap();
+        let mod_id = self.mods[index].id;
+        let owner = self.mods[index]
+            .execution
+            .as_ref()
+            .unwrap()
+            .tasks
+            .iter()
+            .find(|r| r.id == id)
+            .and_then(|r| r.worker);
+        if self.store.retry_task(mod_id, id)? {
+            if let Some(owner) = owner
+                && self.workers.get(&owner).is_some_and(|w| !w.busy())
+            {
+                self.workers.remove(&owner);
+            }
+            self.mods[index].execution = self.store.execution(mod_id)?;
+            self.executing_mods.insert(mod_id);
+            self.notice = None;
+        }
+        Ok(())
+    }
+
     pub fn task_ids(&self) -> Vec<i64> {
         let Some(m) = self.current_mod() else {
             return Vec::new();
@@ -228,13 +276,16 @@ impl App {
                     self.inspect_task(*id).is_some_and(|task| {
                         task.error.is_some()
                             || task.checks.iter().any(|check| check.failed())
-                            || matches!(task.run.status.as_str(), "blocked" | "repair_paused")
+                            || matches!(
+                                task.run.status.as_str(),
+                                "paused" | "blocked" | "repair_paused"
+                            )
                     })
                 })
             })
     }
 
-    pub(super) fn tasks_key(&mut self, key: KeyEvent, selected: usize) {
+    pub(super) fn tasks_key(&mut self, key: KeyEvent, selected: usize) -> rusqlite::Result<()> {
         let ids = self.task_ids();
         let selected = selected.min(ids.len().saturating_sub(1));
         match key.code {
@@ -259,12 +310,18 @@ impl App {
                     self.view = View::Task(*id, 0);
                 }
             }
+            KeyCode::Char('r') if key.modifiers.is_empty() => {
+                if let Some(id) = ids.get(selected) {
+                    self.retry_task(*id)?;
+                }
+            }
             KeyCode::Char('h') if key.modifiers.is_empty() => {
                 self.history_origin = Some(View::Tasks(selected));
                 self.view = View::History(0);
             }
             _ => {}
         }
+        Ok(())
     }
 
     pub(super) fn task_key(
@@ -301,6 +358,13 @@ impl App {
             KeyCode::Down => self.view = view(scroll.saturating_add(1)),
             KeyCode::PageUp => self.view = view(scroll.saturating_sub(self.page_size)),
             KeyCode::PageDown => self.view = view(scroll.saturating_add(self.page_size)),
+            KeyCode::Char('r')
+                if !history
+                    && key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.can_retry_task(id) =>
+            {
+                self.retry_task(id)?;
+            }
             KeyCode::Char('r' | 'n')
                 if !history && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {

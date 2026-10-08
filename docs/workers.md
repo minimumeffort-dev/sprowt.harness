@@ -109,7 +109,7 @@ flowchart TB
 
 Session and command IDs save on the Mac before submission. Accepted turn IDs save before acknowledgment. Recovery reads native items and paged events, including when inline history is unavailable. A saved command ID alone is not proof of delivery. Repeated receipt processing keeps one transcript entry and does not resend steering or mailbox messages.
 
-An interrupted turn waits for **Ctrl+R**. A completed turn reruns independent checks without asking Muse to implement it again. Missing or unreadable native history keeps uncertain delivery paused. Recovery is bounded to 64 pages and 8 MiB; oversized histories pause too.
+A dropped Muse connection gets one automatic reconnect to the same native session. Receipt checks run first: an active turn keeps running, a confirmed interrupted turn resumes from saved work, and a completed turn goes straight to independent checks. Unknown delivery or a missing turn status stays paused. Recovery is bounded to 64 pages and 8 MiB; oversized histories pause too. A second disconnect needs an explicit retry.
 
 ### Bridge failures
 
@@ -122,7 +122,7 @@ The VM sends messages in small, acknowledged chunks. It waits for the Mac before
 - A confirmed context-limit code permits a fresh conversation on the next safe reconnect. The task brief, saved source and accepted instructions rebuild context; the previous session ID and receipts remain saved. Unknown request failures do not reset conversations.
 - Any uncertain delivery prevents a context reset. The harness keeps its receipt checks before resending instructions.
 
-**Ctrl+R** retries the paused task. Completed peers stay complete; a bridge failure never counts as task completion.
+**Ctrl+T** opens tasks. Select a failed task and press **r**, or inspect it and press **Ctrl+R**, to retry only that task. Running peers continue; completed peers stay complete. If both worker slots are occupied, the retry waits for a slot. A bridge failure never counts as task completion.
 
 Another task or edit round starts a new session with its own folder and permissions. Closing or deleting removes the VM and its native logs. After reopening a closed mod, explicit retry rebuilds context from the saved plan, source and accepted instructions; the old native tool history is unavailable.
 
@@ -146,4 +146,10 @@ Offline broker and transport checks:
 
 ```sh
 python3 -m unittest discover -s examples -p 'test_*.py'
+```
+
+Disconnect and recovery check (uses both subscriptions and a disposable VM):
+
+```sh
+cargo test muse_adapter_reconnects_once -- --ignored
 ```

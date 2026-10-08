@@ -111,11 +111,104 @@ pub fn serve(
     outgoing: &Sender<Event>,
 ) -> io::Result<()> {
     let (instructions, context) = setup;
-    let _ = outgoing.send(Event::Preparing("preparing Muse".into()));
     let root = helper()?;
+    let state = context
+        .workspace()
+        .unwrap()
+        .join("muse")
+        .join(format!("{}.json", context.worker_id()));
+    let mut accepted = resume
+        .as_ref()
+        .map_or_else(Vec::new, |r| r.accepted_instructions.clone());
+    let mut resume = resume;
+    for attempt in 0..2 {
+        let result = serve_connection(
+            &vm,
+            resume.as_ref(),
+            (&instructions, &context),
+            &cancelled,
+            &process,
+            &actions,
+            outgoing,
+            &root,
+            &state,
+            &mut accepted,
+        );
+        let Err(error) = result else {
+            return Ok(());
+        };
+        if !transport_closed(&error) {
+            return Err(error);
+        }
+        let status = process
+            .lock()
+            .unwrap()
+            .as_mut()
+            .and_then(|child| child.try_wait().ok().flatten())
+            .map_or_else(|| "output closed".into(), |status| status.to_string());
+        let detail = if error.kind() == io::ErrorKind::ConnectionAborted {
+            error.to_string()
+        } else {
+            format!("Muse host adapter disconnected ({status}). Work is retained.")
+        };
+        fs::create_dir_all(state.parent().unwrap())?;
+        fs::write(
+            state.with_extension("failure.json"),
+            serde_json::to_vec(&json!({
+                "message":detail, "stage":"host adapter", "reconnect_attempted":attempt > 0
+            }))?,
+        )?;
+        if let Some(mut child) = process.lock().unwrap().take() {
+            // Dropping RPC closes stdin; let the adapter finish guest cleanup first.
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while child.try_wait()?.is_none() && std::time::Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(25));
+            }
+            crate::rpc::terminate(&mut child);
+        }
+        if attempt == 1 || cancelled.load(Ordering::Relaxed) || !state.exists() {
+            return Err(io::Error::other(format!(
+                "{detail} Retry this task to reconnect."
+            )));
+        }
+        let _ = outgoing.send(Event::Reconnecting);
+        resume = Some(Resume {
+            id: String::new(),
+            restart_if_missing: false,
+            accepted_instructions: accepted.clone(),
+        });
+    }
+    unreachable!()
+}
+
+fn transport_closed(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::ConnectionAborted
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn serve_connection(
+    vm: &SharedVm,
+    resume: Option<&Resume>,
+    setup: (&str, &Context),
+    cancelled: &AtomicBool,
+    process: &Mutex<Option<Child>>,
+    actions: &Receiver<Action>,
+    outgoing: &Sender<Event>,
+    root: &std::path::Path,
+    state: &std::path::Path,
+    accepted: &mut Vec<String>,
+) -> io::Result<()> {
+    let (instructions, context) = setup;
+    let _ = outgoing.send(Event::Preparing("preparing Muse".into()));
     let binary = root.join(format!("muse-{VERSION}"));
     // Verify the pinned artifact on every connection, even when cached.
-    let output = command(&root)
+    let output = command(root)
         .args(["--artifact", root.to_str().unwrap()])
         .output()?;
     if !output.status.success() || !binary.is_file() {
@@ -123,16 +216,11 @@ pub fn serve(
             "Muse setup failed. Install Muse {VERSION} and log in with your account."
         )));
     }
-    vm.lock()
-        .unwrap()
-        .prepare_muse(&root, &binary, &cancelled)?;
-    let (child, mut rpc) = Rpc::start(&mut command(&root))?;
+    vm.lock().unwrap().prepare_muse(root, &binary, cancelled)?;
+    let (child, mut rpc) = Rpc::start(&mut command(root))?;
     *process.lock().unwrap() = Some(child);
     rpc.client_tools = true;
-    let ready = rpc
-        .receiver
-        .recv_timeout(Duration::from_secs(45))
-        .map_err(io::Error::other)??;
+    let ready = rpc.next(Duration::from_secs(45))?;
     if ready["method"] != "bridge/ready" {
         if ready["method"] == "bridge/failed" {
             return Err(crate::rpc::bridge_error(&ready));
@@ -141,29 +229,24 @@ pub fn serve(
             "Muse account login could not be resolved. Run muse and sign in first.",
         ));
     }
-    let state = context
-        .workspace()
-        .unwrap()
-        .join("muse")
-        .join(format!("{}.json", context.worker_id()));
     let mut task = None;
     let mut thread = json!({"id":format!("muse-worker-{}", context.worker_id()),"turns":[]});
     if resume.is_some() && state.exists() {
-        let saved: serde_json::Value = serde_json::from_slice(&fs::read(&state)?)?;
+        let saved: serde_json::Value = serde_json::from_slice(&fs::read(state)?)?;
         if let Some(id) = saved["task"]
             .as_i64()
             .filter(|id| context.tasks.contains(id))
         {
             let config = {
                 let mut vm = vm.lock().unwrap();
-                vm.assign_muse_task(id, context.worker_id(), &cancelled)?;
+                vm.assign_muse_task(id, context.worker_id(), cancelled)?;
                 vm.muse_configuration(context.worker_id())
             };
             let _ = outgoing.send(Event::Preparing("restoring Muse session".into()));
             thread = rpc.call(
                 "session/resume",
                 json!({"state":state,"config":config,
-                "tools":tools::advertised(&context),
+                "tools":tools::advertised(context),
                 "allowNew":resume.as_ref().is_some_and(|r| r.restart_if_missing)}),
             )?["thread"]
                 .clone();
@@ -175,7 +258,6 @@ pub fn serve(
         model: Some(MODEL.into()),
         effort: Some("high".into()),
     });
-    let mut accepted = resume.map_or_else(Vec::new, |r| r.accepted_instructions);
     loop {
         while let Ok(action) = actions.try_recv() {
             let (method, source, params) = match action {
@@ -188,13 +270,13 @@ pub fn serve(
                     let id = crate::task_worktree::task_id(&source)?;
                     let config = {
                         let mut vm = vm.lock().unwrap();
-                        vm.assign_muse_task(id, context.worker_id(), &cancelled)?;
+                        vm.assign_muse_task(id, context.worker_id(), cancelled)?;
                         if routing.as_ref().is_some_and(|state| {
                             !state["repair"].is_null()
                                 || state["review_fix"] == true
                                 || state["runtime_recovery"] == true
                         }) {
-                            vm.refresh_for_repair(id, &source, &cancelled)?;
+                            vm.refresh_for_repair(id, &source, cancelled)?;
                         }
                         vm.muse_configuration(context.worker_id())
                     };
@@ -216,7 +298,7 @@ pub fn serve(
                         "turn/start",
                         source.clone(),
                         json!({"source":source,"text":prompt,"config":config,"state":state,
-                            "tools":tools::advertised(&context),"schema":report_schema}),
+                            "tools":tools::advertised(context),"schema":report_schema}),
                     )
                 }
                 Action::Steer {
@@ -233,7 +315,7 @@ pub fn serve(
                     let (before, checks) = vm.lock().unwrap().verify_execution_with_progress(
                         &source,
                         &checks,
-                        &cancelled,
+                        cancelled,
                         |label| {
                             let _ = outgoing.send(Event::Preparing(label.into()));
                         },
@@ -293,15 +375,10 @@ pub fn serve(
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    let status = process
-                        .lock()
-                        .unwrap()
-                        .as_mut()
-                        .and_then(|child| child.try_wait().ok().flatten())
-                        .map_or_else(|| "output closed".into(), |status| status.to_string());
-                    receive_error = Some(io::Error::other(format!(
-                        "Muse host adapter stopped ({status}). Work is retained; Ctrl+R retries."
-                    )));
+                    receive_error = Some(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "Muse adapter output closed.",
+                    ));
                     break;
                 }
             }
@@ -318,7 +395,7 @@ pub fn serve(
                 if let Some(vm) = &mut guard {
                     vm.tasks.active = task;
                 }
-                let result = Dispatcher::new(&context, guard.as_deref_mut(), &cancelled)
+                let result = Dispatcher::new(context, guard.as_deref_mut(), cancelled)
                     .worker_call(
                         params["name"].as_str().unwrap_or(""),
                         params["arguments"].clone(),

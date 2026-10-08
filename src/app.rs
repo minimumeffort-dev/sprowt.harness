@@ -443,7 +443,7 @@ impl App {
                         _ => {}
                     },
                     View::Findings(scroll) => self.findings_key(key, scroll)?,
-                    View::Tasks(selected) => self.tasks_key(key, selected),
+                    View::Tasks(selected) => self.tasks_key(key, selected)?,
                     View::Task(id, scroll) => self.task_key(key, id, scroll, false)?,
                     View::TaskHistory(id, scroll) => self.task_key(key, id, scroll, true)?,
                     View::History(scroll) => match key.code {
@@ -5899,6 +5899,120 @@ mod tests {
         app.workers.values_mut().next().unwrap().role = Role::Planner;
         let planner = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(planner.contains("▤ codex · planner · current-model · high"));
+    }
+
+    #[test]
+    fn retry_one_failed_task_preserves_running_peers_and_waits_for_capacity() {
+        let (_data, mut app, _root) = execution_app();
+        let mod_id = app.mods[0].id;
+        let mut plan = app.mods[0].planning.as_ref().unwrap().plan.clone().unwrap();
+        let mut ids = Vec::new();
+        let mut workers = Vec::new();
+        for (index, (provider, status)) in [
+            ("muse", "paused"),
+            ("codex", "running"),
+            ("codex", "running"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let mut task = plan.tasks[0].clone();
+            task.id = format!("task-{index}");
+            task.title = format!("Task {index}");
+            task.worker = (*provider).into();
+            task.files = vec![format!("task-{index}.txt")];
+            let record = app
+                .store
+                .worker_provider(mod_id, Role::Executor, index.saturating_sub(1), provider)
+                .unwrap();
+            let mut worker =
+                Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+            worker.role = Role::Executor;
+            worker.status = if index == 0 {
+                Status::Failed
+            } else {
+                Status::Running
+            };
+            worker.enabled = index != 0;
+            workers.push(worker.id);
+            app.store.0.execute("INSERT INTO task_runs(mod_id,task_id,source,status,worker_id,summary) VALUES (?1,?2,?3,?4,?5,'saved evidence')",
+                rusqlite::params![mod_id,task.id,format!("fixture-{index}"),status,worker.id]).unwrap();
+            ids.push(app.store.0.last_insert_rowid());
+            app.workers.insert(worker.id, worker);
+            plan.tasks.push(task);
+        }
+        app.store
+            .save_plan(
+                mod_id,
+                &app.mods[0].planning.as_ref().unwrap().source,
+                &plan,
+            )
+            .unwrap();
+        app.mods[0].planning = app.store.planning(mod_id).unwrap();
+        app.mods[0].execution = app.store.execution(mod_id).unwrap();
+        app.muse = true;
+        app.executing_mods.insert(mod_id);
+        let before = app.store.execution(mod_id).unwrap().unwrap();
+        let dock = app.action_dock();
+        assert_eq!(dock.status, "2 running · 1 needs attention");
+        assert!(
+            dock.actions
+                .iter()
+                .any(|a| a.action == Action::RetryTask(ids[0]))
+        );
+        assert!(dock.actions.iter().any(|a| a.action == Action::Stop));
+        let visible = rows(&screen(&mut app, 120, 36)).join("\n");
+        assert!(visible.contains("2 running · 1 needs attention"));
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Tasks(1)));
+        let visible = rows(&screen(&mut app, 120, 36)).join("\n");
+        assert!(visible.replace('\u{a0}', " ").contains("retry task"));
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
+        let after = app.mods[0].execution.as_ref().unwrap();
+        assert_eq!(after.tasks[1].status, "pending");
+        assert_ne!(after.tasks[1].source, before.tasks[1].source);
+        assert_eq!(after.tasks[1].worker, Some(workers[0]));
+        for index in [0, 2, 3] {
+            assert_eq!(after.tasks[index].source, before.tasks[index].source);
+            assert_eq!(after.tasks[index].status, before.tasks[index].status);
+            assert_eq!(after.tasks[index].summary, before.tasks[index].summary);
+        }
+        assert!(!app.workers.contains_key(&workers[0]));
+        assert!(
+            workers[1..]
+                .iter()
+                .all(|w| app.workers[w].status == Status::Running && app.workers[w].enabled)
+        );
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert_eq!(
+            app.inspect_task(ids[0]).unwrap().state,
+            "Waiting for a worker"
+        );
+        assert!(!app.can_retry_task(ids[0]));
+        let selected = app
+            .store
+            .schedule_workers(mod_id, &plan, &workers[1..], &[], &["codex", "muse"])
+            .unwrap();
+        assert_eq!(selected.len(), 2);
+        assert!(selected.iter().all(|w| workers[1..].contains(&w.id)));
+        app.store
+            .finish_task(
+                mod_id,
+                &before.tasks[2].source,
+                "done",
+                "Finished peer",
+                &[],
+            )
+            .unwrap();
+        let selected = app
+            .store
+            .schedule_workers(mod_id, &plan, &workers[2..], &[], &["codex", "muse"])
+            .unwrap();
+        assert!(selected.iter().any(|w| w.id == workers[0]));
+        assert!(!app.store.retry_task(mod_id, before.tasks[0].id).unwrap());
+        assert!(!app.store.retry_task(mod_id, ids[1]).unwrap());
+        assert!(!app.store.retry_task(mod_id + 1000, ids[0]).unwrap());
     }
 
     #[test]

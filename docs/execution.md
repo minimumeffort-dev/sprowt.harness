@@ -17,7 +17,7 @@ flowchart TB
     final --> ready["Version ready · send edits or publish"]
 ```
 
-A failed task check returns its evidence to the same worker for one recovery attempt. A repeated failure pauses that task and its dependents. The other worker can finish independent work. **Ctrl+R** retries unfinished work; completed tasks stay done.
+A failed task check returns its evidence to the same worker for one recovery attempt. A repeated failure pauses that task and its dependents. The other worker can finish independent work. **Ctrl+T**, select the failed task, then **r** retries only that task while peers continue. If both slots are busy, the retry waits. **Ctrl+R** from the conversation stops active workers or retries unfinished work when idle; completed tasks stay done.
 
 Executors receive the planner's peer links and coordinate through [saved task mailboxes](coordination.md). Links describe what to coordinate; dependencies describe what must finish first. A task with unanswered asks waits; Rust resumes it after answers arrive. Queued edit rounds wait too, so they cannot replace tasks with outstanding questions. Messages do not change file ownership or dependencies.
 

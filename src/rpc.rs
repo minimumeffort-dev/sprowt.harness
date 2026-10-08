@@ -40,6 +40,10 @@ impl Rpc {
                     break;
                 }
             }
+            let _ = incoming.send(Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "Worker output closed before a response arrived.",
+            )));
         });
         Ok((
             child,
@@ -69,12 +73,14 @@ impl Rpc {
         self.write(json!({"id":id,"method":method,"params":params}))?;
         let deadline = Instant::now() + Duration::from_secs(45);
         loop {
-            let message = self
-                .receiver
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .map_err(io::Error::other)??;
+            let message = self.next(deadline.saturating_duration_since(Instant::now()))?;
             if message.get("id") == Some(&json!(id)) && message.get("method").is_none() {
                 if let Some(error) = message.get("error") {
+                    if error["data"]["delivery"] != "rejected"
+                        && error["data"]["failure"].is_object()
+                    {
+                        return Err(bridge_error(&json!({"params":error["data"]["failure"]})));
+                    }
                     return Err(io::Error::new(
                         if error["data"]["delivery"] == "unknown" {
                             io::ErrorKind::Other
@@ -90,6 +96,20 @@ impl Rpc {
             }
             self.receive(message)?;
         }
+    }
+
+    pub fn next(&self, timeout: Duration) -> io::Result<Value> {
+        self.receiver
+            .recv_timeout(timeout)
+            .map_err(|error| match error {
+                mpsc::RecvTimeoutError::Timeout => {
+                    io::Error::new(io::ErrorKind::TimedOut, "Worker response timed out.")
+                }
+                mpsc::RecvTimeoutError::Disconnected => io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "Worker output closed before a response arrived.",
+                ),
+            })?
     }
 
     pub fn receive(&mut self, message: Value) -> io::Result<()> {
@@ -119,7 +139,17 @@ pub fn bridge_error(message: &Value) -> io::Error {
         .filter(|ch| !ch.is_control())
         .take(800)
         .collect();
-    io::Error::other(format!("{detail} Work is retained."))
+    let disconnected = message["params"]["stage"] == "guest exit"
+        || message["params"]["stage"] == "VM transport"
+            && (detail.contains("stream closed") || detail.contains("I/O failed"));
+    io::Error::new(
+        if disconnected {
+            io::ErrorKind::ConnectionAborted
+        } else {
+            io::ErrorKind::Other
+        },
+        format!("{detail} Work is retained."),
+    )
 }
 
 pub fn terminate(child: &mut Child) {
@@ -134,6 +164,77 @@ pub fn terminate(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closed_output_has_the_same_diagnostic_during_calls_and_streaming() {
+        for during_call in [false, true] {
+            let script = if during_call {
+                "import sys; sys.stdin.readline()"
+            } else {
+                "pass"
+            };
+            let (mut child, mut rpc) =
+                Rpc::start(Command::new("python3").args(["-c", script])).unwrap();
+            let error = if during_call {
+                rpc.call("turn/start", json!({})).unwrap_err()
+            } else {
+                rpc.next(Duration::from_secs(2)).unwrap_err()
+            };
+            assert_eq!(error.kind(), io::ErrorKind::UnexpectedEof);
+            assert!(error.to_string().contains("Worker output closed"));
+            assert_eq!(
+                rpc.next(Duration::from_secs(2)).unwrap_err().kind(),
+                io::ErrorKind::UnexpectedEof
+            );
+            terminate(&mut child);
+        }
+    }
+
+    #[test]
+    fn bridge_reply_preserves_transport_classification_but_not_for_rejections() {
+        for (stage, message, delivery, expected) in [
+            (
+                "VM transport",
+                "Muse VM stream closed",
+                "unknown",
+                io::ErrorKind::ConnectionAborted,
+            ),
+            (
+                "guest exit",
+                "Muse guest exited with code 1",
+                "unknown",
+                io::ErrorKind::ConnectionAborted,
+            ),
+            (
+                "provider",
+                "Muse provider HTTP 400",
+                "unknown",
+                io::ErrorKind::Other,
+            ),
+            (
+                "VM transport",
+                "Invalid frame",
+                "unknown",
+                io::ErrorKind::Other,
+            ),
+            (
+                "guest exit",
+                "Rejected",
+                "rejected",
+                io::ErrorKind::InvalidInput,
+            ),
+        ] {
+            let script = format!(
+                "import json,sys; r=json.loads(sys.stdin.readline()); print(json.dumps({{'id':r['id'],'error':{{'message':{message:?},'data':{{'delivery':{delivery:?},'failure':{{'stage':{stage:?},'message':{message:?}}}}}}}}}),flush=True)"
+            );
+            let (mut child, mut rpc) =
+                Rpc::start(Command::new("python3").args(["-c", &script])).unwrap();
+            let error = rpc.call("turn/start", json!({})).unwrap_err();
+            assert_eq!(error.kind(), expected);
+            assert!(error.to_string().contains(message));
+            terminate(&mut child);
+        }
+    }
 
     #[test]
     fn bridge_failure_preserves_cause_during_requests_without_rejecting_delivery() {

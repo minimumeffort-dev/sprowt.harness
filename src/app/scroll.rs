@@ -71,7 +71,7 @@ impl App {
             View::Mods(index) => return self.picker_key(key, index),
             View::Queue(index) => return self.queue_key(key, index),
             View::Tasks(index) => {
-                self.tasks_key(key, index);
+                self.tasks_key(key, index)?;
                 return Ok(());
             }
             View::Task(id, offset) => View::Task(id, shift(offset)),

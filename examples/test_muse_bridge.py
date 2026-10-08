@@ -293,6 +293,29 @@ class FailureTests(unittest.TestCase):
             self.assertIn('"result": {"status": "accepted"', output.getvalue())
             bridge.close.assert_called_once()
 
+    def test_unexpected_request_failure_is_safe_and_keeps_delivery_state(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            config = {"name": "vm", "cwd": "/tasks/7"}
+            bridge = bridge_fixture()
+            bridge.close = Mock()
+            bridge.call = Mock(side_effect=TypeError("Bearer synthetic-secret"))
+            request = {"id": 1, "method": "turn/start", "params": {"state": str(path), "config": config,
+                       "tools": [], "text": "Task", "source": "task", "schema": {}}}
+            output = io.StringIO()
+            with patch("muse_bridge.host_login", return_value={}), patch("muse_bridge.connect", return_value=(bridge, {"id": "session"})), \
+                    patch("sys.stdin", io.StringIO(json.dumps(request) + "\n")), patch("sys.stdout", output):
+                host()
+            saved = json.loads(path.read_text())
+            self.assertIn("task", saved["commands"])
+            self.assertNotIn("turnId", saved["commands"]["task"])
+            self.assertIn("TypeError", saved["failure"]["message"])
+            self.assertNotIn("synthetic-secret", output.getvalue() + path.read_text())
+            reply = [json.loads(line) for line in output.getvalue().splitlines() if '"error"' in line][0]
+            self.assertEqual(reply["error"]["data"]["failure"], saved["failure"])
+            self.assertEqual(reply["error"]["data"]["delivery"], "unknown")
+            bridge.close.assert_called_once()
+
     def test_completed_turn_followed_by_exit_keeps_the_completed_report(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "state.json"
@@ -380,6 +403,21 @@ class ProtocolTests(unittest.TestCase):
             for key, value in [("workspaceRoot", "/tasks/other"), ("sessionId", "other-session")]:
                 with self.assertRaisesRegex(RuntimeError, "different session or task"):
                     recovered_thread(rpc, state, {**result, "session": {**result["session"], key: value}})
+
+    def test_missing_terminal_is_unknown_not_an_interrupted_turn(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = SessionState(Path(directory) / "state.json", {"name": "vm", "cwd": "/tasks/7"})
+            command = state.command("task")
+            rpc = Mock()
+            rpc.call.return_value = {"events": [], "nextCursor": None}
+            result = {"session": {"sessionId": state.value["sessionId"], "workspaceRoot": "/tasks/7"},
+                      "history": {"items": [{"kind": "userMessage", "itemId": "one", "turnId": "turn", "commandId": command}]}}
+            self.assertEqual(recovered_thread(rpc, state, result)["turns"][0]["status"], "unknown")
+            result["session"]["activeTurnId"] = "turn"
+            self.assertEqual(recovered_thread(rpc, state, result)["turns"][0]["status"], "inProgress")
+            result["session"].pop("activeTurnId")
+            result["lastTurn"] = {"turnId": "turn", "terminal": "interrupted"}
+            self.assertEqual(recovered_thread(rpc, state, result)["turns"][0]["status"], "interrupted")
 
     def test_recovery_does_not_loop_on_a_stuck_native_cursor(self):
         with tempfile.TemporaryDirectory() as directory:

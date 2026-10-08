@@ -52,6 +52,8 @@ pub struct Worker {
     verify_before: Option<workspace::Snapshot>,
     preparing: Option<String>,
     activity_started: Instant,
+    reconnecting: bool,
+    interrupted_task: Option<i64>,
 }
 
 impl Worker {
@@ -150,6 +152,8 @@ impl Worker {
             verify_before: None,
             preparing: None,
             activity_started: Instant::now(),
+            reconnecting: false,
+            interrupted_task: None,
         })
     }
 
@@ -468,6 +472,17 @@ impl Worker {
         code_mod: &mut CodeMod,
     ) -> rusqlite::Result<()> {
         match event {
+            Event::Reconnecting => {
+                self.reconnecting = true;
+                self.recovery = self
+                    .pending
+                    .take()
+                    .map(|input| input.source)
+                    .or(self.recovery.take());
+                self.turn = None;
+                self.status = Status::Connecting;
+                self.preparing = Some("Reconnecting Muse · checking delivery receipts".into());
+            }
             Event::MailboxChanged => {
                 code_mod.coordination = store.mailbox(self.mod_id)?;
             }
@@ -558,6 +573,8 @@ impl Worker {
                 }
                 if self.recovery.is_some() {
                     self.fail("Delivery could not be confirmed. The instruction is retained; automatic retry is paused.".into());
+                } else if self.reconnecting && self.status == Status::Running {
+                    // Native history confirms this turn is still active. Keep listening.
                 } else if !matches!(
                     self.status,
                     Status::Complete | Status::Failed | Status::Checking | Status::Stopping
@@ -575,6 +592,19 @@ impl Worker {
                         self.error = Some("Planning was interrupted. Ctrl+R to retry.".into());
                     }
                 }
+                if self.reconnecting
+                    && self.recovery.is_none()
+                    && self.status != Status::Failed
+                    && self.enabled
+                    && let Some(id) = self.interrupted_task.take()
+                {
+                    store.retry_task(self.mod_id, id)?;
+                    code_mod.execution = store.execution(self.mod_id)?;
+                    self.task_source = None;
+                    self.status = Status::Ready;
+                }
+                self.reconnecting = false;
+                self.interrupted_task = None;
             }
             Event::Accepted { source, turn } => {
                 if !source.starts_with("00000005-") {
@@ -1425,6 +1455,16 @@ impl Worker {
         }
         if turn["status"] == "completed" {
             self.complete_task(store, code_mod)?;
+        } else if self.reconnecting && self.enabled && turn["status"] == "inProgress" {
+            self.turn = turn["id"].as_str().map(str::to_owned);
+            self.status = Status::Running;
+        } else if self.reconnecting
+            && self.enabled
+            && matches!(turn["status"].as_str(), Some("interrupted" | "cancelled"))
+        {
+            store.task_status(self.mod_id, &run.source, "paused", None)?;
+            code_mod.execution = store.execution(self.mod_id)?;
+            self.interrupted_task = Some(run.id);
         } else {
             if turn["status"] == "inProgress" {
                 let _ = self.client.as_ref().unwrap().send(Action::Stop {
@@ -1537,6 +1577,16 @@ mod tests {
     #[test]
     #[ignore = "Uses both subscription CLIs and a disposable Apple Container VM"]
     fn mixed_vm_workers_execute_and_exchange_mail() {
+        mixed_vm_recovery(false);
+    }
+
+    #[test]
+    #[ignore = "Disconnects a Muse adapter in a disposable VM while Codex continues"]
+    fn muse_adapter_reconnects_once_without_redelivering_accepted_steering() {
+        mixed_vm_recovery(true);
+    }
+
+    fn mixed_vm_recovery(automatic: bool) {
         use std::{
             fs,
             time::{Duration, Instant},
@@ -1614,6 +1664,8 @@ mod tests {
             let mut interrupted = false;
             let mut retried = false;
             let mut inspect_at = Instant::now();
+            let mut disconnected_state: Option<Value> = None;
+            let mut disconnected_source = String::new();
             let name = format!("sprowt-{}", root.file_name().unwrap().to_str().unwrap());
             let sleeper = || {
                 std::process::Command::new("container").args(["exec", &name, "/usr/bin/python3", "-c",
@@ -1671,13 +1723,62 @@ mod tests {
                     let process = sleeper();
                     assert!(process.status.success());
                     if String::from_utf8_lossy(&process.stdout).trim() != "0" {
-                        workers[1].toggle();
+                        if automatic {
+                            let path = root.join("muse").join(format!("{}.json", workers[1].id));
+                            disconnected_state =
+                                Some(serde_json::from_slice(&fs::read(path).unwrap()).unwrap());
+                            disconnected_source = m
+                                .execution
+                                .as_ref()
+                                .unwrap()
+                                .tasks
+                                .iter()
+                                .find(|t| t.task_id == "muse")
+                                .unwrap()
+                                .source
+                                .clone();
+                            workers[1].client.as_ref().unwrap().disconnect_for_test();
+                            eprintln!("Disconnecting Muse adapter during an accepted turn");
+                        } else {
+                            workers[1].toggle();
+                        }
                         interrupted = true;
-                        eprintln!("Interrupting Muse's native sleep command");
                     }
                     inspect_at = Instant::now() + Duration::from_millis(500);
                 }
-                if interrupted && !retried && workers[1].status == Status::Ready {
+                if automatic
+                    && interrupted
+                    && !retried
+                    && m.execution
+                        .as_ref()
+                        .unwrap()
+                        .tasks
+                        .iter()
+                        .any(|t| t.task_id == "muse" && t.source != disconnected_source)
+                {
+                    assert!(workers[1].recovery.is_none());
+                    let saved = disconnected_state.as_ref().unwrap();
+                    let path = root.join("muse").join(format!("{}.json", workers[1].id));
+                    let state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+                    assert_eq!(state["sessionId"], saved["sessionId"]);
+                    for (source, receipt) in saved["commands"].as_object().unwrap() {
+                        assert_eq!(
+                            &state["commands"][source], receipt,
+                            "Receipt was resubmitted"
+                        );
+                    }
+                    assert!(path.with_extension("failure.json").exists());
+                    assert_eq!(
+                        String::from_utf8_lossy(&sleeper().stdout).trim(),
+                        "0",
+                        "Disconnected guest left a child running"
+                    );
+                    retried = true;
+                    eprintln!(
+                        "Automatic reconnect retained native session and receipts; one interrupted task resumed"
+                    );
+                }
+                if !automatic && interrupted && !retried && workers[1].status == Status::Ready {
                     let process = sleeper();
                     assert!(
                         process.status.success(),
@@ -3263,6 +3364,120 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn muse_reconnect_uses_receipts_without_replaying_active_or_unknown_work() {
+        for terminal in [
+            "inProgress",
+            "cancelled",
+            "interrupted",
+            "unknown",
+            "missing",
+        ] {
+            let (_data, mut store, mut m, mut worker) = executor();
+            let source = worker.task_source.clone().unwrap();
+            let run_id = m.execution.as_ref().unwrap().tasks[0].id;
+            let (client, actions) = crate::codex::Client::recording();
+            worker.client = Some(client);
+            worker.provider = "muse".into();
+            worker.enabled = true;
+            store.task_status(m.id, &source, "sending", None).unwrap();
+            store.pending(worker.id, Some(&source)).unwrap();
+            m.execution = store.execution(m.id).unwrap();
+            worker.recovery = Some(source.clone());
+            worker
+                .receive(Event::Reconnecting, &mut store, &mut m)
+                .unwrap();
+            let turns = if terminal == "missing" {
+                json!([])
+            } else {
+                json!([{"id":"native-turn","status":terminal,"items":[
+                    {"type":"userMessage","clientId":source,"content":[{"type":"text","text":"task"}]}]}])
+            };
+            worker
+                .receive(
+                    Event::Ready {
+                        model: None,
+                        effort: None,
+                        thread: json!({"id":"native-session","turns":turns}),
+                    },
+                    &mut store,
+                    &mut m,
+                )
+                .unwrap();
+            let run = &m.execution.as_ref().unwrap().tasks[0];
+            match terminal {
+                "inProgress" => {
+                    assert!(worker.status == Status::Running);
+                    assert_eq!(run.source, source);
+                    assert_eq!(worker.turn.as_deref(), Some("native-turn"));
+                }
+                "cancelled" | "interrupted" => {
+                    assert_eq!(run.status, "pending");
+                    assert_ne!(run.source, source);
+                    assert_eq!(run.id, run_id);
+                    assert!(worker.status == Status::Ready);
+                    assert!(worker.enabled);
+                }
+                _ => {
+                    assert_eq!(run.status, "paused");
+                    assert_eq!(run.source, source);
+                    assert!(!worker.enabled);
+                }
+            }
+            assert!(
+                actions.try_recv().is_err(),
+                "No replay or interrupt: {terminal}"
+            );
+        }
+    }
+
+    #[test]
+    fn muse_reconnect_verifies_a_completed_turn_without_reimplementing_it() {
+        let (_data, mut store, mut m, mut worker, report) = reported_task();
+        let source = worker.task_source.clone().unwrap();
+        let (client, actions) = crate::codex::Client::recording();
+        worker.client = Some(client);
+        worker.provider = "muse".into();
+        worker
+            .receive(Event::Reconnecting, &mut store, &mut m)
+            .unwrap();
+        worker.receive(Event::Ready {model:None, effort:None,
+            thread:json!({"id":"session","turns":[{"id":"task-turn","status":"completed","items":[
+                {"type":"userMessage","clientId":source,"content":[{"type":"text","text":"task"}]}, report_item(&report)]}]})}, &mut store, &mut m).unwrap();
+        assert!(worker.status == Status::Checking);
+        assert_eq!(m.execution.as_ref().unwrap().tasks[0].status, "checking");
+        assert!(
+            matches!(actions.try_recv().unwrap(), Action::Verify {source: id, ..} if id == source)
+        );
+        assert!(actions.try_recv().is_err());
+    }
+
+    #[test]
+    fn muse_reconnect_does_not_resume_with_uncertain_steering_or_after_stop() {
+        for stopped in [false, true] {
+            let (_data, mut store, mut m, mut worker) = executor();
+            let source = worker.task_source.clone().unwrap();
+            let (client, actions) = crate::codex::Client::recording();
+            worker.client = Some(client);
+            worker.enabled = !stopped;
+            store
+                .task_status(m.id, &source, "running", Some("turn"))
+                .unwrap();
+            m.execution = store.execution(m.id).unwrap();
+            worker.recovery = (!stopped).then(|| "unknown-steering".into());
+            worker
+                .receive(Event::Reconnecting, &mut store, &mut m)
+                .unwrap();
+            worker.receive(Event::Ready {model:None, effort:None,
+                thread:json!({"id":"session","turns":[{"id":"turn","status":"interrupted","items":[]}]})}, &mut store, &mut m).unwrap();
+            let run = &m.execution.as_ref().unwrap().tasks[0];
+            assert_eq!(run.source, source);
+            assert_eq!(run.status, "paused");
+            assert!(!worker.enabled);
+            assert!(actions.try_recv().is_err());
+        }
     }
 
     #[test]

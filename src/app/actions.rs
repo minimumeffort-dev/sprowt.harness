@@ -8,6 +8,7 @@ pub enum Action {
     Run,
     Stop,
     Retry,
+    RetryTask(i64),
     RetryGit,
     Reopen,
     Network,
@@ -56,6 +57,7 @@ impl Action {
             Self::Failure => Some('f'),
             Self::Findings => Some('i'),
             Self::FixIssues => Some('x'),
+            Self::RetryTask(_) => Some('r'),
             _ => None,
         }
     }
@@ -218,6 +220,13 @@ impl App {
                         Retry => "Retry work",
                         _ => "Run work",
                     },
+                ));
+            }
+            if let Some(id) = self.failed_task().filter(|id| self.can_retry_task(*id)) {
+                let number = self.inspect_task(id).unwrap().number;
+                dock.actions.push(ActionItem::new(
+                    RetryTask(id),
+                    format!("Retry task {number}"),
                 ));
             }
             if self.pending_network().is_some() && !m.closed {
@@ -437,6 +446,30 @@ impl App {
                 dock.status = "Work paused".into();
                 dock.primary = worker_action;
             }
+            if active
+                && m.question().is_none()
+                && self.pending_network().is_none()
+                && self
+                    .git_activity()
+                    .is_none_or(|activity| activity == "checking target branch")
+                && let Some(e) = &m.execution
+            {
+                let attention = e
+                    .tasks
+                    .iter()
+                    .filter(|t| matches!(t.status.as_str(), "paused" | "blocked" | "repair_paused"))
+                    .count();
+                if attention > 0 {
+                    let running = self
+                        .workers
+                        .values()
+                        .filter(|w| w.mod_id == m.id && w.busy())
+                        .count();
+                    dock.status = format!("{running} running · {attention} needs attention");
+                    dock.tone = Tone::Attention;
+                    dock.primary = Some(Failure);
+                }
+            }
             if matches!(
                 dock.status.as_str(),
                 "Work paused" | "Changes ready" | "PR published" | "Review passed · changes ready"
@@ -578,6 +611,7 @@ impl App {
             return Ok(());
         }
         match action {
+            Action::RetryTask(id) => self.retry_task(id)?,
             Action::Run | Action::Stop | Action::Retry | Action::RetryGit | Action::Reopen => {
                 self.toggle_worker()?
             }

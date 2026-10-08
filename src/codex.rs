@@ -47,6 +47,7 @@ pub enum Action {
 
 pub enum Event {
     MailboxChanged,
+    Reconnecting,
     Preparing(String),
     Configured(Selection),
     TaskConfigured {
@@ -125,6 +126,13 @@ pub struct Client {
 }
 
 impl Client {
+    #[cfg(test)]
+    pub(crate) fn disconnect_for_test(&self) {
+        if let Some(child) = self.child.lock().unwrap().as_mut() {
+            child.kill().unwrap();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn recording() -> (Self, Receiver<Action>) {
         let (actions, inbox) = mpsc::channel();

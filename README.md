@@ -66,7 +66,7 @@ Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 tas
 
 Each codemod has two active slots: two Codex, two Muse or one of each. Both providers can implement, test and integrate. Rust picks the least loaded suitable provider across active codemods and alternates ties. Existing plans keep their assignments; retries and repairs keep their owner. The codemod row shows active workers. **Ctrl+O** shows each task's assignment reason.
 
-Muse resumes its native task conversation after a stop or harness restart while the VM disk remains. Saved delivery IDs are checked against native receipts before any retry. Completed work goes straight to verification; unknown delivery stays paused. Starting another task creates a separate conversation.
+Muse resumes its native task conversation while the VM disk remains. A dropped connection gets one automatic reconnect, with native receipt checks before resuming. Completed work goes straight to verification; unknown delivery stays paused. **Ctrl+T**, select a failed task, then **r** retries it while peers continue. Starting another task creates a separate conversation.
 
 Muse sends large messages in acknowledged chunks so the VM's output buffer cannot drop them. Failures show the provider's redacted rejection or the guest/transport cause. Permanent request rejections stop automatic retries. A confirmed context limit can rebuild the conversation from saved work on a safe retry; uncertain delivery stays paused.
 

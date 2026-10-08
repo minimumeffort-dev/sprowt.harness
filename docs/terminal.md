@@ -83,7 +83,7 @@ Errors use up to two wrapped rows inside the dock. **Inspect failure** opens the
 - The task view shows its latest update, checks and failure evidence. Working, waiting for prerequisites, waiting for an answer, failed checks and stopped workers have distinct labels.
 - **h** opens that task's messages and handoffs. **a** opens All history from there. From the task list, **h** opens All history directly.
 - **Esc** goes back one view; **Ctrl+T** returns to the conversation. Your draft, queue and plan toggle stay unchanged.
-- Retry and network shortcuts appear when available and use the existing codemod actions. Inspecting a task does not restart it.
+- **r** retries the selected failed task; **Ctrl+R** does the same in its details. Running peers continue. A retry waits when both worker slots are occupied. Network requests use **Ctrl+N**. Inspecting a task does not restart it.
 
 New worker messages save their task identity. Older unlinked messages remain in All history; they are not guessed from a reused worker ID. Without a task list, Ctrl+T opens All history directly.
 
@@ -98,7 +98,7 @@ User messages have a `>` prefix and a subtle background. Agent messages show the
 
 The worker status uses a small dot spinner during connection, execution and verification. Each running task shows its worker ID and uses the same spinner in the plan, including while its checks run. Completed tasks and replies stay still. `--no-motion` uses a static activity glyph.
 
-The codemod row lists each active provider, worker ID and numbered task. During combined checks the dock says **Final verification**; a failure says **Final verification blocked** with **Inspect failure** when its task is known. The task view shows the failed command and evidence; **Retry final checks** remains available. Missing-runtime recovery says **Restoring task environment**. Narrow terminals show the active worker count instead; task rows retain their worker IDs.
+The codemod row lists each active provider, worker ID and numbered task. When a peer fails, the dock shows **2 running · 1 needs attention** (with current counts). **Inspect failure** opens that task; **Ctrl+G → r** queues its retry. During combined checks the dock says **Final verification**; a failure says **Final verification blocked** with **Inspect failure** when its task is known. The task view shows the failed command and evidence; **Retry final checks** remains available. Missing-runtime recovery says **Restoring task environment**. Narrow terminals show the active worker count instead; task rows retain their worker IDs.
 
 Codex’s configured effort is used when available. When unset, the harness reads the model’s default from Codex’s catalog and sends it explicitly with new turns. Replies save that effort for reopening. Older replies without recorded effort show **effort unknown**.
 

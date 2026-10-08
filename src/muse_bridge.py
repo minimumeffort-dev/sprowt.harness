@@ -436,7 +436,7 @@ def recovered_thread(rpc, state, result):
     if confirmed:
         state.save()
     return {"id": session["sessionId"], "turns": [
-        {"id": turn, "status": turns.get(turn, "interrupted"), "items": values}
+        {"id": turn, "status": turns.get(turn, "unknown"), "items": values}
         for turn, values in grouped.items()]}
 
 
@@ -472,7 +472,7 @@ def connect(config, tools, state, headers, root, emit, allow_new):
             except RpcError as error:
                 if error.kind != "sessionNotFound":
                     raise
-                if state.value["commands"] and not allow_new:
+                if not allow_new:
                     raise BridgeFailure("Muse session is missing. Work and uncertain delivery are retained; Ctrl+R retries recovery.") from error
                 # A removed VM has no native log. An explicit retry may rebuild from saved source.
                 state.value.update(sessionId=command_id(), startId=command_id(), commands={})
@@ -561,7 +561,7 @@ def host():
                     else:
                         raise BridgeFailure("Unsupported bridge method.")
                     emit({"id": message["id"], "result": result})
-                except (OSError, RuntimeError, ValueError, queue.Empty, subprocess.SubprocessError) as error:
+                except Exception as error:
                     diagnostic = failure(error, stage)
                     if state:
                         state.record_failure(diagnostic)
@@ -569,7 +569,7 @@ def host():
                         and method in {"turn/start", "turn/steer"}
                         and error.kind in {"commandRejected", "invalidParams", "sessionNotFound"})
                     emit({"id": message["id"], "error": {"code": -32000, "message": str(diagnostic),
-                        "data": {"delivery": "rejected" if rejected else "unknown"}}})
+                        "data": {"delivery": "rejected" if rejected else "unknown", "failure": diagnostic.details}}})
                     if method in {"turn/start", "session/resume"} and rpc:
                         rpc.close()
                         rpc = None
@@ -594,7 +594,7 @@ def host():
                         emit(translated)
                 if ended and rpc:
                     raise rpc.failure or BridgeFailure("Muse guest process ended before the turn finished.", stage="guest exit")
-    except (OSError, RuntimeError, ValueError, KeyError, queue.Empty) as error:
+    except Exception as error:
         diagnostic = failure(error, stage)
         if state:
             state.record_failure(diagnostic)
@@ -617,7 +617,7 @@ if __name__ == "__main__":
             print(artifact(Path(sys.argv[2])), flush=True)
         else:
             host()
-    except (OSError, RuntimeError, ValueError, KeyError, queue.Empty) as error:
+    except Exception as error:
         diagnostic = failure(error, "adapter")
         print(json.dumps({"method": "bridge/failed", "params": diagnostic.details}), flush=True)
         sys.exit(1)
