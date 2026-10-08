@@ -4,7 +4,7 @@ use std::{
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc::{Receiver, Sender},
+        mpsc::{Receiver, Sender, TryRecvError},
     },
     thread,
     time::Duration,
@@ -134,6 +134,9 @@ pub fn serve(
         .recv_timeout(Duration::from_secs(45))
         .map_err(io::Error::other)??;
     if ready["method"] != "bridge/ready" {
+        if ready["method"] == "bridge/failed" {
+            return Err(crate::rpc::bridge_error(&ready));
+        }
         return Err(io::Error::other(
             "Muse account login could not be resolved. Run muse and sign in first.",
         ));
@@ -275,11 +278,35 @@ pub fn serve(
                 Err(error) => return Err(error),
             }
         }
-        while let Ok(value) = rpc.receiver.try_recv() {
-            rpc.receive(value?)?;
+        let mut receive_error = None;
+        loop {
+            match rpc.receiver.try_recv() {
+                Ok(value) => {
+                    if let Err(error) = value.and_then(|value| rpc.receive(value)) {
+                        receive_error = Some(error);
+                        break;
+                    }
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => {
+                    let status = process
+                        .lock()
+                        .unwrap()
+                        .as_mut()
+                        .and_then(|child| child.try_wait().ok().flatten())
+                        .map_or_else(|| "output closed".into(), |status| status.to_string());
+                    receive_error = Some(io::Error::other(format!(
+                        "Muse host adapter stopped ({status}). Work is retained; Ctrl+R retries."
+                    )));
+                    break;
+                }
+            }
         }
         for message in std::mem::take(&mut rpc.buffered) {
             if message["method"] == "item/tool/call" && message.get("id").is_some() {
+                if receive_error.is_some() {
+                    continue;
+                }
                 let params = &message["params"];
                 let mut guard =
                     (params["name"] == crate::packages::TOOL).then(|| vm.lock().unwrap());
@@ -297,10 +324,6 @@ pub fn serve(
                     .map(Output::message);
                 rpc.write(json!({"id":message["id"],"result":{"isError":result.is_err(),"content":[{"type":"text","text":result.unwrap_or_else(|e|e.to_string())}]}}))?;
                 let _ = outgoing.send(Event::MailboxChanged);
-            } else if message["method"] == "bridge/failed" {
-                return Err(io::Error::other(
-                    "Muse VM bridge stopped. Work is retained; Ctrl+R retries.",
-                ));
             } else {
                 if message["method"] == "turn/completed"
                     && let Some(id) = task
@@ -309,6 +332,9 @@ pub fn serve(
                 }
                 let _ = outgoing.send(Event::Notification(message));
             }
+        }
+        if let Some(error) = receive_error {
+            return Err(error);
         }
         thread::sleep(Duration::from_millis(25));
     }

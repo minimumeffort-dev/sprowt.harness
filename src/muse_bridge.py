@@ -15,8 +15,8 @@ import threading
 import time
 import urllib.request
 
-from muse_transport import (Broker, CHECKSUM, MODEL, VERSION, Rpc, RpcError, command_id,
-                            guest, host_login, private_json, read_account, settings)
+from muse_transport import (BridgeFailure, Broker, CHECKSUM, MODEL, VERSION, Rpc, RpcError,
+                            command_id, failure, guest, host_login, private_json, read_account, settings)
 
 
 def artifact(cache):
@@ -34,13 +34,13 @@ def artifact(cache):
         return path
     info = json.loads((Path.home() / ".local/bin/.muse-release-info.json").read_text())
     if info.get("version") != VERSION or not info.get("manifest_url", "").startswith("https://lookaside.facebook.com/"):
-        raise RuntimeError("Install the supported Muse account CLI: " + VERSION)
+        raise BridgeFailure("Install the supported Muse account CLI: " + VERSION)
     with urllib.request.urlopen(info["manifest_url"], timeout=30) as response:
         manifest = json.load(response)
     item = manifest["artifacts"]["aarch64_linux"]
     if (manifest.get("version") != VERSION or item.get("checksum") != CHECKSUM
             or not item.get("url", "").startswith("https://lookaside.facebook.com/")):
-        raise RuntimeError("Muse release did not match the pinned Linux binary.")
+        raise BridgeFailure("Muse release did not match the pinned Linux binary.")
     next_path = path.with_suffix(".next-" + secrets.token_hex(8))
     try:
         with urllib.request.urlopen(item["url"], timeout=60) as source, next_path.open("xb") as output:
@@ -48,7 +48,7 @@ def artifact(cache):
             while chunk := source.read(1024 * 1024):
                 output.write(chunk)
         if digest(next_path) != CHECKSUM or next_path.stat().st_size != item["size"]:
-            raise RuntimeError("Muse binary checksum mismatch.")
+            raise BridgeFailure("Muse binary checksum mismatch.")
         next_path.chmod(0o755)
         next_path.replace(path)
     finally:
@@ -80,7 +80,7 @@ def cleanup_children(pid):
 def guest_client(base):
     home = Path.home()
     if Path("/workspace").exists() or Path("/opt/sprowt-git").exists():
-        raise RuntimeError("Muse filesystem boundary includes controller source.")
+        raise BridgeFailure("Muse filesystem boundary includes controller source.")
     value = settings(base)
     value["run"].pop("toolset")
     private_json(home / ".config/muse/settings.json", value)
@@ -141,6 +141,8 @@ class ManagedRpc(Rpc):
         self.process_id = "sprowt-muse-" + secrets.token_hex(8)
         self.counter, self.buffered, self.incoming = 0, [], queue.Queue()
         self.failure = None
+        self.failure_lock = threading.Lock()
+        self.broker.on_failure = self.fail
         self.pool = threading.BoundedSemaphore(4)
         try:
             self.start(config)
@@ -149,6 +151,13 @@ class ManagedRpc(Rpc):
             self.executor.close()
             raise
         threading.Thread(target=self.read, daemon=True).start()
+
+    def fail(self, diagnostic):
+        with self.failure_lock:
+            if self.failure is None and not self.stopped:
+                self.failure = diagnostic
+                self.broker.revoked = True
+                self.incoming.put(None)
 
     def start(self, config):
         self.executor.call("initialize", {"clientName": "sprowt_muse"})
@@ -161,7 +170,7 @@ class ManagedRpc(Rpc):
             "enforceManagedNetwork": True, "networkProxy": config["proxy"]})
         if result.get("sandboxType") != "linuxSeccomp":
             self.close()
-            raise RuntimeError("Muse requires an enforced guest process sandbox.")
+            raise BridgeFailure("Muse requires an enforced guest process sandbox.")
 
     def envelope(self, value):
         with self.executor_lock:
@@ -169,7 +178,7 @@ class ManagedRpc(Rpc):
                 "writeId": secrets.token_hex(16),
                 "chunk": base64.b64encode((json.dumps(value) + "\n").encode()).decode()})
             if result.get("status") != "accepted":
-                raise RuntimeError("Guest stdin is unavailable.")
+                raise BridgeFailure("Guest stdin is unavailable.")
 
     def write(self, value):
         self.envelope({"channel": "rpc", "value": {"jsonrpc": "2.0", **value}})
@@ -183,15 +192,18 @@ class ManagedRpc(Rpc):
                     if (not isinstance(params, dict) or not isinstance(params.get("name"), str)
                             or not isinstance(params.get("arguments", {}), dict)
                             or params.get("name") not in {tool["name"] for tool in self.tools}):
-                        raise RuntimeError("Tool not advertised")
+                        raise BridgeFailure("Tool not advertised")
                     self.emit({"method": "item/tool/call", "id": "tool:" + value["id"], "params": params})
                     return
                 self.envelope({"channel": "http", "id": value["id"], "status": 403, "done": True})
             else:
                 self.broker.forward(value, lambda reply: self.envelope({"channel": "http", "id": value["id"], **reply}))
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError, queue.Empty):
             if not self.stopped:
-                self.envelope({"channel": "http", "id": value["id"], "status": 502, "done": True})
+                try:
+                    self.envelope({"channel": "http", "id": value["id"], "status": 502, "done": True})
+                except (OSError, RuntimeError, ValueError, queue.Empty) as error:
+                    self.fail(failure(error, "guest input"))
         finally:
             self.pool.release()
 
@@ -206,10 +218,12 @@ class ManagedRpc(Rpc):
                         continue
                     pending += base64.b64decode(chunk["chunk"])
                     if len(pending) > 4 * 1024 * 1024:
-                        raise RuntimeError("Guest frame too large.")
+                        raise BridgeFailure("Muse guest output exceeded the 4 MiB frame limit.", stage="guest output")
                     while b"\n" in pending:
                         line, pending = pending.split(b"\n", 1)
                         value = json.loads(line)
+                        if not isinstance(value, dict):
+                            raise ValueError("Expected a guest envelope")
                         if value.get("channel") == "http":
                             if not self.pool.acquire(blocking=False):
                                 self.envelope({"channel": "http", "id": value["id"], "status": 429, "done": True})
@@ -217,22 +231,30 @@ class ManagedRpc(Rpc):
                                 threading.Thread(target=self.relay, args=(value,), daemon=True).start()
                         elif value.get("channel") == "rpc":
                             self.incoming.put(value["value"])
+                        elif value.get("channel") == "ended":
+                            code = value.get("exit_code")
+                            code = code if type(code) is int else None
+                            self.fail(BridgeFailure(f"Muse guest exited (code {code}).", stage="guest exit", exit_code=code))
+                            return
                         else:
+                            self.fail(BridgeFailure("Muse guest sent invalid protocol output.", stage="guest output"))
                             return
                 cursor = max(cursor, read.get("nextSeq", 1) - 1)
                 if read.get("closed"):
-                    self.failure = "Muse guest exited before responding. Check the VM setup."
+                    self.fail(BridgeFailure("Muse VM process stream closed before the turn finished.", stage="VM transport"))
                     return
                 time.sleep(0.01)
-        except (OSError, RuntimeError, ValueError, queue.Empty):
-            pass
+        except (OSError, RuntimeError, ValueError, KeyError, TypeError, queue.Empty) as error:
+            self.fail(failure(error, "VM transport"))
         finally:
             self.incoming.put(None)
 
     def next(self, timeout=45):
+        if self.failure:
+            raise self.failure
         value = self.incoming.get(timeout=timeout)
         if value is None:
-            raise RuntimeError(self.failure or "Muse guest ended before responding.")
+            raise self.failure or BridgeFailure("Muse guest ended before responding.", stage="guest exit")
         return value
 
     def close(self):
@@ -240,11 +262,16 @@ class ManagedRpc(Rpc):
         self.stopped = True
         try:
             # Let the wrapper clean up native tools before terminating its boundary.
-            with self.executor_lock:
-                self.executor.call("process/write", {"processId": self.process_id, "writeId": secrets.token_hex(16), "chunk": base64.b64encode(b'{"channel":"stop"}\n').decode()})
-            time.sleep(0.1)
-            with self.executor_lock:
-                self.executor.call("process/terminate", {"processId": self.process_id})
+            try:
+                with self.executor_lock:
+                    self.executor.call("process/write", {"processId": self.process_id, "writeId": secrets.token_hex(16), "chunk": base64.b64encode(b'{"channel":"stop"}\n').decode()})
+                time.sleep(0.1)
+            finally:
+                with self.executor_lock:
+                    self.executor.call("process/terminate", {"processId": self.process_id})
+        except (OSError, RuntimeError, ValueError, queue.Empty):
+            # A dead guest cannot acknowledge shutdown; retain the original failure.
+            pass
         finally:
             self.executor.close()
 
@@ -279,7 +306,7 @@ class SessionState:
                 or not all(isinstance(command, dict) and isinstance(command.get("id"), str)
                            for command in saved["commands"].values())
                 or not isinstance(saved.get("sessionId"), str) or not isinstance(saved.get("startId"), str)):
-            raise RuntimeError("Saved Muse recovery state is invalid; work is retained.")
+            raise BridgeFailure("Saved Muse recovery state is invalid; work is retained.")
         self.resuming = bool(saved) and saved.get("cwd") == config["cwd"]
         self.value = saved if self.resuming else {
             "vm": config["name"], "cwd": config["cwd"], "task": int(config["cwd"].rsplit("/", 1)[1]),
@@ -301,6 +328,22 @@ class SessionState:
         finally:
             os.close(directory)
 
+    def record_failure(self, diagnostic):
+        self.value["failure"] = diagnostic.details
+        self.save()
+
+    def recover(self, allow_new):
+        diagnostic = self.value.get("failure") or {}
+        if diagnostic.get("recovery") != "fresh_session":
+            return
+        if not allow_new or any(not c.get("turnId") for c in self.value["commands"].values()):
+            return
+        self.value["previousSession"] = {"id": self.value["sessionId"], "commands": self.value["commands"]}
+        self.value.update(sessionId=command_id(), startId=command_id(), commands={})
+        self.value.pop("failure", None)
+        self.resuming = False
+        self.save()
+
     def command(self, source):
         commands = self.value["commands"]
         if source not in commands:
@@ -310,7 +353,7 @@ class SessionState:
 
     def accepted(self, source, result):
         if result.get("status") != "accepted" or not isinstance(result.get("turnId"), str):
-            raise RuntimeError("Muse returned no accepted turn ID.")
+            raise BridgeFailure("Muse returned no accepted turn ID.")
         self.value["commands"][source]["turnId"] = result["turnId"]
         self.save()
 
@@ -318,7 +361,7 @@ class SessionState:
 def recovered_thread(rpc, state, result):
     session = result["session"]
     if session["sessionId"] != state.value["sessionId"] or session["workspaceRoot"] != state.value["cwd"]:
-        raise RuntimeError("Muse recovery returned a different session or task folder.")
+        raise BridgeFailure("Muse recovery returned a different session or task folder.")
     sources = {v["id"]: source for source, v in state.value["commands"].items()}
     turns, items, cursor, size = {}, {}, None, 0
 
@@ -337,7 +380,7 @@ def recovered_thread(rpc, state, result):
         page = rpc.call("view/page", params)
         size += len(json.dumps(page))
         if size > 8 * 1024 * 1024:
-            raise RuntimeError("Muse recovery history exceeds its limit; delivery remains unconfirmed.")
+            raise BridgeFailure("Muse recovery history exceeds its limit; delivery remains unconfirmed.")
         for event in page["events"]:
             params = event["params"]
             if event["method"].startswith("item/") and "item" in params:
@@ -348,10 +391,10 @@ def recovered_thread(rpc, state, result):
         if next_cursor is None:
             break
         if next_cursor == cursor:
-            raise RuntimeError("Muse recovery cursor did not advance.")
+            raise BridgeFailure("Muse recovery cursor did not advance.")
         cursor = next_cursor
     else:
-        raise RuntimeError("Muse recovery history exceeds its limit; delivery remains unconfirmed.")
+        raise BridgeFailure("Muse recovery history exceeds its limit; delivery remains unconfirmed.")
     history = result.get("history", {})
     snapshot = history.get("snapshot") or {}
     for item in history.get("items") or (snapshot.get("state") or {}).get("items") or []:
@@ -362,11 +405,15 @@ def recovered_thread(rpc, state, result):
     if session.get("activeTurnId"):
         turns[session["activeTurnId"]] = "inProgress"
     grouped = {}
+    confirmed = False
     for item in items.values():
         if item["kind"] == "userMessage":
             source = sources.get(item.get("commandId"))
             if not source:
                 continue
+            if not state.value["commands"][source].get("turnId"):
+                state.value["commands"][source]["turnId"] = item["turnId"]
+                confirmed = True
             value = {"type": "userMessage", "id": item["itemId"], "clientId": source,
                      "content": [{"type": "text", "text": item.get("text", "")} ]}
         elif item.get("status") == "completed":
@@ -374,12 +421,15 @@ def recovered_thread(rpc, state, result):
         else:
             continue
         grouped.setdefault(item["turnId"], []).append(value)
+    if confirmed:
+        state.save()
     return {"id": session["sessionId"], "turns": [
         {"id": turn, "status": turns.get(turn, "interrupted"), "items": values}
         for turn, values in grouped.items()]}
 
 
 def connect(config, tools, state, headers, root, emit, allow_new):
+    state.recover(allow_new)
     broker = Broker(headers, requests=128, lifetime=3600, output_tokens=8192)
     rpc = None
     try:
@@ -395,7 +445,7 @@ def connect(config, tools, state, headers, root, emit, allow_new):
         init = rpc.call("initialize", {"clientInfo": {"name": "sprowt_harness", "version": "0.1"},
             "capabilities": {"experimentalApi": True, "requestedCapabilities": ["sessionMcp"], "userInputDialogs": False}})
         if "sessionMcp" not in init.get("grantedCapabilities", []):
-            raise RuntimeError("Muse did not enable session MCP tools.")
+            raise BridgeFailure("Muse did not enable session MCP tools.")
         rpc.write({"method": "initialized"})
         mcp_config = {"mcpServers": {"sprowt": {"transport": "stdio", "command": "/usr/bin/python3",
             "args": ["/opt/sprowt-muse/bridge.py", "--mcp"], "framing": "lineDelimitedJson", "mode": "required"}}}
@@ -411,7 +461,7 @@ def connect(config, tools, state, headers, root, emit, allow_new):
                 if error.kind != "sessionNotFound":
                     raise
                 if state.value["commands"] and not allow_new:
-                    raise RuntimeError("Muse session is missing. Work and uncertain delivery are retained; Ctrl+R retries recovery.") from error
+                    raise BridgeFailure("Muse session is missing. Work and uncertain delivery are retained; Ctrl+R retries recovery.") from error
                 # A removed VM has no native log. An explicit retry may rebuild from saved source.
                 state.value.update(sessionId=command_id(), startId=command_id(), commands={})
                 state.save()
@@ -443,6 +493,7 @@ def host():
 
     threading.Thread(target=receive, daemon=True).start()
     rpc, state, root = None, None, tempfile.TemporaryDirectory(prefix="sprowt-muse-auth-")
+    stage = "account login"
     try:
         headers = host_login(Path(root.name), quiet=True)
         emit({"method": "bridge/ready"})
@@ -461,6 +512,7 @@ def host():
                 continue
             if message:
                 method, params = message["method"], message.get("params", {})
+                stage = method
                 try:
                     if method in {"session/resume", "turn/start"}:
                         if rpc:
@@ -473,6 +525,9 @@ def host():
                         if method == "session/resume":
                             result = {"thread": thread}
                         else:
+                            if (state.value.get("failure") or {}).get("recovery") == "fresh_session":
+                                raise BridgeFailure("Muse context is full. Delivery receipts are retained; Ctrl+R retries recovery.",
+                                                    stage="session recovery", recovery="fresh_session")
                             emit({"method": "thread/started", "params": {"thread": {"id": session}}})
                             text = params["text"] + "\nReturn only a JSON object as your final answer matching this schema: " + json.dumps(params["schema"])
                             result = rpc.call("turn/start", {"commandId": state.command(params["source"]), "sessionId": session,
@@ -492,25 +547,28 @@ def host():
                         emit({"id": message["id"], "result": {}})
                         break
                     else:
-                        raise RuntimeError("Unsupported bridge method.")
+                        raise BridgeFailure("Unsupported bridge method.")
                     emit({"id": message["id"], "result": result})
                 except (OSError, RuntimeError, ValueError, queue.Empty, subprocess.SubprocessError) as error:
-                    detail = str(error) if isinstance(error, RuntimeError) else type(error).__name__
+                    diagnostic = failure(error, stage)
+                    if state:
+                        state.record_failure(diagnostic)
                     rejected = (isinstance(error, RpcError) and error.method == method
                         and method in {"turn/start", "turn/steer"}
                         and error.kind in {"commandRejected", "invalidParams", "sessionNotFound"})
-                    emit({"id": message["id"], "error": {"code": -32000, "message": "Muse request failed: " + detail,
+                    emit({"id": message["id"], "error": {"code": -32000, "message": str(diagnostic),
                         "data": {"delivery": "rejected" if rejected else "unknown"}}})
                     if method in {"turn/start", "session/resume"} and rpc:
                         rpc.close()
                         rpc = None
             if rpc:
+                stage = "turn"
                 messages, rpc.buffered = rpc.buffered, []
+                ended = False
                 while not rpc.incoming.empty():
                     value = rpc.incoming.get()
                     if value is None:
-                        if not any(m.get("method") == "turn/completed" for m in messages):
-                            raise RuntimeError("Muse guest process ended unexpectedly.")
+                        ended = True
                         break
                     messages.append(value)
                 for value in messages:
@@ -522,6 +580,13 @@ def host():
                             rpc.close()
                             rpc = None
                         emit(translated)
+                if ended and rpc:
+                    raise rpc.failure or BridgeFailure("Muse guest process ended before the turn finished.", stage="guest exit")
+    except (OSError, RuntimeError, ValueError, KeyError, queue.Empty) as error:
+        diagnostic = failure(error, stage)
+        if state:
+            state.record_failure(diagnostic)
+        raise diagnostic from error
     finally:
         if rpc:
             rpc.close()
@@ -540,6 +605,7 @@ if __name__ == "__main__":
             print(artifact(Path(sys.argv[2])), flush=True)
         else:
             host()
-    except (OSError, RuntimeError, ValueError, KeyError, queue.Empty):
-        print(json.dumps({"method": "bridge/failed", "params": {"message": "Muse bridge failed. Verify the supported account login and VM setup."}}), flush=True)
+    except (OSError, RuntimeError, ValueError, KeyError, queue.Empty) as error:
+        diagnostic = failure(error, "adapter")
+        print(json.dumps({"method": "bridge/failed", "params": diagnostic.details}), flush=True)
         sys.exit(1)

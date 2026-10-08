@@ -2,16 +2,215 @@ import sys
 from pathlib import Path
 import base64
 import json
+import io
 import os
+import queue
 import tempfile
 import threading
 import unittest
+import urllib.error
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from muse_bridge import ManagedRpc, SessionState, connect, recovered_thread, normalize, final_report
-from muse_transport import Broker
+from muse_bridge import ManagedRpc, SessionState, connect, recovered_thread, normalize, final_report, host
+from muse_transport import BridgeFailure, Broker, provider_failure, failure
 import muse_transport
+
+
+def bridge_fixture():
+    bridge = object.__new__(ManagedRpc)
+    bridge.broker = Broker({"authorization": "Bearer synthetic-provider-secret"})
+    bridge.broker.on_failure = bridge.fail
+    bridge.tools = []
+    bridge.stopped = False
+    bridge.failure = None
+    bridge.failure_lock = threading.Lock()
+    bridge.executor_lock = threading.Lock()
+    bridge.process_id = "fixture-process"
+    bridge.executor = Mock()
+    bridge.incoming = queue.Queue()
+    bridge.buffered = []
+    bridge.pool = threading.BoundedSemaphore(1)
+    return bridge
+
+
+def rejected(status=400, code="invalid_request_error", message="Invalid request"):
+    body = json.dumps({"error": {"code": code, "message": message}}).encode()
+    return urllib.error.HTTPError("https://api.meta.ai/v1/responses", status, "rejected", {}, io.BytesIO(body))
+
+
+class FailureTests(unittest.TestCase):
+    def test_provider_rejection_stops_retries_and_keeps_redacted_cause(self):
+        bridge = bridge_fixture()
+        secret, cap = bridge.broker.secret.decode(), bridge.broker.capability
+        message = f"Invalid context: {secret} {base64.b64encode(secret.encode()).decode()} {cap} https://private.invalid/?token=secret\n\x1bsecret"
+        bridge.broker.opener = Mock()
+        bridge.broker.opener.open.side_effect = rejected(message=message)
+        request = {"method": "POST", "path": "/responses", "authorization": "Bearer " + cap,
+                   "body": base64.b64encode(json.dumps({"model": muse_transport.MODEL, "stream": True}).encode()).decode()}
+        replies = []
+        bridge.broker.forward(request, replies.append)
+        bridge.broker.forward(request, replies.append)
+        bridge.broker.opener.open.assert_called_once()
+        with self.assertRaisesRegex(BridgeFailure, "HTTP 400") as caught:
+            bridge.next()
+        diagnostic = str(caught.exception)
+        self.assertIn("invalid_request_error", diagnostic)
+        self.assertNotIn(secret, diagnostic)
+        self.assertNotIn(cap, diagnostic)
+        self.assertNotIn("private.invalid", diagnostic)
+        self.assertTrue(all(c.isprintable() for c in diagnostic))
+        self.assertNotIn(secret, json.dumps(replies))
+        bridge.fail(BridgeFailure("later shutdown failure"))
+        self.assertIs(bridge.failure, caught.exception)
+
+    def test_transient_http_failures_keep_native_retries(self):
+        for status in (408, 429, 500, 502, 503):
+            bridge = bridge_fixture()
+            bridge.broker.opener = Mock()
+            bridge.broker.opener.open.side_effect = rejected(status)
+            request = {"method": "GET", "path": "/muse-code/models", "body": "",
+                       "authorization": "Bearer " + bridge.broker.capability}
+            replies = []
+            bridge.broker.forward(request, replies.append)
+            bridge.broker.forward(request, replies.append)
+            self.assertEqual(bridge.broker.opener.open.call_count, 2)
+            self.assertIsNone(bridge.failure)
+            self.assertEqual(replies[-1]["status"], status)
+
+    def test_oversized_malformed_or_non_json_errors_stay_bounded(self):
+        for body in (b"secret " * 1500, b"not json", b"[]", b'{"error":"private text"}'):
+            error = urllib.error.HTTPError("unused", 400, "rejected", {}, io.BytesIO(body))
+            diagnostic = provider_failure(error, [])
+            self.assertEqual(diagnostic.details["recovery"], "retry")
+            self.assertLess(len(str(diagnostic)), 160)
+            self.assertNotIn("private text", str(diagnostic))
+
+    def test_transport_diagnostics_do_not_dump_exception_content(self):
+        for error in (ValueError("private body"), OSError(32, "private body"), queue.Empty()):
+            self.assertNotIn("private body", str(failure(error, "VM transport")))
+        self.assertIn("timed out", str(failure(queue.Empty(), "VM transport")))
+
+    def test_error_details_redact_quoted_credentials_and_auth_failures_do_not_reset(self):
+        diagnostic = provider_failure(rejected(401, "context_length_exceeded",
+            'Invalid "api_key": "private-value", password=also-private'), [])
+        self.assertNotIn("private-value", str(diagnostic))
+        self.assertNotIn("also-private", str(diagnostic))
+        self.assertIn("muse login", str(diagnostic))
+        self.assertEqual(diagnostic.details["recovery"], "retry")
+
+    def test_guest_exit_and_broken_transport_keep_their_cause(self):
+        bridge = bridge_fixture()
+        frame = json.dumps({"channel": "ended", "exit_code": -9}).encode() + b"\n"
+        bridge.executor.call.return_value = {"chunks": [{"stream": "stdout", "chunk": base64.b64encode(frame).decode()}]}
+        bridge.read()
+        with self.assertRaisesRegex(BridgeFailure, "code -9"):
+            bridge.next()
+        self.assertEqual(bridge.failure.details["exit_code"], -9)
+        for problem in (queue.Empty(), OSError(32, "private"), {"bad": "shape"}):
+            bridge = bridge_fixture()
+            bridge.executor.call.side_effect = [problem]
+            bridge.read()
+            with self.assertRaisesRegex(BridgeFailure, "VM transport"):
+                bridge.next()
+
+    def test_shutdown_still_terminates_after_a_broken_input_pipe(self):
+        bridge = bridge_fixture()
+        original = BridgeFailure("Muse provider HTTP 400.")
+        bridge.fail(original)
+        bridge.executor.call.side_effect = [BrokenPipeError(), {}]
+        bridge.close()
+        self.assertEqual([c.args[0] for c in bridge.executor.call.call_args_list], ["process/write", "process/terminate"])
+        bridge.executor.close.assert_called_once()
+        self.assertIs(bridge.failure, original)
+
+    def test_context_recovery_retains_receipts_and_requires_safe_retry(self):
+        for allow_new, accepted in ((False, True), (True, False), (True, True)):
+            with tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "state.json"
+                config = {"name": "vm", "cwd": "/tasks/7"}
+                state = SessionState(path, config)
+                source = state.command("source")
+                if accepted:
+                    state.accepted("source", {"status": "accepted", "turnId": "turn"})
+                state.record_failure(provider_failure(rejected(code="context_length_exceeded"), []))
+                before = path.read_bytes()
+                reloaded = SessionState(path, config)
+                if allow_new and accepted:
+                    reloaded.recover(True)
+                    self.assertFalse(reloaded.resuming)
+                    self.assertNotEqual(reloaded.value["sessionId"], state.value["sessionId"])
+                    self.assertEqual(reloaded.value["previousSession"]["commands"]["source"]["id"], source)
+                    self.assertEqual(reloaded.value["commands"], {})
+                    self.assertNotIn("failure", reloaded.value)
+                    again = SessionState(path, config)
+                    again.recover(True)
+                    self.assertEqual(again.value["sessionId"], reloaded.value["sessionId"])
+                else:
+                    reloaded.recover(allow_new)
+                    self.assertTrue(reloaded.resuming)
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_unclassified_400_does_not_reset_the_conversation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            config = {"name": "vm", "cwd": "/tasks/7"}
+            state = SessionState(path, config)
+            state.command("uncertain")
+            state.record_failure(provider_failure(rejected(), []))
+            before = path.read_bytes()
+            SessionState(path, config).recover(True)
+            self.assertEqual(path.read_bytes(), before)
+
+    def test_resumed_review_failure_saves_diagnostics_and_accepted_delivery(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            config = {"name": "vm", "cwd": "/tasks/7"}
+            saved = SessionState(path, config)
+            saved.command("first-task")
+            saved.accepted("first-task", {"status": "accepted", "turnId": "first-turn"})
+            bridge = bridge_fixture()
+            bridge.write = Mock()
+            bridge.call = Mock(return_value={"status": "accepted", "turnId": "repair-turn"})
+            bridge.close = Mock()
+            bridge.fail(provider_failure(rejected(message="Invalid request payload"), []))
+            request = {"id": 1, "method": "turn/start", "params": {"state": str(path), "config": config,
+                       "tools": [], "text": "Fix the review finding", "source": "review-fix", "schema": {}}}
+            output = io.StringIO()
+            with patch("muse_bridge.host_login", return_value={}), patch("muse_bridge.connect", return_value=(bridge, {"id": saved.value["sessionId"]})), \
+                    patch("sys.stdin", io.StringIO(json.dumps(request) + "\n")), patch("sys.stdout", output):
+                with self.assertRaisesRegex(BridgeFailure, "HTTP 400"):
+                    host()
+            reloaded = SessionState(path, config)
+            self.assertEqual(reloaded.value["commands"]["review-fix"]["turnId"], "repair-turn")
+            self.assertEqual(reloaded.value["commands"]["first-task"]["turnId"], "first-turn")
+            self.assertEqual(reloaded.value["failure"]["http_status"], 400)
+            self.assertIn('"result": {"status": "accepted"', output.getvalue())
+            bridge.close.assert_called_once()
+
+    def test_completed_turn_followed_by_exit_keeps_the_completed_report(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "state.json"
+            config = {"name": "vm", "cwd": "/tasks/7"}
+            bridge = bridge_fixture()
+            bridge.call = Mock(return_value={"status": "accepted", "turnId": "turn"})
+            bridge.close = Mock()
+            report = '{"status":"completed","summary":"Done","checks":[]}'
+            bridge.incoming.put({"method": "item/completed", "params": {"item": {
+                "kind": "agentMessage", "itemId": "final", "text": report}}})
+            bridge.incoming.put({"method": "turn/completed", "params": {"turnId": "turn", "terminal": "completed"}})
+            bridge.fail(BridgeFailure("guest exited"))
+            request = {"id": 1, "method": "turn/start", "params": {"state": str(path), "config": config,
+                       "tools": [], "text": "Task", "source": "task", "schema": {}}}
+            output = io.StringIO()
+            with patch("muse_bridge.host_login", return_value={}), patch("muse_bridge.connect", return_value=(bridge, {"id": "session"})), \
+                    patch("sys.stdin", io.StringIO(json.dumps(request) + "\n")), patch("sys.stdout", output):
+                host()
+            events = [json.loads(line) for line in output.getvalue().splitlines()]
+            self.assertEqual(events[-2]["params"]["item"]["text"], report)
+            self.assertEqual(events[-1]["params"]["turn"]["status"], "completed")
+            self.assertNotIn("failure", json.loads(path.read_text()))
+            bridge.close.assert_called_once()
 
 
 class ProtocolTests(unittest.TestCase):
@@ -52,6 +251,9 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual([i.get("clientId") for i in thread["turns"][0]["items"]], ["task-source", "steering-source", None])
             self.assertEqual(thread["turns"][0]["items"][-1]["phase"], "final_answer")
             self.assertEqual(thread["turns"][0]["items"][-1]["text"], report)
+            saved = SessionState(state.path, {"name": "vm", "cwd": "/tasks/7"})
+            self.assertEqual(saved.value["commands"]["task-source"]["turnId"], "native-turn")
+            self.assertEqual(saved.value["commands"]["steering-source"]["turnId"], "native-turn")
             rpc.call.assert_called_once_with("view/page", {"sessionId": state.value["sessionId"], "limit": 1000})
 
     def test_paging_confirms_only_native_receipts_and_retains_latest_item_revision(self):

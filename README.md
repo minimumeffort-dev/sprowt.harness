@@ -67,6 +67,8 @@ Each codemod has two active slots: two Codex, two Muse or one of each. Both prov
 
 Muse resumes its native task conversation after a stop or harness restart while the VM disk remains. Saved delivery IDs are checked against native receipts before any retry. Completed work goes straight to verification; unknown delivery stays paused. Starting another task creates a separate conversation.
 
+Muse failures show the provider's redacted rejection or the guest/transport cause. Permanent request rejections stop automatic retries. A confirmed context limit can rebuild the conversation from saved work on a safe retry; uncertain delivery stays paused.
+
 Late handoff acknowledgements keep the worker's valid task report. New blockers take precedence, and user steering requires a fresh report. Each planned check can have several commands. Rust requires every declared check and reruns every command against current files before accepting completion.
 
 Publishing keeps the VM and worktree for further edits. Task environments stay through checks, review and repairs; a new plan removes the old task folders. Missing check executables return to their original worker for one bounded recovery attempt. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.

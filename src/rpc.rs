@@ -93,6 +93,9 @@ impl Rpc {
     }
 
     pub fn receive(&mut self, message: Value) -> io::Result<()> {
+        if message["method"] == "bridge/failed" {
+            return Err(bridge_error(&message));
+        }
         if message.get("method").is_some() && message.get("id").is_some() {
             if self.client_tools && message["method"] == "item/tool/call" {
                 self.buffered.push(message);
@@ -108,6 +111,17 @@ impl Rpc {
     }
 }
 
+pub fn bridge_error(message: &Value) -> io::Error {
+    let detail: String = message["params"]["message"]
+        .as_str()
+        .unwrap_or("Muse bridge stopped without diagnostic details.")
+        .chars()
+        .filter(|ch| !ch.is_control())
+        .take(800)
+        .collect();
+    io::Error::other(format!("{detail} Work is retained."))
+}
+
 pub fn terminate(child: &mut Child) {
     #[cfg(unix)]
     unsafe {
@@ -120,6 +134,28 @@ pub fn terminate(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bridge_failure_preserves_cause_during_requests_without_rejecting_delivery() {
+        let script = "import json,sys; json.loads(sys.stdin.readline()); print(json.dumps({'method':'bridge/failed','params':{'message':'Muse provider HTTP 400: invalid request.'}}),flush=True)";
+        let (mut child, mut rpc) =
+            Rpc::start(Command::new("python3").args(["-c", script])).unwrap();
+        let error = rpc.call("turn/start", json!({})).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert!(error.to_string().contains("provider HTTP 400"));
+        assert!(error.to_string().contains("Work is retained"));
+        terminate(&mut child);
+    }
+
+    #[test]
+    fn bridge_failure_is_bounded_without_terminal_control_characters() {
+        let message =
+            json!({"params":{"message":format!("guest exited\u{1b}\n{}", "x".repeat(2000))}});
+        let text = bridge_error(&message).to_string();
+        assert!(text.starts_with("guest exited"));
+        assert!(text.chars().all(|ch| !ch.is_control()));
+        assert!(text.len() < 850);
+    }
 
     #[test]
     fn uncertain_bridge_errors_are_not_delivery_rejections() {

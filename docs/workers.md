@@ -111,6 +111,17 @@ Session and command IDs save on the Mac before submission. Accepted turn IDs sav
 
 An interrupted turn waits for **Ctrl+R**. A completed turn reruns independent checks without asking Muse to implement it again. Missing or unreadable native history keeps uncertain delivery paused. Recovery is bounded to 64 pages and 8 MiB; oversized histories pause too.
 
+### Bridge failures
+
+Error details distinguish provider rejections, guest exit codes and VM transport failures. Provider details are bounded and redact credentials and URLs. Raw response bodies, headers and process stderr are not saved. The original cause survives cleanup failures and is saved beside the worker's delivery state.
+
+- Permanent HTTP 4xx rejections stop automatic retries. **401** points to `muse login` on your Mac.
+- **408**, **429** and server failures keep the native CLI's bounded retry behavior.
+- A confirmed context-limit code permits a fresh conversation on the next safe reconnect. The task brief, saved source and accepted instructions rebuild context; the previous session ID and receipts remain saved. Unknown request failures do not reset conversations.
+- Any uncertain delivery prevents a context reset. The harness keeps its receipt checks before resending instructions.
+
+**Ctrl+R** retries the paused task. Completed peers stay complete; a bridge failure never counts as task completion.
+
 Another task or edit round starts a new session with its own folder and permissions. Closing or deleting removes the VM and its native logs. After reopening a closed mod, explicit retry rebuilds context from the saved plan, source and accepted instructions; the old native tool history is unavailable.
 
 ## Independent reviewer

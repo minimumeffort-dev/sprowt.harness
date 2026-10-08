@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import queue
+import re
 import secrets
 import signal
 import subprocess
@@ -16,13 +17,69 @@ import threading
 import time
 import urllib.request
 import urllib.error
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.client import HTTPException
 
 MODEL = "muse-spark-1.3"
 ORIGIN = "https://api.meta.ai"
 VERSION = "1.4.3-R5018.1"
 CHECKSUM = "6426c76a0081f20d60f6cad03308a147d79ce45758f1a89fd2713253cf475497"
 IMAGE = "sprowt-sandbox:0.159.2-v1"
+
+
+class BridgeFailure(RuntimeError):
+    """Only bounded, credential-free diagnostics cross the bridge."""
+    def __init__(self, message, **details):
+        self.details = {"message": message, **details}
+        super().__init__(message)
+
+
+def failure(error, stage):
+    if isinstance(error, BridgeFailure):
+        return error
+    if isinstance(error, queue.Empty):
+        reason = "response timed out"
+    elif isinstance(error, RpcError):
+        reason = str(error)
+    elif isinstance(error, OSError):
+        reason = f"I/O failed (errno {error.errno})"
+    else:
+        # Exception strings can include request bodies, paths or credentials.
+        reason = type(error).__name__
+    return BridgeFailure(f"Muse {stage}: {reason}.", stage=stage)
+
+
+def provider_failure(error, secrets_to_hide):
+    detail, code = "", None
+    try:
+        raw = error.read(8193)
+        body = json.loads(raw) if len(raw) <= 8192 else {}
+        value = body.get("error", {}) if isinstance(body, dict) else {}
+        if isinstance(value, dict):
+            code = value.get("code")
+            detail = " · ".join(str(value[k]) for k in ("code", "message")
+                                if isinstance(value.get(k), (str, int)))
+    except (OSError, ValueError, HTTPException):
+        pass
+    for secret in secrets_to_hide:
+        if secret:
+            for encoded in (secret, base64.b64encode(secret.encode()).decode(),
+                            urllib.parse.quote(secret, safe="")):
+                detail = detail.replace(encoded, "[redacted]")
+    detail = re.sub(r"https?://\S+", "[url]", detail)
+    detail = re.sub(r"(?i)(?:bearer\s+|(?:authorization|api[_-]?key|access[_-]?token|password)[\"']?\s*[:=]\s*[\"']?)[^\s,;\"']+",
+                    "[redacted]", detail)
+    detail = re.sub(r"[A-Za-z0-9_+/=.-]{40,}", "[redacted]", detail)
+    detail = " ".join(detail.split())
+    detail = "".join(c for c in detail if c.isprintable())[:400]
+    context = error.code in (400, 413) and code in ("context_length_exceeded", "max_context_length_exceeded")
+    hint = ("Ctrl+R starts a fresh conversation from saved work." if context else
+            "Run muse login on your Mac, then Ctrl+R." if error.code == 401 else
+            "Request rejected; automatic retries stopped.")
+    return BridgeFailure(f"Muse provider HTTP {error.code}" + (f" · {detail}" if detail else "")
+                         + f". {hint}", stage="provider", http_status=error.code,
+                         recovery="fresh_session" if context else "retry")
 
 
 def command_id():
@@ -71,14 +128,18 @@ class Rpc:
         self.incoming = queue.Queue()
         self.counter = 0
         self.buffered = []
+        self.failure = None
         threading.Thread(target=self.read, daemon=True).start()
 
     def read(self):
         try:
             for line in self.process.stdout:
-                self.incoming.put(json.loads(line))
-        except (ValueError, OSError):
-            pass
+                value = json.loads(line)
+                if not isinstance(value, dict):
+                    raise ValueError("Expected an RPC object")
+                self.incoming.put(value)
+        except (ValueError, OSError) as error:
+            self.failure = failure(error, "CLI output")
         finally:
             self.incoming.put(None)
 
@@ -89,7 +150,8 @@ class Rpc:
     def next(self, timeout=45):
         value = self.incoming.get(timeout=timeout)
         if value is None:
-            raise RuntimeError("CLI process ended before responding.")
+            code = self.process.poll()
+            raise self.failure or BridgeFailure(f"Muse CLI process ended (code {code}).", stage="CLI exit", exit_code=code)
         return value
 
     def call(self, method, params):
@@ -109,10 +171,13 @@ class Rpc:
 
     def close(self):
         if self.process.poll() is None:
-            if self.own_group:
-                os.killpg(self.process.pid, signal.SIGKILL)
-            else:
-                self.process.kill()
+            try:
+                if self.own_group:
+                    os.killpg(self.process.pid, signal.SIGKILL)
+                else:
+                    self.process.kill()
+            except ProcessLookupError:
+                pass
         self.process.wait()
         try:
             self.process.stdin.close()
@@ -233,6 +298,8 @@ class Broker:
         self.guard = threading.Lock()
         self.revoked = False
         self.completed = 0
+        self.failure = None
+        self.on_failure = lambda _: None
         self.opener = urllib.request.build_opener(NoRedirect())
 
     def allow(self, request):
@@ -289,7 +356,12 @@ class Broker:
                     self.completed += 1
                 emit({"done": True})
         except urllib.error.HTTPError as error:
-            print(f"Provider HTTP {error.code}; response body withheld.", file=sys.stderr)
+            if 400 <= error.code < 500 and error.code not in (408, 429):
+                diagnostic = provider_failure(error, [self.secret.decode(), self.capability])
+                with self.guard:
+                    self.failure = diagnostic
+                    self.revoked = True
+                self.on_failure(diagnostic)
             emit({"status": error.code, "done": True})
         except (OSError, RuntimeError):
             emit({"status": 502, "done": True})
@@ -349,7 +421,9 @@ def guest(start_client):
         try:
             for line in client.stdout:
                 emit({"channel": "rpc", "value": json.loads(line)})
-        finally:
+        except (OSError, ValueError) as error:
+            emit({"channel": "failed", **failure(error, "guest output").details})
+        else:
             emit({"channel": "ended", "exit_code": client.wait()})
 
     threading.Thread(target=read, daemon=True).start()
