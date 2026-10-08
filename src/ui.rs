@@ -1219,10 +1219,7 @@ fn plan_lines(
                     .iter()
                     .filter(|c| c.exit_code == Some(0))
                     .count(),
-                plan.tasks
-                    .iter()
-                    .map(|task| task.checks.len())
-                    .sum::<usize>()
+                execution.check_count(plan)
             ))
             .fg(ACCENT),
         );
@@ -1404,38 +1401,53 @@ fn plan_lines(
                     .iter()
                     .filter(|check| check.exit_code == Some(0))
                     .count();
+                let total = run.checks.len().max(task.checks.len());
+                let failed = run
+                    .checks
+                    .iter()
+                    .filter(|check| check.exit_code.is_some_and(|code| code != 0))
+                    .count();
                 lines.push(
                     Line::from(format!(
-                        "   verification · {passed}/{} passed · {} failed · {} not run",
-                        task.checks.len(),
-                        run.checks.len() - passed,
-                        task.checks.len().saturating_sub(run.checks.len())
+                        "   verification · {passed}/{total} passed · {failed} failed · {} not run",
+                        total - passed - failed
                     ))
-                    .fg(if passed == task.checks.len() {
-                        ACCENT
-                    } else {
-                        Color::Red
-                    }),
+                    .fg(if passed == total { ACCENT } else { Color::Red }),
                 );
             }
             lines.push(Line::from("   checks").fg(KEY_HINT));
             for check in &task.checks {
-                let result =
-                    run.and_then(|run| run.checks.iter().find(|result| &result.check == check));
+                let results = run
+                    .map(|run| {
+                        run.checks
+                            .iter()
+                            .filter(|result| &result.check == check)
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
                 lines.push(Line::from(format!(
                     "   {} {check}{}",
-                    result.map_or("·", |result| if result.exit_code == Some(0) {
+                    if results.is_empty() {
+                        "·"
+                    } else if results.iter().all(|result| result.exit_code == Some(0)) {
                         "✓"
-                    } else {
+                    } else if results
+                        .iter()
+                        .any(|result| result.exit_code.is_some_and(|code| code != 0))
+                    {
                         "!"
-                    }),
-                    if result.is_none() && run.is_some_and(|run| !run.checks.is_empty()) {
+                    } else {
+                        "·"
+                    },
+                    if results.is_empty() && run.is_some_and(|run| !run.checks.is_empty()) {
                         " · not run"
+                    } else if results.iter().any(|result| result.exit_code.is_none()) {
+                        " · incomplete"
                     } else {
                         ""
                     }
                 )));
-                if let Some(result) = result {
+                for result in results {
                     lines.extend(command_lines(&result.command, width));
                     if result.exit_code != Some(0) {
                         lines.extend(
@@ -1487,10 +1499,7 @@ fn plan_lines(
                             .iter()
                             .filter(|check| check.exit_code == Some(0))
                             .count(),
-                        plan.tasks
-                            .iter()
-                            .map(|task| task.checks.len())
-                            .sum::<usize>()
+                        execution.check_count(plan)
                     ))
                     .fg(KEY_HINT),
                 );

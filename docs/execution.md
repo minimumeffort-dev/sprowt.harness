@@ -58,7 +58,9 @@ One controller owns VM startup and shutdown, task checkpoints, Git integration a
 
 Workers prepare project runtimes and dependencies; missing OS packages go through the [VM setup tool](sandbox.md#system-packages).
 
-Each task returns a short summary and runnable commands for every declared check. Rust reruns them with a 30-second limit per command. Missing checks, nonzero exits, timeouts or checks that change source files block completion. Passing tasks are merged into the integration branch one at a time, as they finish. A conflict pauses execution and keeps both versions. The saved draft includes non-conflicting changes and conflict markers. **Ctrl+R** asks the worker to resolve them, or send an edit request to replan.
+Each task returns a short summary and runnable commands for every declared check. One check can need several commands; each uses that check's exact name. Rust groups them in plan order and reruns every command with a 30-second limit. Missing or undeclared checks, nonzero exits, timeouts or commands that change source files block completion. Commands skipped after failure or interruption stay saved as unrun.
+
+Passing tasks are merged into the integration branch one at a time, as they finish. A conflict pauses execution and keeps both versions. The saved draft includes non-conflicting changes and conflict markers. **Ctrl+R** asks the worker to resolve them, or send an edit request to replan.
 
 A late peer acknowledgement with no check commands keeps the last valid task report. A newer full report, blocker or repair request takes precedence. User steering clears the previous report and requires a fresh one. Live turns and recovered history follow the same rule; retained commands still run against the current source before completion.
 
@@ -66,7 +68,7 @@ After all tasks finish, the harness updates each task folder to the combined sou
 
 Each active task has a spinner and worker ID through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide workers; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.
 
-Details count passed, failed and unrun checks, and show the assertion or error from failed output. The worker's summary is labelled **worker report**; independently rerun checks decide completion.
+Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Failed output shows the assertion or error. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
 
 Finished versions show compact task rows, the final check count and the publish action. **Ctrl+T** opens saved worker narration and handoffs separately from plan details. Questions for you stay visible in the conversation.
 

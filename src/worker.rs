@@ -728,11 +728,30 @@ impl Worker {
             }
             Event::Checked {
                 source,
-                checks,
+                mut checks,
                 before,
             } if self.task_source.as_deref() == Some(&source) => {
                 self.verify_before = Some(before);
                 let passed = self.checks_passed(code_mod, &checks);
+                let matched = checks.len() <= self.verification.len()
+                    && checks
+                        .iter()
+                        .zip(&self.verification)
+                        .all(|(result, expected)| {
+                            result.check == expected.check && result.command == expected.command
+                        });
+                if matched {
+                    // Retain commands skipped after a failure or interruption.
+                    checks.extend(self.verification.iter().skip(checks.len()).map(|check| {
+                        crate::execution::CheckResult {
+                            task: check.task,
+                            check: check.check.clone(),
+                            command: check.command.clone(),
+                            exit_code: None,
+                            output: "Not run.".into(),
+                        }
+                    }));
+                }
                 if source.starts_with("final:") {
                     let fingerprint = if passed {
                         self.verify_before
@@ -773,13 +792,7 @@ impl Worker {
                     && self.enabled
                     && self.status == Status::Checking
                     && failure.is_some_and(|check| check.exit_code.is_some_and(|code| code > 0))
-                    && checks.len() <= self.verification.len()
-                    && checks
-                        .iter()
-                        .zip(&self.verification)
-                        .all(|(result, expected)| {
-                            result.check == expected.check && result.command == expected.command
-                        })
+                    && matched
                     && store.recover_verification(self.mod_id, &source, self.id)?;
                 let summary = format!(
                     "{} · {}\n{}",
@@ -2489,6 +2502,106 @@ mod tests {
 
     fn report_item(text: &Value) -> Value {
         json!({"type":"agentMessage","phase":"final_answer","text":text.to_string()})
+    }
+
+    #[test]
+    fn multiple_commands_per_check_are_verified_and_partial_results_stay_incomplete() {
+        for provider in ["codex", "muse"] {
+            for case in ["pass", "extra fails", "interrupted"] {
+                let (_data, mut store, mut m, mut worker, mut report) = reported_task();
+                worker.provider = provider.into();
+                worker.id = store
+                    .worker_provider(m.id, Role::Executor, 0, provider)
+                    .unwrap()
+                    .id;
+                store
+                    .0
+                    .execute(
+                        "UPDATE task_runs SET worker_id=?1 WHERE mod_id=?2",
+                        rusqlite::params![worker.id, m.id],
+                    )
+                    .unwrap();
+                m.execution = store.execution(m.id).unwrap();
+                let (client, actions) = Client::recording();
+                worker.client = Some(client);
+                let original = report["checks"][0].clone();
+                for flag in ["extra-one", "extra-two"] {
+                    let mut extra = original.clone();
+                    extra["command"] = json!(["/bin/sh", "-c", "exit 0", flag]);
+                    report["checks"].as_array_mut().unwrap().push(extra);
+                }
+                worker
+                    .item(&store, &mut m, &report_item(&report), false)
+                    .unwrap();
+                worker.complete_task(&mut store, &mut m).unwrap();
+                let Action::Verify { source, checks } = actions.try_recv().unwrap() else {
+                    panic!("Every reported command must be independently verified")
+                };
+                assert_eq!(checks.len(), 5);
+                let count = if case == "pass" { 5 } else { 2 };
+                let results = checks
+                    .into_iter()
+                    .take(count)
+                    .enumerate()
+                    .map(|(i, c)| crate::execution::CheckResult {
+                        task: c.task,
+                        check: c.check,
+                        command: c.command,
+                        exit_code: Some(if case == "extra fails" && i == 1 {
+                            1
+                        } else {
+                            0
+                        }),
+                        output: if case == "extra fails" && i == 1 {
+                            "AssertionError: extra check failed".into()
+                        } else {
+                            String::new()
+                        },
+                    })
+                    .collect();
+                worker
+                    .receive(
+                        Event::Checked {
+                            source,
+                            checks: results,
+                            before: workspace::source_state(
+                                &m.execution.as_ref().unwrap().workspace.join("work"),
+                            )
+                            .unwrap(),
+                        },
+                        &mut store,
+                        &mut m,
+                    )
+                    .unwrap();
+                let execution = store.execution(m.id).unwrap().unwrap();
+                let run = &execution.tasks[0];
+                let saved = if case == "extra fails" {
+                    assert_eq!(run.status, "pending");
+                    assert_eq!(run.verification_feedback[1].exit_code, Some(1));
+                    &run.verification_feedback
+                } else {
+                    assert_eq!(run.status, if case == "pass" { "done" } else { "blocked" });
+                    &run.checks
+                };
+                assert_eq!(saved.len(), 5);
+                assert!(saved[count..].iter().all(|c| c.exit_code.is_none()));
+                if case == "pass" {
+                    assert_eq!(
+                        execution.check_count(m.planning.as_ref().unwrap().plan.as_ref().unwrap()),
+                        5
+                    );
+                    worker.turn = None;
+                    worker
+                        .poll(&mut store, &mut m, true, Path::new("/planner-project"))
+                        .unwrap();
+                    let Action::Verify { source, checks } = actions.try_recv().unwrap() else {
+                        panic!("Combined verification must retain every command")
+                    };
+                    assert!(source.starts_with("final:"));
+                    assert_eq!(checks.len(), 5);
+                }
+            }
+        }
     }
 
     #[test]

@@ -56,7 +56,7 @@ Codex’s configured effort is used when available. When unset, the harness read
 
 Plans show task titles, outcomes and dependencies first. **Ctrl+O · Show/Hide plan details** is available through the dock and All actions. It expands file scopes, completion checks and planner model details. Check commands appear in indented blocks; multiline code keeps its source indentation, and wrapped lines stay inside the block. Expanding keeps the heading in view and leaves the draft and queue intact. Details start collapsed when you switch mods or reopen the project.
 
-Check details count passed, failed and unrun checks. Failed output starts at the assertion or error; summaries are labelled **worker report**. During automatic recovery, the previous failure stays in details. Controller results decide whether work is complete.
+Check details count passed, failed and unrun commands. Several commands can belong to one planned check; all appear beneath it, and all must pass. Failed output starts at the assertion or error; summaries are labelled **worker report**. During automatic recovery, the previous failure stays in details. Controller results decide whether work is complete.
 
 **Ctrl+T** opens a separate worker history panel with saved narration, model and effort, and [worker messages](coordination.md). Scroll with ↑/↓ or Fn+↑/↓ on Mac; Esc returns to the same draft, queue and plan view. Questions for you stay visible in the conversation with the sender and message ID; the composer says **answer #ID** and Enter saves your reply.
 

@@ -5341,6 +5341,66 @@ mod tests {
     }
 
     #[test]
+    fn repeated_check_names_show_every_command_and_accurate_progress() {
+        for failed in [false, true] {
+            let (_data, mut app, _) = execution_app();
+            let m = &mut app.mods[0];
+            m.planning.as_mut().unwrap().plan.as_mut().unwrap().tasks[0].checks =
+                vec!["Real model".into(), "Browser flows".into(), "Suites".into()];
+            let execution = m.execution.as_mut().unwrap();
+            let run = &mut execution.tasks[0];
+            run.checks = [
+                "Real model",
+                "Real model",
+                "Real model",
+                "Browser flows",
+                "Suites",
+            ]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| crate::execution::CheckResult {
+                task: Some(run.id),
+                check: (*name).into(),
+                command: vec!["/bin/check".into(), format!("--scenario-{i}")],
+                exit_code: if failed && i > 1 {
+                    None
+                } else {
+                    Some(i64::from(failed && i == 1))
+                },
+                output: if failed && i == 1 {
+                    "AssertionError: relevance".into()
+                } else {
+                    String::new()
+                },
+            })
+            .collect();
+            run.status = if failed { "blocked" } else { "done" }.into();
+            execution.status = if failed { "blocked" } else { "review" }.into();
+            execution.checks = run.checks.clone();
+            app.plan_details = true;
+            let rendered = rows(&screen(&mut app, 120, 70)).join("\n");
+            for i in 0..5 {
+                assert!(rendered.contains(&format!("--scenario-{i}")), "{rendered}");
+            }
+            assert!(!rendered.contains("5/3"), "{rendered}");
+            if failed {
+                assert!(
+                    rendered.contains("1/5 passed · 1 failed · 3 not run"),
+                    "{rendered}"
+                );
+                assert!(rendered.contains("! Real model · incomplete"), "{rendered}");
+                assert!(!rendered.contains("✓ Real model"));
+                assert!(rendered.contains("AssertionError: relevance"));
+            } else {
+                assert!(rendered.contains("✓ 5/5 checks passed"), "{rendered}");
+                assert!(rendered.contains("verification · 5/5 passed"), "{rendered}");
+                assert!(rendered.contains("✓ Real model"), "{rendered}");
+            }
+            assert_eq!(app.input.lines(), ["keep this draft"]);
+        }
+    }
+
+    #[test]
     fn plan_review_preserves_data_and_keeps_the_outline_in_view() {
         use crate::{plan::Plan, router::Selection, store::Message};
 

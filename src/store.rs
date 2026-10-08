@@ -889,7 +889,7 @@ impl Store {
             let mut prompt = crate::execution::task_prompt(&plan, task, run.id);
             if let Some(repair) = &run.repair {
                 prompt.push_str(&format!(
-                    "\nAutomatic repair context: {}\n{} Preserve saved edits. The harness refreshed this task from the combined source. Reproduce the failure using the evidence and command (adapt task paths to /tasks/{}); keep any temporary reproduction scripts outside source. The repair's failing check is supplemental: do not replace your original task checks with it. The report checks array must contain your current task's declared checks, with their exact text and order. Integration and all final checks must pass again.",
+                    "\nAutomatic repair context: {}\n{} Preserve saved edits. The harness refreshed this task from the combined source. Reproduce the failure using the evidence and command (adapt task paths to /tasks/{}); keep any temporary reproduction scripts outside source. The repair's failing check is supplemental: do not replace your original task checks with it. The report checks array must cover every current task check using its exact text; repeat the name when that check needs several commands. Integration and all final checks must pass again.",
                     serde_json::to_string(repair).unwrap(),
                     if task.id == repair.task { "Fix this regression within your original file scope." } else { "Rerun this affected task after the owner fixed the regression; keep your original file scope." },
                     run.id

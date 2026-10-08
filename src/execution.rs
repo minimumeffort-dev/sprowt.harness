@@ -131,11 +131,25 @@ impl Execution {
     pub fn complete(&self) -> bool {
         !self.tasks.is_empty() && self.tasks.iter().all(|task| task.status == "done")
     }
+
+    pub fn check_count(&self, plan: &Plan) -> usize {
+        plan.tasks
+            .iter()
+            .map(|task| {
+                self.tasks
+                    .iter()
+                    .find(|run| run.task_id == task.id)
+                    .map_or(task.checks.len(), |run| {
+                        run.checks.len().max(task.checks.len())
+                    })
+            })
+            .sum()
+    }
 }
 
 impl Report {
     pub fn parse(text: &str, task: &Task) -> Result<Self, String> {
-        let report: Self =
+        let mut report: Self =
             serde_json::from_str(text).map_err(|error| format!("Invalid task report: {error}"))?;
         if report.summary.trim().is_empty()
             || !["completed", "blocked"].contains(&report.status.as_str())
@@ -147,17 +161,18 @@ impl Report {
             repair.validate(task)?;
         }
         if report.status == "completed" {
-            if report.checks.len() != task.checks.len() {
+            if report.checks.len() < task.checks.len() {
                 return Err(format!(
                     "Task returned {} completion checks; expected {}.",
                     report.checks.len(),
                     task.checks.len()
                 ));
             }
-            for (check, expected) in report.checks.iter().zip(&task.checks) {
-                if &check.check != expected {
+            for check in &report.checks {
+                if !task.checks.contains(&check.check) {
                     return Err(format!(
-                        "Completion check must match the task's declared text: {expected}"
+                        "Completion check is not declared by this task: {}",
+                        check.check
                     ));
                 }
                 if check.command.is_empty()
@@ -165,10 +180,21 @@ impl Report {
                     || check.command.iter().any(|arg| arg.contains('\0'))
                 {
                     return Err(format!(
-                        "Completion check needs an absolute executable and valid arguments: {expected}"
+                        "Completion check needs an absolute executable and valid arguments: {}",
+                        check.check
                     ));
                 }
             }
+            for expected in &task.checks {
+                if !report.checks.iter().any(|check| &check.check == expected) {
+                    return Err(format!(
+                        "Task report is missing the declared check: {expected}"
+                    ));
+                }
+            }
+            report
+                .checks
+                .sort_by_key(|check| task.checks.iter().position(|name| name == &check.check));
         }
         Ok(report)
     }
@@ -176,7 +202,7 @@ impl Report {
 
 pub fn task_prompt(plan: &Plan, task: &Task, id: i64) -> String {
     format!(
-        "Execute only this task from the saved plan in the Linux VM in your task worktree at /tasks/{id}. Resume saved edits and resolve any merge conflict markers. Respect project rules and the declared file scope. The harness checkpoints source separately from generated caches and runtime databases; scope checks use the source diff, not all files created by tests. Inspect project manifests, choose compatible runtimes and install needed dependencies using mise or the project's package manager. If OS dependencies are missing, call install_system_packages with required Debian package names and a short reason; the harness installs them in the VM and you continue. If a download or documentation request returns x-proxy-error: blocked-by-allowlist, call request_network_access with the exact blocked hostnames and a short reason, including blocked redirect hosts. Return status blocked with repair null while access is pending or denied; do not poll or bypass the policy. The harness reconnects and retries after user approval. Run the completion checks; report blocked checks honestly. If a reproducible code regression belongs to an already completed task, return status blocked and a repair object: task is the completed owner's task ID; files are exact paths in that owner's scope; check must copy the exact text of the failing check from Current task.checks, not from the owner's checks; command reproduces that failure; evidence states the observed failure. Do not fix another task's files. Use repair null for success, missing access, environment blockers, uncertainty or product decisions. The harness reopens the owner and reruns affected tasks, with at most two repair attempts per plan. Return the required JSON report. For each check, provide its exact text and a repeatable command as an argument array, using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each has a 30-second limit. Commands must test the result and exit nonzero on failure, without changing source files. For asynchronous browser checks, register the matching response wait before the action, await successful completion and assert rendered state. Exercise relevant stale-response and save races with controlled delays or reordered replies, not sleeps. Keep the summary short.\nPlan: {}\nCurrent task: {}\nRelevant peers (message their task IDs; read_worker_messages gives live assignments): {}",
+        "Execute only this task from the saved plan in the Linux VM in your task worktree at /tasks/{id}. Resume saved edits and resolve any merge conflict markers. Respect project rules and the declared file scope. The harness checkpoints source separately from generated caches and runtime databases; scope checks use the source diff, not all files created by tests. Inspect project manifests, choose compatible runtimes and install needed dependencies using mise or the project's package manager. If OS dependencies are missing, call install_system_packages with required Debian package names and a short reason; the harness installs them in the VM and you continue. If a download or documentation request returns x-proxy-error: blocked-by-allowlist, call request_network_access with the exact blocked hostnames and a short reason, including blocked redirect hosts. Return status blocked with repair null while access is pending or denied; do not poll or bypass the policy. The harness reconnects and retries after user approval. Run the completion checks; report blocked checks honestly. If a reproducible code regression belongs to an already completed task, return status blocked and a repair object: task is the completed owner's task ID; files are exact paths in that owner's scope; check must copy the exact text of the failing check from Current task.checks, not from the owner's checks; command reproduces that failure; evidence states the observed failure. Do not fix another task's files. Use repair null for success, missing access, environment blockers, uncertainty or product decisions. The harness reopens the owner and reruns affected tasks, with at most two repair attempts per plan. Return the required JSON report. Cover every declared check using its exact text. A check may have several commands; repeat its exact text for each command, and do not add undeclared check names. Provide each repeatable command as an argument array using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each has a 30-second limit. Commands must test the result and exit nonzero on failure, without changing source files. For asynchronous browser checks, register the matching response wait before the action, await successful completion and assert rendered state. Exercise relevant stale-response and save races with controlled delays or reordered replies, not sleeps. Keep the summary short.\nPlan: {}\nCurrent task: {}\nRelevant peers (message their task IDs; read_worker_messages gives live assignments): {}",
         serde_json::to_string(plan).unwrap(),
         serde_json::to_string(task).unwrap(),
         serde_json::to_string(&plan.peers(task)).unwrap()
@@ -236,6 +262,74 @@ mod tests {
         assert!(Report::parse(&report.to_string(), task).is_err());
         report["status"] = json!("blocked");
         assert!(Report::parse(&report.to_string(), task).is_ok());
+    }
+
+    #[test]
+    fn completion_groups_multiple_commands_without_losing_declared_coverage() {
+        let plan = Plan::parse(r#"{"summary":"Verify model","tasks":[{"id":"integration","title":"Verify","outcome":"Integrated","files":["tests"],"depends_on":[],"worker":"codex","checks":["Real model","Browser flows","Suites"]}]}"#).unwrap();
+        let task = &plan.tasks[0];
+        let checks = [
+            ("Suites", "--suites"),
+            ("Real model", "--real"),
+            ("Browser flows", "--flows"),
+            ("Real model", "--paraphrase"),
+            ("Real model", "--no-match"),
+        ];
+        let mut text = json!({"status":"completed","summary":"Verified","repair":null,
+            "checks":checks.iter().map(|(name,flag)| json!({"check":name,"command":["/tasks/55/.venv/bin/python","tests/checks.py",flag]})).collect::<Vec<_>>()});
+        let report = Report::parse(&text.to_string(), task).unwrap();
+        assert_eq!(report.checks.len(), 5);
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .map(|c| c.check.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Real model",
+                "Real model",
+                "Real model",
+                "Browser flows",
+                "Suites"
+            ]
+        );
+        assert_eq!(
+            report
+                .checks
+                .iter()
+                .map(|c| c.command[2].as_str())
+                .collect::<Vec<_>>(),
+            [
+                "--real",
+                "--paraphrase",
+                "--no-match",
+                "--flows",
+                "--suites"
+            ]
+        );
+        text["checks"][2]["check"] = json!("Real model");
+        assert!(
+            Report::parse(&text.to_string(), task)
+                .err()
+                .unwrap()
+                .contains("missing the declared check: Browser flows")
+        );
+        text["checks"][2]["check"] = json!("Unplanned check");
+        assert!(
+            Report::parse(&text.to_string(), task)
+                .err()
+                .unwrap()
+                .contains("not declared")
+        );
+        text["checks"][2]["check"] = json!("Browser flows");
+        for command in [
+            json!([]),
+            json!(["python"]),
+            json!(["/bin/sh", "bad\u{0}argument"]),
+        ] {
+            text["checks"][4]["command"] = command;
+            assert!(Report::parse(&text.to_string(), task).is_err());
+        }
     }
 
     #[test]
