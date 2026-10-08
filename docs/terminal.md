@@ -78,6 +78,10 @@ Blocked downloads mark the affected task. The dock highlights **Ctrl+N · Review
 
 Git setup shows the starting file list. GitHub setup uses Tab to choose connect existing or create private, then confirms `owner/repository` before contacting GitHub. Queue management appears only with queued instructions; run, stop and retry appear when relevant.
 
+## Scrolling
+
+Use the mouse wheel or trackpad over the conversation, plan, diff, worker history or dialog to scroll it. Hover over the composer to scroll a long draft instead. Codemod, queue and All actions lists move the selection and keep it visible; Enter still opens or confirms it. Scrolling preserves drafts and queued instructions. Dialogs capture their own scrolling, and the view adjusts when the terminal resizes. Keyboard scrolling stays available.
+
 ## Commands
 
 | Command | Action |
@@ -106,6 +110,7 @@ Git setup shows the starting file list. GitHub setup uses Tab to choose connect 
 | Ctrl+T | Open worker history; Esc returns |
 | Ctrl+N | Review a pending network request |
 | Ctrl+D | View diff |
+| Mouse wheel / trackpad | Scroll the view under the pointer; move selection in lists |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |
 | Page Up / Page Down | Scroll on keyboards with those keys |
 | Esc | Back from a dialog; quit from the conversation |
@@ -133,4 +138,4 @@ Sprowt follows the selected codemod:
 
 The body keeps its shape and footprint. Switching codemods resets the animation to that mod’s state. Queueing or editing an instruction can trigger a brief idle celebration; it never overrides active work or an error. Closing or stopping returns Sprowt to idle. Worker identity stays beside it; the dock shows workflow progress.
 
-Run `sprowt-harness --no-motion` for a still companion and no entrance animation. On exit, the harness restores normal terminal input, paste handling and the previous screen.
+Run `sprowt-harness --no-motion` for a still companion and no entrance animation. On exit, the harness restores normal terminal input, mouse and paste handling, and the previous screen.

@@ -76,6 +76,7 @@ pub fn draw(
     pose: sprout::Pose,
     elapsed: Option<Duration>,
 ) -> Rect {
+    app.scroll.begin(app.view);
     let area = frame.area().inner(Margin::new(2, 1));
     let composer_view = app.composer_view();
     let show_dock = matches!(composer_view, View::Chat | View::NewMod);
@@ -199,6 +200,7 @@ pub fn draw(
         ])
         .areas(content);
         can_scroll = draw_conversation(frame, app, conversation, elapsed);
+        app.scroll.content = conversation;
         draw_queue_preview(frame, app, queue);
         draw_steering_preview(frame, app, steering);
     }
@@ -211,8 +213,9 @@ pub fn draw(
     if let View::Actions(selected) = app.view {
         if !read_only {
             frame.render_widget(&app.input, input);
+            app.scroll.input = input;
         }
-        draw_actions(frame, &dock, selected, content);
+        draw_actions(frame, app, &dock, selected, content);
     } else if let View::Failure(scroll) = app.view {
         draw_failure(
             frame,
@@ -246,13 +249,14 @@ pub fn draw(
             &[("tab", "choose"), ("↵", "review"), ("esc", "back")],
         );
         let [choices_area, _, field] = Layout::vertical([
-            Constraint::Length(rows as u16),
+            Constraint::Length((rows as u16).min(body.height.saturating_sub(4))),
             Constraint::Length(1),
             Constraint::Length(3),
         ])
         .areas(body);
-        frame.render_widget(choices, choices_area);
+        draw_scrollable_text(frame, app, choices, choices_area);
         frame.render_widget(&app.input, field);
+        app.scroll.input = field;
     } else if let View::ConfirmRepository(create) = app.view {
         let slug = app.input.lines().join("\n");
         let text = Paragraph::new(format!(
@@ -274,7 +278,7 @@ pub fn draw(
             false,
             &[("↵", "confirm"), ("esc", "back")],
         );
-        frame.render_widget(text, body);
+        draw_scrollable_text(frame, app, text, body);
     } else if let View::Network(id, scroll) = app.view {
         draw_network(frame, app, id, scroll, dialog_area);
     } else if let View::Mods(index) = app.view {
@@ -325,7 +329,7 @@ pub fn draw(
             false,
             &[("↵", "publish"), ("esc", "cancel")],
         );
-        frame.render_widget(text, body);
+        draw_scrollable_text(frame, app, text, body);
     } else {
         if !read_only {
             let title = app
@@ -347,6 +351,7 @@ pub fn draw(
                 });
             }
             frame.render_widget(&app.input, input);
+            app.scroll.input = input;
         }
         let shortcuts = match composer_view {
             View::NewMod => format!(
@@ -373,6 +378,7 @@ pub fn draw(
     if show_dock {
         frame.render_widget(Paragraph::new(dock_lines), dock_area);
     }
+    app.scroll.finish(app.view);
     heading
 }
 
@@ -449,7 +455,7 @@ fn draw_queue_preview(frame: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn draw_queue_editor(frame: &mut Frame, app: &App, index: usize, area: Rect) {
+fn draw_queue_editor(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
     let count = app.current_mod().map_or(0, |code_mod| code_mod.queue.len());
     let mut hints = vec![
         ("↑↓", "focus"),
@@ -476,6 +482,7 @@ fn draw_queue_editor(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         format!("queue ({count}) · {} selected", app.queue_selection.len())
     };
     let (messages, _) = draw_dialog(frame, area, &title, count, false, &hints);
+    app.scroll.content = messages;
     frame.render_stateful_widget(
         List::new(queue_items(app, messages.width)).highlight_style(dialog_selection()),
         messages,
@@ -528,7 +535,7 @@ fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, workers: &[Strin
     );
 }
 
-fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
+fn draw_mod_picker(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
     let indices = app.picker_indices();
     let count = indices.len();
     let mut hints = Vec::new();
@@ -558,6 +565,7 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         true,
         &hints,
     );
+    app.scroll.content = list_area.union(new_mod);
     let items = indices.iter().map(|&i| {
         let code_mod = &app.mods[i];
         let active = app
@@ -589,7 +597,7 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         frame.render_stateful_widget(
             List::new(items).highlight_style(highlight),
             list_area,
-            &mut ListState::default().with_selected((index < count).then_some(index)),
+            &mut ListState::default().with_selected(Some(index.min(count - 1))),
         );
     }
     let action = Line::from(vec!["+ ".fg(ACCENT), "new codemod".into()]);
@@ -603,7 +611,7 @@ fn draw_mod_picker(frame: &mut Frame, app: &App, index: usize, area: Rect) {
     );
 }
 
-fn draw_delete_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
+fn draw_delete_mod(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
     let code_mod = &app.mods[index];
     let removal = if code_mod.git_root.is_some() {
         "Permanently deletes local history and discards unpublished work. Existing PRs stay on GitHub."
@@ -631,10 +639,10 @@ fn draw_delete_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         false,
         &[("↵", "delete"), ("esc", "cancel")],
     );
-    frame.render_widget(body, content);
+    draw_scrollable_text(frame, app, body, content);
 }
 
-fn draw_close_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
+fn draw_close_mod(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
     let body = Paragraph::new(vec![
         Line::from(fit_name(
             &app.mods[index].name,
@@ -652,7 +660,7 @@ fn draw_close_mod(frame: &mut Frame, app: &App, index: usize, area: Rect) {
         false,
         &[("↵", "close"), ("esc", "cancel")],
     );
-    frame.render_widget(body, content);
+    draw_scrollable_text(frame, app, body, content);
 }
 
 fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
@@ -670,6 +678,7 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
                 .bold(),
         );
     let inner = block.inner(panel);
+    app.scroll.content = inner;
     app.page_size = inner.height.max(1);
     let mut lines = Text::from(review.summary.as_str()).lines;
     lines.push(Line::default());
@@ -739,6 +748,7 @@ fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     let scroll = scroll.min(max_scroll);
     frame.render_widget(block, panel);
     draw_message_rows(frame, rows, inner, scroll as usize);
+    app.scroll.content = inner;
     app.page_size = inner.height.max(1);
     app.view = View::History(scroll);
     frame.render_widget(
@@ -789,6 +799,8 @@ fn draw_project_setup(frame: &mut Frame, app: &mut App, saved: bool, scroll: u16
             .min(u16::MAX as usize) as u16,
     );
     app.view = View::ProjectSetup(saved, scroll);
+    app.scroll.content = body;
+    app.page_size = body.height.max(1);
     frame.render_widget(text.scroll((scroll, 0)), body);
 }
 
@@ -834,7 +846,18 @@ fn draw_network(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, area: Re
         .min(u16::MAX as usize) as u16;
     let scroll = scroll.min(maximum);
     app.view = View::Network(id, scroll);
+    app.scroll.content = content;
     frame.render_widget(body.scroll((scroll, 0)), content);
+}
+
+fn draw_scrollable_text(frame: &mut Frame, app: &mut App, text: Paragraph<'_>, area: Rect) {
+    let maximum = text
+        .line_count(area.width)
+        .saturating_sub(area.height as usize)
+        .min(u16::MAX as usize) as u16;
+    app.scroll.offset = app.scroll.offset.min(maximum);
+    app.scroll.content = area;
+    frame.render_widget(text.scroll((app.scroll.offset, 0)), area);
 }
 
 fn draw_dialog(
@@ -1019,7 +1042,7 @@ fn dock_lines(dock: &ActionDock, width: u16, elapsed: Option<Duration>) -> Vec<L
     lines
 }
 
-fn draw_actions(frame: &mut Frame, dock: &ActionDock, selected: Action, area: Rect) {
+fn draw_actions(frame: &mut Frame, app: &mut App, dock: &ActionDock, selected: Action, area: Rect) {
     frame.render_widget(ratatui::widgets::Clear, area);
     let (body, _) = draw_dialog(
         frame,
@@ -1029,6 +1052,7 @@ fn draw_actions(frame: &mut Frame, dock: &ActionDock, selected: Action, area: Re
         false,
         &[("↑↓", "select"), ("↵", "choose"), ("esc", "back")],
     );
+    app.scroll.content = body;
     let items = dock.actions.iter().map(|item| {
         let mut line = action_control(item, body.width);
         if dock.primary == Some(item.action) {
@@ -1048,6 +1072,7 @@ fn draw_actions(frame: &mut Frame, dock: &ActionDock, selected: Action, area: Re
 
 fn draw_failure(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     let [panel, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    app.scroll.content = panel;
     app.page_size = panel.height.saturating_sub(2).max(1);
     let body = Paragraph::new(app.action_error().unwrap_or("No current error."))
         .wrap(Wrap { trim: false })

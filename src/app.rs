@@ -25,9 +25,11 @@ use crate::{
 };
 
 mod actions;
+mod scroll;
 pub use actions::{Action, ActionDock, ActionItem, Tone};
+pub use scroll::Scroll;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Chat,
     Actions(Action),
@@ -54,6 +56,7 @@ pub struct App {
     pub input: TextArea<'static>,
     pub mods: Vec<CodeMod>,
     pub view: View,
+    pub scroll: Scroll,
     action_origin: Option<View>,
     pub history_offset: u16,
     pub page_size: u16,
@@ -169,6 +172,7 @@ impl App {
                 View::NewMod
             },
             action_origin: None,
+            scroll: Scroll::default(),
             history_offset: 0,
             page_size: 1,
             plan_details: false,
@@ -294,6 +298,7 @@ impl App {
 
     fn handle(&mut self, event: Event) -> Result<()> {
         match event {
+            Event::Mouse(mouse) => self.mouse_scroll(mouse)?,
             Event::Paste(text) => match self.view {
                 View::Chat if self.read_only() => {}
                 View::Chat | View::EditQueue(_) => {
@@ -3427,6 +3432,208 @@ mod tests {
             .collect()
     }
 
+    fn wheel(app: &mut App, up: bool, area: ratatui::layout::Rect) {
+        use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
+        assert!(area.width > 0 && area.height > 0);
+        app.handle(Event::Mouse(MouseEvent {
+            kind: if up {
+                MouseEventKind::ScrollUp
+            } else {
+                MouseEventKind::ScrollDown
+            },
+            column: area.x,
+            row: area.y,
+            modifiers: KeyModifiers::NONE,
+        }))
+        .unwrap();
+    }
+
+    #[test]
+    fn mouse_scrolling_keeps_conversation_and_composer_separate() {
+        let (_data, mut app, _root) = execution_app();
+        app.mods[0]
+            .messages
+            .extend((0..40).map(|i| crate::store::Message {
+                item_id: None,
+                role: "user".into(),
+                body: format!("Message {i}"),
+                model: None,
+                effort: None,
+            }));
+        app.input.clear();
+        app.input.insert_str(
+            (0..30)
+                .map(|i| format!("Draft {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        let draft = app.input.lines().to_vec();
+        let first = screen(&mut app, 80, 30);
+        let content = app.scroll.content;
+        wheel(&mut app, true, content);
+        let scrolled = screen(&mut app, 80, 30);
+        assert_ne!(first, scrolled);
+        assert_eq!(app.history_offset, 3);
+        let cursor = app.input.cursor();
+        let input = app.scroll.input;
+        wheel(&mut app, true, input);
+        assert_ne!(app.input.cursor(), cursor);
+        assert_eq!(app.history_offset, 3);
+        assert_eq!(app.input.lines(), draft);
+        wheel(&mut app, false, content);
+        assert_eq!(app.history_offset, 0);
+        screen(&mut app, 80, 30);
+        // A view change cannot reuse the previous screen's hit areas.
+        app.view = View::Mods(0);
+        wheel(&mut app, false, content);
+        assert!(matches!(app.view, View::Mods(0)));
+        screen(&mut app, 80, 30);
+        wheel(&mut app, false, ratatui::layout::Rect::new(0, 0, 1, 1));
+        assert!(matches!(app.view, View::Mods(0)));
+        screen(&mut app, 20, 8);
+        assert_eq!(app.scroll.content, ratatui::layout::Rect::default());
+        assert_eq!(app.scroll.input, ratatui::layout::Rect::default());
+    }
+
+    #[test]
+    fn mouse_scrolling_reaches_list_items_without_activating_them() {
+        let (_data, mut app, _root) = execution_app();
+        let id = app.mods[0].id;
+        for i in 0..20 {
+            app.mods[0]
+                .queue
+                .push(app.store.enqueue(id, &format!("Instruction {i}")).unwrap());
+            let code_mod = app
+                .store
+                .create_mod(app.project_id, &format!("Codemod {i}"))
+                .unwrap();
+            app.mods.push(code_mod);
+        }
+        let queue = queued(&app)
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        app.view = View::Queue(0);
+        let first = screen(&mut app, 80, 24);
+        for _ in 0..15 {
+            let content = app.scroll.content;
+            wheel(&mut app, false, content);
+            screen(&mut app, 80, 24);
+        }
+        assert!(matches!(app.view, View::Queue(15)));
+        assert_ne!(first, screen(&mut app, 80, 24));
+        assert_eq!(queued(&app), queue);
+        assert!(app.queue_selection.is_empty() && app.mods[0].steering.is_empty());
+        app.view = View::Mods(0);
+        for _ in 0..25 {
+            screen(&mut app, 80, 24);
+            let content = app.scroll.content;
+            wheel(&mut app, false, content);
+        }
+        let last = rows(&screen(&mut app, 80, 24)).join("\n");
+        assert!(matches!(app.view, View::Mods(21)));
+        assert!(
+            last.contains("Codemod 19") && last.contains("new codemod"),
+            "{last}"
+        );
+        let content = app.scroll.content;
+        wheel(&mut app, true, content);
+        assert!(matches!(app.view, View::Mods(20)));
+        app.view = View::Chat;
+        app.open_actions();
+        screen(&mut app, 80, 24);
+        let content = app.scroll.content;
+        wheel(&mut app, false, content);
+        assert!(matches!(app.view, View::Actions(_)));
+        assert!(app.workers.is_empty() && app.git_jobs.is_empty() && app.review.is_none());
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
+    fn mouse_scrolling_clamps_panels_and_preserves_confirmation_actions() {
+        let (_data, mut app, root) = execution_app();
+        app.mods[0].messages.push(crate::store::Message {
+            item_id: None,
+            role: "codex:executor:1".into(),
+            body: (0..60)
+                .map(|i| format!("Worker history {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            model: None,
+            effort: None,
+        });
+        let mut review = workspace::review(&root).unwrap();
+        review.patch = (0..60)
+            .map(|i| format!("+ Diff line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.review = Some(review);
+        app.notice = Some(
+            (0..60)
+                .map(|i| format!("Failure evidence {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+        app.setup_files = (0..60).map(|i| format!("source/file-{i}.rs")).collect();
+        for view in [
+            View::History(0),
+            View::Review(0),
+            View::Failure(0),
+            View::ProjectSetup(true, 0),
+        ] {
+            app.view = view;
+            let first = screen(&mut app, 80, 24);
+            assert_eq!(app.scroll.input, ratatui::layout::Rect::default());
+            let content = app.scroll.content;
+            wheel(&mut app, false, content);
+            assert_ne!(first, screen(&mut app, 80, 24));
+            for _ in 0..30 {
+                let content = app.scroll.content;
+                wheel(&mut app, false, content);
+                screen(&mut app, 80, 24);
+            }
+            let last = screen(&mut app, 80, 24);
+            let content = app.scroll.content;
+            wheel(&mut app, false, content);
+            assert_eq!(last, screen(&mut app, 80, 24));
+            screen(&mut app, 100, 100);
+            assert!(matches!(
+                app.view,
+                View::History(0) | View::Review(0) | View::Failure(0) | View::ProjectSetup(true, _)
+            ));
+            assert_eq!(app.input.lines(), ["keep this draft"]);
+        }
+        for view in [View::DeleteMod(0), View::CloseMod(0), View::Publish] {
+            app.view = view;
+            screen(&mut app, 36, 18);
+            let content = app.scroll.content;
+            wheel(&mut app, false, content);
+            assert!(app.view == view && app.mods.len() == 1 && !app.mods[0].closed);
+            assert!(app.git_jobs.is_empty());
+        }
+        app.input.clear();
+        app.input
+            .insert_str(format!("owner/{}", "long-repository-name".repeat(20)));
+        app.view = View::ConfirmRepository(false);
+        let first = screen(&mut app, 36, 24);
+        let content = app.scroll.content;
+        wheel(&mut app, false, content);
+        assert_ne!(first, screen(&mut app, 36, 24));
+        assert!(app.scroll.offset > 0 && app.git_jobs.is_empty());
+        app.view = View::Repository(false);
+        screen(&mut app, 80, 24);
+        assert_eq!(app.scroll.offset, 0);
+        let input = app.scroll.input;
+        wheel(&mut app, true, input);
+        assert!(matches!(app.view, View::Repository(false)) && app.git_jobs.is_empty());
+        app.view = View::NewMod;
+        screen(&mut app, 80, 24);
+        let input = app.scroll.input;
+        wheel(&mut app, true, input);
+        assert!(matches!(app.view, View::NewMod) && app.mods.len() == 1);
+    }
+
     #[test]
     fn action_dock_recommends_review_publish_and_target_updates_from_state() {
         let (_data, mut app, root) = execution_app();
@@ -3687,6 +3894,12 @@ mod tests {
         let View::Network(id, _) = app.view else {
             panic!("Network dialog missing")
         };
+        let content = app.scroll.content;
+        wheel(&mut app, false, content);
+        assert!(matches!(app.view, View::Network(_, scroll) if scroll > 0));
+        assert!(app.pending_network().is_some());
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(crate::network::grants(&_root).unwrap().is_empty());
         app.view = View::Network(id, u16::MAX);
         let last = rows(&screen(&mut app, 80, 24))
             .join("\n")

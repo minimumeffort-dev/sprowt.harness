@@ -28,7 +28,7 @@ use std::io::{self, IsTerminal};
 
 use clap::{Parser, Subcommand};
 use ratatui::crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste},
+    event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture},
     execute,
 };
 
@@ -69,7 +69,7 @@ fn main() -> io::Result<()> {
         .map_err(io::Error::other)?;
     let mut terminal = ratatui::init();
     let _cleanup = TerminalCleanup;
-    execute!(io::stdout(), EnableBracketedPaste)?;
+    execute!(io::stdout(), EnableBracketedPaste, EnableMouseCapture)?;
     app.run(&mut terminal)
 }
 
@@ -77,7 +77,7 @@ struct TerminalCleanup;
 
 impl Drop for TerminalCleanup {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), DisableBracketedPaste);
+        let _ = execute!(io::stdout(), DisableMouseCapture, DisableBracketedPaste);
         ratatui::restore();
     }
 }
