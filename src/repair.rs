@@ -88,6 +88,16 @@ pub fn migrate(connection: &Connection) -> Result<()> {
             "repair",
             "ALTER TABLE task_runs ADD COLUMN repair TEXT",
         ),
+        (
+            "task_runs",
+            "verification_feedback",
+            "ALTER TABLE task_runs ADD COLUMN verification_feedback TEXT NOT NULL DEFAULT '[]'",
+        ),
+        (
+            "task_runs",
+            "verification_retries",
+            "ALTER TABLE task_runs ADD COLUMN verification_retries INTEGER NOT NULL DEFAULT 0",
+        ),
     ] {
         let columns = connection
             .prepare(&format!("PRAGMA table_info({table})"))?

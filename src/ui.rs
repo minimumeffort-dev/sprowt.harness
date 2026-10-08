@@ -1343,26 +1343,52 @@ fn plan_lines(
                     .fg(KEY_HINT),
                 );
             }
+            if let Some(run) = run
+                && !run.checks.is_empty()
+            {
+                let passed = run
+                    .checks
+                    .iter()
+                    .filter(|check| check.exit_code == Some(0))
+                    .count();
+                lines.push(
+                    Line::from(format!(
+                        "   verification · {passed}/{} passed · {} failed · {} not run",
+                        task.checks.len(),
+                        run.checks.len() - passed,
+                        task.checks.len().saturating_sub(run.checks.len())
+                    ))
+                    .fg(if passed == task.checks.len() {
+                        ACCENT
+                    } else {
+                        Color::Red
+                    }),
+                );
+            }
             lines.push(Line::from("   checks").fg(KEY_HINT));
             for check in &task.checks {
                 let result =
                     run.and_then(|run| run.checks.iter().find(|result| &result.check == check));
                 lines.push(Line::from(format!(
-                    "   {} {check}",
+                    "   {} {check}{}",
                     result.map_or("·", |result| if result.exit_code == Some(0) {
                         "✓"
                     } else {
                         "!"
-                    })
+                    }),
+                    if result.is_none() && run.is_some_and(|run| !run.checks.is_empty()) {
+                        " · not run"
+                    } else {
+                        ""
+                    }
                 )));
                 if let Some(result) = result {
                     lines.extend(command_lines(&result.command, width));
                     if result.exit_code != Some(0) {
                         lines.extend(
                             result
-                                .output
+                                .evidence()
                                 .lines()
-                                .take(6)
                                 .map(|line| Line::from(format!("     {line}")).fg(Color::Red)),
                         );
                     }
@@ -1371,7 +1397,27 @@ fn plan_lines(
             if let Some(run) = run
                 && !run.summary.is_empty()
             {
-                lines.push(Line::from(format!("   {}", run.summary)).fg(KEY_HINT));
+                lines.push(Line::from(format!("   worker report · {}", run.summary)).fg(MUTED));
+            }
+            if let Some(run) = run
+                && run.status != "done"
+                && run.checks.is_empty()
+                && !run.verification_feedback.is_empty()
+            {
+                lines.push(Line::from("   previous verification · recovery context").fg(KEY_HINT));
+                for check in run
+                    .verification_feedback
+                    .iter()
+                    .filter(|check| check.exit_code != Some(0))
+                {
+                    lines.push(Line::from(format!("   ! {}", check.check)).fg(Color::Red));
+                    lines.extend(
+                        check
+                            .evidence()
+                            .lines()
+                            .map(|line| Line::from(format!("     {line}")).fg(Color::Red)),
+                    );
+                }
             }
         }
     }
@@ -1404,9 +1450,8 @@ fn plan_lines(
                 lines.push(Line::from(format!("! {}", check.check)).fg(Color::Red));
                 lines.extend(
                     check
-                        .output
+                        .evidence()
                         .lines()
-                        .take(6)
                         .map(|line| Line::from(line.to_owned()).fg(Color::Red)),
                 );
             }

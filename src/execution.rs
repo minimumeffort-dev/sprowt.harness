@@ -28,6 +28,7 @@ pub struct TaskRun {
     pub turn: Option<String>,
     pub summary: String,
     pub checks: Vec<CheckResult>,
+    pub verification_feedback: Vec<CheckResult>,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -38,6 +39,41 @@ pub struct CheckResult {
     pub command: Vec<String>,
     pub exit_code: Option<i64>,
     pub output: String,
+}
+
+impl CheckResult {
+    pub fn evidence(&self) -> String {
+        let lines = self
+            .output
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        let start = lines
+            .iter()
+            .rposition(|line| {
+                line.contains("Error")
+                    || line.contains("FAILED")
+                    || line.contains("panicked")
+                    || line.contains("error:")
+            })
+            .unwrap_or_else(|| lines.len().saturating_sub(6));
+        lines[start..]
+            .iter()
+            .take(8)
+            .copied()
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn brief(&self) -> String {
+        let evidence = self.evidence();
+        let line = evidence
+            .lines()
+            .next()
+            .filter(|line| !line.trim().is_empty())
+            .unwrap_or(&self.check);
+        line.chars().take(180).collect()
+    }
 }
 
 #[derive(Clone, Deserialize)]
@@ -139,7 +175,7 @@ impl Report {
 
 pub fn task_prompt(plan: &Plan, task: &Task, id: i64) -> String {
     format!(
-        "Execute only this task from the saved plan in the Linux VM in your task worktree at /tasks/{id}. Resume saved edits and resolve any merge conflict markers. Respect project rules and the declared file scope. The harness checkpoints source separately from generated caches and runtime databases; scope checks use the source diff, not all files created by tests. Inspect project manifests, choose compatible runtimes and install needed dependencies using mise or the project's package manager. If OS dependencies are missing, call install_system_packages with required Debian package names and a short reason; the harness installs them in the VM and you continue. If a download or documentation request returns x-proxy-error: blocked-by-allowlist, call request_network_access with the exact blocked hostnames and a short reason, including blocked redirect hosts. Return status blocked with repair null while access is pending or denied; do not poll or bypass the policy. The harness reconnects and retries after user approval. Run the completion checks; report blocked checks honestly. If a reproducible code regression belongs to an already completed task, return status blocked and a repair object: task is the completed owner's task ID; files are exact paths in that owner's scope; check must copy the exact text of the failing check from Current task.checks, not from the owner's checks; command reproduces that failure; evidence states the observed failure. Do not fix another task's files. Use repair null for success, missing access, environment blockers, uncertainty or product decisions. The harness reopens the owner and reruns affected tasks, with at most two repair attempts per plan. Return the required JSON report. For each check, provide its exact text and a repeatable command as an argument array, using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each has a 30-second limit. Commands must test the result and exit nonzero on failure, without changing source files. Keep the summary short.\nPlan: {}\nCurrent task: {}\nRelevant peers (message their task IDs; read_worker_messages gives live assignments): {}",
+        "Execute only this task from the saved plan in the Linux VM in your task worktree at /tasks/{id}. Resume saved edits and resolve any merge conflict markers. Respect project rules and the declared file scope. The harness checkpoints source separately from generated caches and runtime databases; scope checks use the source diff, not all files created by tests. Inspect project manifests, choose compatible runtimes and install needed dependencies using mise or the project's package manager. If OS dependencies are missing, call install_system_packages with required Debian package names and a short reason; the harness installs them in the VM and you continue. If a download or documentation request returns x-proxy-error: blocked-by-allowlist, call request_network_access with the exact blocked hostnames and a short reason, including blocked redirect hosts. Return status blocked with repair null while access is pending or denied; do not poll or bypass the policy. The harness reconnects and retries after user approval. Run the completion checks; report blocked checks honestly. If a reproducible code regression belongs to an already completed task, return status blocked and a repair object: task is the completed owner's task ID; files are exact paths in that owner's scope; check must copy the exact text of the failing check from Current task.checks, not from the owner's checks; command reproduces that failure; evidence states the observed failure. Do not fix another task's files. Use repair null for success, missing access, environment blockers, uncertainty or product decisions. The harness reopens the owner and reruns affected tasks, with at most two repair attempts per plan. Return the required JSON report. For each check, provide its exact text and a repeatable command as an argument array, using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each has a 30-second limit. Commands must test the result and exit nonzero on failure, without changing source files. For asynchronous browser checks, register the matching response wait before the action, await successful completion and assert rendered state. Exercise relevant stale-response and save races with controlled delays or reordered replies, not sleeps. Keep the summary short.\nPlan: {}\nCurrent task: {}\nRelevant peers (message their task IDs; read_worker_messages gives live assignments): {}",
         serde_json::to_string(plan).unwrap(),
         serde_json::to_string(task).unwrap(),
         serde_json::to_string(&plan.peers(task)).unwrap()

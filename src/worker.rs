@@ -424,6 +424,7 @@ impl Worker {
         state["plan"] = serde_json::json!(plan);
         state["task"] = serde_json::json!(task);
         state["previous_result"] = serde_json::json!({"summary":run.summary,"checks":run.checks});
+        state["verification_feedback"] = serde_json::json!(run.verification_feedback);
         state["repair"] = serde_json::json!(run.repair);
         Some(state)
     }
@@ -704,15 +705,37 @@ impl Worker {
                     &self.task_summary,
                     &checks,
                 )?;
+                let failure = checks.iter().find(|check| check.exit_code != Some(0));
+                let recover = !passed
+                    && self.enabled
+                    && self.status == Status::Checking
+                    && failure.is_some_and(|check| check.exit_code.is_some_and(|code| code > 0))
+                    && checks.len() <= self.verification.len()
+                    && checks
+                        .iter()
+                        .zip(&self.verification)
+                        .all(|(result, expected)| {
+                            result.check == expected.check && result.command == expected.command
+                        })
+                    && store.recover_verification(self.mod_id, &source, self.id)?;
                 let summary = format!(
                     "{} · {}\n{}",
                     if passed {
                         "✓ task complete"
+                    } else if recover {
+                        "↺ verification failed · recovering"
                     } else {
                         "! check failed"
                     },
                     self.task_name(code_mod),
-                    self.task_summary
+                    if passed {
+                        self.task_summary.clone()
+                    } else {
+                        failure.map_or_else(
+                            || "Checks incomplete or interrupted.".into(),
+                            |check| check.brief(),
+                        )
+                    }
                 );
                 save_message(
                     store,
@@ -728,9 +751,19 @@ impl Worker {
                 self.task_source = None;
                 self.task_report = None;
                 self.status = Status::Ready;
-                if !passed {
+                if recover {
+                    self.error = None;
+                } else if !passed {
                     self.enabled = false;
-                    self.error.get_or_insert_with(|| "Verification failed or was stopped. See plan details; Ctrl+R retries the task.".into());
+                    self.error.get_or_insert_with(|| {
+                        format!(
+                            "Verification failed · {} · Ctrl+R retries",
+                            failure.map_or_else(
+                                || "checks incomplete or interrupted".into(),
+                                |check| check.brief()
+                            )
+                        )
+                    });
                 }
                 code_mod.execution = store.execution(self.mod_id)?;
             }
@@ -2110,6 +2143,140 @@ mod tests {
                 if case == "success" { "done" } else { "blocked" }
             );
             assert_ne!(code_mod.execution.as_ref().unwrap().status, "review");
+        }
+    }
+
+    #[test]
+    fn failed_verification_returns_evidence_to_its_owner_once_across_restart() {
+        let (data, mut store, mut m, mut worker) = executor();
+        worker.id = store.worker_for(m.id, Role::Executor).unwrap().id;
+        let id = m.execution.as_ref().unwrap().tasks[0].id;
+        store
+            .0
+            .execute(
+                "UPDATE task_runs SET worker_id=?2,status='checking' WHERE id=?1",
+                rusqlite::params![id, worker.id],
+            )
+            .unwrap();
+        m.execution = store.execution(m.id).unwrap();
+        worker.task_summary = "All checks passed".into();
+        let source = worker.task_source.clone().unwrap();
+        let checked = |source: String| Event::Checked {
+            source,
+            checks: vec![crate::execution::CheckResult {
+                task: Some(id),
+                check: worker.verification[0].check.clone(),
+                command: worker.verification[0].command.clone(),
+                exit_code: Some(1),
+                output: "Warning: legacy dependency\nTraceback\nAssertionError: Save not finished"
+                    .into(),
+            }],
+            before: workspace::source_state(&m.execution.as_ref().unwrap().workspace.join("work"))
+                .unwrap(),
+        };
+        let first = checked(source.clone());
+        let duplicate = checked(source.clone());
+        worker.receive(first, &mut store, &mut m).unwrap();
+        worker.receive(duplicate, &mut store, &mut m).unwrap();
+        let run = &m.execution.as_ref().unwrap().tasks[0];
+        assert_eq!(run.status, "pending");
+        assert_eq!(run.worker, Some(worker.id));
+        assert_ne!(run.source, source);
+        assert_eq!(run.verification_feedback.len(), 1);
+        assert!(worker.enabled && worker.error.is_none());
+        assert!(
+            !m.messages
+                .last()
+                .unwrap()
+                .body
+                .contains("All checks passed")
+        );
+        let next = run.source.clone();
+        drop(store);
+        let mut store = data.store();
+        let input = store.submission(m.id, &next).unwrap();
+        assert!(input.texts[0].contains("AssertionError: Save not finished"));
+        assert!(input.texts[0].contains("before triggering an action"));
+        assert!(input.texts[0].contains("do not skip failures or weaken assertions"));
+        worker.task_source = Some(next.clone());
+        worker.status = Status::Checking;
+        let result = Event::Checked {
+            source: next.clone(),
+            checks: m.execution.as_ref().unwrap().tasks[0]
+                .verification_feedback
+                .clone(),
+            before: worker.verify_before.clone().unwrap(),
+        };
+        worker.receive(result, &mut store, &mut m).unwrap();
+        assert_eq!(m.execution.as_ref().unwrap().tasks[0].status, "blocked");
+        assert!(!worker.enabled);
+        assert!(worker.error.as_ref().unwrap().contains("Save not finished"));
+        store.retry_tasks(m.id).unwrap();
+        let source = store.execution(m.id).unwrap().unwrap().tasks[0]
+            .source
+            .clone();
+        store
+            .finish_task(
+                m.id,
+                &source,
+                "blocked",
+                "Still failed",
+                &m.execution.as_ref().unwrap().tasks[0].checks,
+            )
+            .unwrap();
+        assert!(
+            !store
+                .recover_verification(m.id, &source, worker.id)
+                .unwrap()
+        );
+        assert!(!store.recover_verification(m.id, &next, worker.id).unwrap());
+    }
+
+    #[test]
+    fn interrupted_stopped_or_mismatched_checks_never_start_recovery() {
+        for case in ["stopped", "interrupted", "mismatch", "wrong owner"] {
+            let (_data, mut store, mut m, mut worker) = executor();
+            let id = m.execution.as_ref().unwrap().tasks[0].id;
+            store
+                .0
+                .execute(
+                    "UPDATE task_runs SET worker_id=?2,status='checking' WHERE id=?1",
+                    rusqlite::params![id, worker.id],
+                )
+                .unwrap();
+            if case == "stopped" {
+                worker.enabled = false;
+            }
+            if case == "wrong owner" {
+                worker.id += 1;
+            }
+            worker
+                .receive(
+                    Event::Checked {
+                        source: worker.task_source.clone().unwrap(),
+                        checks: vec![crate::execution::CheckResult {
+                            task: Some(id),
+                            check: worker.verification[0].check.clone(),
+                            command: if case == "mismatch" {
+                                vec!["/bin/false".into()]
+                            } else {
+                                worker.verification[0].command.clone()
+                            },
+                            exit_code: if case == "interrupted" { None } else { Some(1) },
+                            output: "AssertionError: failed".into(),
+                        }],
+                        before: worker.verify_before.clone().unwrap(),
+                    },
+                    &mut store,
+                    &mut m,
+                )
+                .unwrap();
+            assert_eq!(
+                m.execution.as_ref().unwrap().tasks[0].status,
+                "blocked",
+                "{case}"
+            );
+            assert!(!worker.enabled, "{case}");
         }
     }
 

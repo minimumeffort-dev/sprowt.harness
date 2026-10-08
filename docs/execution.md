@@ -18,7 +18,7 @@ flowchart TB
     cleanup --> ready["Version ready · send edits or publish"]
 ```
 
-A failed check pauses that task and its dependents unless the worker requests a code repair from a completed owner. The other worker can finish independent work. **Ctrl+R** retries unfinished work; completed tasks stay done.
+A failed task check returns its evidence to the same worker for one recovery attempt. A repeated failure pauses that task and its dependents. The other worker can finish independent work. **Ctrl+R** retries unfinished work; completed tasks stay done.
 
 Executors receive the planner's peer links and coordinate through [saved task mailboxes](coordination.md). Links describe what to coordinate; dependencies describe what must finish first. A task with unanswered asks waits; Rust resumes it after answers arrive. Queued edit rounds wait too, so they cannot replace tasks with outstanding questions. Messages do not change file ownership or dependencies.
 
@@ -66,7 +66,28 @@ After all tasks finish, the harness updates each task folder to the combined sou
 
 Each active task has a spinner and worker ID through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide workers; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.
 
+Details count passed, failed and unrun checks, and show the assertion or error from failed output. The worker's summary is labelled **worker report**; independently rerun checks decide completion.
+
 Finished versions show compact task rows, the final check count and the publish action. **Ctrl+T** opens saved worker narration and handoffs separately from plan details. Questions for you stay visible in the conversation.
+
+### Verification feedback
+
+```mermaid
+flowchart TB
+    report["Worker returns commands"] --> check["Controller reruns declared checks"]
+    check -->|"Pass"| combine["Combine verified source"]
+    check -->|"Fail"| evidence["Save command, exit code and failure output"]
+    evidence --> owner["Original worker · one recovery attempt"]
+    owner --> recheck["Controller reruns checks"]
+    recheck -->|"Pass"| combine
+    recheck -->|"Fail again"| pause["Pause · Ctrl+R or request edits"]
+```
+
+Recovery keeps the task, worker, folder and file scope. The worker receives the failed command and output, must preserve declared coverage and rerun all checks, including those not reached. A defect in a completed peer can use the repair handoff below.
+
+Browser checks must wait for the matching successful response and resulting UI state before reading saved data. Register the response wait before triggering the action. Exercise races with controlled request completion, rather than sleeps.
+
+The one-attempt budget saves with each task. Restart and explicit retry retain it; a new plan resets it. Stops, timeouts, missing or mismatched commands do not trigger recovery. Access requests still need approval. Failed final combined checks wait for **Ctrl+R**. Existing blocked tasks receive their saved failure evidence on retry.
 
 ## Automatic repairs
 
@@ -85,7 +106,7 @@ The original worker, task identity and file scope stay. Independent completed ta
 
 Requests, failure evidence and the two-attempt budget save in SQLite. Reopened tasks lose their old passing checks, and publication waits for fresh final verification. **Ctrl+R** stops work; explicit retry preserves the repair budget. Each new plan starts a fresh budget. If a failure persists after two handoffs, send an edit request to revise the plan. **Ctrl+O** shows the repair check and failure evidence; the conversation keeps a short notice.
 
-Missing access, environment blockers, uncertainty and product decisions still pause. Repairs do not expand file ownership or approve network access. A worker must identify a completed owner and provide evidence; ordinary blocked reports and failed controller checks keep their retry flow.
+Missing access, environment blockers, uncertainty and product decisions still pause. Repairs do not expand file ownership or approve network access. A worker must identify a completed owner and provide evidence. Ordinary blocked reports wait for retry; failed controller task checks use the bounded verification feedback above.
 
 ## Updates from merged work
 
@@ -118,6 +139,7 @@ These checks use disposable VMs and remove them afterward. The provider test use
 ```sh
 cargo test repair_handoff_preserves_drafts_and_rechecks_in_vm -- --ignored
 cargo test codex_verifier_hands_a_regression_back_to_muse -- --ignored
+cargo test verification_feedback_recovers_both_vm_workers -- --ignored
 ```
 
 Scheduling tests cover load balancing, provider combinations, dependencies and saved owners. The VM checks verify automatic mixed assignment and fixed provider waves, including real overlap and dependent integration.

@@ -79,7 +79,9 @@ Muse's verified Linux binary and adapter files live in `~/Library/Caches/sprowt-
 
 Muse recovery files are private, written atomically before delivery and contain IDs, not credentials or message bodies. Native conversations and tool history remain in that worker's VM home. Quitting retains them; VM deletion removes them. SQLite stores the native session identity and pending receipt. See [Muse recovery](workers.md#muse-recovery).
 
-Task rows also save repair evidence and affected-task context. The execution stores its repair-attempt count; restart and explicit retry retain it. A new plan resets the budget. See [Automatic repairs](execution.md#automatic-repairs).
+Task rows save verification feedback and a one-attempt recovery budget. Requeueing saves the evidence, new attempt identity and budget atomically. Restart and explicit retry retain the budget; passing verification clears the feedback. See [Verification feedback](execution.md#verification-feedback).
+
+Task rows also save repair evidence and affected-task context. The execution stores a separate repair-attempt count; restart and explicit retry retain it. A new plan resets both budgets. See [Automatic repairs](execution.md#automatic-repairs).
 
 The `worker_messages` table saves [coordination](coordination.md): task identities, bodies, reply links, retry keys and delivery/receipt state. New edit and integration rounds retain that history but retire its task addresses. Closing keeps messages; deleting a codemod removes them. Mailbox access goes through the host dispatcher; the database is never copied into the VM.
 

@@ -437,7 +437,7 @@ pub(crate) mod tests {
             .remove(0);
         store.save_thread(owner.id, "saved-muse-session").unwrap();
         let input = store.task_input(id, owner.id, &plan).unwrap().unwrap();
-        store.0.execute_batch("ALTER TABLE task_runs DROP COLUMN assignment_reason; ALTER TABLE task_runs DROP COLUMN assignment_order;").unwrap();
+        store.0.execute_batch("ALTER TABLE task_runs DROP COLUMN assignment_reason; ALTER TABLE task_runs DROP COLUMN assignment_order; ALTER TABLE task_runs DROP COLUMN verification_feedback; ALTER TABLE task_runs DROP COLUMN verification_retries;").unwrap();
         drop(store);
         let mut store = data.store();
         assert!(
@@ -450,6 +450,7 @@ pub(crate) mod tests {
         assert_eq!(run.worker, Some(owner.id));
         assert_eq!(run.provider.as_deref(), Some("muse"));
         assert!(run.assignment_reason.is_empty());
+        assert!(run.verification_feedback.is_empty());
         let resumed = store
             .schedule_workers(id, &plan, &[], &[], &["codex", "muse"])
             .unwrap()

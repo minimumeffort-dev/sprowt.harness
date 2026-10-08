@@ -883,6 +883,12 @@ impl Store {
                     run.id
                 ));
             }
+            if !run.verification_feedback.is_empty() {
+                prompt.push_str(&format!(
+                    "\nIndependent verification failed: {}\nReproduce the failure and fix it within your original file scope. Preserve all declared checks and their coverage; do not skip failures or weaken assertions. Browser tests must register a matching response wait before triggering an action, await successful completion and assert the resulting state. Exercise relevant races by controlling request completion, not arbitrary sleeps. If the defect belongs to a completed peer, request a repair with the observed evidence. Report environment or access blockers honestly. Rerun every declared check, including checks not reached previously.",
+                    serde_json::to_string(&run.verification_feedback).unwrap()
+                ));
+            }
             let inbox = self.task_mail(mod_id, run.id)?;
             if !inbox.is_empty() {
                 prompt.push_str(&format!(
@@ -1325,7 +1331,7 @@ impl Store {
         let Some((workspace, status, checks, fingerprint, backend)) = result else {
             return Ok(None);
         };
-        let mut statement = self.0.prepare("SELECT t.id,t.task_id,t.status,t.source,t.turn_id,t.summary,t.checks,t.worker_id,t.routing,t.repair,w.provider,t.assignment_reason FROM task_runs t LEFT JOIN workers w ON w.id=t.worker_id WHERE t.mod_id=?1 ORDER BY t.id")?;
+        let mut statement = self.0.prepare("SELECT t.id,t.task_id,t.status,t.source,t.turn_id,t.summary,t.checks,t.worker_id,t.routing,t.repair,w.provider,t.assignment_reason,t.verification_feedback FROM task_runs t LEFT JOIN workers w ON w.id=t.worker_id WHERE t.mod_id=?1 ORDER BY t.id")?;
         let tasks = statement
             .query_map([mod_id], |row| {
                 let checks: String = row.get(6)?;
@@ -1358,6 +1364,8 @@ impl Store {
                             Box::new(error),
                         )
                     })?,
+                    verification_feedback: serde_json::from_str(&row.get::<_, String>(12)?)
+                        .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 })
             })?
             .collect::<Result<Vec<_>>>()?;
@@ -1473,7 +1481,7 @@ impl Store {
     ) -> Result<()> {
         let transaction = self.0.transaction()?;
         let changed = transaction.execute(
-            "UPDATE task_runs SET status=?3,summary=?4,checks=?5 WHERE mod_id=?1 AND source=?2",
+            "UPDATE task_runs SET status=?3,summary=?4,checks=?5,verification_feedback=CASE WHEN ?3='blocked' AND ?5!='[]' THEN ?5 WHEN ?3='done' THEN '[]' ELSE verification_feedback END WHERE mod_id=?1 AND source=?2",
             params![
                 mod_id,
                 source,
@@ -1487,6 +1495,28 @@ impl Store {
         }
         transaction.execute("UPDATE executions SET status=CASE WHEN EXISTS(SELECT 1 FROM task_runs WHERE mod_id=?1 AND status='repair_wait') THEN 'repairing' WHEN EXISTS(SELECT 1 FROM task_runs WHERE mod_id=?1 AND status IN ('blocked','paused','waiting')) THEN 'blocked' ELSE 'running' END WHERE mod_id=?1", [mod_id])?;
         transaction.commit()
+    }
+
+    pub fn recover_verification(&mut self, mod_id: i64, source: &str, worker: i64) -> Result<bool> {
+        let transaction = self.0.transaction()?;
+        let run: Option<(i64, i64)> = transaction.query_row(
+            "SELECT id,attempt FROM task_runs WHERE mod_id=?1 AND source=?2 AND worker_id=?3 AND status='blocked' AND verification_retries=0 AND checks!='[]'",
+            params![mod_id,source,worker], |row| Ok((row.get(0)?,row.get(1)?))
+        ).optional()?;
+        let Some((id, attempt)) = run else {
+            return Ok(false);
+        };
+        transaction.execute("UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,verification_feedback=checks,checks='[]',verification_retries=verification_retries+1 WHERE id=?1", params![id,attempt+1,task_source(id,attempt+1)])?;
+        transaction.execute(
+            "UPDATE workers SET pending=NULL WHERE id=?1 AND pending=?2",
+            params![worker, source],
+        )?;
+        transaction.execute(
+            "UPDATE executions SET status='running',checks='[]',fingerprint=NULL WHERE mod_id=?1",
+            [mod_id],
+        )?;
+        transaction.commit()?;
+        Ok(true)
     }
 
     pub fn retry_tasks(&mut self, mod_id: i64) -> Result<()> {
@@ -1508,7 +1538,7 @@ impl Store {
                 [task.id],
                 |row| row.get(0),
             )?;
-            transaction.execute("UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,summary='',checks='[]' WHERE id=?1", params![task.id,attempt+1,task_source(task.id,attempt+1)])?;
+            transaction.execute("UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,summary='',verification_feedback=CASE WHEN checks!='[]' THEN checks ELSE verification_feedback END,checks='[]' WHERE id=?1", params![task.id,attempt+1,task_source(task.id,attempt+1)])?;
             transaction.execute(
                 "UPDATE workers SET pending=NULL WHERE mod_id=?1 AND pending=?2",
                 params![mod_id, task.source],

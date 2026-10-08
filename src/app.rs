@@ -3818,6 +3818,121 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "Recovers real failed checks with Codex and Muse in a disposable VM"]
+    fn verification_feedback_recovers_both_vm_workers() {
+        use std::sync::atomic::AtomicBool;
+        let (data, mut store, id, mut plan) =
+            crate::scheduler::tests::fixture(&["auto", "auto"], false);
+        let project = data.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("check.sh"), "printf '%s\\n' \"$2\" | cmp -s - \"$1\" || { echo 'AssertionError: Saved result is incorrect'; exit 1; }\nprintf 'check passed\\n'\n").unwrap();
+        for (i, task) in plan.tasks.iter_mut().enumerate() {
+            std::fs::write(project.join(format!("{i}.txt")), "incorrect\n").unwrap();
+            task.outcome = format!(
+                "Write exactly task{i} followed by a newline in {i}.txt. Use the existing immutable check.sh to verify it. Do not modify check.sh. No dependencies are needed."
+            );
+        }
+        let source = store.planning(id).unwrap().unwrap().source;
+        store.save_plan(id, &source, &plan).unwrap();
+        let root = store.execution(id).unwrap().unwrap().workspace;
+        workspace::create(&project, &root).unwrap();
+        let records = store
+            .schedule_workers(id, &plan, &[], &[], &["codex", "muse"])
+            .unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let flag = AtomicBool::new(false);
+            let mut vm = crate::sandbox::Sandbox::prepare(&root, &flag, |_| {}).unwrap();
+            let runs = store.execution(id).unwrap().unwrap().tasks;
+            vm.prepare_tasks(&runs.iter().map(|run| run.id).collect::<Vec<_>>(), &flag)
+                .unwrap();
+            for (i, run) in runs.iter().enumerate() {
+                let record = records
+                    .iter()
+                    .find(|record| Some(record.id) == run.worker)
+                    .unwrap();
+                vm.assign_task(run.id, record.id, &flag).unwrap();
+                let check = crate::execution::Check {
+                    task: Some(run.id),
+                    check: plan.tasks[i].checks[0].clone(),
+                    command: vec![
+                        "/bin/sh".into(),
+                        format!("/tasks/{}/check.sh", run.id),
+                        format!("/tasks/{}/{i}.txt", run.id),
+                        format!("task{i}"),
+                    ],
+                };
+                let (_, results) = vm.verify_execution(&run.source, &[check], &flag).unwrap();
+                assert_eq!(results[0].exit_code, Some(1), "{}", results[0].output);
+                store
+                    .finish_task(
+                        id,
+                        &run.source,
+                        "blocked",
+                        "Worker claimed success",
+                        &results,
+                    )
+                    .unwrap();
+                assert!(
+                    store
+                        .recover_verification(id, &run.source, record.id)
+                        .unwrap()
+                );
+            }
+            drop(vm);
+            let mut app = App::load(project.clone(), false, store).unwrap();
+            app.muse = true;
+            app.start_worker(0, Role::Executor).unwrap();
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(300) {
+                app.poll_workers().unwrap();
+                assert!(
+                    app.workers
+                        .values()
+                        .all(|worker| worker.status != Status::Failed),
+                    "{}",
+                    app.worker_error().unwrap_or("")
+                );
+                if app.mods[0].execution.as_ref().unwrap().status == "review" {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let execution = app.mods[0].execution.as_ref().unwrap();
+            assert_eq!(
+                execution.status,
+                "review",
+                "{}",
+                app.worker_error().unwrap_or("")
+            );
+            assert_eq!(execution.checks.len(), 2);
+            assert!(
+                execution
+                    .checks
+                    .iter()
+                    .all(|check| check.exit_code == Some(0))
+            );
+            assert!(
+                execution
+                    .tasks
+                    .iter()
+                    .zip(&runs)
+                    .all(|(now, before)| now.worker == before.worker
+                        && now.verification_feedback.is_empty())
+            );
+            assert_eq!(
+                std::fs::read(root.join("work/check.sh")).unwrap(),
+                std::fs::read(project.join("check.sh")).unwrap()
+            );
+            app.workers.clear();
+            eprintln!("Codex and Muse recovered their own failures; combined checks passed.");
+        }));
+        crate::sandbox::delete(&root).unwrap();
+        if let Err(error) = outcome {
+            std::panic::resume_unwind(error);
+        }
+    }
+
     fn execution_app() -> (TestData, App, PathBuf) {
         let data = TestData::new();
         let project = data.0.join("project");
@@ -4675,7 +4790,7 @@ mod tests {
                 .unwrap();
             let end = expanded
                 .iter()
-                .position(|row| row.contains("   Done"))
+                .position(|row| row.contains("worker report · Done"))
                 .unwrap();
             let code: Vec<_> = expanded[start..end]
                 .iter()
@@ -4719,6 +4834,43 @@ mod tests {
             expanded.contains("worker · muse · equally suitable, lower load"),
             "{expanded}"
         );
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
+    fn verification_results_show_the_assertion_and_label_worker_claims() {
+        let (_data, mut app, _) = execution_app();
+        let id = app.mods[0].id;
+        let mut plan = app.mods[0].planning.as_ref().unwrap().plan.clone().unwrap();
+        plan.tasks[0].checks = vec!["Suite".into(), "Browser flows".into(), "Real model".into()];
+        app.store
+            .save_plan(id, &app.mods[0].planning.as_ref().unwrap().source, &plan)
+            .unwrap();
+        let source = app.mods[0].execution.as_ref().unwrap().tasks[0]
+            .source
+            .clone();
+        let checks = vec![crate::execution::CheckResult { task: None, check: "Suite".into(), command: vec!["/bin/true".into()], exit_code: Some(0), output: String::new() }, crate::execution::CheckResult { task: None, check: "Browser flows".into(), command: vec!["/bin/false".into()], exit_code: Some(1), output: "DeprecationWarning: dependency\nTraceback\nAssertionError: Upload retry\nactual: undefined\nexpected: true".into() }];
+        app.store
+            .finish_task(id, &source, "blocked", "All checks passed", &checks)
+            .unwrap();
+        app.mods[0].planning = app.store.planning(id).unwrap();
+        app.mods[0].execution = app.store.execution(id).unwrap();
+        app.plan_details = true;
+        let rendered = rows(&screen(&mut app, 120, 50)).join("\n");
+        assert!(
+            rendered.contains("1/3 passed · 1 failed · 1 not run"),
+            "{rendered}"
+        );
+        assert!(rendered.contains("Real model · not run"), "{rendered}");
+        assert!(
+            rendered.contains("AssertionError: Upload retry"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("worker report · All checks passed"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("DeprecationWarning"), "{rendered}");
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 
