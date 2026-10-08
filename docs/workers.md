@@ -16,11 +16,11 @@ Startup checks CLI versions and local account status. Codex is required for plan
 flowchart TB
     start["Run sprowt-harness"] --> check["Check installed CLIs and local account logins"]
     check --> pool["Available workers · Codex, plus Muse when installed"]
-    pool --> planner["Astra xhigh · assign useful tasks and providers"]
-    planner --> schedule["Rust scheduler · run up to two ready tasks"]
+    pool --> planner["Astra xhigh · define tasks and capability needs"]
+    planner --> schedule["Rust · balance providers, run up to two ready tasks"]
 ```
 
-Describe the outcome normally. Astra xhigh assigns demanding implementation and integration checks to Codex, and can assign independent, well-scoped work to Muse. Small changes can stay with one provider. Saved tasks keep their provider and worker identity when retried.
+Describe the outcome normally. Astra xhigh defines useful tasks and contracts. Both providers can implement, test and integrate. Rust picks the least loaded suitable provider when a task is ready, alternating ties. A specific capability can restrict the choice. Small changes can stay with one worker; retries keep their assigned provider and identity. See [Provider assignment](planning.md#provider-assignment).
 
 | Role | Engine | Model and effort |
 | --- | --- | --- |
@@ -61,7 +61,7 @@ flowchart TB
 
 Each worker has its own conversation, runtime HOME and cancellation signal. The shared controller serializes checkpoints, Git integration, independent checks and system package installation. Model turns and task commands overlap.
 
-The two active slots follow ready work. They can run two Codex workers, two Muse workers or one of each. Astra's saved provider assignments stay; Rust fills capacity when dependencies pass. Idle workers are parked and reused. Connecting, running and checking all occupy a slot. Saved task ownership, delivery recovery and repair handoffs keep the original worker.
+The two active slots follow ready work. They can run two Codex workers, two Muse workers or one of each. Rust balances automatic tasks using active load across codemods in this harness; saved assignments stay fixed. Dependencies gate readiness. Idle workers are parked and reused. Connecting, running and checking all occupy a slot. Saved task ownership, delivery recovery and repair handoffs keep the original worker.
 
 Codex's trusted host process handles inference and uses its guest environment for executor tools. Its apps, inherited MCP servers, plugins, hooks and delegation are disabled. The planner's host sandbox is read-only and denies credential directories and local environment files.
 
@@ -90,7 +90,7 @@ Both providers use the same [task mailboxes](coordination.md) and [tool dispatch
 
 Blocked downloads can request exact domains for your approval. Approval reconnects only the affected worker and retries its saved task; peers continue. Native conversation context is reused when compatible. An older Codex conversation without the current tool set starts fresh from the saved plan, source and accepted instructions. See [Downloads](sandbox.md#downloads).
 
-The codemod row shows each active provider, worker ID and task number; narrow terminals show a count. Worker labels and saved replies show model and effort. **Ctrl+R** stops or retries work. Steering is acknowledged separately for each targeted worker; reordering the queue does not deliver instructions.
+The codemod row shows each active provider, worker ID and task number; narrow terminals show a count. Worker labels and saved replies show model and effort. **Ctrl+O** shows each task’s provider and assignment reason. **Ctrl+R** stops or retries work. Steering is acknowledged separately for each targeted worker; reordering the queue does not deliver instructions.
 
 The harness saves a delivery as pending before sending it. Acceptance records its receipt atomically. Both providers check their saved conversation for receipts on reconnect. Unknown delivery remains saved and pauses automatic retry.
 

@@ -357,9 +357,11 @@ impl Worker {
                             .as_ref()
                             .and_then(|p| p.plan.as_ref())
                             .is_some_and(|p| {
-                                p.tasks
-                                    .iter()
-                                    .any(|t| t.id == run.task_id && t.worker == self.provider)
+                                p.tasks.iter().any(|t| {
+                                    t.id == run.task_id
+                                        && t.accepts(&self.provider)
+                                        && run.worker.is_none_or(|id| id == self.id)
+                                })
                             })
                 }) && !execution
                     .tasks
@@ -1757,22 +1759,40 @@ mod tests {
             workspace::create(&project, &root).unwrap();
             store.create_execution(m.id, &root, &plan).unwrap();
             m.execution = store.execution(m.id).unwrap();
-            let mut workers: Vec<_> = (0..2)
-                .map(|slot| {
-                    Worker::start(
-                        &project,
-                        &m,
-                        store.worker_at(m.id, Role::Executor, slot).unwrap(),
-                        Role::Executor,
-                        None,
-                    )
-                    .unwrap()
-                })
+            let records = store
+                .schedule_workers(m.id, &plan, &[], &[], &["codex"])
+                .unwrap();
+            m.execution = store.execution(m.id).unwrap();
+            let mut workers: Vec<_> = records
+                .into_iter()
+                .map(|record| Worker::start(&project, &m, record, Role::Executor, None).unwrap())
                 .collect();
             let deadline = Instant::now() + Duration::from_secs(1800);
             let mut overlap = false;
             let mut previous = String::new();
             while Instant::now() < deadline && m.execution.as_ref().unwrap().status != "review" {
+                let busy = workers
+                    .iter()
+                    .filter(|w| w.busy())
+                    .map(|w| w.id)
+                    .collect::<Vec<_>>();
+                let records = store
+                    .schedule_workers(m.id, &plan, &busy, &[], &["codex"])
+                    .unwrap();
+                m.execution = store.execution(m.id).unwrap();
+                for record in records {
+                    if let Some(worker) = workers.iter_mut().find(|w| w.id == record.id) {
+                        if !worker.enabled
+                            && matches!(worker.status, Status::Ready | Status::Complete)
+                        {
+                            worker.toggle();
+                        }
+                    } else {
+                        workers.push(
+                            Worker::start(&project, &m, record, Role::Executor, None).unwrap(),
+                        );
+                    }
+                }
                 for worker in &mut workers {
                     worker.poll(&mut store, &mut m, true, &project).unwrap();
                     assert!(

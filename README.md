@@ -11,7 +11,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 ## What works today
 
 - [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
-- [Planning and routing](docs/planning.md): describe the outcome. Astra xhigh chooses task splits, shared contracts and coordination; Jev routes each task to Sol 6.1 medium, high or xhigh.
+- [Planning and routing](docs/planning.md): describe the outcome. Astra xhigh defines tasks and contracts. Rust balances Codex and Muse; Jev chooses Sol 6.1 effort.
 - [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
 - [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders, combined verification and automatic repair handoffs.
 - [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
@@ -31,14 +31,14 @@ Startup detects Codex and Muse from your installed CLIs and account logins. Muse
 
 ## Architecture today
 
-Rust owns the interface, scheduling, workers, task mailboxes and saved state. Startup checks the available agents and gives that pool to the planner. A shared tool dispatcher validates operations and routes them to host or VM adapters. Codex plans; Codex and Muse execute. Jev evaluates task difficulty and risk through a host-only API adapter.
+Rust owns the interface, scheduling, workers, task mailboxes and saved state. Startup checks the available agents. Astra defines the work; Rust assigns ready tasks to the least loaded suitable provider. A shared tool dispatcher validates operations and routes them to host or VM adapters. Codex plans; Codex and Muse execute. Jev evaluates task difficulty and risk through a host-only API adapter.
 
 ```mermaid
 flowchart TB
     goal["Describe a codemod"] --> sync["Check remote · safely update project branch"]
     sync --> setup["Git branch + worktree"]
     setup --> planner["Astra xhigh · inspect source and plan"]
-    planner --> schedule["Rust scheduler · ready tasks"]
+    planner --> schedule["Rust · balance ready tasks across providers"]
     schedule --> first["Slot 1 · Codex or Muse · own task worktree"]
     schedule --> second["Slot 2 · Codex or Muse · own task worktree"]
     first <-->|"Saved task mailboxes"| second
@@ -53,13 +53,13 @@ flowchart TB
     publish --> ready
     upstream["Another PR merges"] --> update["Save checkpoint · combine latest target branch"]
     upstream --> local["Project check · safely update local branch"]
-    update --> verify["Codex resolves conflicts · Rust rechecks"]
+    update --> verify["Codex or Muse resolves conflicts · Rust rechecks"]
     verify --> ready
 ```
 
-Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. When Muse is available, the planner can assign independent work to Spark 1.3 high; Jev continues to route Codex effort.
+Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Rust reruns checks independently. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse uses Spark 1.3 high. Jev routes Codex effort.
 
-The two active slots follow ready tasks: two Codex, two Muse or one of each. Saved provider assignments and dependencies decide who runs. Idle workers keep their identity and conversation; retries and repairs return to the original owner. The codemod row shows each active provider, worker ID and task number.
+Each codemod has two active slots: two Codex, two Muse or one of each. Both providers can implement, test and integrate. Rust picks the least loaded suitable provider across active codemods and alternates ties. Existing plans keep their assignments; retries and repairs keep their owner. The codemod row shows active workers. **Ctrl+O** shows each task's assignment reason.
 
 Muse resumes its native task conversation after a stop or harness restart while the VM disk remains. Saved delivery IDs are checked against native receipts before any retry. Completed work goes straight to verification; unknown delivery stays paused. Starting another task creates a separate conversation.
 

@@ -325,7 +325,8 @@ pub fn prepare(
                     .collect(),
                 depends_on: vec![],
                 coordination: vec![],
-                worker: "codex".into(),
+                worker: "auto".into(),
+                provider_reason: Some(String::new()),
                 checks,
             }],
             ..plan.clone()
@@ -694,6 +695,7 @@ pub(crate) mod tests {
                 depends_on: vec![],
                 coordination: vec![],
                 worker: "codex".into(),
+                provider_reason: None,
                 checks: vec!["Deletion check passes".into()],
             }],
             ..Plan::default()
@@ -1182,6 +1184,7 @@ pub(crate) mod tests {
                 depends_on: vec![],
                 coordination: vec![],
                 worker: "codex".into(),
+                provider_reason: None,
                 checks: vec!["Deletion works".into()],
             }],
             ..Plan::default()
@@ -1232,8 +1235,9 @@ pub(crate) mod tests {
         store.install_update(code_mod.id, &root, &update).unwrap();
         let execution = store.execution(code_mod.id).unwrap().unwrap();
         let worker = store
-            .worker_for(code_mod.id, crate::plan::Role::Executor)
-            .unwrap();
+            .schedule_workers(code_mod.id, &update.plan, &[], &[], &["codex"])
+            .unwrap()
+            .remove(0);
         let input = store
             .task_input(code_mod.id, worker.id, &update.plan)
             .unwrap()
@@ -1341,6 +1345,9 @@ pub(crate) mod tests {
                     .map_err(io::Error::other)?
                     .mods
                     .remove(0);
+                store
+                    .schedule_workers(code_mod.id, &update.plan, &[], &[], &["codex"])
+                    .map_err(io::Error::other)?;
                 assert_eq!(fs::read(root.join("vm.json"))?, before);
                 assert!(
                     Context::worker(&code_mod, record.id, Role::Executor)

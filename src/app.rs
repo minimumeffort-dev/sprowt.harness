@@ -1915,7 +1915,12 @@ impl App {
             .as_ref()
             .and_then(|p| p.plan.as_ref());
         let uses_muse = role == Role::Executor
-            && plan.is_some_and(|p| p.tasks.iter().any(|t| t.worker == "muse"));
+            && (plan.is_some_and(|p| p.tasks.iter().any(|t| t.worker == "muse"))
+                || self.mods[index].execution.as_ref().is_some_and(|e| {
+                    e.tasks
+                        .iter()
+                        .any(|t| t.provider.as_deref() == Some("muse"))
+                }));
         if uses_muse && !self.muse {
             self.notice = Some(format!(
                 "This plan needs Muse {}. Install it, run muse login and restart the harness.",
@@ -1942,7 +1947,7 @@ impl App {
         let busy = self
             .workers
             .values()
-            .filter(|w| w.mod_id == mod_id && w.role == Role::Executor && w.busy())
+            .filter(|w| w.role == Role::Executor && w.busy())
             .map(|w| w.id)
             .collect::<Vec<_>>();
         let unavailable = self
@@ -1964,9 +1969,17 @@ impl App {
             .plan
             .as_ref()
             .unwrap();
-        let records = self
-            .store
-            .schedule_workers(mod_id, plan, &busy, &unavailable)?;
+        let records = self.store.schedule_workers(
+            mod_id,
+            plan,
+            &busy,
+            &unavailable,
+            if self.muse {
+                &["codex", "muse"]
+            } else {
+                &["codex"]
+            },
+        )?;
         self.mods[index].execution = self.store.execution(mod_id)?;
         for worker in self
             .workers
@@ -3719,6 +3732,92 @@ mod tests {
         }
     }
 
+    #[test]
+    #[ignore = "Runs automatic Codex/Muse assignment and integration in a disposable VM"]
+    fn automatic_provider_assignment_runs_in_vm() {
+        let (data, mut store, id, mut plan) =
+            crate::scheduler::tests::fixture(&["auto", "auto", "auto"], true);
+        let project = data.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(
+            project.join("README.md"),
+            "Disposable assignment fixture.\n",
+        )
+        .unwrap();
+        let root = store.execution(id).unwrap().unwrap().workspace;
+        workspace::create(&project, &root).unwrap();
+        for (i, task) in plan.tasks.iter_mut().take(2).enumerate() {
+            task.outcome = format!(
+                "Write exactly task{i} followed by a newline in {i}.txt. Run /bin/sleep 8 before writing to exercise concurrency. Use /bin/sh for checks; no dependencies or other source changes are needed."
+            );
+        }
+        plan.tasks[2].files.clear();
+        plan.tasks[2].outcome = "Verify 0.txt contains exactly task0 and 1.txt exactly task1, both followed by a newline. Do not modify source files. Use /bin/sh; no dependencies are needed.".into();
+        plan.tasks[2].checks = vec!["Both files contain the expected text".into()];
+        let source = store.planning(id).unwrap().unwrap().source;
+        store.save_plan(id, &source, &plan).unwrap();
+        let mut app = App::load(project, false, store).unwrap();
+        app.muse = true;
+        app.start_worker(0, Role::Executor).unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let started = Instant::now();
+            let mut overlap = false;
+            let mut previous = String::new();
+            while started.elapsed() < Duration::from_secs(480) {
+                app.poll_workers().unwrap();
+                let execution = app.mods[0].execution.as_ref().unwrap();
+                overlap |= execution.tasks[..2].iter().all(|r| r.status == "running");
+                let state = execution
+                    .tasks
+                    .iter()
+                    .map(|r| format!("{}:{}:{:?}", r.task_id, r.status, r.provider))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if state != previous {
+                    eprintln!("Automatic assignment: {state}");
+                    previous = state;
+                }
+                assert!(
+                    app.workers.values().all(|w| w.status != Status::Failed),
+                    "{}",
+                    app.worker_error().unwrap_or("")
+                );
+                if execution.status == "review" {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let execution = app.mods[0].execution.as_ref().unwrap();
+            assert_eq!(
+                execution.status,
+                "review",
+                "{}",
+                app.worker_error().unwrap_or("")
+            );
+            assert!(overlap, "Implementation tasks must overlap");
+            assert_eq!(execution.tasks[0].provider.as_deref(), Some("codex"));
+            assert_eq!(execution.tasks[1].provider.as_deref(), Some("muse"));
+            assert_eq!(execution.checks.len(), 3);
+            assert!(execution.checks.iter().all(|c| c.exit_code == Some(0)));
+            assert!(
+                execution
+                    .tasks
+                    .iter()
+                    .all(|r| r.assignment_reason.starts_with("equally suitable"))
+            );
+            eprintln!(
+                "Automatic assignment: 3/3 tasks and checks passed in {:.1}s",
+                started.elapsed().as_secs_f64()
+            );
+        }));
+        app.workers.clear();
+        drop(app);
+        crate::sandbox::delete(&root).unwrap();
+        if let Err(error) = outcome {
+            std::panic::resume_unwind(error);
+        }
+    }
+
     fn execution_app() -> (TestData, App, PathBuf) {
         let data = TestData::new();
         let project = data.0.join("project");
@@ -4595,6 +4694,32 @@ mod tests {
             assert!(!collapsed.contains("execution stays"));
             assert_eq!(app.input.lines(), ["keep this draft"]);
         }
+    }
+
+    #[test]
+    fn provider_assignment_reasons_stay_in_plan_details() {
+        let (data, mut store, id, plan) =
+            crate::scheduler::tests::fixture(&["auto", "auto"], false);
+        let project = data.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        store
+            .schedule_workers(id, &plan, &[], &[], &["codex", "muse"])
+            .unwrap();
+        let mut app = App::load(project, false, store).unwrap();
+        app.input.insert_str("keep this draft");
+        let compact = rows(&screen(&mut app, 110, 36)).join("\n");
+        assert!(!compact.contains("equally suitable"));
+        app.plan_details = true;
+        let expanded = rows(&screen(&mut app, 110, 36)).join("\n");
+        assert!(
+            expanded.contains("worker · codex · equally suitable, alternating tie"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("worker · muse · equally suitable, lower load"),
+            "{expanded}"
+        );
+        assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 
     #[test]

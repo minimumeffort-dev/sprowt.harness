@@ -19,6 +19,8 @@ pub struct TaskRun {
     pub repair: Option<crate::repair::Repair>,
     pub selection: Option<crate::router::Selection>,
     pub worker: Option<i64>,
+    pub provider: Option<String>,
+    pub assignment_reason: String,
     pub id: i64,
     pub task_id: String,
     pub status: String,

@@ -6,7 +6,7 @@ Creating a codemod starts a read-only Codex planner at **Astra xhigh**. Git setu
 flowchart TB
     goal["Request + project brief"] --> planner["Astra xhigh · inspect source and define contracts"]
     planner --> validate["Rust · validate tasks, scopes and dependencies"]
-    validate --> schedule["Rust · assign up to two independent tasks"]
+    validate --> schedule["Rust · choose the least loaded suitable provider"]
     schedule --> route["Jev + Rust policy · Codex model and effort"]
     route --> execute["Codex executors · task worktrees inside the VM"]
     schedule --> muse["Muse Spark 1.3 high · own VM task worktree"]
@@ -36,7 +36,15 @@ flowchart TB
 
 ## Provider assignment
 
-Startup detects installed CLIs and local account logins. Astra receives the available worker pool and can assign independent, well-scoped work to Muse while keeping demanding or high-risk implementation and integration on Codex. The scheduler matches ready tasks to their saved providers, filling two active slots with Codex, Muse or both. Dependencies and task ownership stay fixed. Muse currently uses Spark 1.3 high; it does not call Jev.
+Startup checks installed CLIs and local account logins. Astra defines tasks, contracts and dependencies; Rust assigns each task when it becomes ready.
+
+- Tasks use `worker: auto` by default. Backend, interface, tests, demanding implementation and integration can use either provider.
+- A specific provider needs a brief `provider_reason` naming a required capability. Complexity alone does not restrict the provider. Rust validates the structure; it does not prove the claimed capability is real.
+- Rust counts active executors across codemods in this harness and chooses the least loaded available provider. Ties alternate using saved assignment order. These counts cover work, not subscription quotas.
+- Each codemod keeps two active slots. Connecting, running and checking occupy a slot. Dependencies still gate readiness.
+- Assignment saves the provider, worker identity and reason before delivery. Retries, steering, recovery and repairs keep that owner. A missing provider pauses its saved work.
+
+Existing plans keep their fixed provider assignments. New plans use automatic assignment. Muse runs Spark 1.3 high; Jev continues to choose Codex effort. **Ctrl+O** shows the assignment reason beside each task's model details.
 
 ## Jev task routing
 
@@ -67,7 +75,7 @@ Copy `.env.example` to `.env.local` in the harness repository and add `TYPESAFE_
 
 ## What a plan contains
 
-A summary, shared contracts, material assumptions, non-goals and tasks with IDs, titles, outcomes, file scopes, dependencies, coordination topics, worker assignments and completion checks. Existing saved plans without context or coordination fields still load.
+A summary, shared contracts, material assumptions, non-goals and tasks with IDs, titles, outcomes, file scopes, dependencies, coordination topics, automatic or capability-specific provider choices and completion checks. Existing saved plans without context or coordination fields still load.
 
 Rust checks that:
 
@@ -77,7 +85,8 @@ Rust checks that:
 - Coordination links name existing peers, exclude the task itself and duplicate peers, and carry brief topics.
 - File scopes use exact project-relative paths, with no globs or parent traversal.
 - Tasks sharing file or directory scopes have a dependency between them.
-- The planner's response schema limits worker assignments to the detected providers: Codex, or Codex and Muse.
+- Automatic tasks have an empty provider reason; a newly specified provider has a short capability reason. Legacy fixed assignments still load.
+- The planner's schema allows automatic assignment and only the detected providers.
 
 These checks validate structure and declared scopes. They do not prove the plan will solve the request.
 

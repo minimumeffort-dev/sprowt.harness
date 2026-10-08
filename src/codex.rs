@@ -163,12 +163,14 @@ impl Client {
         let (actions, inbox) = mpsc::channel();
         let (outgoing, events) = mpsc::channel();
         let mut instructions = plan::instructions(role, description, plan, workspace.is_some());
-        if role == Role::Planner && context.muse {
-            instructions = instructions.replace("Only Codex is connected; assign every task to codex.", "Codex and Muse are connected. Assign demanding or high-risk implementation and integration checks to codex; use muse for well-scoped independent implementation, tests or documentation. Use both when that is useful, without forcing a split.");
-        }
         if role == Role::Planner {
             instructions.push_str(&format!(
-                "\nProject brief (verify against source): {}",
+                "\nAvailable executors: {}. Project brief (verify against source): {}",
+                if context.muse {
+                    "Codex and Muse"
+                } else {
+                    "Codex"
+                },
                 crate::router::context(&cwd, description)
             ));
         }
@@ -698,11 +700,7 @@ fn serve(
                         params["effort"] = json!(effort);
                     }
                     if role == Role::Planner {
-                        params["outputSchema"] = plan::schema();
-                        if context.muse {
-                            params["outputSchema"]["properties"]["tasks"]["items"]["properties"]
-                                ["worker"]["enum"] = json!(["codex", "muse"]);
-                        }
+                        params["outputSchema"] = plan::schema(context.muse);
                         if let Some(selection) = &selection {
                             params["model"] = json!(selection.model);
                             params["effort"] = json!(selection.effort);
@@ -942,9 +940,11 @@ mod tests {
         let before = crate::workspace::source_state(&project).unwrap();
         let mut store = data.store();
         let id = store.load_project(&project).unwrap().id;
-        let goal = "Plan two independent changes: update hello.py to print hello sprowt, and document running it in README.md. No other changes. Define any shared contract first.";
+        let goal = "Update hello.py to print hello sprowt and document how to run it in README.md.";
         let m = store.create_mod(id, goal).unwrap();
         let record = store.worker_for(m.id, Role::Planner).unwrap();
+        let mut context = Context::worker(&m, record.id, Role::Planner);
+        context.muse = true;
         let mut client = Client::start(
             &project,
             None,
@@ -952,7 +952,7 @@ mod tests {
             goal,
             None,
             Some(Selection::planner()),
-            Context::worker(&m, record.id, Role::Planner),
+            context,
         )
         .unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(180);
@@ -994,6 +994,12 @@ mod tests {
         assert!(completed, "Planner turn timed out");
         let text = final_plan.unwrap();
         let plan = Plan::parse(&text).unwrap();
+        assert!(
+            plan.tasks
+                .iter()
+                .all(|task| task.worker == "auto" && task.provider_reason.as_deref() == Some("")),
+            "{text}"
+        );
         let output: Value = serde_json::from_str(&text).unwrap();
         for field in ["contracts", "assumptions", "non_goals"] {
             assert!(output[field].is_array());

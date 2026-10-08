@@ -59,7 +59,7 @@ flowchart TB
     merged["PR A merges on GitHub"] --> wait["Codemod B finishes current workers"]
     wait --> checkpoint["Save B's checkpoint"]
     checkpoint --> combine["Combine latest target branch with B"]
-    combine --> worker["Codex resolves text conflicts and checks both goals"]
+    combine --> worker["Codex or Muse resolves text conflicts and checks both goals"]
     worker --> checks["Harness reruns checks on combined source"]
     checks --> ready["Review B · publish to update its existing PR"]
     ready --> merge["Merge B on GitHub"]

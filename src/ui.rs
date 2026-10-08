@@ -1277,6 +1277,33 @@ fn plan_lines(
             );
         }
         if details {
+            if let Some(provider) = run.and_then(|run| run.provider.as_deref()) {
+                let reason = &run.unwrap().assignment_reason;
+                lines.push(
+                    Line::from(format!(
+                        "   worker · {provider}{}",
+                        if reason.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" · {reason}")
+                        }
+                    ))
+                    .fg(KEY_HINT),
+                );
+            } else if task.worker == "auto" {
+                lines.push(Line::from("   worker · assigned when ready").fg(KEY_HINT));
+            } else {
+                lines.push(
+                    Line::from(format!(
+                        "   worker · {}{}",
+                        task.worker,
+                        task.provider_reason
+                            .as_ref()
+                            .map_or(String::new(), |r| format!(" · {r}"))
+                    ))
+                    .fg(KEY_HINT),
+                );
+            }
             if let Some(run) = run
                 && run.status != "done"
                 && let Some(repair) = &run.repair

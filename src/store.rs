@@ -311,6 +311,27 @@ impl Store {
                 .execute_batch("ALTER TABLE task_runs ADD COLUMN routing TEXT")
                 .map_err(io::Error::other)?;
         }
+        let columns = connection
+            .prepare("PRAGMA table_info(task_runs)")
+            .map_err(io::Error::other)?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(io::Error::other)?
+            .collect::<Result<Vec<_>>>()
+            .map_err(io::Error::other)?;
+        for (column, sql) in [
+            (
+                "assignment_reason",
+                "ALTER TABLE task_runs ADD COLUMN assignment_reason TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "assignment_order",
+                "ALTER TABLE task_runs ADD COLUMN assignment_order INTEGER NOT NULL DEFAULT 0",
+            ),
+        ] {
+            if !columns.iter().any(|name| name == column) {
+                connection.execute_batch(sql).map_err(io::Error::other)?;
+            }
+        }
         crate::repair::migrate(&connection).map_err(io::Error::other)?;
         connection
             .execute_batch(
@@ -1304,7 +1325,7 @@ impl Store {
         let Some((workspace, status, checks, fingerprint, backend)) = result else {
             return Ok(None);
         };
-        let mut statement = self.0.prepare("SELECT id,task_id,status,source,turn_id,summary,checks,worker_id,routing,repair FROM task_runs WHERE mod_id=?1 ORDER BY id")?;
+        let mut statement = self.0.prepare("SELECT t.id,t.task_id,t.status,t.source,t.turn_id,t.summary,t.checks,t.worker_id,t.routing,t.repair,w.provider,t.assignment_reason FROM task_runs t LEFT JOIN workers w ON w.id=t.worker_id WHERE t.mod_id=?1 ORDER BY t.id")?;
         let tasks = statement
             .query_map([mod_id], |row| {
                 let checks: String = row.get(6)?;
@@ -1322,6 +1343,8 @@ impl Store {
                         })
                         .transpose()?,
                     worker: row.get(7)?,
+                    provider: row.get(10)?,
+                    assignment_reason: row.get(11)?,
                     id: row.get(0)?,
                     task_id: row.get(1)?,
                     status: row.get(2)?,
@@ -1396,7 +1419,15 @@ impl Store {
             |row| row.get(0),
         )?;
         let mut available = plan.clone();
-        available.tasks.retain(|task| task.worker == provider);
+        available.tasks.retain(|task| task.accepts(&provider));
+        // Automatic tasks must be reserved by the scheduler before delivery.
+        available.tasks.retain(|task| {
+            task.worker != "auto"
+                || execution
+                    .tasks
+                    .iter()
+                    .any(|run| run.task_id == task.id && run.worker == Some(worker))
+        });
         let Some(task) = execution.next_task(&available, worker) else {
             return Ok(None);
         };

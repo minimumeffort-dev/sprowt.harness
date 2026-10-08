@@ -22,7 +22,7 @@ A failed check pauses that task and its dependents unless the worker requests a 
 
 Executors receive the planner's peer links and coordinate through [saved task mailboxes](coordination.md). Links describe what to coordinate; dependencies describe what must finish first. A task with unanswered asks waits; Rust resumes it after answers arrive. Queued edit rounds wait too, so they cannot replace tasks with outstanding questions. Messages do not change file ownership or dependencies.
 
-Provider assignments come from the planner's automatically detected worker pool. Codex remains the planner and integration worker. Both providers use the same checks, task mailboxes and source checkpoints. See [Workers](workers.md).
+Astra plans. Rust balances ready tasks across the available Codex and Muse executors; either can handle integration. Both providers use the same checks, task mailboxes and source checkpoints. See [Workers](workers.md).
 
 ## Working folder
 
@@ -52,7 +52,7 @@ flowchart TB
 
 Rust dispatches at most two ready tasks into `/tasks/<task-run-id>`. Each worktree has its own branch and index, sharing Git objects. New tasks start from the latest combined source. A retry keeps the same worker and task folder. The worker can write that folder, its own runtime home and temporary files; other task folders, combined source and Git metadata remain read-only.
 
-Slots follow the saved task providers: two Codex, two Muse or one of each. Rust reserves task ownership before connecting, parks idle workers and reuses them when their work is ready. Connecting and verification count toward the same two-slot limit. Stops stay paused; reopening waits for **Ctrl+R**. Network approval queues the original worker's retry until capacity is available.
+Slots use balanced provider choices or saved assignments: two Codex, two Muse or one of each. Rust reserves task ownership before connecting, parks idle workers and reuses them when their work is ready. Connecting and verification count toward the same two-slot limit. Stops stay paused; reopening waits for **Ctrl+R**. Network approval queues the original worker's retry until capacity is available.
 
 One controller owns VM startup and shutdown, task checkpoints, Git integration and system package setup. Controller operations run one at a time; model turns and task commands overlap. Worker conversations and cancellation signals are separate.
 
@@ -89,7 +89,7 @@ Missing access, environment blockers, uncertainty and product decisions still pa
 
 ## Updates from merged work
 
-When the PR target changes, a finished codemod saves a checkpoint and runs an integration plan in the same VM. Codex resolves text conflicts; Rust independently reruns the original and combined checks. Current workers finish first. Publication waits for verification. See [Worktrees and PRs](git-workflow.md#when-another-codemod-merges).
+When the PR target changes, a finished codemod saves a checkpoint and runs an integration plan in the same VM. The assigned Codex or Muse worker resolves text conflicts; Rust independently reruns the original and combined checks. Current workers finish first. Publication waits for verification. See [Worktrees and PRs](git-workflow.md#when-another-codemod-merges).
 
 ## Request edits
 
@@ -120,9 +120,10 @@ cargo test repair_handoff_preserves_drafts_and_rechecks_in_vm -- --ignored
 cargo test codex_verifier_hands_a_regression_back_to_muse -- --ignored
 ```
 
-Scheduling tests cover provider combinations, dependencies and saved owners. The VM check runs two Codex tasks followed by two Muse tasks, checks real overlap and removes the VM afterward.
+Scheduling tests cover load balancing, provider combinations, dependencies and saved owners. The VM checks verify automatic mixed assignment and fixed provider waves, including real overlap and dependent integration.
 
 ```sh
 cargo test scheduler
+cargo test automatic_provider_assignment_runs_in_vm -- --ignored
 cargo test worker_slots_follow_provider_waves_in_vm -- --ignored
 ```
