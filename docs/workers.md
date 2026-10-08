@@ -101,13 +101,16 @@ Muse keeps one native conversation per assigned task in its VM home. Stop and re
 ```mermaid
 flowchart TB
     reopen["Reconnect to retained VM"] --> resume["Resume Muse task session"]
-    resume --> receipts["Read native delivery receipts and turn results"]
+    resume --> receipts["Check dispatch log, receipts and turn results"]
+    receipts --> unsent["Unsent update · keep queued and continue"]
     receipts --> done["Completed turn · verify saved work"]
     receipts --> stopped["Interrupted turn · Ctrl+R continues with context"]
     receipts --> unknown["Unknown delivery · retain instruction and pause"]
 ```
 
 Session and command IDs save on the Mac before submission. Accepted turn IDs save before acknowledgment. Recovery reads native items and paged events, including when inline history is unavailable. A saved command ID alone is not proof of delivery. Repeated receipt processing keeps one transcript entry and does not resend steering or mailbox messages.
+
+An update saved as pending may never have reached the bridge. When the same Muse session resumes, its dispatch log can prove that a steering or mailbox update was never sent. Recovery releases that pending marker and leaves the update queued or in the inbox. An attempted delivery without a receipt still pauses; a missing log or replacement session cannot clear it.
 
 A dropped Muse connection gets one automatic reconnect to the same native session. Receipt checks run first: an active turn keeps running, a confirmed interrupted turn resumes from saved work, and a completed turn goes straight to independent checks. Unknown delivery or a missing turn status stays paused. Recovery is bounded to 64 pages and 8 MiB; oversized histories pause too. A second disconnect needs an explicit retry.
 

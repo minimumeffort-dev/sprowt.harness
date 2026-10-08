@@ -399,10 +399,28 @@ class ProtocolTests(unittest.TestCase):
             thread = recovered_thread(rpc, state, result)
             self.assertEqual(thread["turns"], [{"id": "turn", "status": "cancelled", "items": [
                 {"type": "userMessage", "id": "one", "clientId": "delivered", "content": [{"type": "text", "text": "new"}]}]}])
+            self.assertEqual(thread["dispatchJournal"], ["not-delivered", "delivered"])
             self.assertEqual(rpc.call.call_args.args[1]["cursor"], "next")
             for key, value in [("workspaceRoot", "/tasks/other"), ("sessionId", "other-session")]:
                 with self.assertRaisesRegex(RuntimeError, "different session or task"):
                     recovered_thread(rpc, state, {**result, "session": {**result["session"], key: value}})
+
+    def test_dispatch_journal_distinguishes_unsent_from_uncertain_after_restart(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = {"name": "vm", "cwd": "/tasks/7"}
+            state = SessionState(Path(directory) / "state.json", config)
+            state.command("uncertain")
+            state.command("accepted")
+            state.accepted("accepted", {"status": "accepted", "turnId": "turn"})
+            state = SessionState(state.path, config)
+            rpc = Mock()
+            rpc.call.return_value = {"events": [], "nextCursor": None}
+            thread = recovered_thread(rpc, state, {"session": {
+                "sessionId": state.value["sessionId"], "workspaceRoot": "/tasks/7"}})
+            self.assertEqual(thread["turns"], [])
+            self.assertEqual(thread["dispatchJournal"], ["uncertain", "accepted"])
+            self.assertNotIn("never-sent", thread["dispatchJournal"])
+            rpc.call.assert_called_once_with("view/page", {"sessionId": state.value["sessionId"], "limit": 1000})
 
     def test_missing_terminal_is_unknown_not_an_interrupted_turn(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -509,6 +509,25 @@ impl Worker {
                 self.model = model;
                 self.effort = effort;
                 self.preparing = None;
+                if self.provider == "muse"
+                    && self
+                        .thread_id
+                        .as_deref()
+                        .is_some_and(|id| thread["id"] == id)
+                    && let Some(source) = self.recovery.as_deref()
+                    && (source.starts_with("00000002-") || source.starts_with("00000005-"))
+                    && thread["dispatchJournal"]
+                        .as_array()
+                        .is_some_and(|commands| {
+                            commands.iter().all(|id| id.is_string())
+                                && !commands.iter().any(|id| id == source)
+                        })
+                {
+                    // The bridge never sent this injection. Keep it queued/in the
+                    // inbox; clearing pending is not an acceptance receipt.
+                    store.pending(self.id, None)?;
+                    self.recovery = None;
+                }
                 store.save_thread(self.id, thread["id"].as_str().unwrap())?;
                 self.thread_id = thread["id"].as_str().map(str::to_owned);
                 if self.role == Role::Executor {
@@ -3364,6 +3383,101 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn muse_recovery_releases_only_proven_unsent_injections_after_task_retry() {
+        for kind in ["mail", "steering"] {
+            for evidence in [
+                "unsent",
+                "uncertain",
+                "missing",
+                "invalid",
+                "other-session",
+                "codex",
+            ] {
+                let (data, mut store, mut m, ids, plan) = crate::mailbox::tests::fixture();
+                let record = store.worker_at(m.id, Role::Executor, 1).unwrap();
+                let mut worker =
+                    Worker::start(&data.0.join("project"), &m, record, Role::Planner, None)
+                        .unwrap();
+                worker.role = Role::Executor;
+                worker.provider = if evidence == "codex" { "codex" } else { "muse" }.into();
+                worker.thread_id = Some("native-session".into());
+                let input = if kind == "mail" {
+                    crate::mailbox::tests::send(
+                        &mut store, m.id, ids[0], "b", "update", None, "contract",
+                    );
+                    store.next_mail(m.id, ids[1]).unwrap().unwrap()
+                } else {
+                    let queued = store.enqueue(m.id, "Keep the saved edits").unwrap();
+                    store.request_steering(m.id, &[queued.id]).unwrap();
+                    store.next_steering(m.id, ids[1]).unwrap().unwrap()
+                };
+                store.pending(worker.id, Some(&input.source)).unwrap();
+                worker.recovery = Some(input.source.clone());
+                let task = &m.execution.as_ref().unwrap().tasks[1];
+                store
+                    .task_status(m.id, &task.source, "paused", None)
+                    .unwrap();
+                store.retry_task(m.id, task.id).unwrap();
+                m.execution = store.execution(m.id).unwrap();
+                let source = m.execution.as_ref().unwrap().tasks[1].source.clone();
+                let mut thread = json!({"id":"native-session","turns":[],"dispatchJournal":[]});
+                match evidence {
+                    "uncertain" => thread["dispatchJournal"] = json!([input.source]),
+                    "missing" => {
+                        thread.as_object_mut().unwrap().remove("dispatchJournal");
+                    }
+                    "invalid" => thread["dispatchJournal"] = json!([null]),
+                    "other-session" => thread["id"] = json!("replacement-session"),
+                    _ => (),
+                }
+                worker
+                    .receive(
+                        Event::Ready {
+                            model: None,
+                            effort: None,
+                            thread,
+                        },
+                        &mut store,
+                        &mut m,
+                    )
+                    .unwrap();
+                assert_eq!(
+                    worker.recovery.is_none(),
+                    evidence == "unsent",
+                    "{kind}: {evidence}"
+                );
+                assert_eq!(
+                    store
+                        .worker_at(m.id, Role::Executor, 1)
+                        .unwrap()
+                        .pending
+                        .is_none(),
+                    evidence == "unsent"
+                );
+                assert_eq!(m.execution.as_ref().unwrap().tasks[0].status, "running");
+                assert_eq!(m.execution.as_ref().unwrap().tasks[1].source, source);
+                if evidence == "unsent" {
+                    assert!(worker.status == Status::Ready && worker.enabled);
+                    let task_input = store.task_input(m.id, ids[1], &plan).unwrap().unwrap();
+                    if kind == "mail" {
+                        assert!(task_input.texts[0].contains("Message contract"));
+                        let inbox = store.mailbox(m.id).unwrap();
+                        assert!(inbox[0].delivered.is_none() && inbox[0].acknowledged.is_none());
+                    } else {
+                        assert_eq!(
+                            store.next_steering(m.id, ids[1]).unwrap().unwrap().source,
+                            input.source
+                        );
+                        assert_eq!(store.steering(m.id).unwrap(), ["Keep the saved edits"]);
+                    }
+                } else {
+                    assert!(worker.status == Status::Failed && !worker.enabled);
+                }
+            }
+        }
     }
 
     #[test]

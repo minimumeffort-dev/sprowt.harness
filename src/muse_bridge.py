@@ -435,7 +435,9 @@ def recovered_thread(rpc, state, result):
         grouped.setdefault(item["turnId"], []).append(value)
     if confirmed:
         state.save()
-    return {"id": session["sessionId"], "turns": [
+    # Every native submission is journaled first. Absence proves it was never sent
+    # only for this resumed session, not for a replacement session or missing log.
+    return {"id": session["sessionId"], "dispatchJournal": list(state.value["commands"]), "turns": [
         {"id": turn, "status": turns.get(turn, "unknown"), "items": values}
         for turn, values in grouped.items()]}
 
