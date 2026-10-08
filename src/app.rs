@@ -4074,7 +4074,7 @@ mod tests {
         plan.tasks[0].outcome =
             "Completion stays available and every unfinished edit remains intact across updates."
                 .into();
-        for width in [48, 160] {
+        for width in [48, 100, 160] {
             app.focus_plan = true;
             let rendered = rows(&screen(&mut app, width, 36));
             let start = rendered
@@ -4094,8 +4094,12 @@ mod tests {
             assert!(
                 rendered[start..end]
                     .iter()
-                    .all(|row| row.trim_end().chars().count() <= 82)
+                    .all(|row| row.trim_end().chars().count() <= width as usize - 2)
             );
+            if width >= 100 {
+                assert!(rendered[start].contains("keyboard focus across refreshes"));
+                assert!(rendered[start + 1].contains("intact across updates."));
+            }
         }
         app.mods[0].messages.push(crate::store::Message {
             item_id: None,
@@ -4108,8 +4112,9 @@ mod tests {
         let rendered = rows(&buffer);
         let user = rendered.iter().position(|r| r.contains("> café")).unwrap();
         assert!(rendered[user].starts_with("  > "));
-        assert_ne!(buffer[(81, user as u16)].bg, ratatui::style::Color::Reset);
-        assert_eq!(buffer[(82, user as u16)].bg, ratatui::style::Color::Reset);
+        assert!((82..158).any(|x| buffer[(x, user as u16)].symbol() != " "));
+        assert_ne!(buffer[(157, user as u16)].bg, ratatui::style::Color::Reset);
+        assert_eq!(buffer[(158, user as u16)].bg, ratatui::style::Color::Reset);
     }
 
     #[test]

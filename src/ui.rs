@@ -28,7 +28,6 @@ const USER_BACKGROUND: Color = Color::Rgb(43, 49, 43);
 const KEY_HINT: Color = Color::Rgb(161, 170, 160);
 const MOD_GLYPH: &str = "◇";
 const DIALOG_WIDTH: u16 = 68;
-const PROSE_WIDTH: u16 = 80;
 
 pub fn input() -> TextArea<'static> {
     field("message", "Describe a feature, a fix, or an idea...")
@@ -1904,10 +1903,6 @@ fn conversation_blocks<'a>(
 }
 
 fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option<Duration>) {
-    let area = Rect {
-        width: area.width.min(PROSE_WIDTH),
-        ..area
-    };
     app.page_size = area.height.max(1);
     if area.is_empty() {
         return;

@@ -34,7 +34,7 @@ queue / waiting steering, when present
 
 ## Layout
 
-- Messages and plans use up to 80 columns. The transcript and dock share the left edge; the dock has one column of inner padding. One blank row separates messages.
+- Messages and plans use the available terminal width, with two columns of margin on each side. The transcript and dock share the left edge; the dock has one column of inner padding. One blank row separates messages.
 - Task markers and numbers have their own column. Titles, outcomes and wrapped text line up beneath each other.
 - Menus and confirmations use up to 68 columns. The queue widens to fit its actions on one row when space allows. Diffs, history and full errors use the terminal width.
 - The composer starts with four text rows and grows to eight, then scrolls. Blank lines and wrapped text count toward its height; the cursor stays visible. Short terminals use fewer rows to keep the controls on screen. Opening All actions keeps the draft visible and moves focus to the menu.
