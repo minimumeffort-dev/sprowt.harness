@@ -365,12 +365,7 @@ impl Worker {
             if input.is_none() {
                 let execution = code_mod.execution.as_ref().unwrap();
                 let applied = execution.status == "applied";
-                if execution.complete()
-                    && !matches!(
-                        execution.status.as_str(),
-                        "applied" | "verifying" | "review"
-                    )
-                {
+                if execution.needs_final_checks() {
                     let checks = execution
                         .tasks
                         .iter()
@@ -3312,6 +3307,48 @@ mod tests {
         }));
         crate::sandbox::delete(&root).unwrap();
         result.unwrap();
+    }
+
+    #[test]
+    fn failed_final_checks_cannot_restart_from_an_enabled_idle_worker() {
+        let (data, mut store, mut m, mut worker) = executor();
+        let source = worker.task_source.clone().unwrap();
+        store
+            .finish_task(m.id, &source, "done", "Task passed", &[])
+            .unwrap();
+        m.execution = store.execution(m.id).unwrap();
+        worker.task_source = Some(format!("final:{}", m.id));
+        worker
+            .receive(
+                Event::Checked {
+                    source: worker.task_source.clone().unwrap(),
+                    checks: vec![crate::execution::CheckResult {
+                        task: None,
+                        check: worker.verification[0].check.clone(),
+                        command: worker.verification[0].command.clone(),
+                        exit_code: Some(1),
+                        output: "Assertion failed on combined source".into(),
+                        missing_runtime: None,
+                    }],
+                    before: worker.verify_before.clone().unwrap(),
+                },
+                &mut store,
+                &mut m,
+            )
+            .unwrap();
+        let error = worker.error.clone();
+        assert!(error.is_some() && !worker.enabled);
+        // Even a stale scheduler decision must not clear the failed pass.
+        worker.enabled = true;
+        worker
+            .poll(&mut store, &mut m, true, &data.0.join("project"))
+            .unwrap();
+        let execution = m.execution.as_ref().unwrap();
+        assert_eq!(execution.status, "blocked");
+        assert_eq!(execution.checks[0].exit_code, Some(1));
+        assert!(execution.complete());
+        assert!(!worker.enabled && worker.status == Status::Ready);
+        assert_eq!(worker.error, error);
     }
 
     #[test]

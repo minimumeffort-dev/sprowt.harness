@@ -1639,6 +1639,12 @@ impl Store {
             .execution(mod_id)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         let transaction = self.0.transaction()?;
+        if execution.complete() {
+            transaction.execute(
+                "UPDATE executions SET status='ready' WHERE mod_id=?1 AND status IN ('blocked','verifying')",
+                [mod_id],
+            )?;
+        }
         transaction.execute(
             "UPDATE task_runs SET status='repair_wait' WHERE mod_id=?1 AND status='repair_paused'",
             [mod_id],

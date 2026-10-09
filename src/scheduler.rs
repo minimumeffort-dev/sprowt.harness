@@ -130,7 +130,7 @@ impl Store {
                     selected.push(worker);
                 }
             }
-            if selected.is_empty() && execution.complete() {
+            if selected.is_empty() && execution.needs_final_checks() {
                 if let Some(record) = records.iter().find(|r| {
                     !unavailable.contains(&r.id) && providers.contains(&r.provider.as_str())
                 }) {
@@ -572,6 +572,80 @@ pub(crate) mod tests {
             store.execution(id).unwrap().unwrap().tasks[0].worker,
             Some(records[0].id)
         );
+    }
+
+    #[test]
+    fn failed_final_checks_wait_for_explicit_retry_even_after_restart() {
+        let (data, mut store, id, plan) = fixture(&["codex"], false);
+        let worker = store
+            .schedule_workers(id, &plan, &[], &[], &["codex"])
+            .unwrap()
+            .remove(0);
+        let input = store.task_input(id, worker.id, &plan).unwrap().unwrap();
+        let mut check = crate::execution::CheckResult {
+            task: Some(store.execution(id).unwrap().unwrap().tasks[0].id),
+            check: plan.tasks[0].checks[0].clone(),
+            command: vec!["/usr/bin/false".into()],
+            exit_code: Some(0),
+            output: String::new(),
+            missing_runtime: None,
+        };
+        store.pending(worker.id, None).unwrap();
+        store
+            .finish_task(id, &input.source, "done", "Task passed", &[check.clone()])
+            .unwrap();
+        assert_eq!(
+            store
+                .schedule_workers(id, &plan, &[], &[], &["codex"])
+                .unwrap()
+                .len(),
+            1
+        );
+        store.execution_status(id, "verifying").unwrap();
+        assert!(
+            store
+                .schedule_workers(id, &plan, &[], &[], &["codex"])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .schedule_workers(id, &plan, &[worker.id], &[], &["codex"])
+                .unwrap()
+                .len(),
+            1
+        );
+        check.exit_code = Some(1);
+        check.output = "Assertion failed on combined source".into();
+        store
+            .execution_checks(id, "blocked", &[check], None)
+            .unwrap();
+        let saved = store.execution(id).unwrap().unwrap();
+        drop(store);
+        let mut store = data.store();
+        for _ in 0..10 {
+            assert!(
+                store
+                    .schedule_workers(id, &plan, &[], &[], &["codex"])
+                    .unwrap()
+                    .is_empty()
+            );
+            let execution = store.execution(id).unwrap().unwrap();
+            assert_eq!(execution.status, "blocked");
+            assert!(execution.complete());
+            assert_eq!(execution.checks[0].output, saved.checks[0].output);
+            assert_eq!(execution.tasks[0].source, saved.tasks[0].source);
+        }
+        store.retry_tasks(id).unwrap();
+        let retry = store
+            .schedule_workers(id, &plan, &[], &[], &["codex"])
+            .unwrap();
+        assert_eq!(retry.len(), 1);
+        assert_eq!(retry[0].id, worker.id);
+        let execution = store.execution(id).unwrap().unwrap();
+        assert!(execution.needs_final_checks());
+        assert_eq!(execution.checks[0].output, saved.checks[0].output);
+        assert_eq!(execution.tasks[0].source, saved.tasks[0].source);
     }
 
     #[test]

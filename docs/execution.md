@@ -87,7 +87,7 @@ After all tasks finish, the harness updates each task folder to the combined sou
 
 Each active task has a spinner and worker ID through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide workers; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.
 
-Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Final verification stops at the first failure: details show that command and its evidence, with skipped commands summarized in muted text. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
+Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Final verification stops at the first failure and leaves active scheduling: details retain that command and its evidence, with skipped commands summarized in muted text. Polling and reopening cannot restart a failed pass. **Retry final checks** explicitly starts another pass, keeping completed tasks and their source. A missing executable can first use the single runtime-recovery attempt below. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
 
 Combined checks passing automatically starts independent review. Current clean reviews recommend publication. **Ctrl+T** opens [Details](terminal.md#details): tasks, check evidence, review findings and activity. Select a task to inspect its failure and retry only that task. Questions for you stay visible in the conversation.
 

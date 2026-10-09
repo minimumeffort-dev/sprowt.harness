@@ -24,6 +24,8 @@ stateDiagram-v2
     Planning --> Building: Plan ready
     Building --> Checking: Tasks integrated
     Checking --> Reviewing: Combined checks pass
+    Checking --> NeedsYou: Combined checks fail
+    NeedsYou --> Checking: Retry final checks
     Reviewing --> Ready: No findings
     Reviewing --> NeedsYou: Findings or review failure
     NeedsYou --> Building: Choose Fix issues

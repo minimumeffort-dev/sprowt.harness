@@ -2064,6 +2064,13 @@ impl App {
             self.executing_mods.remove(&mod_id);
             self.auto_reviews.insert(mod_id);
         }
+        if self.mods[index]
+            .execution
+            .as_ref()
+            .is_some_and(|e| e.complete() && e.status == "blocked")
+        {
+            self.executing_mods.remove(&mod_id);
+        }
         Ok(())
     }
 
@@ -3097,6 +3104,36 @@ mod tests {
             target
         );
         assert_eq!(app.input.lines().join("\n"), "Next feature");
+    }
+
+    #[test]
+    fn failed_final_checks_leave_active_scheduling_and_show_retry() {
+        let (data, mut app, _) = execution_app();
+        let id = app.mods[0].id;
+        let mut checks = app.mods[0].execution.as_ref().unwrap().checks.clone();
+        checks[0].exit_code = Some(1);
+        checks[0].output = "Assertion failed on combined source".into();
+        app.store
+            .execution_checks(id, "blocked", &checks, None)
+            .unwrap();
+        app.executing_mods.insert(id);
+        app.schedule_execution(0).unwrap();
+        assert!(!app.executing_mods.contains(&id));
+        assert!(!app.auto_reviews.contains(&id));
+        assert!(app.workers.is_empty());
+        assert_eq!(app.state_summary().phase, state::Phase::NeedsYou);
+        assert!(app.action_dock().primary == Some(Action::Retry));
+        key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+        assert!(matches!(app.view, View::Checks(0)));
+        let display = rows(&screen(&mut app, 100, 40)).join("\n");
+        assert!(display.contains("Assertion failed on combined source"));
+        let project = app.project.clone();
+        drop(app);
+        let app = App::load(project, false, data.store()).unwrap();
+        assert_eq!(app.state_summary().phase, state::Phase::NeedsYou);
+        assert!(app.action_dock().primary == Some(Action::Retry));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(app.workers.is_empty());
     }
 
     #[test]

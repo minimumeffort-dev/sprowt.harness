@@ -154,6 +154,10 @@ impl Execution {
         !self.tasks.is_empty() && self.tasks.iter().all(|task| task.status == "done")
     }
 
+    pub fn needs_final_checks(&self) -> bool {
+        self.complete() && matches!(self.status.as_str(), "pending" | "ready" | "running")
+    }
+
     pub fn check_count(&self, plan: &Plan) -> usize {
         plan.tasks
             .iter()
