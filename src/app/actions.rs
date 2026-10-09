@@ -318,6 +318,13 @@ impl App {
                         if e.status == "verifying" {
                             return "Final verification".into();
                         }
+                        if let Some((index, _)) = e.tasks.iter().enumerate().find(|(_, run)| {
+                            run.conflict.is_some()
+                                && ["pending", "sending", "running", "checking"]
+                                    .contains(&run.status.as_str())
+                        }) {
+                            return format!("Resolving task {} conflicts", index + 1);
+                        }
                         if let Some(review) =
                             m.agent_review.as_ref().filter(|r| r.status == "fixing")
                         {

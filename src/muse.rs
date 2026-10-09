@@ -312,19 +312,15 @@ fn serve_connection(
                 ),
                 Action::Stop { turn } => ("turn/interrupt", String::new(), json!({"turn":turn})),
                 Action::Verify { source, checks } => {
-                    let (before, checks) = vm.lock().unwrap().verify_execution_with_progress(
+                    let result = vm.lock().unwrap().verify_execution_with_progress(
                         &source,
                         &checks,
                         cancelled,
                         |label| {
                             let _ = outgoing.send(Event::Preparing(label.into()));
                         },
-                    )?;
-                    let _ = outgoing.send(Event::Checked {
-                        source,
-                        checks,
-                        before,
-                    });
+                    );
+                    let _ = outgoing.send(crate::codex::verification_event(source, result)?);
                     continue;
                 }
                 Action::Shutdown(finished) => {

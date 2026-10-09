@@ -81,6 +81,7 @@ Errors use up to two wrapped rows inside the dock. **Inspect failure** opens the
 **Ctrl+T · Tasks and history** lists the current tasks with their status, worker, model and effort. Select one with ↑/↓ and press Enter.
 
 - The task view shows its latest update, checks and failure evidence. Working, waiting for prerequisites, waiting for an answer, failed checks and stopped workers have distinct labels.
+- During merge recovery, the dock names the task being resolved. Task details show conflicting files, owners and the saved automatic-attempt count. Unsupported or repeated conflicts pause with the reason; **r** retries explicitly.
 - **h** opens that task's messages and handoffs. **a** opens All history from there. From the task list, **h** opens All history directly.
 - **Esc** goes back one view; **Ctrl+T** returns to the conversation. Your draft, queue and plan toggle stay unchanged.
 - **r** retries the selected failed task; **Ctrl+R** does the same in its details. Running peers continue. A retry waits when both worker slots are occupied. Network requests use **Ctrl+N**. Inspecting a task does not restart it.

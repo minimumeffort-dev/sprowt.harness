@@ -932,7 +932,7 @@ impl Sandbox {
         Ok(snapshot)
     }
 
-    fn read_guest(&mut self, path: &str, cancelled: &AtomicBool) -> io::Result<Vec<u8>> {
+    pub(crate) fn read_guest(&mut self, path: &str, cancelled: &AtomicBool) -> io::Result<Vec<u8>> {
         let permissions = self.permissions();
         let rpc = self.rpc.as_mut().unwrap();
         let handle = format!("export-{}", PROCESS.fetch_add(1, Ordering::Relaxed));
@@ -1827,13 +1827,17 @@ mod tests {
                 vm.activate_task(5, &flag)?;
                 vm.run(&command("printf five > first.txt"), &flag, 30, 8192)?;
                 let fifth = check(5, "test \"$(cat first.txt)\" = five");
-                assert!(
-                    vm.verify_execution(&source(5), &[fifth], &flag)
-                        .err()
-                        .unwrap()
-                        .to_string()
-                        .contains("conflict")
-                );
+                let error = vm
+                    .verify_execution(&source(5), &[fifth], &flag)
+                    .err()
+                    .unwrap();
+                let conflict = error
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<crate::conflict::MergeConflict>()
+                    .unwrap();
+                assert_eq!(conflict.paths(), "first.txt");
+                assert!(conflict.files[0].text);
                 assert_eq!(
                     vm.snapshot("/workspace", &flag)?
                         .iter()
@@ -1872,6 +1876,34 @@ mod tests {
                         .iter()
                         .any(|f| f.0 == Path::new("combined.txt") && f.1 == b"shared")
                 );
+                assert!(conflict.contains("|||||||"));
+                // A permissive check cannot accept unresolved markers after restoring the VM.
+                let error = vm
+                    .verify_execution(&source(5), &[check(5, "true")], &flag)
+                    .err()
+                    .unwrap();
+                assert!(
+                    error
+                        .get_ref()
+                        .unwrap()
+                        .is::<crate::conflict::MergeConflict>()
+                );
+                vm.run(
+                    &command("printf 'five and six' > first.txt"),
+                    &flag,
+                    30,
+                    8192,
+                )?;
+                assert_eq!(
+                    vm.verify_execution(&source(5), &[check(5, "false")], &flag)?
+                        .1[0]
+                        .exit_code,
+                    Some(1)
+                );
+                assert!(!vm.tasks.integrated.contains(&5));
+                assert_eq!(vm.verify_execution(&source(5), &[check(5, "test \"$(cat first.txt)\" = 'five and six' && test \"$(cat combined.txt)\" = shared")], &flag)?.1[0].exit_code, Some(0));
+                assert!(vm.tasks.integrated.contains(&5));
+                assert!(!vm.tasks.conflicts.contains_key(&5));
                 vm.prepare_tasks(&[7, 8], &flag)?;
                 vm.assign_task(7, 101, &flag)?;
                 assert_eq!(
@@ -1921,6 +1953,33 @@ mod tests {
                 );
                 assert_eq!(fs::read_to_string(root.join("work/seven.txt"))?, "seven");
                 assert_eq!(fs::read_to_string(root.join("work/eight.txt"))?, "eight");
+                // Git refusing an untracked overwrite is not a merge conflict.
+                vm.prepare_tasks(&[9], &flag)?;
+                vm.activate_task(9, &flag)?;
+                vm.run(&command("printf nine > collision.txt"), &flag, 30, 8192)?;
+                vm.guest(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        "printf retained > /workspace/collision.txt",
+                    ],
+                    &flag,
+                )?;
+                let error = vm
+                    .verify_execution(&source(9), &[check(9, "true")], &flag)
+                    .err()
+                    .unwrap();
+                assert!(
+                    !error
+                        .get_ref()
+                        .unwrap()
+                        .is::<crate::conflict::MergeConflict>()
+                );
+                assert!(
+                    error.to_string().contains("untracked working tree files"),
+                    "{error}"
+                );
+                assert!(vm.tasks.conflicts.is_empty());
                 drop(vm);
                 Ok(())
             },

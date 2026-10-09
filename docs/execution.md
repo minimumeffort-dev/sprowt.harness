@@ -79,7 +79,7 @@ The tool accepts all declared checks, up to 32 check entries per call. A script 
 
 Scripts survive retries, review and harness restart, including restoration after VM recreation. Runtimes still need installation in a fresh VM. A replacement plan removes retired task scripts and their receipts; deleting the codemod removes all of them. Existing checks that reference `/tmp` must be resubmitted as saved scripts on retry.
 
-Passing tasks are merged into the integration branch one at a time, as they finish. A conflict pauses execution and keeps both versions. The saved draft includes non-conflicting changes and conflict markers. **Ctrl+R** asks the worker to resolve them, or send an edit request to replan.
+Passing tasks are merged into the integration branch one at a time, as they finish. Git errors retain their actual failure message. Merge conflicts save the exact paths and both versions; the task draft includes non-conflicting changes and text markers with the common base when available.
 
 A late peer acknowledgement with no check commands keeps the last valid task report. A newer full report, blocker or repair request takes precedence. User steering clears the previous report and requires a fresh one. Live turns and recovered history follow the same rule; retained commands still run against the current source before completion.
 
@@ -90,6 +90,24 @@ Each active task has a spinner and worker ID through implementation and checks. 
 Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Final verification stops at the first failure: details show that command and its evidence, with skipped commands summarized in muted text. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
 
 Finished versions show compact task rows, the final check count and the publish action. **Ctrl+T** opens [task inspection](terminal.md#inspect-a-task): status, owner, checks and focused history. **Inspect failure** in the dock opens the affected task directly. Questions for you stay visible in the conversation.
+
+### Task conflict recovery
+
+```mermaid
+flowchart TB
+    conflict["Task merge conflict · save both versions"] --> scope{"Text inside the owner's scope?"}
+    scope -->|"Yes · attempt available"| owner["Original worker resolves once"]
+    owner --> checks["Rerun task checks · combine · final checks"]
+    scope -->|"No"| pause["Pause · inspect files or request edits"]
+    checks -->|"Pass"| ready["Continue"]
+    checks -->|"Conflict or failure"| pause
+```
+
+The same Codex or Muse worker receives the conflicting paths and owners, with instructions to preserve both tasks' behavior and shared contracts. It keeps its original task and file scope. Binary, rename, deletion and out-of-scope conflicts pause; product decisions return as questions. Independent peers can finish while an affected task waits.
+
+Each task gets one automatic conflict-resolution attempt per plan, separate from check-failure recovery. The counter survives restart and explicit retry. An unresolved marker blocks integration even if a reported command passes. Failed checks during resolution pause instead of launching another automatic recovery. Successful resolution still requires final verification against combined source.
+
+The dock shows **Resolving task N conflicts**. **Ctrl+T** opens the task's conflicting files, owners and attempt count; its history records the outcome. **r** explicitly retries a paused task, or send edits to revise the plan. Stops remain paused. Older paused runs resume only when you retry.
 
 ### Verification feedback
 

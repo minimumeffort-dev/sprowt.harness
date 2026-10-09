@@ -462,6 +462,7 @@ impl Worker {
         state["repair"] = serde_json::json!(run.repair);
         state["review_fix"] = serde_json::json!(run.review_feedback.is_some());
         state["runtime_recovery"] = serde_json::json!(run.restoring_runtime());
+        state["merge_conflict"] = serde_json::json!(run.conflict);
         Some(state)
     }
 
@@ -761,6 +762,50 @@ impl Worker {
                     )?;
                 }
             }
+            Event::MergeConflict { source, conflict }
+                if self.task_source.as_deref() == Some(&source) =>
+            {
+                let automatic =
+                    self.enabled && self.status == Status::Checking && self.error.is_none();
+                let Some(recover) =
+                    store.record_conflict(self.mod_id, &source, self.id, conflict, automatic)?
+                else {
+                    return Ok(());
+                };
+                code_mod.execution = store.execution(self.mod_id)?;
+                let id = crate::task_worktree::task_id(&source)
+                    .map_err(|_| rusqlite::Error::InvalidQuery)?;
+                let summary = code_mod
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .tasks
+                    .iter()
+                    .find(|run| run.id == id)
+                    .unwrap()
+                    .summary
+                    .clone();
+                save_message(
+                    store,
+                    code_mod,
+                    Message {
+                        task: Some(id),
+                        item_id: Some(format!("conflict:{source}")),
+                        role: "system".into(),
+                        body: summary.clone(),
+                        model: None,
+                        effort: None,
+                    },
+                )?;
+                self.preparing = None;
+                self.verify_before = None;
+                self.task_source = None;
+                self.task_report = None;
+                self.status = Status::Ready;
+                self.enabled = recover;
+                self.error = (!recover).then_some(summary);
+            }
+            Event::MergeConflict { .. } => {}
             Event::Checked {
                 source,
                 mut checks,
@@ -839,6 +884,21 @@ impl Worker {
                         ));
                     }
                     return Ok(());
+                }
+                if passed
+                    && let Some(conflict) = code_mod
+                        .execution
+                        .as_ref()
+                        .and_then(|execution| {
+                            execution.tasks.iter().find(|run| run.source == source)
+                        })
+                        .and_then(|run| run.conflict.as_ref())
+                {
+                    self.task_summary = format!(
+                        "Resolved conflicts in {}. {}",
+                        conflict.paths(),
+                        self.task_summary
+                    );
                 }
                 store.finish_task(
                     self.mod_id,
@@ -2462,6 +2522,84 @@ mod tests {
         }];
         worker.verify_before = Some(workspace::source_state(&root.join("work")).unwrap());
         (data, store, code_mod, worker)
+    }
+
+    #[test]
+    fn merge_conflict_recovers_once_and_requires_fresh_checks() {
+        for passes in [false, true] {
+            let (_data, mut store, mut m, mut worker) = executor();
+            let run = &m.execution.as_ref().unwrap().tasks[0];
+            let source = run.source.clone();
+            store
+                .0
+                .execute(
+                    "UPDATE task_runs SET worker_id=?2,status='checking' WHERE id=?1",
+                    rusqlite::params![run.id, worker.id],
+                )
+                .unwrap();
+            let event = || Event::MergeConflict {
+                source: source.clone(),
+                conflict: crate::conflict::tests::conflict("src/main.rs", true),
+            };
+            worker.receive(event(), &mut store, &mut m).unwrap();
+            worker.receive(event(), &mut store, &mut m).unwrap();
+            let run = &m.execution.as_ref().unwrap().tasks[0];
+            assert_eq!(run.status, "pending");
+            assert!(worker.enabled && worker.error.is_none());
+            assert!(worker.status == Status::Ready);
+            assert_eq!(
+                m.messages
+                    .iter()
+                    .filter(
+                        |message| message.item_id.as_deref() == Some(&format!("conflict:{source}"))
+                    )
+                    .count(),
+                1
+            );
+            worker.task_source = Some(run.source.clone());
+            worker.status = Status::Checking;
+            worker.task_summary = "Preserved both changes".into();
+            worker
+                .receive(
+                    Event::Checked {
+                        source: run.source.clone(),
+                        before: workspace::source_state(
+                            &m.execution.as_ref().unwrap().workspace.join("work"),
+                        )
+                        .unwrap(),
+                        checks: vec![crate::execution::CheckResult {
+                            missing_runtime: None,
+                            task: None,
+                            check: worker.verification[0].check.clone(),
+                            command: worker.verification[0].command.clone(),
+                            exit_code: Some(if passes { 0 } else { 1 }),
+                            output: "resolution check".into(),
+                        }],
+                    },
+                    &mut store,
+                    &mut m,
+                )
+                .unwrap();
+            let execution = m.execution.as_ref().unwrap();
+            assert_eq!(execution.tasks[0].conflict_retries, 1);
+            assert_ne!(execution.status, "review");
+            assert!(execution.checks.is_empty() && execution.fingerprint.is_none());
+            if passes {
+                assert_eq!(execution.tasks[0].status, "done");
+                assert!(execution.tasks[0].conflict.is_none());
+                assert!(
+                    m.messages
+                        .last()
+                        .unwrap()
+                        .body
+                        .contains("Resolved conflicts in src/main.rs")
+                );
+            } else {
+                assert_eq!(execution.tasks[0].status, "blocked");
+                assert!(execution.tasks[0].conflict.is_some());
+                assert!(!worker.enabled);
+            }
+        }
     }
 
     #[test]

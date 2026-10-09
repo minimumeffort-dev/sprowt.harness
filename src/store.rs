@@ -894,6 +894,9 @@ impl Store {
                 .find(|task| task.id == run.task_id)
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
             let mut prompt = crate::execution::task_prompt(&plan, task, run.id);
+            if let Some(conflict) = &run.conflict {
+                prompt.push_str(&format!("\nTask merge conflict: {}\nResolve the saved conflict in your task folder, within your original file scope. Text markers contain this task's version, the common base when available, and the combined version. Preserve both tasks' intended behavior and the plan's shared contracts; do not blindly select one side. Rerun every declared check after resolving, and preserve all check coverage. If resolution needs another owner's files or a product decision, ask for it and report blocked. Do not expand scope. This automatic resolution is limited to one attempt; independent task and final checks must pass again.", serde_json::to_string(conflict).unwrap()));
+            }
             prompt.push_str(&format!("\nCheck runner task attempt source: {}. Use run_task_checks before returning completed. Save any standalone check scripts with that tool at {}/<name>; use an absolute interpreter and that script path in the reported commands. Keep scripts self-contained, resolve project files from /tasks/{}, and use /tmp or HOME for generated fixtures. scripts=null reuses the saved bundle; an array replaces it. Failed or skipped checks need correction and a fresh run. Source edits after a passing run also require fresh checks. The controller will independently rerun the same commands before integration.", run.source, crate::checks::folder(run.id), run.id));
             if let Some(repair) = &run.repair {
                 prompt.push_str(&format!(
@@ -1360,11 +1363,18 @@ impl Store {
         let Some((workspace, status, checks, fingerprint, backend)) = result else {
             return Ok(None);
         };
-        let mut statement = self.0.prepare("SELECT t.id,t.task_id,t.status,t.source,t.turn_id,t.summary,t.checks,t.worker_id,t.routing,t.repair,w.provider,t.assignment_reason,t.verification_feedback,t.review_feedback FROM task_runs t LEFT JOIN workers w ON w.id=t.worker_id WHERE t.mod_id=?1 ORDER BY t.id")?;
+        let mut statement = self.0.prepare("SELECT t.id,t.task_id,t.status,t.source,t.turn_id,t.summary,t.checks,t.worker_id,t.routing,t.repair,w.provider,t.assignment_reason,t.verification_feedback,t.review_feedback,t.conflict,t.conflict_retries FROM task_runs t LEFT JOIN workers w ON w.id=t.worker_id WHERE t.mod_id=?1 ORDER BY t.id")?;
         let tasks = statement
             .query_map([mod_id], |row| {
                 let checks: String = row.get(6)?;
                 Ok(TaskRun {
+                    conflict: row
+                        .get::<_, Option<String>>(14)?
+                        .map(|text| {
+                            serde_json::from_str(&text).map_err(|_| rusqlite::Error::InvalidQuery)
+                        })
+                        .transpose()?,
+                    conflict_retries: row.get(15)?,
                     repair: row
                         .get::<_, Option<String>>(9)?
                         .map(|text| {
@@ -1511,7 +1521,7 @@ impl Store {
     ) -> Result<()> {
         let transaction = self.0.transaction()?;
         let changed = transaction.execute(
-            "UPDATE task_runs SET status=?3,summary=?4,checks=?5,verification_feedback=CASE WHEN ?3='blocked' AND ?5!='[]' THEN ?5 WHEN ?3='done' THEN '[]' ELSE verification_feedback END,review_feedback=CASE WHEN ?3='done' THEN NULL ELSE review_feedback END WHERE mod_id=?1 AND source=?2",
+            "UPDATE task_runs SET status=?3,summary=?4,checks=?5,verification_feedback=CASE WHEN ?3='blocked' AND ?5!='[]' THEN ?5 WHEN ?3='done' THEN '[]' ELSE verification_feedback END,review_feedback=CASE WHEN ?3='done' THEN NULL ELSE review_feedback END,conflict=CASE WHEN ?3='done' THEN NULL ELSE conflict END WHERE mod_id=?1 AND source=?2",
             params![
                 mod_id,
                 source,
@@ -1530,7 +1540,7 @@ impl Store {
     pub fn recover_verification(&mut self, mod_id: i64, source: &str, worker: i64) -> Result<bool> {
         let transaction = self.0.transaction()?;
         let run: Option<(i64, i64)> = transaction.query_row(
-            "SELECT id,attempt FROM task_runs WHERE mod_id=?1 AND source=?2 AND worker_id=?3 AND status='blocked' AND verification_retries=0 AND checks!='[]'",
+            "SELECT id,attempt FROM task_runs WHERE mod_id=?1 AND source=?2 AND worker_id=?3 AND status='blocked' AND verification_retries=0 AND conflict IS NULL AND checks!='[]'",
             params![mod_id,source,worker], |row| Ok((row.get(0)?,row.get(1)?))
         ).optional()?;
         let Some((id, attempt)) = run else {

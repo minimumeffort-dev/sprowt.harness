@@ -186,7 +186,14 @@ impl App {
                 "Review the requested domains with Ctrl+N.".into(),
             )
         } else if busy {
-            if run.restoring_runtime() {
+            if let Some(conflict) = &run.conflict
+                && worker.is_some_and(|w| w.status != Status::Stopping)
+            {
+                (
+                    "Resolving conflicts",
+                    conflict.progress(run.conflict_retries),
+                )
+            } else if run.restoring_runtime() {
                 (
                     "Restoring environment",
                     "The worker is preparing the missing runtime.".into(),

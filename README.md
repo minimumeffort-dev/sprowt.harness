@@ -84,6 +84,8 @@ Other codemods finish their current work, save a checkpoint and update in their 
 
 When integration finds a regression in a completed task, it sends failure evidence back to that owner. The harness preserves work, reopens affected tasks and reruns final checks. Each plan allows two automatic repair attempts; unresolved failures stop with the next action. File ownership and network approvals stay in place.
 
+Task merge conflicts get one automatic resolution attempt by the original worker, limited to text conflicts inside its file scope. Both versions stay saved. The dock shows progress; task inspection lists conflicting files and owners. Repeated failures, binary conflicts and changes outside scope pause. Task and final checks must pass again.
+
 New `dist/` build output, test caches, package metadata and runtime databases stay out of source checkpoints. Distribution files and database fixtures tracked in the starting project remain source; committed `.egg-info` metadata keeps its baseline contents. Parallel builds and dependency installs can keep their generated output in the VM without creating source merge conflicts.
 
 ## Get started

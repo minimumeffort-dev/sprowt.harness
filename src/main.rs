@@ -2,6 +2,7 @@ mod agents;
 mod app;
 mod checks;
 mod codex;
+mod conflict;
 mod execution;
 mod git_mod;
 mod git_sync;

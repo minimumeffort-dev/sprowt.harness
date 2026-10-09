@@ -69,11 +69,38 @@ pub enum Event {
         message: String,
     },
     Failed(String),
+    MergeConflict {
+        source: String,
+        conflict: crate::conflict::MergeConflict,
+    },
     Checked {
         source: String,
         checks: Vec<CheckResult>,
         before: Snapshot,
     },
+}
+
+pub(crate) fn verification_event(
+    source: String,
+    result: io::Result<(Snapshot, Vec<CheckResult>)>,
+) -> io::Result<Event> {
+    match result {
+        Ok((before, checks)) => Ok(Event::Checked {
+            source,
+            checks,
+            before,
+        }),
+        Err(error) => match error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<crate::conflict::MergeConflict>())
+        {
+            Some(conflict) => Ok(Event::MergeConflict {
+                source,
+                conflict: conflict.clone(),
+            }),
+            None => Err(error),
+        },
+    }
 }
 
 pub(crate) type SharedVm = Arc<Mutex<Sandbox>>;
@@ -698,14 +725,14 @@ fn serve(
         while let Ok(action) = actions.try_recv() {
             if let Action::Verify { source, checks } = &action {
                 task = crate::task_worktree::task_id(source).ok();
-                let (before, results) = vm
+                let result = vm
                     .as_mut()
                     .ok_or_else(|| io::Error::other("Verification requires the mod VM."))?
                     .lock()
                     .unwrap()
                     .verify_execution_with_progress(source, checks, &cancelled, |label| {
                         let _ = outgoing.send(Event::Preparing(label.into()));
-                    })?;
+                    });
                 if let Some(vm) = &vm {
                     let vm = vm.lock().unwrap();
                     if source.starts_with("final:")
@@ -714,11 +741,7 @@ fn serve(
                         task = None;
                     }
                 }
-                let _ = outgoing.send(Event::Checked {
-                    source: source.clone(),
-                    checks: results,
-                    before,
-                });
+                let _ = outgoing.send(verification_event(source.clone(), result)?);
                 flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context, task)?;
                 continue;
             }

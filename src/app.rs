@@ -4208,6 +4208,31 @@ mod tests {
     }
 
     #[test]
+    fn conflict_inspection_keeps_paths_owners_and_draft_visible() {
+        let (_data, mut app, _root) = execution_app();
+        let m = &mut app.mods[0];
+        let execution = m.execution.as_mut().unwrap();
+        execution.status = "running".into();
+        execution.checks.clear();
+        let run = &mut execution.tasks[0];
+        run.status = "pending".into();
+        run.checks.clear();
+        run.conflict_retries = 1;
+        let mut conflict = crate::conflict::tests::conflict("hello.sh", true);
+        conflict.files[0].owners = vec!["one".into()];
+        run.conflict = Some(conflict);
+        let id = run.id;
+        app.auto_runs.insert(m.id);
+        assert_eq!(app.action_dock().status, "Resolving task 1 conflicts");
+        app.view = View::Task(id, 0);
+        let rendered = rows(&screen(&mut app, 100, 40)).join("\n");
+        assert!(rendered.contains("Conflicting files"));
+        assert!(rendered.contains("hello.sh · text · owners: one"));
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
     fn task_inspection_keeps_histories_scoped_and_returns_to_the_draft() {
         let (_data, mut app, _root) = execution_app();
         let m = &mut app.mods[0];
@@ -4910,6 +4935,128 @@ mod tests {
             );
             app.workers.clear();
             eprintln!("Codex and Muse recovered their own failures; combined checks passed.");
+        }));
+        crate::sandbox::delete(&root).unwrap();
+        if let Err(error) = outcome {
+            std::panic::resume_unwind(error);
+        }
+    }
+
+    #[test]
+    #[ignore = "Resolves real text conflicts with Codex and Muse in a disposable VM"]
+    fn merge_conflicts_recover_both_vm_workers() {
+        use std::sync::atomic::AtomicBool;
+        let (data, mut store, id, mut plan) =
+            crate::scheduler::tests::fixture(&["auto", "auto"], false);
+        let project = data.0.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("check.sh"), "printf 'upstream%s\\nworker%s\\n' \"$2\" \"$2\" | cmp -s - \"$1\" || { echo 'AssertionError: Both additions must be preserved'; exit 1; }\nprintf 'check passed\\n'\n").unwrap();
+        for (i, task) in plan.tasks.iter_mut().enumerate() {
+            std::fs::write(project.join(format!("{i}.txt")), "base\n").unwrap();
+            task.outcome = format!(
+                "Resolve {i}.txt preserving upstream{i} and worker{i}, in that order, each on its own line. Verify with /bin/sh check.sh {i}.txt {i}. Do not edit check.sh. No dependencies are needed."
+            );
+        }
+        let source = store.planning(id).unwrap().unwrap().source;
+        store.save_plan(id, &source, &plan).unwrap();
+        let root = store.execution(id).unwrap().unwrap().workspace;
+        workspace::create(&project, &root).unwrap();
+        store
+            .schedule_workers(id, &plan, &[], &[], &["codex", "muse"])
+            .unwrap();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let flag = AtomicBool::new(false);
+            let mut vm = crate::sandbox::Sandbox::prepare(&root, &flag, |_| {}).unwrap();
+            let runs = store.execution(id).unwrap().unwrap().tasks;
+            vm.prepare_tasks(&runs.iter().map(|run| run.id).collect::<Vec<_>>(), &flag)
+                .unwrap();
+            for run in &runs {
+                vm.assign_task(run.id, run.worker.unwrap(), &flag).unwrap();
+            }
+            vm.guest(&["/bin/sh", "-c", "set -eu; cd /workspace; printf 'upstream0\\n' > 0.txt; printf 'upstream1\\n' > 1.txt; git add .; git -c user.name=Sprowt -c user.email=sprowt@localhost commit -m upstream"], &flag).unwrap();
+            for (i, run) in runs.iter().enumerate() {
+                vm.assign_task(run.id, run.worker.unwrap(), &flag).unwrap();
+                vm.guest(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        &format!("printf 'worker{i}\\n' > /tasks/{}/{i}.txt", run.id),
+                    ],
+                    &flag,
+                )
+                .unwrap();
+                let error = vm.integrate_task(run.id, &flag).unwrap_err();
+                let conflict = error
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<crate::conflict::MergeConflict>()
+                    .unwrap()
+                    .clone();
+                store
+                    .0
+                    .execute(
+                        "UPDATE task_runs SET status='checking' WHERE id=?1",
+                        [run.id],
+                    )
+                    .unwrap();
+                assert_eq!(
+                    store
+                        .record_conflict(id, &run.source, run.worker.unwrap(), conflict, true)
+                        .unwrap(),
+                    Some(true)
+                );
+            }
+            drop(vm);
+            let mut app = App::load(project.clone(), false, store).unwrap();
+            app.muse = true;
+            app.start_worker(0, Role::Executor).unwrap();
+            let started = Instant::now();
+            while started.elapsed() < Duration::from_secs(300) {
+                app.poll_workers().unwrap();
+                assert!(
+                    app.workers
+                        .values()
+                        .all(|worker| worker.status != Status::Failed && worker.error.is_none()),
+                    "{}",
+                    app.worker_error().unwrap_or("")
+                );
+                if app.mods[0].execution.as_ref().unwrap().status == "review" {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            let execution = app.mods[0].execution.as_ref().unwrap();
+            assert_eq!(
+                execution.status,
+                "review",
+                "{}",
+                app.worker_error().unwrap_or("")
+            );
+            assert_eq!(execution.checks.len(), 2);
+            assert!(
+                execution
+                    .checks
+                    .iter()
+                    .all(|check| check.exit_code == Some(0))
+            );
+            for (i, (now, before)) in execution.tasks.iter().zip(&runs).enumerate() {
+                assert_eq!(now.worker, before.worker);
+                assert_eq!(now.conflict_retries, 1);
+                assert!(now.conflict.is_none());
+                assert_eq!(
+                    std::fs::read_to_string(root.join(format!("work/{i}.txt"))).unwrap(),
+                    format!("upstream{i}\nworker{i}\n")
+                );
+            }
+            assert_eq!(
+                std::fs::read(root.join("work/check.sh")).unwrap(),
+                std::fs::read(project.join("check.sh")).unwrap()
+            );
+            app.workers.clear();
+            eprintln!(
+                "Codex and Muse resolved their own conflicts; combined checks passed in {:.1}s.",
+                started.elapsed().as_secs_f64()
+            );
         }));
         crate::sandbox::delete(&root).unwrap();
         if let Err(error) = outcome {

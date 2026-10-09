@@ -26,7 +26,10 @@ fn state_style(state: &str) -> Style {
             "Check failed" | "Final checks failed" | "Worker stopped" | "Blocked"
         ) {
             Color::Red
-        } else if matches!(state, "Done" | "Working" | "Checking" | "Starting") {
+        } else if matches!(
+            state,
+            "Done" | "Working" | "Checking" | "Starting" | "Resolving conflicts"
+        ) {
             ACCENT
         } else {
             KEY_HINT
@@ -124,6 +127,33 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
                 .lines()
                 .map(|line| Line::from(line.to_owned()).fg(Color::Red)),
         );
+        lines.push(Line::default());
+    }
+    if let Some(conflict) = &task.run.conflict {
+        lines.push(Line::from("Conflicting files").fg(KEY_HINT).bold());
+        lines.push(
+            Line::from(format!(
+                "Automatic attempts used: {}/1",
+                task.run.conflict_retries
+            ))
+            .fg(MUTED),
+        );
+        for file in &conflict.files {
+            lines.push(Line::from(format!(
+                "{} · {} · owners: {}",
+                file.path,
+                if file.text {
+                    "text"
+                } else {
+                    "manual resolution"
+                },
+                if file.owners.is_empty() {
+                    "unassigned".into()
+                } else {
+                    file.owners.join(", ")
+                }
+            )));
+        }
         lines.push(Line::default());
     }
     if let Some(check) = task.checks.iter().find(|check| check.failed()) {

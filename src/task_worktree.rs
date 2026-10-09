@@ -7,6 +7,7 @@ use std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    conflict::{ConflictFile, MergeConflict, has_markers},
     sandbox::Sandbox,
     workspace::{self, Snapshot},
 };
@@ -24,6 +25,8 @@ pub struct TaskWorktrees {
     pub repair_sources: BTreeMap<i64, String>,
     #[serde(default)]
     pub cleaned: bool,
+    #[serde(default)]
+    pub conflicts: BTreeMap<i64, MergeConflict>,
 }
 
 pub fn task_id(source: &str) -> io::Result<i64> {
@@ -325,18 +328,23 @@ impl Sandbox {
             return Err(io::Error::other("The verified task is no longer active."));
         }
         self.export(cancelled)?;
-        if self
-            .git(
-                None,
-                &["merge", "--no-ff", "--no-edit", &format!("task/{id}")],
-                cancelled,
-            )
-            .is_err()
-        {
+        if let Err(error) = self.git_output(
+            None,
+            &["merge", "--no-ff", "--no-edit", &format!("task/{id}")],
+            cancelled,
+        ) {
             let keep = AtomicBool::new(false);
+            let paths = self.git_output(
+                None,
+                &["diff", "--name-only", "--diff-filter=U", "-z"],
+                &keep,
+            )?;
+            if paths.is_empty() {
+                return Err(error);
+            }
             self.git(None, &["merge", "--abort"], &keep)?;
             // Bring non-conflicting changes and conflict markers into the saved draft.
-            let merged = self.git(
+            let merged = self.git_output(
                 Some(id),
                 &["merge", "--no-ff", "--no-edit", "integration"],
                 &keep,
@@ -344,11 +352,55 @@ impl Sandbox {
             if merged.is_err() && !self.guest_exists(&format!("{GIT}/worktrees/{id}/MERGE_HEAD"))? {
                 merged?;
             }
+            let paths = self.git_output(
+                Some(id),
+                &["diff", "--name-only", "--diff-filter=U", "-z"],
+                &keep,
+            )?;
+            let statuses = self.git_output(
+                Some(id),
+                &["status", "--porcelain=v1", "-z", "--untracked-files=no"],
+                &keep,
+            )?;
+            let text_paths = statuses
+                .split(|byte| *byte == 0)
+                .filter(|entry| entry.starts_with(b"UU ") || entry.starts_with(b"AA "))
+                .map(|entry| &entry[3..])
+                .collect::<BTreeSet<_>>();
+            let draft = self.snapshot(&folder(id), &keep)?;
+            let mut files = Vec::new();
+            for path in paths
+                .split(|byte| *byte == 0)
+                .filter(|path| !path.is_empty())
+            {
+                let path = std::str::from_utf8(path)
+                    .map_err(io::Error::other)?
+                    .to_owned();
+                let contents = draft
+                    .iter()
+                    .filter(|file| file.0 == std::path::Path::new(&path))
+                    .cloned()
+                    .collect::<Snapshot>();
+                let text = text_paths.contains(path.as_bytes())
+                    && contents.first().is_some_and(|(_, bytes, _)| {
+                        !bytes.contains(&0)
+                            && std::str::from_utf8(bytes).is_ok()
+                            && has_markers(bytes)
+                    });
+                files.push(ConflictFile {
+                    path,
+                    text,
+                    fingerprint: workspace::fingerprint(&contents)?,
+                    owners: Vec::new(),
+                });
+            }
+            let conflict = MergeConflict { files };
+            self.tasks.conflicts.insert(id, conflict.clone());
+            self.save_tasks()?;
             self.export(&keep)?;
-            return Err(io::Error::other(
-                "Task changes conflict with the combined source. Both versions are saved; Ctrl+R retries from the draft with conflict markers, or send edits to replan.",
-            ));
+            return Err(io::Error::other(conflict));
         }
+        self.tasks.conflicts.remove(&id);
         self.tasks.integrated.insert(id);
         self.tasks.active = None;
         self.save_tasks()?;
@@ -377,6 +429,21 @@ impl Sandbox {
         if !source.starts_with("final:") {
             let id = task_id(source)?;
             self.activate_task(id, cancelled)?;
+            if let Some(conflict) = self.tasks.conflicts.get(&id).cloned() {
+                let snapshot = self.snapshot(&folder(id), cancelled)?;
+                for file in &conflict.files {
+                    let contents = snapshot
+                        .iter()
+                        .filter(|entry| entry.0 == std::path::Path::new(&file.path))
+                        .cloned()
+                        .collect::<Snapshot>();
+                    if contents.iter().any(|(_, bytes, _)| has_markers(bytes))
+                        || !file.text && workspace::fingerprint(&contents)? == file.fingerprint
+                    {
+                        return Err(io::Error::other(conflict));
+                    }
+                }
+            }
             let (before, results) = self.verify_with_progress(checks, cancelled, &mut progress)?;
             let unchanged = before == self.snapshot(&folder(id), &keep)?;
             let passed = unchanged
@@ -662,6 +729,43 @@ impl Sandbox {
         self.guest_status(&command.iter().map(String::as_str).collect::<Vec<_>>())
     }
 
+    fn git_output(
+        &mut self,
+        id: Option<i64>,
+        args: &[&str],
+        cancelled: &AtomicBool,
+    ) -> io::Result<Vec<u8>> {
+        let mut command = vec![
+            "/bin/sh".into(),
+            "-c".into(),
+            "\"$@\" > /opt/sprowt-git/output 2>&1".into(),
+            "sprowt-git".into(),
+        ];
+        command.extend(Self::git_command(id, args));
+        let result = self.guest(
+            &command.iter().map(String::as_str).collect::<Vec<_>>(),
+            cancelled,
+        );
+        let output = self.read_guest("/opt/sprowt-git/output", cancelled)?;
+        match result {
+            Ok(()) => Ok(output),
+            Err(error) => {
+                let detail: String = String::from_utf8_lossy(&output)
+                    .chars()
+                    .take(4000)
+                    .collect();
+                Err(io::Error::other(format!(
+                    "Git operation failed: {}",
+                    if detail.trim().is_empty() {
+                        error.to_string()
+                    } else {
+                        detail
+                    }
+                )))
+            }
+        }
+    }
+
     fn git_command(id: Option<i64>, args: &[&str]) -> Vec<String> {
         let dir = id.map_or_else(|| GIT.into(), |id| format!("{GIT}/worktrees/{id}"));
         let cwd = id.map_or_else(|| "/workspace".into(), folder);
@@ -696,6 +800,8 @@ impl Sandbox {
             "submodule.recurse=false",
             "-c",
             "gc.auto=0",
+            "-c",
+            "merge.conflictStyle=diff3",
         ];
         if args.first() != Some(&"init") {
             command.extend(["--git-dir", &dir, "--work-tree", &cwd]);

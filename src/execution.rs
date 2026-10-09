@@ -16,6 +16,8 @@ pub struct Execution {
 
 #[derive(Clone)]
 pub struct TaskRun {
+    pub conflict: Option<crate::conflict::MergeConflict>,
+    pub conflict_retries: u32,
     pub repair: Option<crate::repair::Repair>,
     pub selection: Option<crate::router::Selection>,
     pub worker: Option<i64>,

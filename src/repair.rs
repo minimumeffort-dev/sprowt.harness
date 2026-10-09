@@ -79,6 +79,16 @@ pub fn schema() -> Value {
 pub fn migrate(connection: &Connection) -> Result<()> {
     for (table, column, sql) in [
         (
+            "task_runs",
+            "conflict",
+            "ALTER TABLE task_runs ADD COLUMN conflict TEXT",
+        ),
+        (
+            "task_runs",
+            "conflict_retries",
+            "ALTER TABLE task_runs ADD COLUMN conflict_retries INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
             "executions",
             "repair_count",
             "ALTER TABLE executions ADD COLUMN repair_count INTEGER NOT NULL DEFAULT 0",
