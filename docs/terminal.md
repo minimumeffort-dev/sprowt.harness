@@ -110,6 +110,8 @@ Details opens Review when findings exist, Checks after a combined failure, and o
 
 Select a task and press Enter. Its details show the latest update, checks, failure evidence and recovery context. Dependencies, unanswered questions and network permissions have distinct states. Conflict details include paths, owners and automatic attempts used.
 
+Fix failed check shows Connecting worker, Starting repair, Fixing failed check, then Checking as it progresses. Waiting for a worker means no worker has started connecting for that task. Previous failed checks remain visible as saved evidence until the new results arrive.
+
 **r** retries the selected failed task from Tasks; **Ctrl+R** does so in its details. Independent peers continue; retries wait if both slots are occupied. **h** opens that task's activity and **a** opens all activity. Older messages without a saved task identity remain in all activity. Draft, queue and plan toggle are preserved.
 
 ## Messages and plans

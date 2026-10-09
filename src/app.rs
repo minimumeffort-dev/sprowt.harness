@@ -3219,6 +3219,80 @@ mod tests {
     }
 
     #[test]
+    fn connecting_repair_is_associated_only_with_its_selected_task() {
+        let (_data, mut app, _root) = execution_app();
+        let mod_id = app.mods[0].id;
+        let record = app.store.worker_for(mod_id, Role::Executor).unwrap();
+        // Construct the display fixture without opening a provider connection.
+        let mut worker =
+            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        worker.role = Role::Executor;
+        worker.status = Status::Connecting;
+        let worker_id = worker.id;
+        let m = &mut app.mods[0];
+        let plan = m.planning.as_mut().unwrap().plan.as_mut().unwrap();
+        let mut repair = plan.tasks[0].clone();
+        repair.id = "repair".into();
+        repair.title = "Repair offline check".into();
+        plan.tasks.push(repair.clone());
+        repair.id = "later".into();
+        plan.tasks.push(repair);
+        let execution = m.execution.as_mut().unwrap();
+        execution.status = "running".into();
+        execution.checks.clear();
+        execution.tasks[0].worker = Some(worker_id);
+        let done_id = execution.tasks[0].id;
+        let mut repair = execution.tasks[0].clone();
+        repair.id += 1;
+        repair.task_id = "repair".into();
+        repair.status = "pending".into();
+        repair.check_repair = true;
+        repair.verification_feedback = std::mem::take(&mut repair.checks);
+        repair.verification_feedback[0].exit_code = Some(1);
+        repair.verification_feedback[0].output = "Database fixture timed out".into();
+        let repair_id = repair.id;
+        execution.tasks.push(repair.clone());
+        repair.id += 1;
+        repair.task_id = "later".into();
+        let later_id = repair.id;
+        execution.tasks.push(repair);
+        app.executing_mods.insert(mod_id);
+        assert_eq!(
+            app.inspect_task(repair_id).unwrap().state,
+            "Waiting for a worker"
+        );
+        app.workers.insert(worker_id, worker);
+        assert_eq!(app.inspect_task(done_id).unwrap().state, "Done");
+        assert_eq!(
+            app.inspect_task(repair_id).unwrap().state,
+            "Connecting worker"
+        );
+        assert_eq!(
+            app.inspect_task(later_id).unwrap().state,
+            "Waiting for a worker"
+        );
+        assert_eq!(app.failed_task(), None);
+        app.view = View::Checks(0);
+        let visible = rows(&screen(&mut app, 120, 40)).join("\n");
+        assert!(visible.contains("Repair offline check · Connecting worker"));
+        assert!(visible.contains("Previous failed checks"));
+        assert!(visible.contains("Database fixture timed out"));
+
+        // Reconnecting a saved delivery takes precedence over pending work.
+        app.mods[0].execution.as_mut().unwrap().tasks[2].status = "sending".into();
+        assert_eq!(
+            app.inspect_task(repair_id).unwrap().state,
+            "Waiting for a worker"
+        );
+        assert_eq!(
+            app.inspect_task(later_id).unwrap().state,
+            "Connecting worker"
+        );
+        assert_eq!(app.inspect_task(done_id).unwrap().state, "Done");
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
     fn project_sync_keeps_codemod_controls_available() {
         let (_data, mut app, _root) = execution_app();
         app.project_job = Some(Job::start("syncing project branch", |cancelled| {

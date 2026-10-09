@@ -149,10 +149,27 @@ impl App {
             .filter(|worker| {
                 worker.task_run_id() == Some(run.id)
                     || worker.task_run_id().is_none()
-                        && worker.status == Status::Failed
-                        && run.status != "done"
-                        && !run.summary.is_empty()
-                        && worker.error.as_deref() == Some(run.summary.as_str())
+                        && (worker.status == Status::Connecting
+                            && execution
+                                .tasks
+                                .iter()
+                                .find(|r| {
+                                    r.worker == Some(worker.id)
+                                        && matches!(
+                                            r.status.as_str(),
+                                            "sending" | "running" | "checking"
+                                        )
+                                })
+                                .or_else(|| {
+                                    execution
+                                        .ready_tasks(plan)
+                                        .find(|r| r.worker == Some(worker.id))
+                                })
+                                .is_some_and(|r| r.id == run.id)
+                            || worker.status == Status::Failed
+                                && run.status != "done"
+                                && !run.summary.is_empty()
+                                && worker.error.as_deref() == Some(run.summary.as_str()))
             });
         let latest = m.messages.iter().rev().find(|message| {
             message.task == Some(id)
@@ -228,31 +245,36 @@ impl App {
                 "Review the requested domains with Ctrl+N.".into(),
             )
         } else if busy {
-            if let Some(conflict) = &run.conflict
-                && worker.is_some_and(|w| w.status != Status::Stopping)
-            {
+            if worker.is_some_and(|w| w.status == Status::Stopping) {
+                ("Stopping", String::new())
+            } else if worker.is_some_and(|w| w.status == Status::Checking) {
+                ("Checking", String::new())
+            } else if worker.is_some_and(|w| w.status == Status::Connecting) {
+                ("Connecting worker", String::new())
+            } else if let Some(conflict) = &run.conflict {
                 (
                     "Resolving conflicts",
                     conflict.progress(run.conflict_retries),
                 )
             } else if run.check_repair {
-                ("Fixing failed check", String::new())
+                (
+                    if worker
+                        .is_some_and(|w| matches!(w.status, Status::Starting | Status::Routing))
+                    {
+                        "Starting repair"
+                    } else {
+                        "Fixing failed check"
+                    },
+                    String::new(),
+                )
             } else if run.restoring_runtime() {
                 (
                     "Restoring environment",
                     "The worker is preparing the missing runtime.".into(),
                 )
-            } else if worker.is_some_and(|w| w.status == Status::Checking) {
-                ("Checking", String::new())
-            } else if worker.is_some_and(|w| {
-                matches!(
-                    w.status,
-                    Status::Connecting | Status::Starting | Status::Routing
-                )
-            }) {
+            } else if worker.is_some_and(|w| matches!(w.status, Status::Starting | Status::Routing))
+            {
                 ("Starting", String::new())
-            } else if worker.is_some_and(|w| w.status == Status::Stopping) {
-                ("Stopping", String::new())
             } else {
                 ("Working", String::new())
             }
