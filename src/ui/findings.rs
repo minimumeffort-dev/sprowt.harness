@@ -15,6 +15,20 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     }
     keys.extend([("h", "all history"), ("esc", "back")]);
     let inner = tasks::panel(frame, area, "review findings".into(), &keys);
+    let lines = finding_lines(app);
+    let (scroll, _) = draw_text(
+        frame,
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        inner,
+        scroll,
+        true,
+    );
+    app.scroll.content = inner;
+    app.page_size = inner.height.max(1);
+    app.view = View::Findings(scroll);
+}
+
+pub(super) fn finding_lines(app: &App) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(m) = app.current_mod()
         && let Some(review) = &m.agent_review
@@ -80,14 +94,5 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     } else {
         lines.push(Line::from("No review findings yet."));
     }
-    let text = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let max_scroll = text
-        .line_count(inner.width)
-        .saturating_sub(inner.height as usize)
-        .min(u16::MAX as usize) as u16;
-    let scroll = scroll.min(max_scroll);
-    frame.render_widget(text.scroll((scroll, 0)), inner);
-    app.scroll.content = inner;
-    app.page_size = inner.height.max(1);
-    app.view = View::Findings(scroll);
+    lines
 }

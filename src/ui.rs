@@ -10,7 +10,9 @@ use ratatui::{
     layout::{Constraint, Layout, Margin, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span, Text},
-    widgets::{Block, BorderType, List, ListState, Padding, Paragraph, Wrap},
+    widgets::{
+        Block, BorderType, List, ListState, Padding, Paragraph, Scrollbar, ScrollbarState, Wrap,
+    },
 };
 use ratatui_textarea::{TextArea, WrapMode};
 use tachyonfx::{Effect, Interpolation, fx};
@@ -83,6 +85,7 @@ pub fn draw(
     elapsed: Option<Duration>,
 ) -> Rect {
     app.scroll.begin(app.view);
+    app.timeline.inspector.area = Rect::default();
     let area = frame.area().inner(Margin::new(2, 1));
     let composer_view = app.composer_view();
     let show_dock = matches!(composer_view, View::Chat | View::NewMod);
@@ -377,9 +380,11 @@ pub fn draw(
         frame.render_widget(Line::from(shortcuts).fg(MUTED), footer);
     }
     if show_dock {
+        let composer_focused = !menu_open
+            && (!app.has_timeline() || app.timeline.focus == crate::app::timeline::Focus::Composer);
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
-            .border_style(Style::new().fg(BORDER))
+            .border_style(Style::new().fg(if composer_focused { ACCENT } else { BORDER }))
             .padding(Padding::horizontal(1));
         let inner = block.inner(dock_area);
         frame.render_widget(block, dock_area);
@@ -413,7 +418,7 @@ pub fn draw(
                 } else {
                     "Add an instruction…"
                 });
-            if menu_open || app.has_timeline() && app.timeline.focused {
+            if !composer_focused {
                 let mut draft = app.input.clone();
                 draft.set_cursor_style(Style::new());
                 frame.render_widget(&draft, input);
@@ -795,16 +800,15 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
             Line::from(line).style(style)
         }));
     }
-    let body = Paragraph::new(lines)
-        .wrap(Wrap { trim: false })
-        .block(block);
-    let max_scroll = body
-        .line_count(inner.width)
-        .saturating_sub(inner.height as usize)
-        .min(u16::MAX as usize) as u16;
-    let scroll = scroll.min(max_scroll);
+    frame.render_widget(block, panel);
+    let (scroll, _) = draw_text(
+        frame,
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        inner,
+        scroll,
+        true,
+    );
     app.view = View::Review(scroll);
-    frame.render_widget(body.scroll((scroll, 0)), panel);
     frame.render_widget(hints, footer);
 }
 
@@ -839,7 +843,11 @@ fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect, task:
             .fg(KEY_HINT)
             .bold(),
         );
-    let inner = block.inner(panel);
+    let viewport = block.inner(panel);
+    let inner = Rect {
+        width: viewport.width.saturating_sub(2),
+        ..viewport
+    };
     let mut rows = Vec::new();
     let mut total: usize = 0;
     for item in conversation_blocks(code_mod, false, true, inner.width, None, &[], task) {
@@ -867,7 +875,14 @@ fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect, task:
     let scroll = scroll.min(max_scroll);
     frame.render_widget(block, panel);
     draw_message_rows(frame, rows, inner, scroll as usize);
-    app.scroll.content = inner;
+    draw_scrollbar(
+        frame,
+        viewport,
+        total.saturating_sub(1),
+        scroll as usize,
+        true,
+    );
+    app.scroll.content = viewport;
     app.page_size = inner.height.max(1);
     app.view = task.map_or(View::History(scroll), |id| View::TaskHistory(id, scroll));
     frame.render_widget(hints, footer);
@@ -962,13 +977,52 @@ fn draw_network(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, area: Re
 }
 
 fn draw_scrollable_text(frame: &mut Frame, app: &mut App, text: Paragraph<'_>, area: Rect) {
-    let maximum = text
-        .line_count(area.width)
-        .saturating_sub(area.height as usize)
-        .min(u16::MAX as usize) as u16;
-    app.scroll.offset = app.scroll.offset.min(maximum);
+    app.scroll.offset = draw_text(frame, text, area, app.scroll.offset, true).0;
     app.scroll.content = area;
-    frame.render_widget(text.scroll((app.scroll.offset, 0)), area);
+}
+
+fn draw_text(
+    frame: &mut Frame,
+    text: Paragraph<'_>,
+    area: Rect,
+    offset: u16,
+    focused: bool,
+) -> (u16, u16) {
+    if area.is_empty() {
+        return (0, 0);
+    }
+    let content = Rect {
+        width: area.width.saturating_sub(2),
+        ..area
+    };
+    let total = text.line_count(content.width);
+    let maximum = total
+        .saturating_sub(content.height as usize)
+        .min(u16::MAX as usize) as u16;
+    let offset = offset.min(maximum);
+    frame.render_widget(text.scroll((offset, 0)), content);
+    draw_scrollbar(frame, area, total, offset as usize, focused);
+    (offset, maximum)
+}
+
+fn draw_scrollbar(frame: &mut Frame, area: Rect, total: usize, offset: usize, focused: bool) {
+    if area.is_empty() || total <= area.height as usize {
+        return;
+    }
+    let mut state = ScrollbarState::new(total)
+        .viewport_content_length(area.height as usize)
+        .position(offset);
+    frame.render_stateful_widget(
+        Scrollbar::default()
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .thumb_symbol("┃")
+            .track_style(Style::new().fg(BORDER))
+            .thumb_style(Style::new().fg(if focused { ACCENT } else { MUTED })),
+        area,
+        &mut state,
+    );
 }
 
 fn key_hints(shortcuts: &[(&str, &str)]) -> Paragraph<'static> {
@@ -1314,23 +1368,24 @@ fn draw_failure(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
         Constraint::Length(hints.line_count(area.width) as u16),
     ])
     .areas(area);
-    app.scroll.content = panel;
-    app.page_size = panel.height.saturating_sub(2).max(1);
-    let body = Paragraph::new(app.action_error().unwrap_or("No current error."))
-        .wrap(Wrap { trim: false })
-        .block(
-            Block::bordered()
-                .border_type(BorderType::Rounded)
-                .border_style(Style::new().fg(BORDER))
-                .padding(Padding::horizontal(1))
-                .title(Line::from(" error details ").fg(KEY_HINT).bold()),
-        );
-    let maximum = body
-        .line_count(panel.width.saturating_sub(4))
-        .saturating_sub(panel.height.saturating_sub(2) as usize)
-        .min(u16::MAX as usize) as u16;
-    frame.render_widget(body.scroll((scroll.min(maximum), 0)), panel);
-    app.view = View::Failure(scroll.min(maximum));
+    let block = Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(Style::new().fg(BORDER))
+        .padding(Padding::horizontal(1))
+        .title(Line::from(" error details ").fg(KEY_HINT).bold());
+    let inner = block.inner(panel);
+    frame.render_widget(block, panel);
+    let (scroll, _) = draw_text(
+        frame,
+        Paragraph::new(app.action_error().unwrap_or("No current error."))
+            .wrap(Wrap { trim: false }),
+        inner,
+        scroll,
+        true,
+    );
+    app.scroll.content = inner;
+    app.page_size = inner.height.max(1);
+    app.view = View::Failure(scroll);
     frame.render_widget(hints, footer);
 }
 

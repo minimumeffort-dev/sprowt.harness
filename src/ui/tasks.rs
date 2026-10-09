@@ -117,6 +117,23 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
         ("ctrl+t", "conversation"),
     ]);
     let inner = panel(frame, area, format!("task {}", task.number), &keys);
+    let lines = task_lines(app, id, inner.width.saturating_sub(2));
+    let (scroll, _) = draw_text(
+        frame,
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        inner,
+        scroll,
+        true,
+    );
+    app.scroll.content = inner;
+    app.page_size = inner.height.max(1);
+    app.view = View::Task(id, scroll);
+}
+
+pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
+    let Some(task) = app.inspect_task(id) else {
+        return Vec::new();
+    };
     let mut lines = vec![
         Line::from(task.task.title.clone()).bold(),
         Line::from(task.identity).fg(KEY_HINT),
@@ -173,7 +190,7 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
                 .fg(Color::Red)
                 .bold(),
         );
-        lines.extend(command_lines(&check.command, inner.width));
+        lines.extend(command_lines(&check.command, width));
         let output = if app.show_evidence {
             check.output.clone()
         } else {
@@ -250,7 +267,7 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
                 .find(|c| c.failed())
                 .is_some_and(|first| std::ptr::eq(*first, *check))
             {
-                lines.extend(command_lines(&check.command, inner.width));
+                lines.extend(command_lines(&check.command, width));
                 let output = if app.show_evidence {
                     check.output.clone()
                 } else {
@@ -266,14 +283,5 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
             }
         }
     }
-    let text = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let max_scroll = text
-        .line_count(inner.width)
-        .saturating_sub(inner.height as usize)
-        .min(u16::MAX as usize) as u16;
-    let scroll = scroll.min(max_scroll);
-    frame.render_widget(text.scroll((scroll, 0)), inner);
-    app.scroll.content = inner;
-    app.page_size = inner.height.max(1);
-    app.view = View::Task(id, scroll);
+    lines
 }

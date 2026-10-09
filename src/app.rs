@@ -320,7 +320,7 @@ impl App {
             Event::Paste(text) => match self.view {
                 View::Chat if self.read_only() => {}
                 View::Chat | View::EditQueue(_) => {
-                    self.timeline.focused = false;
+                    self.timeline.focus = timeline::Focus::Composer;
                     self.input
                         .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                 }
@@ -5999,16 +5999,16 @@ mod tests {
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(matches!(app.view, View::Chat));
         // Removed rows cannot activate their former action or submit the draft.
-        app.timeline.focused = true;
+        app.timeline.focus = timeline::Focus::Timeline;
         app.timeline.selected = Some(Key::Repair(id));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(matches!(app.view, View::Chat));
         assert!(queued(&app).is_empty());
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(!app.timeline.focused && !app.quit);
+        assert!(app.timeline.focus == timeline::Focus::Composer && !app.quit);
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         paste(&mut app, " more");
-        assert!(!app.timeline.focused);
+        assert!(app.timeline.focus == timeline::Focus::Composer);
         assert_eq!(app.input.lines(), ["keep this draft more"]);
     }
 
@@ -6097,7 +6097,7 @@ mod tests {
         }
         app.mods[0].execution = None;
         screen(&mut app, 100, 36);
-        app.timeline.focused = true;
+        app.timeline.focus = timeline::Focus::Timeline;
         app.timeline.selected = Some(Key::Planned(10));
         app.timeline.reveal = true;
         app.timeline.held = true;
@@ -6125,9 +6125,12 @@ mod tests {
         screen(&mut app, 100, 36);
         assert!(!app.timeline.held);
         assert_eq!(app.input.lines(), draft);
+        app.mods[0].planning.as_mut().unwrap().status = "failed".into();
+        screen(&mut app, 100, 36);
+        assert_eq!(app.timeline.selected, Some(Key::Plan));
         app.mods[0].planning.as_mut().unwrap().source = "next-plan".into();
         screen(&mut app, 100, 36);
-        assert!(!app.timeline.focused && !app.timeline.held);
+        assert!(app.timeline.focus == timeline::Focus::Composer && !app.timeline.held);
     }
 
     #[test]
@@ -6160,7 +6163,7 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             }))
             .unwrap();
-            assert!(app.timeline.focused);
+            assert!((app.timeline.focus != timeline::Focus::Composer));
             assert_eq!(app.timeline.selected, Some(Key::Build));
             app.handle(Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
@@ -6169,12 +6172,12 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             }))
             .unwrap();
-            assert!(!app.timeline.focused);
+            assert!(app.timeline.focus == timeline::Focus::Composer);
             assert_eq!(app.input.lines(), ["keep this draft"]);
             assert!(!rows(&buffer).iter().any(|line| line.contains("\n")));
         }
         app.timeline.selected = Some(Key::Request);
-        app.timeline.focused = true;
+        app.timeline.focus = timeline::Focus::Timeline;
         app.timeline.reveal = true;
         key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
         let text = rows(&screen(&mut app, 100, 40)).join("\n");
@@ -6182,6 +6185,135 @@ mod tests {
         assert!(text.contains("Second request line") && text.contains("Third request line"));
         screen(&mut app, 20, 8);
         assert!(app.scroll.content.is_empty() && app.scroll.input.is_empty());
+    }
+
+    #[test]
+    fn timeline_split_focus_and_evidence_preserve_the_draft() {
+        use timeline::{Focus, Key};
+        let (_data, mut app, _) = execution_app();
+        let id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
+        screen(&mut app, 160, 45);
+        assert!(!app.timeline.inspector.area.is_empty());
+        assert!(
+            app.scroll.input.width + 4
+                >= app.scroll.content.width + app.timeline.inspector.area.width
+        );
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.timeline.focus, Focus::Timeline);
+        app.timeline.selected = Some(Key::Build);
+        key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        let buffer = screen(&mut app, 160, 45);
+        assert_eq!(app.timeline.inspector.key, Some(Key::Task(id)));
+        assert!(rows(&buffer).join("\n").contains("▸ Timeline"));
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.timeline.focus, Focus::Inspector);
+        assert!(
+            rows(&screen(&mut app, 160, 45))
+                .join("\n")
+                .contains("▸ Details")
+        );
+        key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+        assert!(app.show_evidence);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.view == View::Task(id, 0));
+        assert!(queued(&app).is_empty());
+        app.view = View::Chat;
+        screen(&mut app, 160, 45);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        assert_eq!(app.timeline.focus, Focus::Composer);
+        key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(app.timeline.focus, Focus::Inspector);
+        key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+        assert_eq!(app.timeline.focus, Focus::Timeline);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.timeline.focus, Focus::Composer);
+        assert!(!app.quit);
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
+    fn timeline_inspector_scroll_is_independent_and_survives_resize() {
+        use timeline::{Focus, Key};
+        let (_data, mut app, _) = execution_app();
+        app.mods[0]
+            .planning
+            .as_mut()
+            .unwrap()
+            .plan
+            .as_mut()
+            .unwrap()
+            .contracts = (0..60)
+            .map(|i| format!("Contract {i} with concrete evidence."))
+            .collect();
+        screen(&mut app, 160, 42);
+        app.timeline.focus = Focus::Timeline;
+        app.timeline.selected = Some(Key::Plan);
+        app.timeline.held = true;
+        let buffer = screen(&mut app, 160, 42);
+        let right = app.timeline.inspector.area;
+        assert!(right.height > 0 && app.timeline.inspector.maximum > 0);
+        assert!((right.y..right.bottom()).any(|y| buffer[(right.right() - 1, y)].symbol() == "┃"));
+        let timeline_top = app.timeline.top;
+        wheel(&mut app, false, right);
+        screen(&mut app, 160, 42);
+        assert_eq!(app.timeline.top, timeline_top);
+        assert_eq!(app.timeline.inspector.offset, 3);
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert_eq!(app.timeline.focus, Focus::Inspector);
+        key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        screen(&mut app, 160, 42);
+        assert_eq!(
+            app.timeline.inspector.offset,
+            app.timeline.inspector.maximum
+        );
+        screen(&mut app, 160, 100);
+        assert!(app.timeline.inspector.offset < 60);
+        screen(&mut app, 80, 42);
+        assert!(app.timeline.inspector.area.is_empty());
+        assert_eq!(app.timeline.focus, Focus::Timeline);
+        assert_eq!(app.timeline.selected, Some(Key::Plan));
+        screen(&mut app, 160, 42);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        screen(&mut app, 160, 42);
+        assert_eq!(app.timeline.inspector.offset, 0);
+        assert_eq!(app.timeline.inspector.key, Some(Key::Build));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
+    fn timeline_split_mouse_selection_and_changed_plan_keep_evidence_truthful() {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use timeline::{Focus, Key};
+        let (_data, mut app, _) = execution_app();
+        screen(&mut app, 160, 45);
+        let right = app.timeline.inspector.area;
+        app.handle(Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: right.x,
+            row: right.y,
+            modifiers: KeyModifiers::NONE,
+        }))
+        .unwrap();
+        assert_eq!(app.timeline.focus, Focus::Inspector);
+        assert!(app.timeline.held);
+        // A vanished row must not open a different stage or send the draft.
+        app.timeline.selected = Some(Key::Repair(-1));
+        assert!(
+            rows(&screen(&mut app, 160, 45))
+                .join("\n")
+                .contains("no longer in the current plan")
+        );
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(app.view == View::Chat);
+        assert!(queued(&app).is_empty());
+        app.mods[0].planning.as_mut().unwrap().source = "a new plan".into();
+        screen(&mut app, 160, 45);
+        assert_eq!(app.timeline.focus, Focus::Composer);
+        assert!(!app.timeline.held);
+        assert_ne!(app.timeline.selected, Some(Key::Repair(-1)));
+        assert_eq!(app.timeline.inspector.offset, 0);
+        assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 
     fn commit_project(project: &std::path::Path) {
@@ -7484,7 +7616,7 @@ mod tests {
             );
             for y in first..next - 1 {
                 assert_eq!(buffer[(4, y)].symbol(), if y == first { ">" } else { " " });
-                assert_eq!(buffer[(width - 5, y)].bg, background);
+                assert_eq!(buffer[(width - 7, y)].bg, background);
             }
             for y in [next - 1, agent - 1] {
                 assert!(

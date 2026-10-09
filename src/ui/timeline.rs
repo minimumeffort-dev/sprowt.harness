@@ -1,5 +1,5 @@
 use super::*;
-use crate::app::timeline::{Key, State};
+use crate::app::timeline::{Focus, Item, Key, State};
 
 pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option<Duration>) {
     if area.is_empty() {
@@ -8,6 +8,32 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
     let m = app.current_mod().unwrap();
     app.timeline
         .reset_for((m.id, m.planning.as_ref().unwrap().source.clone()));
+    let split = area.width >= 120 && area.height >= 12;
+    let (area, inspector) = if split {
+        let [left, divider, right] = Layout::horizontal([
+            Constraint::Percentage(45),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+        .areas(area);
+        frame.render_widget(
+            Block::default()
+                .borders(ratatui::widgets::Borders::LEFT)
+                .border_style(Style::new().fg(BORDER)),
+            Rect {
+                x: divider.x + 1,
+                width: 1,
+                ..divider
+            },
+        );
+        (left, right)
+    } else {
+        if app.timeline.focus == Focus::Inspector {
+            app.timeline.focus = Focus::Timeline;
+            app.timeline.reveal = true;
+        }
+        (area, Rect::default())
+    };
     let items = app.timeline_items();
     if app.focus_plan {
         app.timeline.top = 0;
@@ -22,60 +48,56 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
         .or_else(|| items.iter().find(|i| i.state == State::Attention))
         .or_else(|| items.iter().find(|i| i.state == State::Active && i.branch))
         .or_else(|| items.iter().find(|i| i.state == State::Active))
-        .map_or(Key::Publish, |i| i.key);
-    if app.timeline.selected.is_none() {
+        .or_else(|| items.iter().find(|i| i.state == State::Waiting))
+        .or_else(|| items.last())
+        .map_or(Key::Request, |i| i.key);
+    if app.timeline.selected.is_none() || !app.timeline.held {
         app.timeline.selected = Some(current);
     }
-    let width = area.width;
-    let hints = if app.timeline.focused {
-        key_hints(&[
-            ("↑↓", "select"),
-            ("↵", "details"),
-            ("space", "expand"),
-            ("tab", "message"),
-        ])
-    } else {
-        Paragraph::new(Line::from(vec![
-            "Timeline  ".fg(ACCENT).bold(),
-            "tab Explore".fg(KEY_HINT),
-        ]))
-    };
-    let hints_height = hints.line_count(width).min(2) as u16;
-    let [heading, body] =
-        Layout::vertical([Constraint::Length(hints_height.max(1)), Constraint::Min(0)]).areas(area);
-    frame.render_widget(hints, heading);
+    let focused = app.timeline.focus == Focus::Timeline;
+    let width = area.width.saturating_sub(2);
+    let [heading, hints, body] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    frame.render_widget(
+        Line::from(if focused { "▸ Timeline" } else { "Timeline" })
+            .fg(if focused { ACCENT } else { KEY_HINT })
+            .bold(),
+        heading,
+    );
+    frame.render_widget(
+        if focused {
+            key_hints(&[("↑↓", "select"), ("↵", "details"), ("space", "expand")])
+        } else {
+            key_hints(&[(
+                if app.timeline.focus == Focus::Inspector {
+                    "←"
+                } else {
+                    "tab"
+                },
+                "Explore",
+            )])
+        },
+        hints,
+    );
     app.timeline.jump_area = Rect::default();
     if app.timeline.held {
-        let label = if app.timeline.focused {
-            "end Jump to current"
+        let label = if focused {
+            "end Current"
         } else {
-            "tab end Jump to current"
+            "Jump to current"
         };
         let button = Rect {
             x: heading.right().saturating_sub(label.len() as u16),
             width: label.len() as u16,
-            height: 1,
             ..heading
         };
-        if button.x > heading.x + if app.timeline.focused { 58 } else { 23 } {
+        if button.x > heading.x + 12 {
             frame.render_widget(Line::from(label).fg(ACCENT).bg(CONTROL), button);
             app.timeline.jump_area = button;
-        } else {
-            frame.render_widget(
-                Line::from(if app.timeline.focused {
-                    "end Current · tab Message"
-                } else {
-                    "Timeline · tab end Current"
-                })
-                .fg(ACCENT),
-                heading,
-            );
-            app.timeline.jump_area = Rect {
-                x: heading.x + if app.timeline.focused { 0 } else { 11 },
-                width: if app.timeline.focused { 11 } else { 15 },
-                height: 1,
-                ..heading
-            };
         }
     }
     app.scroll.content = body;
@@ -85,13 +107,18 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
     let dock = app.action_dock();
     for item in &items {
         let top = lines.len();
-        let selected = app.timeline.focused && app.timeline.selected == Some(item.key);
-        let open = app
-            .timeline
-            .expanded
-            .get(&item.key)
-            .copied()
-            .unwrap_or(item.expanded_by_default());
+        let selected = split && app.timeline.selected == Some(item.key)
+            || focused && app.timeline.selected == Some(item.key);
+        let open =
+            app.timeline
+                .expanded
+                .get(&item.key)
+                .copied()
+                .unwrap_or(if item.key == Key::Build {
+                    item.state != State::Done
+                } else {
+                    !split && item.expanded_by_default()
+                });
         let (marker, color) = match item.state {
             State::Done => ("✓", ACCENT),
             State::Active => (activity_glyph(elapsed), ACCENT),
@@ -131,11 +158,11 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
                 .fg(KEY_HINT),
             );
         }
-        if selected {
-            title = title.bg(SELECTED);
-        }
         if item.key == Key::Request {
             title = title.bg(USER_BACKGROUND);
+        }
+        if selected {
+            title = title.bg(SELECTED);
         }
         let mut rows = wrap_line(title, width, if item.branch { 5 } else { 2 });
         if item.key == Key::Request {
@@ -209,7 +236,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
     }
     lines.pop();
     let max = lines.len().saturating_sub(body.height as usize);
-    let target = if app.timeline.focused {
+    let target = if app.timeline.focus != Focus::Composer {
         app.timeline.selected.unwrap_or(current)
     } else {
         current
@@ -243,6 +270,151 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
     frame.render_widget(
         Paragraph::new(Text::from(lines))
             .scroll((app.timeline.top.min(u16::MAX as usize) as u16, 0)),
-        body,
+        Rect { width, ..body },
     );
+    draw_scrollbar(
+        frame,
+        body,
+        app.timeline.rows.last().map_or(0, |(_, _, end)| *end),
+        app.timeline.top,
+        focused,
+    );
+    if split {
+        draw_inspector(frame, app, &items, inspector);
+    }
+}
+
+fn draw_inspector(frame: &mut Frame, app: &mut App, items: &[Item], area: Rect) {
+    let focused = app.timeline.focus == Focus::Inspector;
+    let [heading, hints, body] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+    frame.render_widget(
+        Line::from(if focused { "▸ Details" } else { "Details" })
+            .fg(if focused { ACCENT } else { KEY_HINT })
+            .bold(),
+        heading,
+    );
+    let selected = items.iter().find(|i| Some(i.key) == app.timeline.selected);
+    let mut keys = Vec::new();
+    if focused {
+        keys.push(("↑↓", "scroll"));
+        if selected.is_some_and(|i| i.inspect.is_some() || i.key == Key::Plan) {
+            keys.push(("↵", "full view"));
+        }
+        if selected.is_some_and(|i| matches!(i.key, Key::Task(_) | Key::Repair(_) | Key::Checks)) {
+            keys.push((
+                "e",
+                if app.show_evidence {
+                    "hide evidence"
+                } else {
+                    "evidence"
+                },
+            ));
+        }
+        keys.push(("tab", "message"));
+    } else if app.timeline.focus == Focus::Timeline {
+        keys.push(("tab", "Focus details"));
+    }
+    frame.render_widget(key_hints(&keys), hints);
+    let lines = selected.map_or_else(
+        || vec![Line::from("This step is no longer in the current plan.").fg(KEY_HINT)],
+        |item| inspector_lines(app, item, body.width.saturating_sub(2)),
+    );
+    if app.timeline.inspector.key != app.timeline.selected {
+        app.timeline.inspector.offset = 0;
+        app.timeline.inspector.key = app.timeline.selected;
+    }
+    let (offset, maximum) = draw_text(
+        frame,
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        body,
+        app.timeline.inspector.offset,
+        focused,
+    );
+    app.timeline.inspector.area = body;
+    app.timeline.inspector.offset = offset;
+    app.timeline.inspector.maximum = maximum;
+}
+
+fn inspector_lines(app: &App, item: &Item, width: u16) -> Vec<Line<'static>> {
+    let mut lines = match item.key {
+        Key::Task(id) | Key::Repair(id) => tasks::task_lines(app, id, width),
+        Key::Checks => inspector::check_summary(app, width),
+        Key::Review => findings::finding_lines(app),
+        _ => {
+            let mut lines = vec![Line::from(item.title.clone()).bold(), Line::default()];
+            for detail in &item.detail {
+                lines.extend(Text::from(detail.clone()).lines);
+            }
+            lines
+        }
+    };
+    if let Key::Task(id) | Key::Repair(id) = item.key
+        && let Some(worker) = app.active_workers().find(|w| w.task_run_id() == Some(id))
+    {
+        lines.insert(
+            3.min(lines.len()),
+            Line::from(worker.timeline_timing()).fg(KEY_HINT),
+        );
+    }
+    if let Some(plan) = app
+        .current_mod()
+        .and_then(|m| m.planning.as_ref())
+        .and_then(|p| p.plan.as_ref())
+    {
+        match item.key {
+            Key::Plan => {
+                for (label, notes) in [
+                    ("Contracts", &plan.contracts),
+                    ("Assumptions", &plan.assumptions),
+                ] {
+                    if !notes.is_empty() {
+                        lines.push(Line::default());
+                        lines.push(Line::from(label).fg(KEY_HINT).bold());
+                        lines.extend(notes.iter().map(|note| Line::from(format!("· {note}"))));
+                    }
+                }
+            }
+            Key::Build => {
+                for (i, task) in plan.tasks.iter().enumerate() {
+                    let run = app
+                        .current_mod()
+                        .and_then(|m| m.execution.as_ref())
+                        .and_then(|e| e.tasks.iter().find(|r| r.task_id == task.id))
+                        .and_then(|r| app.inspect_task(r.id));
+                    lines.push(
+                        Line::from(format!(
+                            "{}. {} · {}",
+                            i + 1,
+                            task.title,
+                            run.as_ref().map_or("Waiting", |r| r.state)
+                        ))
+                        .bold(),
+                    );
+                    lines.push(Line::from(task.outcome.clone()).fg(KEY_HINT));
+                    lines.push(Line::default());
+                }
+            }
+            Key::Planned(index) => {
+                if let Some(task) = plan.tasks.get(index) {
+                    lines.push(Line::default());
+                    lines.push(
+                        Line::from(format!("Files · {}", task.files.join(", "))).fg(KEY_HINT),
+                    );
+                    lines.push(Line::from("Checks").fg(KEY_HINT).bold());
+                    lines.extend(
+                        task.checks
+                            .iter()
+                            .map(|check| Line::from(format!("· {check}"))),
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    lines
 }

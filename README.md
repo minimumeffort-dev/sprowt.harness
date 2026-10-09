@@ -20,7 +20,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Workers and isolation](docs/workers.md): Codex planning and review, with separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup, VM setup and task checks, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
-- [Terminal and companion](docs/terminal.md): a full-width workflow timeline, one shared state summary, a growing message dock and a Details inspector for tasks, checks, review and activity. Contextual actions, mouse scrolling and a Sprowt pet that reacts to work.
+- [Terminal and companion](docs/terminal.md): an adaptive workflow timeline with a side inspector, one shared state summary, a growing message dock and a Details inspector for tasks, checks, review and activity. Contextual actions, mouse scrolling and a Sprowt pet that reacts to work.
 
 ### Current limits
 
@@ -122,7 +122,7 @@ Start in an empty folder, an existing project or a Git repository. If Git has no
 Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth login` and `gh auth setup-git`.
 
 1. Describe a codemod and press **Enter**. Confirm Git setup if offered. Planning and execution start automatically.
-2. Workers prepare a first version. The timeline branches into parallel tasks, then follows checks, repairs, review and publication. Tab explores the timeline; Enter opens a stage’s evidence. The unified dock keeps the next useful action and your message together. **Ctrl+T · Details** shows evidence; **Ctrl+G · More** opens grouped actions; existing shortcuts still work.
+2. Workers prepare a first version. The timeline branches into parallel tasks, then follows checks, repairs, review and publication. Wide terminals show selected evidence beside the timeline. Tab cycles through the timeline, inspector and message; Enter inspects a stage. Scrollbars show where more evidence is available. The unified dock keeps the next useful action and your message together. **Ctrl+T · Details** shows evidence; **Ctrl+G · More** opens grouped actions; existing shortcuts still work.
 3. Send a message to request edits. Messages sent during work wait for the next round; the queue also supports steering.
 4. Combined checks lead to an automatic review. Inspect findings in **Details → Review**, then explicitly choose **Fix issues**. Verified fixes get a fresh review. Choose **Publish PR** and confirm its destination and publication; keep editing afterward to update the same PR.
 5. In **Ctrl+P**, **c** closes with a checkpoint, **Tab** shows closed mods, **r** reopens and **d** deletes local data.
@@ -144,9 +144,9 @@ Setup saves the key in private local configuration, so the installed harness can
 | Key | Action |
 | --- | --- |
 | Enter | Answer a highlighted question, send edits or queue an instruction |
-| Tab | Explore the timeline / return to the composer |
+| Tab / Shift+Tab | Cycle through timeline, side inspector and composer |
 | ↑↓ / Space / Enter | Select / expand / inspect a timeline row |
-| End | Jump to current while exploring the timeline |
+| End | Jump to current in the timeline / bottom of inspector |
 | Ctrl+J | Newline |
 | Ctrl+G | More: grouped applicable actions; Esc returns |
 | Ctrl+P | Switch, create, close, reopen or delete a codemod |

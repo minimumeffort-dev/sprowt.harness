@@ -39,7 +39,10 @@ impl App {
                 if self.timeline.jump_area.contains(position) {
                     self.timeline.jump();
                 } else if self.scroll.input.contains(position) {
-                    self.timeline.focused = false;
+                    self.timeline.focus = super::timeline::Focus::Composer;
+                } else if self.timeline.inspector.area.contains(position) {
+                    self.timeline.focus = super::timeline::Focus::Inspector;
+                    self.timeline.held = true;
                 } else if self.scroll.content.contains(position) {
                     let row = self.timeline.top + usize::from(mouse.row - self.scroll.content.y);
                     if let Some((id, _, _)) = self
@@ -49,10 +52,26 @@ impl App {
                         .find(|(_, start, end)| row >= *start && row < *end)
                     {
                         self.timeline.selected = Some(*id);
-                        self.timeline.focused = true;
+                        self.timeline.focus = super::timeline::Focus::Timeline;
                         self.timeline.held = true;
                     }
                 }
+                return Ok(());
+            }
+            if self.timeline.inspector.area.contains(position)
+                && matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                )
+            {
+                self.timeline.held = true;
+                self.timeline
+                    .inspector
+                    .scroll(if mouse.kind == MouseEventKind::ScrollUp {
+                        -3
+                    } else {
+                        3
+                    });
                 return Ok(());
             }
             if self.scroll.content.contains(position)

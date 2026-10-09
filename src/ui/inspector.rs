@@ -60,6 +60,20 @@ fn draw_checks(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
         ("esc", "back"),
     ]);
     let inner = tasks::panel(frame, area, "checks".into(), &hints);
+    let lines = check_summary(app, inner.width.saturating_sub(2));
+    let (scroll, _) = draw_text(
+        frame,
+        Paragraph::new(lines).wrap(Wrap { trim: false }),
+        inner,
+        scroll,
+        true,
+    );
+    app.scroll.content = inner;
+    app.page_size = inner.height.max(1);
+    app.view = View::Checks(scroll);
+}
+
+pub(super) fn check_summary(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(m) = app.current_mod() {
         if let Some(e) = &m.execution {
@@ -76,7 +90,7 @@ fn draw_checks(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
                 .fg(KEY_HINT),
             );
             if !e.checks.is_empty() {
-                lines.extend(check_lines(&e.checks, inner.width, app.show_evidence));
+                lines.extend(check_lines(&e.checks, width, app.show_evidence));
             }
         }
         lines.push(Line::default());
@@ -106,7 +120,7 @@ fn draw_checks(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
                         }
                         lines.extend(check_lines(
                             &task.checks.iter().map(|c| (*c).clone()).collect::<Vec<_>>(),
-                            inner.width,
+                            width,
                             app.show_evidence,
                         ));
                     }
@@ -118,16 +132,7 @@ fn draw_checks(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
             lines.push(Line::from("No checks planned yet."));
         }
     }
-    let text = Paragraph::new(lines).wrap(Wrap { trim: false });
-    let max_scroll = text
-        .line_count(inner.width)
-        .saturating_sub(inner.height as usize)
-        .min(u16::MAX as usize) as u16;
-    let scroll = scroll.min(max_scroll);
-    frame.render_widget(text.scroll((scroll, 0)), inner);
-    app.scroll.content = inner;
-    app.page_size = inner.height.max(1);
-    app.view = View::Checks(scroll);
+    lines
 }
 
 fn check_lines(

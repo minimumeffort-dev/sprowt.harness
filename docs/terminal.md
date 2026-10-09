@@ -1,6 +1,6 @@
 # Terminal and companion
 
-The full-width timeline shows the codemod from its request through publication. One dock tells you what is happening, whether anything needs you, and the next useful action. **Ctrl+T · Details** opens the evidence without interrupting work or losing your draft.
+The timeline shows the codemod from its request through publication. One dock tells you what is happening, whether anything needs you, and the next useful action. **Ctrl+T · Details** opens the evidence without interrupting work or losing your draft.
 
 ## State model
 
@@ -77,8 +77,37 @@ Close can also stop active work before saving its checkpoint. Delete requires co
 - Planning, implementation, combined checks, review and publication have separate rows. Task branches show independent work and dependencies; the parallel count comes from connected, active executors.
 - Finished stages collapse. Active tasks show their owner, model, effort, elapsed time and latest update. Waiting tasks explain dependencies; active repairs follow a muted **previous failure** row. Expanding that row shows its saved evidence.
 - Relevant actions sit beside their stage and remain available from the dock and More. Enter on a timeline row opens evidence; it never starts a repair or publishes.
-- **Tab** focuses the timeline. **↑/↓** selects, **Space** expands, **Enter** opens details, and **Tab** or **Esc** returns to the draft. Clicking a row also selects it. **Ctrl+O** opens the full plan.
+- **Tab** focuses the timeline. **↑/↓** selects, **Space** expands, and **Enter** opens details. Clicking a row also selects it. **Esc** returns to the draft. **Ctrl+O** opens the full plan.
 - New activity follows the current step until you scroll or navigate back. Your position then stays anchored to the same row. **End** while exploring, or clicking **Jump to current**, resumes following. End in the composer still moves the text cursor.
+
+### Timeline and side inspector
+
+With at least 124 terminal columns and 12 rows available above the dock, the timeline and selected step appear side by side. The timeline uses 45% of the content width; the inspector gets the rest. The message dock stays full width.
+
+```text
+Timeline                          │ Details
+✓ Plan ready                      │ Build search controls
+⠋ Implementation                  │ Muse · Working
+├─ ✓ Search storage               │ Elapsed 2m 10s · last activity 8s ago
+├─ ⠋ Search controls              │
+└─ ○ Verify integration           │ Latest update
+○ Combined checks                 │ Checking keyboard focus
+○ Review                          │
+○ Publish PR                      │ Checks
+                                  │ ✓ Keyboard navigation
+                                  │ · Retry after failure
+──────────────────────────────────┴─────────────────────────────────────
+Working · 1/3 tasks finished
+Add an instruction…
+```
+
+Selection updates the inspector immediately. It uses the same task evidence, check results and review findings as the full Details view. Task narration starts collapsed in the split timeline; Space expands it. Previous failures and outdated reviews stay labelled as saved evidence.
+
+- **Tab / Shift+Tab** cycle between message, timeline and inspector. A **▸** heading marks the focused pane; the dock border highlights when the composer is focused.
+- **Enter** or **→** from the timeline focuses the inspector. **←** returns to the timeline. **Esc** returns directly to the draft. Enter in the inspector opens the full view when available; it never executes a workflow action.
+- The inspector supports **↑/↓**, **Page Up/Down**, **Home/End**, and mouse scrolling. **e** toggles evidence for task and check rows. Each pane scrolls independently; exploring holds the selected step as new activity arrives.
+- Thin scrollbars appear when timeline or evidence content overflows. The thumb shows your position; use the wheel or keyboard to move. Selecting another step resets the inspector to the top.
+- Smaller or shorter terminals show the timeline across the available width, with Enter opening the existing full Details view. Resizing preserves the draft and selected step, clamps scroll positions, and returns inspector focus to the timeline when the side pane disappears.
 
 The timeline reflects the current saved plan and operation states. Prior passes and full worker messages stay in **Details → Activity**. It does not invent historical timestamps or completion estimates. Elapsed time measures the connected worker's current turn; last activity measures observed worker events, not a guarantee of progress. Both restart with a new connection or turn. A completed task, passed combined checks and a clean current review remain distinct.
 
@@ -155,16 +184,16 @@ The Enter hint says **Create codemod**, **Answer #ID**, **Request edits** or **Q
 
 ## Navigation and layout
 
-Messages, plans, Details, errors and diffs use the terminal width. Task numbers have their own column and wrapped outcomes align beneath the title. Menus and confirmations use up to 68 columns; queue menus widen for their controls. Empty lists say **No active codemods** or **No closed codemods**.
+Messages, plans, full Details, errors and diffs use the terminal width. Wide timelines reserve a side inspector for the selected step. Task numbers have their own column and wrapped outcomes align beneath the title. Menus and confirmations use up to 68 columns; queue menus widen for their controls. Empty lists say **No active codemods** or **No closed codemods**.
 
 Use the wheel or trackpad over a view to scroll it, or over the composer to scroll the draft. Lists move their selection; Enter activates. Views clamp scrolling after resize. Opening More retains the visible draft. Narrow terminals stack controls without separating shortcuts from labels.
 
 | Key | Action |
 | --- | --- |
 | Enter | Send from the composer; inspect a selected timeline row |
-| Tab | Move between the timeline and composer |
+| Tab / Shift+Tab | Move between composer, timeline and side inspector |
 | Space / ↑↓ | Expand / select while exploring the timeline |
-| End | Jump to current while exploring the timeline |
+| End | Jump to current in the timeline; scroll to the bottom in the inspector |
 | Ctrl+J | Newline |
 | Ctrl+T | Details / return to conversation |
 | Ctrl+G | More actions; Esc returns |

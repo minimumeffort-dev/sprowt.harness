@@ -57,10 +57,33 @@ impl Item {
     }
 }
 
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub enum Focus {
+    #[default]
+    Composer,
+    Timeline,
+    Inspector,
+}
+
+#[derive(Default)]
+pub struct Inspector {
+    pub key: Option<Key>,
+    pub area: ratatui::layout::Rect,
+    pub offset: u16,
+    pub maximum: u16,
+}
+
+impl Inspector {
+    pub fn scroll(&mut self, delta: i32) {
+        self.offset = (i32::from(self.offset) + delta).clamp(0, i32::from(self.maximum)) as u16;
+    }
+}
+
 #[derive(Default)]
 pub struct Timeline {
     pub context: Option<(i64, String)>,
-    pub focused: bool,
+    pub focus: Focus,
+    pub inspector: Inspector,
     pub selected: Option<Key>,
     pub expanded: BTreeMap<Key, bool>,
     pub top: usize,
@@ -495,12 +518,53 @@ impl App {
         if !self.has_timeline() {
             return Ok(false);
         }
+        let split = !self.timeline.inspector.area.is_empty();
         if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-            self.timeline.focused = !self.timeline.focused;
-            self.timeline.reveal = true;
+            self.timeline.focus = match (self.timeline.focus, key.code == KeyCode::BackTab, split) {
+                (Focus::Composer, true, true) | (Focus::Timeline, false, true) => Focus::Inspector,
+                (Focus::Composer, _, _) | (Focus::Inspector, true, _) => Focus::Timeline,
+                _ => Focus::Composer,
+            };
+            self.timeline.reveal = self.timeline.focus == Focus::Timeline;
+            if self.timeline.focus == Focus::Inspector {
+                self.timeline.held = true;
+            }
             return Ok(true);
         }
-        if key.code == KeyCode::End && key.modifiers.is_empty() && self.timeline.focused {
+        if !key.modifiers.is_empty() {
+            if key.code == KeyCode::Char('j') {
+                self.timeline.focus = Focus::Composer;
+            }
+            return Ok(false);
+        }
+        if self.timeline.focus == Focus::Inspector {
+            let inspector = &mut self.timeline.inspector;
+            match key.code {
+                KeyCode::Up => inspector.scroll(-1),
+                KeyCode::Down => inspector.scroll(1),
+                KeyCode::PageUp => inspector.scroll(-i32::from(inspector.area.height)),
+                KeyCode::PageDown => inspector.scroll(i32::from(inspector.area.height)),
+                KeyCode::Home => inspector.offset = 0,
+                KeyCode::End => inspector.offset = inspector.maximum,
+                KeyCode::Left => self.timeline.focus = Focus::Timeline,
+                KeyCode::Esc => self.timeline.focus = Focus::Composer,
+                KeyCode::Char('e')
+                    if matches!(
+                        self.timeline.selected,
+                        Some(Key::Task(_) | Key::Repair(_) | Key::Checks)
+                    ) =>
+                {
+                    self.show_evidence = !self.show_evidence
+                }
+                KeyCode::Enter => self.open_timeline_details()?,
+                _ => {
+                    self.timeline.focus = Focus::Composer;
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
+        if key.code == KeyCode::End && self.timeline.focus == Focus::Timeline {
             self.timeline.jump();
             return Ok(true);
         }
@@ -512,10 +576,7 @@ impl App {
             });
             return Ok(true);
         }
-        if !self.timeline.focused || !key.modifiers.is_empty() {
-            if key.code == KeyCode::Char('j') {
-                self.timeline.focused = false;
-            }
+        if self.timeline.focus != Focus::Timeline {
             return Ok(false);
         }
         let items = self.timeline_items();
@@ -525,7 +586,7 @@ impl App {
             .position(|i| Some(i.key) == selected)
             .unwrap_or(0);
         match key.code {
-            KeyCode::Esc => self.timeline.focused = false,
+            KeyCode::Esc => self.timeline.focus = Focus::Composer,
             KeyCode::Up | KeyCode::Down | KeyCode::Home => {
                 let next = match key.code {
                     KeyCode::Up => index.saturating_sub(1),
@@ -536,29 +597,63 @@ impl App {
                 self.timeline.held = true;
                 self.timeline.reveal = true;
             }
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                if let Some(item) = items.iter().find(|i| Some(i.key) == selected) {
-                    if key.code == KeyCode::Enter && item.key == Key::Plan && item.inspect.is_none()
-                    {
-                        self.perform_action(Action::Details)?;
-                    } else if key.code == KeyCode::Enter && item.inspect.is_some() {
-                        self.view = item.inspect.unwrap();
+            KeyCode::Right if split => {
+                self.timeline.focus = Focus::Inspector;
+                self.timeline.held = true;
+            }
+            KeyCode::Enter => {
+                if items.iter().any(|i| Some(i.key) == selected) {
+                    if split {
+                        self.timeline.focus = Focus::Inspector;
+                        self.timeline.held = true;
                     } else {
-                        let expanded = self
-                            .timeline
-                            .expanded
-                            .entry(item.key)
-                            .or_insert(item.expanded_by_default());
-                        *expanded = !*expanded;
-                        self.timeline.reveal = true;
+                        self.open_timeline_details()?;
                     }
                 }
             }
+            KeyCode::Char(' ') => {
+                if let Some(item) = items.iter().find(|i| Some(i.key) == selected) {
+                    let expanded = self.timeline.expanded.entry(item.key).or_insert(
+                        if item.key == Key::Build {
+                            item.state != State::Done
+                        } else {
+                            !split && item.expanded_by_default()
+                        },
+                    );
+                    *expanded = !*expanded;
+                    self.timeline.held = true;
+                    self.timeline.reveal = true;
+                }
+            }
             _ => {
-                self.timeline.focused = false;
+                self.timeline.focus = Focus::Composer;
                 return Ok(false);
             }
         }
         Ok(true)
+    }
+
+    fn open_timeline_details(&mut self) -> rusqlite::Result<()> {
+        if let Some(item) = self
+            .timeline_items()
+            .iter()
+            .find(|i| Some(i.key) == self.timeline.selected)
+        {
+            if item.key == Key::Plan && item.inspect.is_none() {
+                self.perform_action(Action::Details)?;
+            } else if let Some(view) = item.inspect {
+                self.view = view;
+            } else if self.timeline.inspector.area.is_empty() {
+                let expanded = self
+                    .timeline
+                    .expanded
+                    .entry(item.key)
+                    .or_insert(item.expanded_by_default());
+                *expanded = !*expanded;
+                self.timeline.held = true;
+                self.timeline.reveal = true;
+            }
+        }
+        Ok(())
     }
 }
