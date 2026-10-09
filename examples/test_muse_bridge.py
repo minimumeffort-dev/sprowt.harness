@@ -12,7 +12,7 @@ import urllib.error
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from muse_bridge import ManagedRpc, SessionState, connect, recovered_thread, normalize, final_report, host
+from muse_bridge import ManagedRpc, SessionState, connect, recovered_thread, normalize, final_report, host, OUTPUT_TOKENS
 from muse_transport import BridgeFailure, Broker, FrameReader, FramedOutput, FRAME_BYTES, provider_failure, failure
 import muse_transport
 
@@ -282,7 +282,7 @@ class FailureTests(unittest.TestCase):
             request = {"id": 1, "method": "turn/start", "params": {"state": str(path), "config": config,
                        "tools": [], "text": "Fix the review finding", "source": "review-fix", "schema": {}}}
             output = io.StringIO()
-            with patch("muse_bridge.host_login", return_value={}), patch("muse_bridge.connect", return_value=(bridge, {"id": saved.value["sessionId"]})), \
+            with patch("muse_bridge.host_login", return_value={}), patch("muse_bridge.connect", return_value=(bridge, {"id": saved.value["sessionId"], "turns": []})), \
                     patch("sys.stdin", io.StringIO(json.dumps(request) + "\n")), patch("sys.stdout", output):
                 with self.assertRaisesRegex(BridgeFailure, "HTTP 400"):
                     host()
@@ -303,7 +303,7 @@ class FailureTests(unittest.TestCase):
             request = {"id": 1, "method": "turn/start", "params": {"state": str(path), "config": config,
                        "tools": [], "text": "Task", "source": "task", "schema": {}}}
             output = io.StringIO()
-            with patch("muse_bridge.host_login", return_value={}), patch("muse_bridge.connect", return_value=(bridge, {"id": "session"})), \
+            with patch("muse_bridge.host_login", return_value={}), patch("muse_bridge.connect", return_value=(bridge, {"id": "session", "turns": []})), \
                     patch("sys.stdin", io.StringIO(json.dumps(request) + "\n")), patch("sys.stdout", output):
                 host()
             saved = json.loads(path.read_text())
@@ -331,7 +331,7 @@ class FailureTests(unittest.TestCase):
             request = {"id": 1, "method": "turn/start", "params": {"state": str(path), "config": config,
                        "tools": [], "text": "Task", "source": "task", "schema": {}}}
             output = io.StringIO()
-            with patch("muse_bridge.host_login", return_value={}), patch("muse_bridge.connect", return_value=(bridge, {"id": "session"})), \
+            with patch("muse_bridge.host_login", return_value={}), patch("muse_bridge.connect", return_value=(bridge, {"id": "session", "turns": []})), \
                     patch("sys.stdin", io.StringIO(json.dumps(request) + "\n")), patch("sys.stdout", output):
                 host()
             events = [json.loads(line) for line in output.getvalue().splitlines()]
@@ -340,8 +340,72 @@ class FailureTests(unittest.TestCase):
             self.assertNotIn("failure", json.loads(path.read_text()))
             bridge.close.assert_called_once()
 
+    def test_active_resume_keeps_the_last_finish_reason_until_the_turn_ends(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bridge = bridge_fixture()
+            bridge.close = Mock()
+            bridge.incoming.put({"method": "turn/completed", "params": {"turnId": "turn", "terminal": "completed"}})
+            thread = {"id": "session", "turns": [{"id": "turn", "status": "inProgress", "finishReason": "length"}]}
+            request = {"id": 1, "method": "session/resume", "params": {
+                "state": str(Path(directory) / "state.json"), "config": {"name": "vm", "cwd": "/tasks/7"}, "tools": []}}
+            output = io.StringIO()
+            with patch("muse_bridge.host_login", return_value={}), patch("muse_bridge.connect", return_value=(bridge, thread)), \
+                    patch("sys.stdin", io.StringIO(json.dumps(request) + "\n")), patch("sys.stdout", output):
+                host()
+            terminal = json.loads(output.getvalue().splitlines()[-1])["params"]["turn"]
+            self.assertEqual(terminal["status"], "failed")
+            self.assertIn("response limit", terminal["error"]["message"])
+            bridge.close.assert_called_once()
+
 
 class ProtocolTests(unittest.TestCase):
+    def test_reasoning_exhaustion_is_a_failure_live_and_after_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = SessionState(Path(directory) / "state.json", {"name": "vm", "cwd": "/tasks/7"})
+            command = state.command("task-source")
+            # The observed failure: tools finish, reasoning consumes 8,189 of 8,192
+            # output tokens, and Muse ends with no agentMessage but terminal completed.
+            events = [
+                {"method": "item/completed", "params": {"item": {
+                    "kind": "userMessage", "itemId": "input", "turnId": "turn",
+                    "commandId": command, "text": "task"}}},
+                {"method": "session/tokenUsage", "params": {"turnId": "turn", "finishReason": "length",
+                    "usage": {"outputTokens": 8192, "reasoningTokens": 8189}}},
+                {"method": "turn/completed", "params": {"turnId": "turn", "terminal": "completed"}},
+            ]
+            finishes = {}
+            for event in events:
+                live = normalize(event, finishes)
+            self.assertEqual(live["params"]["turn"]["status"], "failed")
+            self.assertIn("response limit", live["params"]["turn"]["error"]["message"])
+            rpc = Mock()
+            rpc.call.side_effect = [
+                {"events": events[:2], "nextCursor": "next"},
+                {"events": events[2:], "nextCursor": None}]
+            recovered = recovered_thread(rpc, state, {"session": {
+                "sessionId": state.value["sessionId"], "workspaceRoot": "/tasks/7"},
+                "lastTurn": {"turnId": "turn", "terminal": "completed"}})["turns"][0]
+            self.assertEqual({k: v for k, v in recovered.items() if k != "items"}, live["params"]["turn"])
+            # A later successful request clears an earlier truncation in this turn.
+            normalize({"method": "session/tokenUsage", "params": {"turnId": "turn", "finishReason": "stop"}}, finishes)
+            self.assertEqual(normalize(events[-1], finishes)["params"]["turn"]["status"], "completed")
+            self.assertEqual(normalize({"method": "turn/completed", "params": {
+                "turnId": "another-turn", "terminal": "completed"}}, finishes)["params"]["turn"]["status"], "completed")
+            finishes["turn"] = "length"
+            self.assertEqual(normalize({"method": "turn/completed", "params": {
+                "turnId": "turn", "terminal": "interrupted"}}, finishes)["params"]["turn"]["status"], "interrupted")
+
+    def test_production_broker_has_room_for_reasoning_and_a_report(self):
+        with tempfile.TemporaryDirectory() as directory, patch("muse_bridge.ManagedRpc") as client, patch("muse_bridge.subprocess.run"):
+            config = {"name": "vm", "cwd": "/tasks/7", "env": {"HOME": "/home/worker"}}
+            state = SessionState(Path(directory) / "state.json", config)
+            client.return_value.call.side_effect = [{"grantedCapabilities": ["sessionMcp"]}, {}]
+            connect(config, [], state, {"authorization": "Bearer synthetic-provider-secret"}, Path(directory), lambda _: None, False)
+            broker = client.call_args.args[1]
+            self.assertEqual(broker.output_tokens, 32768)
+            self.assertEqual(OUTPUT_TOKENS, broker.output_tokens)
+            self.assertEqual(broker.remaining, 128)
+
     def test_delivery_ids_are_saved_before_submission_and_survive_restart(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "muse/2.json"

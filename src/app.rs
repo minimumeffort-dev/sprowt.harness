@@ -151,6 +151,7 @@ impl App {
                     .any(|message| message.item_id.as_deref() == Some(&item_id))
                 {
                     let message = crate::store::Message {
+                        source: None,
                         task: None,
                         item_id: Some(item_id),
                         role: "harness".into(),
@@ -2658,6 +2659,7 @@ impl App {
                         .any(|message| message.item_id.as_deref() == Some(&item_id))
                     {
                         let message = crate::store::Message {
+                            source: None,
                             task: None,
                             item_id: Some(item_id),
                             role: "harness".into(),
@@ -3828,6 +3830,7 @@ mod tests {
         app.mods[0]
             .messages
             .extend((0..40).map(|i| crate::store::Message {
+                source: None,
                 task: None,
                 item_id: None,
                 role: "user".into(),
@@ -3929,7 +3932,11 @@ mod tests {
     fn mouse_scrolling_clamps_panels_and_preserves_confirmation_actions() {
         let (_data, mut app, root) = execution_app();
         let task = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
+        let source = app.mods[0].execution.as_ref().unwrap().tasks[0]
+            .source
+            .clone();
         app.mods[0].messages.push(crate::store::Message {
+            source: Some(source),
             task: Some(task),
             item_id: None,
             role: "codex:executor:1".into(),
@@ -4491,6 +4498,7 @@ mod tests {
             }
         }
         app.mods[0].messages.push(crate::store::Message {
+            source: None,
             task: None,
             item_id: None,
             role: "user".into(),
@@ -4574,6 +4582,14 @@ mod tests {
             (None, "Legacy worker update"),
         ] {
             m.messages.push(crate::store::Message {
+                source: task.and_then(|id| {
+                    m.execution
+                        .as_ref()?
+                        .tasks
+                        .iter()
+                        .find(|r| r.id == id)
+                        .map(|r| r.source.clone())
+                }),
                 task,
                 item_id: None,
                 role: "muse:12".into(),
@@ -5979,6 +5995,64 @@ mod tests {
     }
 
     #[test]
+    fn task_updates_belong_to_the_current_attempt_and_split_details_stay_compact() {
+        use timeline::Key;
+        let (_data, mut app, _) = execution_app();
+        let m = &mut app.mods[0];
+        let e = m.execution.as_mut().unwrap();
+        e.status = "blocked".into();
+        e.checks.clear();
+        let run = &mut e.tasks[0];
+        let id = run.id;
+        let old_source = run.source.clone();
+        run.source = crate::store::task_source(id, 2);
+        run.status = "blocked".into();
+        run.checks.clear();
+        run.check_repair = true;
+        run.summary = "Muse reached its response limit before finishing the task report. Retry to continue from saved work.".into();
+        run.provider = Some("muse".into());
+        let source = run.source.clone();
+        let old = crate::store::Message {
+            source: None,
+            task: Some(id),
+            item_id: Some(format!("result:{old_source}")),
+            role: "muse:65".into(),
+            body: "✓ task complete · Earlier repair passed".into(),
+            model: Some("muse-spark-1.3".into()),
+            effort: Some("high".into()),
+        };
+        m.messages.push(old.clone());
+        assert!(app.inspect_task(id).unwrap().latest.is_none());
+        assert!(
+            !app.timeline_items()
+                .iter()
+                .any(|item| item.key == Key::Failure(id))
+        );
+        for width in [80, 124, 160] {
+            app.view = View::Chat;
+            screen(&mut app, width, 42);
+            app.timeline.selected = Some(Key::Repair(id));
+            app.timeline.expanded.insert(Key::Repair(id), true);
+            let preview = screen(&mut app, width, 42);
+            let text = rows(&preview).join("\n");
+            assert!(!text.contains("Earlier repair passed") && !text.contains("task complete"));
+            assert!(text.contains("Retry task 1"));
+        }
+        app.mods[0].messages.push(crate::store::Message {
+            source: Some(source),
+            item_id: Some("current-update".into()),
+            body: "Checking this repair".into(),
+            ..old
+        });
+        let text = rows(&screen(&mut app, 160, 42)).join("\n");
+        assert_eq!(text.matches("Checking this repair").count(), 1);
+        app.view = View::TaskHistory(id, 0);
+        let text = rows(&screen(&mut app, 100, 42)).join("\n");
+        assert!(text.contains("Earlier repair passed") && text.contains("Checking this repair"));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
     fn timeline_navigation_preserves_draft_and_opens_existing_evidence() {
         use timeline::Key;
         let (_data, mut app, _) = execution_app();
@@ -6031,6 +6105,7 @@ mod tests {
         let items = app.timeline_items();
         let failure = items.iter().find(|i| i.key == Key::Failure(id)).unwrap();
         assert!(failure.state == State::Previous && failure.action.is_none());
+        assert!(failure.inspect.is_none());
         assert!(
             failure
                 .detail
@@ -6846,6 +6921,7 @@ mod tests {
             .unwrap()
             .bind_test_task(execution.tasks[0].source.clone());
         app.mods[0].messages.push(crate::store::Message {
+            source: None,
             task: None,
             item_id: Some("previous-reply".into()),
             role: "codex".into(),
@@ -7152,6 +7228,7 @@ mod tests {
     fn missing_recorded_effort_is_visible_without_guessing_a_level() {
         let (_data, mut app, _root) = execution_app();
         app.mods[0].messages.push(crate::store::Message {
+            source: None,
             task: None,
             item_id: Some("old-reply".into()),
             role: "codex".into(),
@@ -7170,6 +7247,7 @@ mod tests {
         let (data, mut app, root) = execution_app();
         let id = app.mods[0].id;
         let message = crate::store::Message {
+            source: None,
             task: None,
             item_id: Some("saved-worker-reply".into()),
             role: "codex:45".into(),
@@ -7496,6 +7574,7 @@ mod tests {
             .save_message(
                 code_mod.id,
                 &Message {
+                    source: None,
                     task: None,
                     item_id: Some("preface".into()),
                     role: "planner".into(),
@@ -7575,6 +7654,7 @@ mod tests {
                 .save_message(
                     code_mod.id,
                     &Message {
+                        source: None,
                         task: None,
                         item_id: None,
                         role: role.into(),

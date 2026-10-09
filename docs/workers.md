@@ -80,7 +80,7 @@ sequenceDiagram
     Broker-->>Muse: Response body · no provider credentials
 ```
 
-The guest gets a random capability, valid for one task turn: at most 128 model requests, one hour of access and 8,192 output tokens per request. The broker accepts only the model catalog and streamed Spark 1.3 responses at fixed Meta endpoints. Redirects and other model or account routes are denied. It revokes access when the turn ends or the worker stops.
+The guest gets a random capability, valid for one task turn: at most 128 model requests, one hour of access and 32,768 output tokens per request. That output allowance includes reasoning, leaving room for Muse to produce its verification report. The broker accepts only the model catalog and streamed Spark 1.3 responses at fixed Meta endpoints. Redirects and other model or account routes are denied. It revokes access when the turn ends or the worker stops.
 
 Account authentication is verified. Subscription metering is not independently exposed by this CLI; confirm included usage in your account before treating it as measured subscription consumption.
 
@@ -124,6 +124,7 @@ The VM sends messages in small, acknowledged chunks. It waits for the Mac before
 - **408**, **429** and server failures keep the native CLI's bounded retry behavior.
 - A confirmed context-limit code permits a fresh conversation on the next safe reconnect. The task brief, saved source and accepted instructions rebuild context; the previous session ID and receipts remain saved. Unknown request failures do not reset conversations.
 - Any uncertain delivery prevents a context reset. The harness keeps its receipt checks before resending instructions.
+- If Muse exhausts its response allowance, the task pauses with **Muse reached its response limit**. Native turn completion alone cannot mark it successful. The same cause survives reconnect; retry continues from saved work. Missing reports also pause, and every accepted report still goes through independent checks.
 
 **Ctrl+T** opens tasks. Select a failed task and press **r**, or inspect it and press **Ctrl+R**, to retry only that task. Running peers continue; completed peers stay complete. If both worker slots are occupied, the retry waits for a slot. A bridge failure never counts as task completion.
 

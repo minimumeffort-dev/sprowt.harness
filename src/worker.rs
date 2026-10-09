@@ -690,6 +690,7 @@ impl Worker {
                         store,
                         code_mod,
                         Message {
+                            source: None,
                             task: None,
                             item_id: Some(format!("rejected:{source}:{}", self.id)),
                             role: "harness".into(),
@@ -798,6 +799,7 @@ impl Worker {
                     store,
                     code_mod,
                     Message {
+                        source: None,
                         task: Some(id),
                         item_id: Some(format!("conflict:{source}")),
                         role: "system".into(),
@@ -876,6 +878,7 @@ impl Worker {
                     };
                     if recover {
                         save_message(store, code_mod, Message {
+                            source: None,
                             task: None,
                             item_id: Some(format!("runtime:{source}:{}", checks.iter().find_map(|c| c.missing_runtime.as_ref()).unwrap())),
                             role: "system".into(),
@@ -946,6 +949,7 @@ impl Worker {
                     store,
                     code_mod,
                     Message {
+                        source: Some(source.clone()),
                         task: crate::task_worktree::task_id(&source).ok(),
                         item_id: Some(format!("result:{source}")),
                         role: format!("{}:{}", self.provider, self.id),
@@ -1001,6 +1005,7 @@ impl Worker {
                                 .find(|message| message.item_id.as_deref() == Some(id))
                                 .cloned()
                                 .unwrap_or(Message {
+                                    source: None,
                                     task: None,
                                     item_id: Some(id.into()),
                                     role: format!("{}:{}", self.provider, self.id),
@@ -1035,7 +1040,9 @@ impl Worker {
                             if params["turn"]["status"] == "completed" {
                                 self.complete_task(store, code_mod)?;
                             } else {
-                                self.block_task(store,code_mod,"paused","Task interrupted. Ctrl+R retries it from the current working files.".into())?;
+                                let error = params["turn"]["error"]["message"].as_str()
+                                    .unwrap_or("Task interrupted. Ctrl+R retries it from the current working files.");
+                                self.block_task(store, code_mod, "paused", error.into())?;
                             }
                         }
                         if params["turn"]["status"] != "completed" {
@@ -1044,7 +1051,7 @@ impl Worker {
                                 self.error = Some(
                                     params["turn"]["error"]["message"]
                                         .as_str()
-                                        .unwrap_or("Codex could not finish this turn.")
+                                        .unwrap_or("The worker could not finish this turn.")
                                         .into(),
                                 );
                             }
@@ -1100,6 +1107,7 @@ impl Worker {
             store,
             code_mod,
             Message {
+                source: None,
                 task: None,
                 item_id: Some(input.source.clone()),
                 role: "user".into(),
@@ -1113,6 +1121,7 @@ impl Worker {
                 store,
                 code_mod,
                 Message {
+                    source: None,
                     task: None,
                     item_id: Some(format!("delivered:{}:{}", input.source, self.id)),
                     role: "harness".into(),
@@ -1225,6 +1234,11 @@ impl Worker {
             store,
             code_mod,
             Message {
+                source: if historical {
+                    None
+                } else {
+                    self.task_source.clone()
+                },
                 task: if historical { None } else { self.task_run_id() },
                 item_id: Some(id.into()),
                 role: if role == "codex" {
@@ -1287,6 +1301,7 @@ impl Worker {
                 store,
                 code_mod,
                 Message {
+                    source: None,
                     task: None,
                     item_id: Some(format!("review:{source}")),
                     role: "reviewer".into(),
@@ -1467,7 +1482,12 @@ impl Worker {
         let report = self
             .task_report
             .as_deref()
-            .ok_or_else(|| format!("{} returned no task report.", self.provider))
+            .ok_or_else(|| {
+                format!(
+                    "{} stopped without a verification report. Retry to continue from saved work.",
+                    self.provider
+                )
+            })
             .and_then(|text| Report::parse(text, task));
         match report {
             Ok(report) if report.status == "completed" => {
@@ -1483,6 +1503,7 @@ impl Worker {
                             store,
                             code_mod,
                             Message {
+                                source: None,
                                 task: crate::task_worktree::task_id(&source).ok(),
                                 item_id: Some(format!("repair:{source}")),
                                 role: "harness".into(),
@@ -1581,7 +1602,12 @@ impl Worker {
                 store,
                 code_mod,
                 "paused",
-                "Task was interrupted. Ctrl+R retries it from the saved working files.".into(),
+                turn["error"]["message"]
+                    .as_str()
+                    .unwrap_or(
+                        "Task was interrupted. Ctrl+R retries it from the saved working files.",
+                    )
+                    .into(),
             )?;
             if turn["status"] == "inProgress" {
                 self.turn = turn["id"].as_str().map(str::to_owned);
@@ -1662,6 +1688,7 @@ fn remember_message(code_mod: &mut CodeMod, mut message: Message) {
         .find(|existing| existing.item_id == message.item_id)
     {
         message.task = existing.task.or(message.task);
+        message.source = existing.source.clone().or(message.source);
         if message.model.is_none() {
             message.model.clone_from(&existing.model);
         }
@@ -2871,6 +2898,62 @@ mod tests {
     }
 
     #[test]
+    fn muse_response_limit_preserves_the_reason_and_never_verifies_an_old_report() {
+        for historical in [false, true] {
+            let (_data, mut store, mut m, mut worker, report) = reported_task();
+            worker.provider = "muse".into();
+            let (client, actions) = Client::recording();
+            worker.client = Some(client);
+            let error = "Muse reached its response limit before finishing the task report. Retry to continue from saved work.";
+            let turn = json!({"id":"task-turn","status":"failed","error":{"message":error},
+                "items":[{"type":"userMessage","clientId":worker.task_source.clone().unwrap()},report_item(&report)]});
+            if historical {
+                worker
+                    .recover_task(&mut store, &mut m, &json!({"turns":[turn]}))
+                    .unwrap();
+            } else {
+                worker
+                    .item(&store, &mut m, &report_item(&report), false)
+                    .unwrap();
+                worker
+                    .receive(
+                        Event::Notification(
+                            json!({"method":"turn/completed","params":{"turn":turn}}),
+                        ),
+                        &mut store,
+                        &mut m,
+                    )
+                    .unwrap();
+            }
+            let run = &m.execution.as_ref().unwrap().tasks[0];
+            assert_eq!(run.status, "paused");
+            assert_eq!(run.summary, error);
+            assert_eq!(worker.error.as_deref(), Some(error));
+            assert!(!worker.enabled);
+            assert!(actions.try_recv().is_err());
+        }
+    }
+
+    #[test]
+    fn worker_updates_keep_their_attempt_when_history_is_replayed() {
+        let (_data, store, mut m, mut worker, _) = reported_task();
+        let source = worker.task_source.clone().unwrap();
+        let item = json!({"id":"comment","type":"agentMessage","phase":"commentary","text":"Checking the repair"});
+        worker.item(&store, &mut m, &item, false).unwrap();
+        worker.task_source = Some("another-attempt".into());
+        worker.item(&store, &mut m, &item, true).unwrap();
+        assert!(m.messages.last().unwrap().belongs_to_attempt(&source));
+        let saved = store.load_project(Path::new("/planner-project")).unwrap();
+        assert!(
+            saved
+                .mods
+                .iter()
+                .flat_map(|m| &m.messages)
+                .any(|m| m.belongs_to_attempt(&source))
+        );
+    }
+
+    #[test]
     fn multiple_commands_per_check_are_verified_and_partial_results_stay_incomplete() {
         for provider in ["codex", "muse"] {
             for case in ["pass", "extra fails", "interrupted"] {
@@ -4050,6 +4133,7 @@ mod tests {
             &store,
             &mut code_mod,
             Message {
+                source: None,
                 task: None,
                 item_id: Some("model-only".into()),
                 role: "codex".into(),

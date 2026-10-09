@@ -437,6 +437,7 @@ impl Store {
         tx.execute("INSERT INTO worker_messages(mod_id,recipient_task,from_task,to_task,kind,body,reply_to,request_key)
             VALUES (?1,?2,'user',?3,'reply',?4,?5,?6)", params![mod_id,task,to,body,id,format!("user:{id}")])?;
         let reply = Message {
+            source: None,
             task: Some(task),
             item_id: Some(format!("answer:{id}")),
             role: "user".into(),

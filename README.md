@@ -70,6 +70,8 @@ Muse resumes its native task conversation while the VM disk remains. A dropped c
 
 Muse sends large messages in acknowledged chunks so the VM's output buffer cannot drop them. Failures show the provider's redacted rejection or the guest/transport cause. Permanent request rejections stop automatic retries. A confirmed context limit can rebuild the conversation from saved work on a safe retry; uncertain delivery stays paused.
 
+Muse has a bounded response allowance for reasoning and its verification report. Exhaustion shows a specific retryable failure, including after reconnect. Task updates belong to the current attempt; earlier completions stay in history. In the split timeline, the inspector holds task evidence so it is not repeated in expanded rows.
+
 Late handoff acknowledgements keep the worker's valid task report. New blockers take precedence, and user steering requires a fresh report. Each planned check can have several commands. Rust requires every declared check and reruns every command against current files before accepting completion.
 
 Publishing keeps the VM and worktree for further edits. Task environments stay through checks, review and repairs; a new plan removes the old task folders. Missing check executables return to their original worker for one bounded recovery attempt. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.

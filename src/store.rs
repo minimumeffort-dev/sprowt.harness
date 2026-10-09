@@ -45,12 +45,22 @@ impl CodeMod {
 
 #[derive(Clone)]
 pub struct Message {
+    pub source: Option<String>,
     pub task: Option<i64>,
     pub item_id: Option<String>,
     pub role: String,
     pub body: String,
     pub model: Option<String>,
     pub effort: Option<String>,
+}
+
+impl Message {
+    pub fn belongs_to_attempt(&self, source: &str) -> bool {
+        self.source
+            .as_deref()
+            .or_else(|| self.item_id.as_deref()?.strip_prefix("result:"))
+            == Some(source)
+    }
 }
 
 pub struct WorkerRecord {
@@ -164,6 +174,10 @@ impl Store {
             (
                 "task_run_id",
                 "ALTER TABLE messages ADD COLUMN task_run_id INTEGER",
+            ),
+            (
+                "task_source",
+                "ALTER TABLE messages ADD COLUMN task_source TEXT",
             ),
         ] {
             if !columns.iter().any(|column| column == name) {
@@ -386,11 +400,12 @@ impl Store {
             code_mod.git_root = self.git_root(code_mod.id)?;
             code_mod.coordination = self.mailbox(code_mod.id)?;
             let mut statement = self.0.prepare(
-                "SELECT item_id, role, body, model, effort, task_run_id FROM messages WHERE mod_id = ?1 ORDER BY id",
+                "SELECT item_id, role, body, model, effort, task_run_id, task_source FROM messages WHERE mod_id = ?1 ORDER BY id",
             )?;
             code_mod.messages = statement
                 .query_map([code_mod.id], |row| {
                     Ok(Message {
+                        source: row.get(6)?,
                         task: row.get(5)?,
                         item_id: row.get(0)?,
                         role: row.get(1)?,
@@ -460,6 +475,7 @@ impl Store {
             params![id, project_id],
         )?;
         let message = Message {
+            source: None,
             task: None,
             item_id: Some(format!("description:{id}")),
             role: "user".into(),
@@ -1234,6 +1250,7 @@ impl Store {
             return Err(rusqlite::Error::QueryReturnedNoRows);
         }
         let message = Message {
+            source: None,
             task: None,
             item_id: Some(format!("plan:{source}")),
             role: "planner".into(),
@@ -1247,7 +1264,7 @@ impl Store {
     }
 
     pub fn save_message(&self, mod_id: i64, message: &Message) -> Result<()> {
-        self.0.execute("INSERT INTO messages(mod_id,item_id,role,body,model,effort,task_run_id) VALUES (?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body,model=COALESCE(excluded.model,messages.model),effort=COALESCE(excluded.effort,messages.effort),task_run_id=COALESCE(messages.task_run_id,excluded.task_run_id)", params![mod_id,message.item_id,message.role,message.body,message.model,message.effort,message.task])?;
+        self.0.execute("INSERT INTO messages(mod_id,item_id,role,body,model,effort,task_run_id,task_source) VALUES (?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(mod_id,item_id) DO UPDATE SET body=excluded.body,model=COALESCE(excluded.model,messages.model),effort=COALESCE(excluded.effort,messages.effort),task_run_id=COALESCE(messages.task_run_id,excluded.task_run_id),task_source=COALESCE(messages.task_source,excluded.task_source)", params![mod_id,message.item_id,message.role,message.body,message.model,message.effort,message.task,message.source])?;
         Ok(())
     }
 
@@ -2615,6 +2632,7 @@ mod tests {
                 .save_message(
                     a.id,
                     &Message {
+                        source: None,
                         task: None,
                         item_id: Some("agent-1".into()),
                         role: "codex".into(),

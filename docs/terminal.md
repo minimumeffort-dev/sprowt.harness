@@ -101,7 +101,9 @@ Working · 1/3 tasks finished
 Add an instruction…
 ```
 
-Selection updates the inspector immediately. It uses the same task evidence, check results and review findings as the full Details view. Task narration starts collapsed in the split timeline; Space expands it. Previous failures and outdated reviews stay labelled as saved evidence.
+Selection updates the inspector immediately. It uses the same task evidence, check results and review findings as the full Details view. Task rows start collapsed in the split timeline; Space reveals the worker identity, while the inspector holds updates and evidence. Narrow terminals expand that evidence inline. Previous failures and outdated reviews stay labelled as saved evidence.
+
+**Latest update** belongs to the current task attempt. Retrying or repairing a task clears earlier narration from this view; earlier results remain in task Activity. Older saved messages without an identifiable attempt appear only in history. A previous completion cannot appear as progress on a new repair. **Previous failure** rows appear only with saved check or review evidence, and selection shows that evidence separately from the current repair.
 
 - **Tab / Shift+Tab** cycle between message, timeline and inspector. A **▸** heading marks the focused pane; the dock border highlights when the composer is focused.
 - **Enter** or **→** from the timeline focuses the inspector. **←** returns to the timeline. **Esc** returns directly to the draft. Enter in the inspector opens the full view when available; it never executes a workflow action.

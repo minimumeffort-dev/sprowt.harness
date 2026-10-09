@@ -2,6 +2,8 @@
 
 One SQLite database stores harness state for all projects. Git projects use their canonical repository root; other folders use their canonical path. Each mod’s data stays scoped to that project.
 
+Worker updates record their task and attempt. Retries retain the full history, but current progress only uses matching updates. Existing completion records identify their attempt through their saved result ID; older unlinked narration remains in Activity.
+
 ```mermaid
 flowchart TB
     database[("SQLite · state.db")] --> project["Project · folder path and selected mod"]

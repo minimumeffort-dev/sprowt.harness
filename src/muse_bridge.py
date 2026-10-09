@@ -18,6 +18,8 @@ import urllib.request
 from muse_transport import (BridgeFailure, Broker, CHECKSUM, MODEL, VERSION, FrameReader, Rpc, RpcError,
                             command_id, failure, guest, host_login, private_json, read_account, settings)
 
+OUTPUT_TOKENS = 32768
+
 
 def artifact(cache):
     cache.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -296,14 +298,28 @@ def final_report(text):
         return False
 
 
-def normalize(message):
+def turn_result(turn, status, finish_reason=None):
+    result = {"id": turn, "status": status}
+    if finish_reason is not None:
+        result["finishReason"] = finish_reason
+    # Muse can mark a turn completed after exhausting output on reasoning alone.
+    if status == "completed" and finish_reason == "length":
+        result.update(status="failed", error={"message":
+            "Muse reached its response limit before finishing the task report. Retry to continue from saved work."})
+    return result
+
+
+def normalize(message, finishes=None):
     method, params = message.get("method"), message.get("params", {})
+    if method == "session/tokenUsage" and finishes is not None and params.get("turnId"):
+        finishes[params["turnId"]] = params.get("finishReason")
     if method == "item/completed" and params.get("item", {}).get("kind") == "agentMessage":
         item = params["item"]
         return {"method": method, "params": {"item": {"type": "agentMessage", "id": item.get("itemId", item.get("id")),
             "text": item.get("text", ""), "phase": "final_answer" if item.get("phase") in {"final", "final_answer"} or final_report(item.get("text", "")) else "commentary"}}}
     if method == "turn/completed":
-        return {"method": method, "params": {"turn": {"id": params["turnId"], "status": params["terminal"]}}}
+        return {"method": method, "params": {"turn": turn_result(
+            params["turnId"], params["terminal"], (finishes or {}).get(params["turnId"]))}}
     return None
 
 
@@ -375,7 +391,7 @@ def recovered_thread(rpc, state, result):
     if session["sessionId"] != state.value["sessionId"] or session["workspaceRoot"] != state.value["cwd"]:
         raise BridgeFailure("Muse recovery returned a different session or task folder.")
     sources = {v["id"]: source for source, v in state.value["commands"].items()}
-    turns, items, cursor, size = {}, {}, None, 0
+    turns, items, finishes, cursor, size = {}, {}, {}, None, 0
 
     def fold(item):
         if item.get("kind") not in {"userMessage", "agentMessage"} or not item.get("turnId"):
@@ -399,6 +415,8 @@ def recovered_thread(rpc, state, result):
                 fold(params["item"])
             elif event["method"] == "turn/completed":
                 turns[params["turnId"]] = params["terminal"]
+            elif event["method"] == "session/tokenUsage" and params.get("turnId"):
+                finishes[params["turnId"]] = params.get("finishReason")
         next_cursor = page["nextCursor"]
         if next_cursor is None:
             break
@@ -438,13 +456,13 @@ def recovered_thread(rpc, state, result):
     # Every native submission is journaled first. Absence proves it was never sent
     # only for this resumed session, not for a replacement session or missing log.
     return {"id": session["sessionId"], "dispatchJournal": list(state.value["commands"]), "turns": [
-        {"id": turn, "status": turns.get(turn, "unknown"), "items": values}
+        {**turn_result(turn, turns.get(turn, "unknown"), finishes.get(turn)), "items": values}
         for turn, values in grouped.items()]}
 
 
 def connect(config, tools, state, headers, root, emit, allow_new):
     state.recover(allow_new)
-    broker = Broker(headers, requests=128, lifetime=3600, output_tokens=8192)
+    broker = Broker(headers, requests=128, lifetime=3600, output_tokens=OUTPUT_TOKENS)
     rpc = None
     try:
         guest_files = root / "guest"
@@ -507,6 +525,7 @@ def host():
 
     threading.Thread(target=receive, daemon=True).start()
     rpc, state, root = None, None, tempfile.TemporaryDirectory(prefix="sprowt-muse-auth-")
+    finishes = {}
     stage = "account login"
     try:
         headers = host_login(Path(root.name), quiet=True)
@@ -531,10 +550,13 @@ def host():
                     if method in {"session/resume", "turn/start"}:
                         if rpc:
                             rpc.close()
+                        finishes.clear()
                         config = params["config"]
                         state = SessionState(params["state"], config)
                         rpc, thread = connect(config, params["tools"], state, headers, Path(root.name), emit,
                                               params.get("allowNew", False))
+                        finishes.update((turn["id"], turn["finishReason"]) for turn in thread["turns"]
+                                        if "finishReason" in turn)
                         session = thread["id"]
                         if method == "session/resume":
                             result = {"thread": thread}
@@ -588,7 +610,7 @@ def host():
                 for value in messages:
                     if rpc is None:
                         break
-                    translated = normalize(value)
+                    translated = normalize(value, finishes)
                     if translated:
                         if translated["method"] == "turn/completed":
                             rpc.close()

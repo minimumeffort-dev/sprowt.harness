@@ -308,7 +308,7 @@ impl App {
             if !dependencies.is_empty() && task.note.is_empty() {
                 item.detail.push(dependency);
             }
-            if let Some(error) = task.error {
+            if let Some(error) = task.error.filter(|error| *error != task.note) {
                 item.detail.push(error.into());
             }
             if let Some(check) = task
@@ -338,22 +338,23 @@ impl App {
                 _ => None,
             };
             if repairing {
-                let mut failure = Item::new(
-                    Key::Failure(run.id),
-                    format!("Task {} · previous failure", task.number),
-                    Previous,
-                );
-                failure.branch = true;
-                failure.inspect = Some(View::Task(run.id, 0));
-                failure.detail.push(
-                    run.verification_feedback
-                        .iter()
-                        .find(|c| c.failed())
-                        .map(|c| c.brief())
-                        .or_else(|| run.review_feedback.clone())
-                        .unwrap_or_else(|| run.summary.clone()),
-                );
-                repairs.push(failure);
+                if let Some(evidence) = run
+                    .verification_feedback
+                    .iter()
+                    .find(|c| c.failed())
+                    .map(|c| c.brief())
+                    .or_else(|| run.review_feedback.clone())
+                    .filter(|text| !text.trim().is_empty())
+                {
+                    let mut failure = Item::new(
+                        Key::Failure(run.id),
+                        format!("Task {} · previous failure", task.number),
+                        Previous,
+                    );
+                    failure.branch = true;
+                    failure.detail.push(evidence);
+                    repairs.push(failure);
+                }
                 repairs.push(item);
             } else if show_tasks || matches!(state, Active | Attention) {
                 items.push(item);

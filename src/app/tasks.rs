@@ -173,6 +173,7 @@ impl App {
             });
         let latest = m.messages.iter().rev().find(|message| {
             message.task == Some(id)
+                && message.belongs_to_attempt(&run.source)
                 && (message.role.starts_with("codex:") || message.role.starts_with("muse:"))
         });
         let provider = run.provider.as_deref().unwrap_or(&task.worker);

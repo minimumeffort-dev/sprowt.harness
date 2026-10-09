@@ -195,7 +195,13 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
             } else {
                 "│ "
             };
-            for text in &item.detail {
+            // The side pane owns task evidence; expanded rows only identify the worker.
+            let limit = if split && matches!(item.key, Key::Task(_) | Key::Repair(_)) {
+                1
+            } else {
+                usize::MAX
+            };
+            for text in item.detail.iter().take(limit) {
                 if text.trim().is_empty() {
                     continue;
                 }
