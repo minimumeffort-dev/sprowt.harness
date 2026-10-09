@@ -13,7 +13,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
 - [Planning and routing](docs/planning.md): describe the outcome. Astra xhigh defines tasks and contracts. Rust balances Codex and Muse; Jev chooses Sol 6.1 effort.
 - [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
-- [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders, independent checks, one recovery attempt and repair handoffs.
+- [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders, independent checks, bounded recovery and an explicit action to fix failed combined checks.
 - [Independent review](docs/review.md): after combined checks pass, a fresh Sol 6.1 xhigh reviewer automatically inspects the result, shows findings for your approval, then returns defects to their owners and reviews verified fixes.
 - [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Workers choose runtimes and dependencies, request OS packages and ask you to approve blocked download domains.
@@ -46,7 +46,7 @@ flowchart TB
     first --> combine["Combine one result at a time · verify together"]
     second --> combine
     combine -->|"Checks pass"| reviewer["Automatic review · Sol 6.1 xhigh"]
-    combine -->|"Regression found"| repair["Reopen responsible task · rerun affected checks"]
+    combine -->|"Checks fail · you choose Fix failed check"| repair["Reopen responsible task · rerun checks"]
     repair --> schedule
     ready --> edits["Send edits · plan the next round"]
     edits --> planner

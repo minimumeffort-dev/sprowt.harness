@@ -31,6 +31,7 @@ pub struct TaskRun {
     pub summary: String,
     pub checks: Vec<CheckResult>,
     pub verification_feedback: Vec<CheckResult>,
+    pub check_repair: bool,
     pub review_feedback: Option<String>,
 }
 
@@ -156,6 +157,21 @@ impl Execution {
 
     pub fn needs_final_checks(&self) -> bool {
         self.complete() && matches!(self.status.as_str(), "pending" | "ready" | "running")
+    }
+
+    pub fn failed_check_owner(&self) -> Option<&TaskRun> {
+        if self.status != "blocked" || !self.complete() {
+            return None;
+        }
+        let failure = self.checks.iter().find(|check| check.failed())?;
+        self.tasks.iter().find(|run| {
+            Some(run.id) == failure.task
+                && run.worker.is_some()
+                && run
+                    .checks
+                    .iter()
+                    .any(|check| check.check == failure.check && check.command == failure.command)
+        })
     }
 
     pub fn check_count(&self, plan: &Plan) -> usize {

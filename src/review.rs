@@ -337,7 +337,7 @@ impl Store {
                 tx.query_row("SELECT attempt FROM task_runs WHERE id=?1", [run.id], |r| {
                     r.get(0)
                 })?;
-            tx.execute("UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,checks='[]',repair=NULL,verification_feedback='[]',review_feedback=?4 WHERE id=?1 AND status='done'", params![run.id,attempt+1,crate::store::task_source(run.id,attempt+1),feedback])?;
+            tx.execute("UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,checks='[]',repair=NULL,verification_feedback='[]',check_repair=0,review_feedback=?4 WHERE id=?1 AND status='done'", params![run.id,attempt+1,crate::store::task_source(run.id,attempt+1),feedback])?;
             tx.execute("UPDATE workers SET pending=NULL WHERE id=?1", [run.worker])?;
         }
         tx.execute(

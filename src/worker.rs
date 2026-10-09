@@ -457,6 +457,7 @@ impl Worker {
         state["repair"] = serde_json::json!(run.repair);
         state["review_fix"] = serde_json::json!(run.review_feedback.is_some());
         state["runtime_recovery"] = serde_json::json!(run.restoring_runtime());
+        state["check_repair"] = serde_json::json!(run.check_repair);
         state["merge_conflict"] = serde_json::json!(run.conflict);
         Some(state)
     }
@@ -3349,6 +3350,56 @@ mod tests {
         assert!(execution.complete());
         assert!(!worker.enabled && worker.status == Status::Ready);
         assert_eq!(worker.error, error);
+    }
+
+    #[test]
+    fn requested_check_repair_reaches_both_provider_contexts() {
+        for provider in ["codex", "muse"] {
+            let (_data, mut store, mut m, worker) = executor();
+            let run = &m.execution.as_ref().unwrap().tasks[0];
+            let id = run.id;
+            let source = run.source.clone();
+            let owner = store
+                .worker_provider(m.id, Role::Executor, 0, provider)
+                .unwrap();
+            store
+                .0
+                .execute(
+                    "UPDATE task_runs SET worker_id=?2 WHERE id=?1",
+                    rusqlite::params![id, owner.id],
+                )
+                .unwrap();
+            let mut check = crate::execution::CheckResult {
+                task: Some(id),
+                check: worker.verification[0].check.clone(),
+                command: worker.verification[0].command.clone(),
+                exit_code: Some(0),
+                output: String::new(),
+                missing_runtime: None,
+            };
+            store
+                .finish_task(m.id, &source, "done", "Task passed", &[check.clone()])
+                .unwrap();
+            check.exit_code = Some(1);
+            check.output = "Incorrect combined assertion".into();
+            store
+                .execution_checks(m.id, "blocked", &[check], None)
+                .unwrap();
+            assert!(store.fix_failed_check(m.id, id).unwrap());
+            m.execution = store.execution(m.id).unwrap();
+            let source = &m.execution.as_ref().unwrap().tasks[0].source;
+            let context = worker.task_context(&m, source).unwrap();
+            assert_eq!(context["check_repair"], true);
+            assert_eq!(context["runtime_recovery"], false);
+            assert_eq!(
+                context["verification_feedback"][0]["output"],
+                "Incorrect combined assertion"
+            );
+            assert_eq!(
+                m.execution.as_ref().unwrap().tasks[0].provider.as_deref(),
+                Some(provider)
+            );
+        }
     }
 
     #[test]

@@ -84,6 +84,8 @@ Muse recovery files are private, written atomically before delivery and contain 
 
 Task rows save verification feedback and a one-attempt recovery budget, shared with missing-runtime recovery. Check results record missing executables separately from test failures. Requeueing saves the evidence, original owner, new attempt identity and budget atomically. Restart and explicit retry retain the budget; passing verification clears the feedback. See [Verification feedback](execution.md#verification-feedback).
 
+An explicit **Fix failed check** request also saves a repair marker on the owning task. The transaction retains its combined-check evidence, clears obsolete passing results from the task row and invalidates the verified version. Other task rows and saved check bundles stay intact. Restart retains the request; a failed requested attempt pauses, and a successful one clears the marker before fresh combined verification.
+
 Task rows also save repair evidence and affected-task context. The execution stores a separate repair-attempt count; restart and explicit retry retain it. A new plan resets both budgets. See [Automatic repairs](execution.md#automatic-repairs).
 
 The `worker_messages` table saves [coordination](coordination.md): task identities, bodies, reply links, retry keys and delivery/receipt state. New edit and integration rounds retain that history but retire its task addresses. Closing keeps messages; deleting a codemod removes them. Mailbox access goes through the host dispatcher; the database is never copied into the VM.

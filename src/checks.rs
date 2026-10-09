@@ -496,6 +496,101 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "repairs a faulty combined check with saved scripts and peer source in a disposable VM"]
+    fn requested_check_repair_preserves_combined_source_and_saved_scripts() {
+        let (_data, mut store, mut m, worker, source, root) = fixture();
+        let id = task_worktree::task_id(&source).unwrap();
+        let flag = AtomicBool::new(false);
+        let bad = "from pathlib import Path\nfor p in Path('.').rglob('*'):\n    assert 'backup' not in p.name, str(p)\n";
+        let good = "from pathlib import Path\ndef private(name):\n    return name.endswith(('.db', '.duckdb', '.wal', '-backup.json'))\nassert all(private(n) for n in ['private.db', 'private.duckdb', 'private.wal', 'private-backup.json'])\nassert not private('task-backup.mjs')\nfor p in Path('.').rglob('*'):\n    assert not private(p.name), str(p)\nassert Path('source.txt').read_text() == 'original'\nassert Path('static/task-backup.mjs').read_text() == 'export const backup = true;\\n'\n";
+        let args = |source: &str, script: &str| {
+            json!({
+                "source":source,
+                "checks":[{"check":"source is correct","command":["/usr/bin/python3",format!("{}/check.py", folder(id))]}],
+                "scripts":[{"name":"check.py","content":script}],
+            })
+        };
+        let call =
+            |vm: &mut Sandbox, m: &CodeMod, store: &Store, args: Value| -> io::Result<Value> {
+                let context = Context::worker(m, worker, Role::Executor)
+                    .with_mailbox(Path::new(store.0.path().unwrap()));
+                let output = Dispatcher::new(&context, Some(vm), &flag)
+                    .worker_call(TOOL, args, |_| {})?
+                    .message();
+                Ok(serde_json::from_str(&output)?)
+            };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.prepare_tasks(&[id, id + 1], &flag)?;
+                vm.assign_task(id, worker, &flag)?;
+                vm.install_packages(
+                    &crate::packages::Request {
+                        packages: vec!["python3".into()],
+                        reason: "Run the saved-check repair regression".into(),
+                    },
+                    &flag,
+                )?;
+                let first = call(&mut vm, &m, &store, args(&source, bad))?;
+                assert_eq!(first["passed"], true, "{first}");
+                let mut checks = Request::parse(args(&source, bad))?.checks;
+                checks[0].task = Some(id);
+                let (_, passed) = vm.verify_execution(&source, &checks, &flag)?;
+                assert_eq!(passed[0].exit_code, Some(0));
+                store
+                    .finish_task(m.id, &source, "done", "Passed", &passed)
+                    .unwrap();
+                store.pending(worker, None).unwrap();
+
+                // A peer adds a legitimate module after the owner's check passed.
+                vm.assign_task(id + 1, worker + 1, &flag)?;
+                vm.guest(&["/bin/sh", "-c", &format!("mkdir -p /tasks/{}/static; printf 'export const backup = true;\\n' > /tasks/{}/static/task-backup.mjs", id+1, id+1)], &flag)?;
+                vm.integrate_task(id + 1, &flag)?;
+                let (_, failed) = vm.verify_execution("final:test", &checks, &flag)?;
+                assert_eq!(failed[0].exit_code, Some(1));
+                assert!(failed[0].output.contains("static/task-backup.mjs"));
+                store
+                    .execution_checks(m.id, "blocked", &failed, None)
+                    .unwrap();
+                assert!(store.fix_failed_check(m.id, id).unwrap());
+                let plan = store.planning(m.id).unwrap().unwrap().plan.unwrap();
+                let input = store.task_input(m.id, worker, &plan).unwrap().unwrap();
+                m.execution = store.execution(m.id).unwrap();
+                let saved = fs::read(path(&root, id))?;
+                vm.guest(&["/bin/rm", "-rf", &folder(id)], &flag)?;
+                drop(vm);
+
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.assign_task(id, worker, &flag)?;
+                vm.refresh_for_repair(id, &input.source, &flag)?;
+                assert_eq!(fs::read(path(&root, id))?, saved);
+                assert!(vm.guest_exists(&format!("{}/check.py", folder(id)))?);
+                assert!(vm.guest_exists(&format!("/tasks/{id}/static/task-backup.mjs"))?);
+                assert_eq!(
+                    call(&mut vm, &m, &store, args(&input.source, good))?["passed"],
+                    true
+                );
+                let (_, repaired) = vm.verify_execution(&input.source, &checks, &flag)?;
+                assert_eq!(repaired[0].exit_code, Some(0));
+                store
+                    .finish_task(m.id, &input.source, "done", "Repaired", &repaired)
+                    .unwrap();
+                assert!(store.execution(m.id).unwrap().unwrap().needs_final_checks());
+                let (_, final_checks) = vm.verify_execution("final:test", &checks, &flag)?;
+                assert_eq!(final_checks[0].exit_code, Some(0));
+                assert!(root.join("work/static/task-backup.mjs").exists());
+                assert_eq!(
+                    fs::read_to_string(root.join("work/source.txt"))?,
+                    "original"
+                );
+                Ok(())
+            },
+        ));
+        crate::sandbox::delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
+
+    #[test]
     #[ignore = "reproduces /static failure and verifies saved scripts, restart, source binding and cleanup in a disposable VM"]
     fn shared_check_runner_recovers_and_survives_restart() {
         let (_data, store, code_mod, worker, source, root) = fixture();

@@ -96,6 +96,8 @@ impl Sandbox {
         source: &str,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
+        self.activate_task(id, cancelled)?;
+        self.restore_check_scripts(cancelled)?;
         if self
             .tasks
             .repair_sources
@@ -104,7 +106,6 @@ impl Sandbox {
         {
             return Ok(());
         }
-        self.activate_task(id, cancelled)?;
         if self.tasks.integrated.contains(&id) {
             self.git(Some(id), &["reset", "--hard", "integration"], cancelled)?;
         } else {

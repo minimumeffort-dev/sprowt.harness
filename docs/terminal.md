@@ -26,6 +26,7 @@ stateDiagram-v2
     Checking --> Reviewing: Combined checks pass
     Checking --> NeedsYou: Combined checks fail
     NeedsYou --> Checking: Retry final checks
+    NeedsYou --> Building: Choose Fix failed check
     Reviewing --> Ready: No findings
     Reviewing --> NeedsYou: Findings or review failure
     NeedsYou --> Building: Choose Fix issues
@@ -79,7 +80,7 @@ Close can also stop active work before saving its checkpoint. Delete requires co
 | Needs your answer | Answer in the composer |
 | Needs network access | Review the requested domains |
 | Task needs attention | Retry that task, or inspect its evidence in Details |
-| Combined checks need attention | Retry final checks |
+| Combined checks need attention | Fix failed check; rerun without edits remains in More |
 | Review issues found | Fix review issues; Details opens Review |
 | Review interrupted | Review changes |
 | Paused by you | Resume the relevant work |
@@ -103,7 +104,7 @@ The inspector has four sections. Use **1–4**, **Tab** or **Shift+Tab** to swit
 | 3 · Review | Current or outdated findings, severity, file/line, evidence, owner and proposed fix |
 | 4 · Activity | Saved worker updates, handoffs and previous results |
 
-Details opens Review when findings exist, Checks after a combined failure, and otherwise Tasks. Before a task list exists it opens Activity. Opening any section is read-only. **e** expands command evidence in Checks or task details; passing commands stay collapsed initially. Worker reports are labelled separately from controller check results.
+Details opens Review when findings exist, Checks after a combined failure, and otherwise Tasks. Before a task list exists it opens Activity. Opening any section is read-only. Checks puts failures first, summarizes skipped commands and keeps passing command output collapsed; **e** expands the evidence. In Checks, **x · Fix failed check** returns a combined failure to its original worker while preserving completed peers. The action appears only when the failure matches a saved task and command. Worker reports are labelled separately from controller check results.
 
 ### Inspect a task
 
@@ -143,7 +144,7 @@ Use the wheel or trackpad over a view to scroll it, or over the composer to scro
 | Esc | Back from a view; quit from the conversation |
 | Ctrl+C | Quit |
 
-More also supports **n** new, **c** close, **d** delete, **x** fix findings and **r** retry a failed task. These letters type normally in the composer. Close, delete and publish retain their confirmations.
+More also supports **n** new, **c** close, **d** delete, **x** fix the failed check or review findings, and **r** retry a failed task. These letters type normally in the composer. Close, delete and publish retain their confirmations.
 
 Blocked downloads show exact domains and a reason; **a** approves for this codemod and **d** denies. GitHub setup confirms the repository destination. Project sync runs on startup and every 30 seconds even without codemods; **Ctrl+U** checks immediately. Background target checks do not replace active work progress. See [Codemods](codemods.md), [Review](review.md) and [Git workflow](git-workflow.md).
 

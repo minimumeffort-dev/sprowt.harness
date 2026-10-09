@@ -437,7 +437,7 @@ pub(crate) mod tests {
             .remove(0);
         store.save_thread(owner.id, "saved-muse-session").unwrap();
         let input = store.task_input(id, owner.id, &plan).unwrap().unwrap();
-        store.0.execute_batch("ALTER TABLE task_runs DROP COLUMN assignment_reason; ALTER TABLE task_runs DROP COLUMN assignment_order; ALTER TABLE task_runs DROP COLUMN verification_feedback; ALTER TABLE task_runs DROP COLUMN verification_retries;").unwrap();
+        store.0.execute_batch("ALTER TABLE task_runs DROP COLUMN assignment_reason; ALTER TABLE task_runs DROP COLUMN assignment_order; ALTER TABLE task_runs DROP COLUMN verification_feedback; ALTER TABLE task_runs DROP COLUMN verification_retries; ALTER TABLE task_runs DROP COLUMN check_repair;").unwrap();
         drop(store);
         let mut store = data.store();
         assert!(
@@ -451,6 +451,7 @@ pub(crate) mod tests {
         assert_eq!(run.provider.as_deref(), Some("muse"));
         assert!(run.assignment_reason.is_empty());
         assert!(run.verification_feedback.is_empty());
+        assert!(!run.check_repair);
         let resumed = store
             .schedule_workers(id, &plan, &[], &[], &["codex", "muse"])
             .unwrap()
@@ -646,6 +647,178 @@ pub(crate) mod tests {
         assert!(execution.needs_final_checks());
         assert_eq!(execution.checks[0].output, saved.checks[0].output);
         assert_eq!(execution.tasks[0].source, saved.tasks[0].source);
+    }
+
+    #[test]
+    fn requested_check_repair_keeps_its_owner_peers_and_retry_budget() {
+        for provider in ["codex", "muse"] {
+            let (data, mut store, id, plan) = fixture(&[provider, provider], false);
+            let workers = store
+                .schedule_workers(id, &plan, &[], &[], &[provider])
+                .unwrap();
+            let mut checks = Vec::new();
+            for worker in &workers {
+                let input = store.task_input(id, worker.id, &plan).unwrap().unwrap();
+                let run_id = crate::task_worktree::task_id(&input.source).unwrap();
+                let check = crate::execution::CheckResult {
+                    task: Some(run_id),
+                    check: "File is correct".into(),
+                    command: vec!["/usr/bin/true".into()],
+                    exit_code: Some(0),
+                    output: "Task passed".into(),
+                    missing_runtime: None,
+                };
+                store
+                    .finish_task(
+                        id,
+                        &input.source,
+                        "done",
+                        "Saved work",
+                        std::slice::from_ref(&check),
+                    )
+                    .unwrap();
+                store.pending(worker.id, None).unwrap();
+                checks.push(check);
+            }
+            let saved = store.execution(id).unwrap().unwrap();
+            let owner = &saved.tasks[0];
+            checks[0].exit_code = Some(1);
+            checks[0].output = "AssertionError: static/task-backup.mjs".into();
+            checks[1].exit_code = None;
+            checks[1].output = "Not run.".into();
+            store
+                .execution_checks(id, "blocked", &checks, None)
+                .unwrap();
+            assert!(!store.fix_failed_check(id, saved.tasks[1].id).unwrap());
+            assert!(store.fix_failed_check(id, owner.id).unwrap());
+            assert!(!store.fix_failed_check(id, owner.id).unwrap());
+            drop(store);
+            let mut store = data.store();
+            let execution = store.execution(id).unwrap().unwrap();
+            let repair = &execution.tasks[0];
+            assert!(repair.check_repair && repair.checks.is_empty());
+            assert_eq!(repair.worker, owner.worker);
+            assert_eq!(repair.provider, owner.provider);
+            assert_ne!(repair.source, owner.source);
+            assert_eq!(repair.verification_feedback.len(), 1);
+            assert_eq!(repair.verification_feedback[0].output, checks[0].output);
+            let peer = &execution.tasks[1];
+            assert_eq!(peer.status, "done");
+            assert_eq!(peer.source, saved.tasks[1].source);
+            assert_eq!(peer.worker, saved.tasks[1].worker);
+            assert_eq!(peer.summary, "Saved work");
+            assert_eq!(peer.checks[0].exit_code, Some(0));
+            assert!(execution.checks.is_empty() && execution.fingerprint.is_none());
+            assert!(!execution.needs_final_checks());
+            let selected = store
+                .schedule_workers(id, &plan, &[], &[], &[provider])
+                .unwrap();
+            assert_eq!(selected.len(), 1);
+            assert_eq!(Some(selected[0].id), owner.worker);
+            let input = store
+                .task_input(id, selected[0].id, &plan)
+                .unwrap()
+                .unwrap();
+            assert!(input.texts[0].contains("The user chose Fix failed check"));
+            assert!(input.texts[0].contains("AssertionError: static/task-backup.mjs"));
+            assert!(input.texts[0].contains("every declared check's intent and coverage"));
+            // A failed requested attempt pauses even with automatic recovery still available.
+            store
+                .finish_task(id, &repair.source, "blocked", "Still failing", &checks[..1])
+                .unwrap();
+            assert!(
+                !store
+                    .recover_verification(id, &repair.source, selected[0].id)
+                    .unwrap()
+            );
+            store
+                .0
+                .execute(
+                    "UPDATE task_runs SET verification_retries=1 WHERE id=?1",
+                    [owner.id],
+                )
+                .unwrap();
+            assert!(store.retry_task(id, owner.id).unwrap());
+            let retried = store.execution(id).unwrap().unwrap().tasks.remove(0);
+            assert!(retried.check_repair);
+            let budget: i64 = store
+                .0
+                .query_row(
+                    "SELECT verification_retries FROM task_runs WHERE id=?1",
+                    [owner.id],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(budget, 1);
+            store
+                .finish_task(id, &retried.source, "done", "Repaired", &owner.checks)
+                .unwrap();
+            let execution = store.execution(id).unwrap().unwrap();
+            assert!(!execution.tasks[0].check_repair);
+            assert!(execution.needs_final_checks());
+            assert_ne!(execution.status, "review");
+        }
+    }
+
+    #[test]
+    fn check_repair_requires_a_recorded_failure_with_a_known_owner() {
+        let (_data, mut store, id, plan) = fixture(&["codex"], false);
+        let worker = store
+            .schedule_workers(id, &plan, &[], &[], &["codex"])
+            .unwrap()
+            .remove(0);
+        let input = store.task_input(id, worker.id, &plan).unwrap().unwrap();
+        let run_id = crate::task_worktree::task_id(&input.source).unwrap();
+        let check = crate::execution::CheckResult {
+            task: Some(run_id),
+            check: "File is correct".into(),
+            command: vec!["/usr/bin/true".into()],
+            exit_code: Some(0),
+            output: String::new(),
+            missing_runtime: None,
+        };
+        store
+            .finish_task(
+                id,
+                &input.source,
+                "done",
+                "Passed",
+                std::slice::from_ref(&check),
+            )
+            .unwrap();
+        for case in [
+            "unknown task",
+            "changed command",
+            "changed name",
+            "passed",
+            "skipped",
+            "running",
+        ] {
+            let mut failure = check.clone();
+            failure.exit_code = Some(1);
+            match case {
+                "unknown task" => failure.task = None,
+                "changed command" => failure.command = vec!["/bin/false".into()],
+                "changed name" => failure.check = "Unrecorded check".into(),
+                "passed" => failure.exit_code = Some(0),
+                "skipped" => failure.exit_code = None,
+                _ => {}
+            }
+            store
+                .execution_checks(
+                    id,
+                    if case == "running" {
+                        "verifying"
+                    } else {
+                        "blocked"
+                    },
+                    &[failure],
+                    None,
+                )
+                .unwrap();
+            assert!(!store.fix_failed_check(id, run_id).unwrap(), "{case}");
+            assert!(store.execution(id).unwrap().unwrap().complete());
+        }
     }
 
     #[test]

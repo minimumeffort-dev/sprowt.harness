@@ -21,6 +21,45 @@ pub struct TaskInspection<'a> {
 }
 
 impl App {
+    pub fn failed_check_owner(&self) -> Option<i64> {
+        let m = self.current_mod()?;
+        if m.closed || self.execution_busy() {
+            return None;
+        }
+        let run = m.execution.as_ref()?.failed_check_owner()?;
+        (!self
+            .network_requests
+            .iter()
+            .any(|r| r.task == run.id && r.status == "pending"))
+        .then_some(run.id)
+    }
+
+    pub(super) fn fix_failed_check(&mut self, id: i64) -> rusqlite::Result<()> {
+        if self.failed_check_owner() != Some(id) {
+            return Ok(());
+        }
+        let index = self.active.unwrap();
+        let mod_id = self.mods[index].id;
+        let owner = self.mods[index]
+            .execution
+            .as_ref()
+            .unwrap()
+            .failed_check_owner()
+            .unwrap()
+            .worker;
+        if self.store.fix_failed_check(mod_id, id)? {
+            self.set_paused(index, false)?;
+            if let Some(owner) = owner {
+                self.workers.remove(&owner);
+            }
+            self.mods[index].execution = self.store.execution(mod_id)?;
+            self.executing_mods.insert(mod_id);
+            self.notice = None;
+            self.view = View::Checks(0);
+        }
+        Ok(())
+    }
+
     pub fn can_retry_task(&self, id: i64) -> bool {
         self.current_mod().is_some_and(|m| {
             !m.closed
@@ -196,6 +235,8 @@ impl App {
                     "Resolving conflicts",
                     conflict.progress(run.conflict_retries),
                 )
+            } else if run.check_repair {
+                ("Fixing failed check", String::new())
             } else if run.restoring_runtime() {
                 (
                     "Restoring environment",
@@ -285,7 +326,7 @@ impl App {
                 self.task_ids().into_iter().find(|id| {
                     self.inspect_task(*id).is_some_and(|task| {
                         task.error.is_some()
-                            || task.checks.iter().any(|check| check.failed())
+                            || task.run.checks.iter().any(|check| check.failed())
                             || matches!(
                                 task.run.status.as_str(),
                                 "paused" | "blocked" | "repair_paused"

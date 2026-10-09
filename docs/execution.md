@@ -87,7 +87,22 @@ After all tasks finish, the harness updates each task folder to the combined sou
 
 Each active task has a spinner and worker ID through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide workers; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.
 
-Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Final verification stops at the first failure and leaves active scheduling: details retain that command and its evidence, with skipped commands summarized in muted text. Polling and reopening cannot restart a failed pass. **Retry final checks** explicitly starts another pass, keeping completed tasks and their source. A missing executable can first use the single runtime-recovery attempt below. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
+Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Final verification stops at the first failure and leaves active scheduling. Checks shows failures first and summarizes skipped commands; **e** expands all evidence. Polling and reopening cannot restart a failed pass. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
+
+**Fix failed check** returns a recorded combined failure to its original worker. The task receives the latest combined source, saved check scripts, command and failure output. It can correct source within its original scope or a faulty check while preserving the declared requirements and coverage. Completed peers keep their work, checks and owners. The requested attempt pauses if it fails; it does not reset the automatic recovery budget. Success must pass task verification and a fresh run of every combined check before review or publication. An outdated review stays available as history.
+
+```mermaid
+flowchart TB
+    failed["Combined check fails"] --> choose["You choose Fix failed check"]
+    choose --> owner["Original worker · correct source or check"]
+    owner --> task["Rerun task checks"]
+    task -->|"Pass"| combined["Rerun all combined checks"]
+    task -->|"Fail"| pause["Pause · retain work and evidence"]
+    combined -->|"Pass"| review["Independent review"]
+    combined -->|"Fail"| failed
+```
+
+**Retry final checks** reruns the saved commands without asking a worker to change them. It remains available in More, and is the fallback when a failure has no matching recorded owner. A missing executable can first use the single runtime-recovery attempt below.
 
 Combined checks passing automatically starts independent review. Current clean reviews recommend publication. **Ctrl+T** opens [Details](terminal.md#details): tasks, check evidence, review findings and activity. Select a task to inspect its failure and retry only that task. Questions for you stay visible in the conversation.
 
@@ -126,7 +141,7 @@ Recovery keeps the task, worker, folder and file scope. The worker receives the 
 
 Browser checks must wait for the matching successful response and resulting UI state before reading saved data. Register the response wait before triggering the action. Exercise races with controlled request completion, rather than sleeps.
 
-The one-attempt budget saves with each task. Restart and explicit retry retain it; a new plan resets it. Stops, timeouts and mismatched reports do not trigger recovery. Access requests still need approval. Ordinary failed final checks wait for **Ctrl+R**. Existing blocked tasks receive their saved failure evidence on retry.
+The one-attempt budget saves with each task. Restart and explicit retry retain it; a new plan resets it. Stops, timeouts and mismatched reports do not trigger recovery. Access requests still need approval. Ordinary failed final checks wait for **Fix failed check** or an explicit rerun. Existing blocked tasks receive their saved failure evidence on retry.
 
 ### Missing task environments
 

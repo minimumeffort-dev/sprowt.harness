@@ -275,6 +275,7 @@ fn serve_connection(
                             !state["repair"].is_null()
                                 || state["review_fix"] == true
                                 || state["runtime_recovery"] == true
+                                || state["check_repair"] == true
                         }) {
                             vm.refresh_for_repair(id, &source, cancelled)?;
                         }

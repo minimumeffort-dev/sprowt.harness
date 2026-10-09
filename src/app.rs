@@ -355,7 +355,7 @@ impl App {
                     self.perform_action(Action::Update)?;
                     return Ok(());
                 }
-                if self.inspector_key(key) {
+                if self.inspector_key(key)? {
                     return Ok(());
                 }
                 match self.view {
@@ -3134,6 +3134,88 @@ mod tests {
         assert!(app.action_dock().primary == Some(Action::Retry));
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert!(app.workers.is_empty());
+    }
+
+    #[test]
+    fn failed_check_action_is_visible_and_preserves_draft_and_queue() {
+        for from_menu in [false, true] {
+            let (data, mut app, _) = execution_app();
+            let mod_id = app.mods[0].id;
+            let worker = app
+                .store
+                .worker_provider(mod_id, Role::Executor, 0, "codex")
+                .unwrap();
+            let task_id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
+            app.store
+                .0
+                .execute(
+                    "UPDATE task_runs SET worker_id=?2 WHERE id=?1",
+                    rusqlite::params![task_id, worker.id],
+                )
+                .unwrap();
+            let mut checks = app.mods[0].execution.as_ref().unwrap().checks.clone();
+            checks[0].task = Some(task_id);
+            checks[0].exit_code = Some(1);
+            checks[0].output = "AssertionError: static/task-backup.mjs".into();
+            let mut skipped = checks[0].clone();
+            skipped.check = "Later browser flows".into();
+            skipped.exit_code = None;
+            skipped.output = "Not run.".into();
+            checks.extend(vec![skipped; 22]);
+            app.store
+                .execution_checks(mod_id, "blocked", &checks, None)
+                .unwrap();
+            app.store.enqueue(mod_id, "Keep this queued edit").unwrap();
+            app.store.save_draft(mod_id, "keep this draft").unwrap();
+            let project = app.project.clone();
+            drop(app);
+            let mut app = App::load(project, false, data.store()).unwrap();
+            assert_eq!(app.action_dock().primary, Some(Action::FixCheck(task_id)));
+            key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+            assert!(app.view == View::Checks(0));
+            let text = rows(&screen(&mut app, 100, 40))
+                .join("\n")
+                .replace('\u{a0}', " ");
+            assert!(text.contains("AssertionError: static/task-backup.mjs"));
+            assert!(text.contains("22 commands not run"));
+            assert!(!text.contains("Later browser flows"));
+            assert!(text.contains("x Fix failed check"), "{text}");
+            key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+            assert!(
+                rows(&screen(&mut app, 100, 40))
+                    .join("\n")
+                    .contains("Later browser flows")
+            );
+            key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+            if from_menu {
+                key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+                key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+                assert!(app.view == View::Actions(Action::FixCheck(task_id)));
+            }
+            key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+            assert!(app.view == View::Checks(0));
+            assert!(app.mods[0].execution.as_ref().unwrap().tasks[0].check_repair);
+            assert_eq!(app.state_summary().status, "Working · fixing failed check");
+            assert!(
+                rows(&screen(&mut app, 100, 40))
+                    .join("\n")
+                    .contains("Previous failed checks")
+            );
+            assert_eq!(app.input.lines(), ["keep this draft"]);
+            assert_eq!(app.mods[0].queue[0].body, "Keep this queued edit");
+            assert!(app.executing_mods.contains(&mod_id));
+            assert!(app.failed_check_owner().is_none());
+            let source = app.mods[0].execution.as_ref().unwrap().tasks[0]
+                .source
+                .clone();
+            // The stale menu action cannot reopen or replace a running repair.
+            app.view = View::Actions(Action::FixCheck(task_id));
+            key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+            assert_eq!(
+                app.mods[0].execution.as_ref().unwrap().tasks[0].source,
+                source
+            );
+        }
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use super::{App, View};
+use super::{Action, App, View};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 impl View {
@@ -14,16 +14,16 @@ impl View {
 }
 
 impl App {
-    pub(super) fn inspector_key(&mut self, key: KeyEvent) -> bool {
+    pub(super) fn inspector_key(&mut self, key: KeyEvent) -> rusqlite::Result<bool> {
         let Some(tab) = self.view.details_tab() else {
-            return false;
+            return Ok(false);
         };
         if key.kind == KeyEventKind::Release {
-            return false;
+            return Ok(false);
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('t') {
             self.view = View::Chat;
-            return true;
+            return Ok(true);
         }
         let next = match key.code {
             KeyCode::Char('1'..='4') if key.modifiers.is_empty() => {
@@ -45,16 +45,24 @@ impl App {
                 View::History(0),
             ][next];
             self.history_origin = None;
-            return true;
+            return Ok(true);
         }
         if key.code == KeyCode::Char('e')
             && key.modifiers.is_empty()
             && matches!(self.view, View::Checks(_) | View::Task(_, _))
         {
             self.show_evidence = !self.show_evidence;
-            return true;
+            return Ok(true);
         }
         if let View::Checks(scroll) = self.view {
+            if key.code == KeyCode::Char('x')
+                && key.modifiers.is_empty()
+                && key.kind == KeyEventKind::Press
+                && let Some(id) = self.failed_check_owner()
+            {
+                self.perform_action(Action::FixCheck(id))?;
+                return Ok(true);
+            }
             self.view = match key.code {
                 KeyCode::Esc => View::Chat,
                 KeyCode::Up => View::Checks(scroll.saturating_sub(1)),
@@ -65,8 +73,8 @@ impl App {
                 KeyCode::End => View::Checks(u16::MAX),
                 _ => self.view,
             };
-            return true;
+            return Ok(true);
         }
-        false
+        Ok(false)
     }
 }

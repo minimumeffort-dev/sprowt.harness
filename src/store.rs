@@ -911,7 +911,13 @@ impl Store {
             if let Some(feedback) = &run.review_feedback {
                 prompt.push_str(&format!("\n{feedback} The harness refreshed this task from combined source. Preserve all other completed work."));
             }
-            if run.restoring_runtime() {
+            if run.check_repair {
+                prompt.push_str(&format!(
+                    "\nRequested repair of a failed combined check: {}\nThe user chose Fix failed check. The harness refreshed your task from combined source and retained your saved scripts at {}. Reproduce the failure. Decide whether the source is defective or the check makes an incorrect assumption about the combined result. Correct it within your original file scope, preserving all other completed work and every declared check's intent and coverage. In particular, keep negative fixtures for private data; do not bypass a check or remove a legitimate module just to satisfy a filename assertion. Use run_task_checks to save corrected standalone scripts and rerun every declared check, including those not reached previously. Reuse installed dependencies. If the fix needs another owner's files, request a repair with concrete evidence; otherwise report blockers honestly. This requested attempt pauses on failure. The controller must rerun all combined checks before the result is ready.",
+                    serde_json::to_string(&run.verification_feedback).unwrap(),
+                    crate::checks::folder(run.id)
+                ));
+            } else if run.restoring_runtime() {
                 prompt.push_str(&format!(
                     "\nRestore this task's missing runtime: {}\nThe harness refreshed the task folder from combined source. Inspect the project manifests and rebuild compatible runtimes and dependencies in this task folder or your runtime home. Preserve the combined source, tests and all declared check coverage. Rerun every declared check and return repeatable commands. Report access or installation blockers honestly; do not bypass permissions.",
                     serde_json::to_string(&run.verification_feedback).unwrap()
@@ -1365,7 +1371,7 @@ impl Store {
         let Some((workspace, status, checks, fingerprint, backend)) = result else {
             return Ok(None);
         };
-        let mut statement = self.0.prepare("SELECT t.id,t.task_id,t.status,t.source,t.turn_id,t.summary,t.checks,t.worker_id,t.routing,t.repair,w.provider,t.assignment_reason,t.verification_feedback,t.review_feedback,t.conflict,t.conflict_retries FROM task_runs t LEFT JOIN workers w ON w.id=t.worker_id WHERE t.mod_id=?1 ORDER BY t.id")?;
+        let mut statement = self.0.prepare("SELECT t.id,t.task_id,t.status,t.source,t.turn_id,t.summary,t.checks,t.worker_id,t.routing,t.repair,w.provider,t.assignment_reason,t.verification_feedback,t.review_feedback,t.conflict,t.conflict_retries,t.check_repair FROM task_runs t LEFT JOIN workers w ON w.id=t.worker_id WHERE t.mod_id=?1 ORDER BY t.id")?;
         let tasks = statement
             .query_map([mod_id], |row| {
                 let checks: String = row.get(6)?;
@@ -1406,6 +1412,7 @@ impl Store {
                         )
                     })?,
                     review_feedback: row.get(13)?,
+                    check_repair: row.get(16)?,
                     verification_feedback: serde_json::from_str(&row.get::<_, String>(12)?)
                         .map_err(|_| rusqlite::Error::InvalidQuery)?,
                 })
@@ -1523,7 +1530,7 @@ impl Store {
     ) -> Result<()> {
         let transaction = self.0.transaction()?;
         let changed = transaction.execute(
-            "UPDATE task_runs SET status=?3,summary=?4,checks=?5,verification_feedback=CASE WHEN ?3='blocked' AND ?5!='[]' THEN ?5 WHEN ?3='done' THEN '[]' ELSE verification_feedback END,review_feedback=CASE WHEN ?3='done' THEN NULL ELSE review_feedback END,conflict=CASE WHEN ?3='done' THEN NULL ELSE conflict END WHERE mod_id=?1 AND source=?2",
+            "UPDATE task_runs SET status=?3,summary=?4,checks=?5,verification_feedback=CASE WHEN ?3='blocked' AND ?5!='[]' THEN ?5 WHEN ?3='done' THEN '[]' ELSE verification_feedback END,check_repair=CASE WHEN ?3='done' THEN 0 ELSE check_repair END,review_feedback=CASE WHEN ?3='done' THEN NULL ELSE review_feedback END,conflict=CASE WHEN ?3='done' THEN NULL ELSE conflict END WHERE mod_id=?1 AND source=?2",
             params![
                 mod_id,
                 source,
@@ -1542,7 +1549,7 @@ impl Store {
     pub fn recover_verification(&mut self, mod_id: i64, source: &str, worker: i64) -> Result<bool> {
         let transaction = self.0.transaction()?;
         let run: Option<(i64, i64)> = transaction.query_row(
-            "SELECT id,attempt FROM task_runs WHERE mod_id=?1 AND source=?2 AND worker_id=?3 AND status='blocked' AND verification_retries=0 AND conflict IS NULL AND checks!='[]'",
+            "SELECT id,attempt FROM task_runs WHERE mod_id=?1 AND source=?2 AND worker_id=?3 AND status='blocked' AND verification_retries=0 AND check_repair=0 AND conflict IS NULL AND checks!='[]'",
             params![mod_id,source,worker], |row| Ok((row.get(0)?,row.get(1)?))
         ).optional()?;
         let Some((id, attempt)) = run else {
@@ -1599,6 +1606,39 @@ impl Store {
         let changed = tx.execute(
             "UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,verification_feedback=?4,checks='[]',verification_retries=verification_retries+1 WHERE id=?1 AND status='done' AND verification_retries=0",
             params![run.id,attempt+1,task_source(run.id,attempt+1),serde_json::to_string(&feedback).unwrap()]
+        )?;
+        if changed == 0 {
+            return Ok(false);
+        }
+        tx.execute("UPDATE workers SET pending=NULL WHERE id=?1", [run.worker])?;
+        tx.execute(
+            "UPDATE executions SET status='running',checks='[]',fingerprint=NULL WHERE mod_id=?1",
+            [mod_id],
+        )?;
+        tx.commit()?;
+        Ok(true)
+    }
+
+    pub fn fix_failed_check(&mut self, mod_id: i64, id: i64) -> Result<bool> {
+        let Some(execution) = self.execution(mod_id)? else {
+            return Ok(false);
+        };
+        let Some(run) = execution.failed_check_owner().filter(|run| run.id == id) else {
+            return Ok(false);
+        };
+        let feedback = execution
+            .checks
+            .iter()
+            .filter(|check| check.task == Some(id))
+            .collect::<Vec<_>>();
+        let tx = self.0.transaction()?;
+        let attempt: i64 =
+            tx.query_row("SELECT attempt FROM task_runs WHERE id=?1", [id], |row| {
+                row.get(0)
+            })?;
+        let changed = tx.execute(
+            "UPDATE task_runs SET status='pending',attempt=?2,source=?3,turn_id=NULL,summary='',verification_feedback=?4,check_repair=1,repair=NULL,review_feedback=NULL,checks='[]' WHERE id=?1 AND status='done' AND EXISTS(SELECT 1 FROM executions WHERE mod_id=?5 AND status='blocked' AND checks=?6) AND NOT EXISTS(SELECT 1 FROM task_runs WHERE mod_id=?5 AND status!='done')",
+            params![id,attempt+1,task_source(id,attempt+1),serde_json::to_string(&feedback).unwrap(),mod_id,serde_json::to_string(&execution.checks).unwrap()],
         )?;
         if changed == 0 {
             return Ok(false);

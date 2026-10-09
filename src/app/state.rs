@@ -178,6 +178,10 @@ impl App {
                 .is_some_and(|r| r.status == "fixing")
             {
                 Summary::new(Recovering, "Working · fixing review issues", None)
+            } else if execution
+                .is_some_and(|e| e.tasks.iter().any(|t| t.status != "done" && t.check_repair))
+            {
+                Summary::new(Recovering, "Working · fixing failed check", None)
             } else if execution.is_some_and(|e| {
                 e.tasks
                     .iter()
@@ -229,7 +233,11 @@ impl App {
                 Some(Update),
             )
         } else if final_failed {
-            let mut s = Summary::new(NeedsYou, "Combined checks need attention", Some(Retry));
+            let mut s = Summary::new(
+                NeedsYou,
+                "Combined checks need attention",
+                Some(self.failed_check_owner().map_or(Retry, FixCheck)),
+            );
             s.error =
                 execution.and_then(|e| e.checks.iter().find(|c| c.failed()).map(|c| c.brief()));
             s

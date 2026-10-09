@@ -43,24 +43,23 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_checks(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
-    let inner = tasks::panel(
-        frame,
-        area,
-        "checks".into(),
-        &[
-            ("↑↓", "scroll"),
-            (
-                "e",
-                if app.show_evidence {
-                    "hide evidence"
-                } else {
-                    "show evidence"
-                },
-            ),
-            ("tab", "section"),
-            ("esc", "back"),
-        ],
-    );
+    let mut hints = vec![("↑↓", "scroll")];
+    if app.failed_check_owner().is_some() {
+        hints.push(("x", "Fix failed check"));
+    }
+    hints.extend([
+        (
+            "e",
+            if app.show_evidence {
+                "hide evidence"
+            } else {
+                "show evidence"
+            },
+        ),
+        ("tab", "section"),
+        ("esc", "back"),
+    ]);
+    let inner = tasks::panel(frame, area, "checks".into(), &hints);
     let mut lines = Vec::new();
     if let Some(m) = app.current_mod() {
         if let Some(e) = &m.execution {
@@ -101,6 +100,10 @@ fn draw_checks(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
                         .as_ref()
                         .is_some_and(|e| e.checks.iter().any(|c| c.task == Some(task.run.id)))
                     {
+                        if task.run.checks.is_empty() && !task.run.verification_feedback.is_empty()
+                        {
+                            lines.push(Line::from("Previous failed checks").fg(KEY_HINT));
+                        }
                         lines.extend(check_lines(
                             &task.checks.iter().map(|c| (*c).clone()).collect::<Vec<_>>(),
                             inner.width,
@@ -133,7 +136,12 @@ fn check_lines(
     evidence: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    for check in checks {
+    let mut ordered: Vec<_> = checks
+        .iter()
+        .filter(|check| evidence || !check.skipped())
+        .collect();
+    ordered.sort_by_key(|check| !check.failed());
+    for check in ordered {
         let (glyph, status, color) = if check.exit_code == Some(0) {
             ("✓", "passed", KEY_HINT)
         } else if check.failed() {
@@ -153,6 +161,16 @@ fn check_lines(
         } else if check.failed() {
             lines.push(Line::from(check.brief()).fg(Color::Red));
         }
+    }
+    let skipped = checks.iter().filter(|check| check.skipped()).count();
+    if !evidence && skipped > 0 {
+        lines.push(
+            Line::from(format!(
+                "· {skipped} command{} not run · e show evidence",
+                if skipped == 1 { "" } else { "s" }
+            ))
+            .fg(KEY_HINT),
+        );
     }
     lines
 }

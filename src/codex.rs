@@ -768,6 +768,7 @@ fn serve(
                             !state["repair"].is_null()
                                 || state["review_fix"] == true
                                 || state["runtime_recovery"] == true
+                                || state["check_repair"] == true
                         });
                         let _ = outgoing.send(Event::Preparing("choosing task model".into()));
                         let chosen = match (&router, routing) {

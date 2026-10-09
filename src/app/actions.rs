@@ -9,6 +9,7 @@ pub enum Action {
     Stop,
     Retry,
     RetryTask(i64),
+    FixCheck(i64),
     RetryGit,
     Reopen,
     Network,
@@ -65,7 +66,7 @@ impl Action {
             Self::Delete => Some('d'),
             Self::Failure => Some('f'),
             Self::Findings => Some('i'),
-            Self::FixIssues => Some('x'),
+            Self::FixIssues | Self::FixCheck(_) => Some('x'),
             Self::RetryTask(_) => Some('r'),
             _ => None,
         }
@@ -249,6 +250,10 @@ impl App {
                     },
                 ));
             }
+            if let Some(id) = self.failed_check_owner() {
+                dock.actions
+                    .push(ActionItem::new(FixCheck(id), "Fix failed check"));
+            }
             if let Some(id) = self.failed_task().filter(|id| self.can_retry_task(*id)) {
                 let number = self.inspect_task(id).unwrap().number;
                 dock.actions.push(ActionItem::new(
@@ -424,6 +429,7 @@ impl App {
             return Ok(());
         }
         match action {
+            Action::FixCheck(id) => self.fix_failed_check(id)?,
             Action::RetryTask(id) => self.retry_task(id)?,
             Action::Run | Action::Stop | Action::Retry | Action::RetryGit | Action::Reopen => {
                 self.toggle_worker()?
