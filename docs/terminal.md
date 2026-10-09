@@ -1,6 +1,6 @@
 # Terminal and companion
 
-The full-width outline shows the request and tasks. One dock tells you what is happening, whether anything needs you, and the next useful action. **Ctrl+T · Details** opens the evidence without interrupting work or losing your draft.
+The full-width timeline shows the codemod from its request through publication. One dock tells you what is happening, whether anything needs you, and the next useful action. **Ctrl+T · Details** opens the evidence without interrupting work or losing your draft.
 
 ## State model
 
@@ -50,6 +50,37 @@ stateDiagram-v2
 ```
 
 Close can also stop active work before saving its checkpoint. Delete requires confirmation and removes local work; the PR stays on GitHub. Reopening restores saved work, without starting workers. A review interrupted by exit or pause waits for an explicit retry.
+
+## Timeline
+
+```text
+> Make tasks searchable
+
+✓ Plan ready · 3 tasks
+│
+⠋ Implementation · 1/3 tasks finished
+├─ ✓ 1. Add search storage · Done
+├─ ⠋ 2. Build search controls · Working
+│    muse · w12 · muse-spark-1.3 · high
+│    Elapsed 2m 10s · last activity 8s ago
+│    Latest update · Checking keyboard focus
+├─ ○ 3. Verify integration · Waiting
+│    Waiting for task 2.
+│
+○ Combined checks · after implementation / repair
+│
+○ Review · after combined checks
+│
+○ Publish PR · after checks and review
+```
+
+- Planning, implementation, combined checks, review and publication have separate rows. Task branches show independent work and dependencies; the parallel count comes from connected, active executors.
+- Finished stages collapse. Active tasks show their owner, model, effort, elapsed time and latest update. Waiting tasks explain dependencies; active repairs follow a muted **previous failure** row. Expanding that row shows its saved evidence.
+- Relevant actions sit beside their stage and remain available from the dock and More. Enter on a timeline row opens evidence; it never starts a repair or publishes.
+- **Tab** focuses the timeline. **↑/↓** selects, **Space** expands, **Enter** opens details, and **Tab** or **Esc** returns to the draft. Clicking a row also selects it. **Ctrl+O** opens the full plan.
+- New activity follows the current step until you scroll or navigate back. Your position then stays anchored to the same row. **End** while exploring, or clicking **Jump to current**, resumes following. End in the composer still moves the text cursor.
+
+The timeline reflects the current saved plan and operation states. Prior passes and full worker messages stay in **Details → Activity**. It does not invent historical timestamps or completion estimates. Elapsed time measures the connected worker's current turn; last activity measures observed worker events, not a guarantee of progress. Both restart with a new connection or turn. A completed task, passed combined checks and a clean current review remain distinct.
 
 ## Unified dock
 
@@ -116,9 +147,9 @@ Fix failed check shows Connecting worker, Starting repair, Fixing failed check, 
 
 ## Messages and plans
 
-Conversations remain left aligned with two columns of outer margin and one blank row between messages. User messages have a visible `>` and subtle background. Agent identities include provider, role, worker, model and effort. Active identities appear beside the companion; task spinners and IDs stay in the outline through checks. `--no-motion` uses a static glyph.
+Conversations remain left aligned with two columns of outer margin and one blank row between messages. User messages have a visible `>` and subtle background. Agent identities include provider, role, worker, model and effort. Active identities appear beside the companion and within expanded task rows. `--no-motion` uses a static glyph.
 
-Plans show numbered tasks, outcomes and dependencies. **Ctrl+O** beside the heading expands scopes, contracts, check commands and routing. Multiline commands retain indentation. Expanding keeps the heading in view; switching codemods starts collapsed. Completed plans collapse to task rows and check totals. Routine worker narration stays in Activity; questions for you remain beside the composer.
+Plans show numbered tasks, outcomes and dependencies. **Ctrl+O** opens scopes, contracts, check commands and routing; pressing it again returns to the timeline. Multiline commands retain indentation. Switching codemods starts with collapsed completed stages. Routine worker narration stays in Activity; questions for you remain beside the composer.
 
 The Enter hint says **Create codemod**, **Answer #ID**, **Request edits** or **Queue for next pass**. Queued messages remain separate from history. **Ctrl+Q** manages them; **s · Send to workers** uses saved steering and waits for an acknowledged delivery. With no running worker, the hint says **Send when workers connect**. Reordering does not send anything. Deliberately paused work keeps queued edits until you resume.
 
@@ -130,7 +161,10 @@ Use the wheel or trackpad over a view to scroll it, or over the composer to scro
 
 | Key | Action |
 | --- | --- |
-| Enter | Create, answer, request edits or queue the message |
+| Enter | Send from the composer; inspect a selected timeline row |
+| Tab | Move between the timeline and composer |
+| Space / ↑↓ | Expand / select while exploring the timeline |
+| End | Jump to current while exploring the timeline |
 | Ctrl+J | Newline |
 | Ctrl+T | Details / return to conversation |
 | Ctrl+G | More actions; Esc returns |
@@ -143,7 +177,7 @@ Use the wheel or trackpad over a view to scroll it, or over the composer to scro
 | Ctrl+N | Decide a pending domain request |
 | Ctrl+P | Switch/create/close/reopen/delete codemods |
 | Fn + ↑ / ↓, or Page Up / Down | Scroll |
-| Esc | Back from a view; quit from the conversation |
+| Esc | Return from timeline exploration or a view; quit from the composer |
 | Ctrl+C | Quit |
 
 More also supports **n** new, **c** close, **d** delete, **x** fix the failed check or review findings, and **r** retry a failed task. These letters type normally in the composer. Close, delete and publish retain their confirmations.

@@ -52,11 +52,17 @@ pub struct Worker {
     verify_before: Option<workspace::Snapshot>,
     preparing: Option<String>,
     activity_started: Instant,
+    last_activity: Option<Instant>,
     reconnecting: bool,
     interrupted_task: Option<i64>,
 }
 
 impl Worker {
+    #[cfg(test)]
+    pub fn bind_test_task(&mut self, source: String) {
+        self.task_source = Some(source);
+    }
+
     #[cfg(test)]
     pub fn start(
         project: &Path,
@@ -152,6 +158,7 @@ impl Worker {
             verify_before: None,
             preparing: None,
             activity_started: Instant::now(),
+            last_activity: None,
             reconnecting: false,
             interrupted_task: None,
         })
@@ -483,7 +490,12 @@ impl Worker {
             Event::MailboxChanged => {
                 code_mod.coordination = store.mailbox(self.mod_id)?;
             }
-            Event::Preparing(label) => self.preparing = (!label.is_empty()).then_some(label),
+            Event::Preparing(label) => {
+                if self.preparing.as_deref() != Some(&label) {
+                    self.last_activity = Some(Instant::now());
+                }
+                self.preparing = (!label.is_empty()).then_some(label);
+            }
             Event::Configured(selection) => {
                 if self.role == Role::Planner {
                     store.planning_model(self.mod_id, &selection)?;
@@ -625,6 +637,7 @@ impl Worker {
             Event::Accepted { source, turn } => {
                 if !source.starts_with("00000005-") {
                     self.activity_started = Instant::now();
+                    self.last_activity = None;
                 }
                 self.preparing = None;
                 if let Some(input) = self.pending.take() {
@@ -962,6 +975,12 @@ impl Worker {
             }
             Event::Checked { .. } => {}
             Event::Notification(message) => {
+                if matches!(
+                    message["method"].as_str(),
+                    Some("item/started" | "item/completed" | "item/agentMessage/delta")
+                ) {
+                    self.last_activity = Some(Instant::now());
+                }
                 let params = &message["params"];
                 match message["method"].as_str().unwrap_or("") {
                     "thread/started" => {
@@ -1354,6 +1373,18 @@ impl Worker {
         } else {
             format!("{seconds}s")
         }
+    }
+
+    pub fn timeline_timing(&self) -> String {
+        let age = self.last_activity.map_or("awaiting activity".into(), |at| {
+            let seconds = at.elapsed().as_secs();
+            if seconds < 60 {
+                format!("last activity {seconds}s ago")
+            } else {
+                format!("last activity {}m {}s ago", seconds / 60, seconds % 60)
+            }
+        });
+        format!("Elapsed {} · {age}", self.elapsed_label())
     }
 
     pub fn activity(&self, code_mod: &CodeMod) -> String {
@@ -2487,6 +2518,24 @@ mod tests {
             Some("Checking 2/4 · Review regression 1 · Preserve focus")
         );
         assert!(worker.elapsed_label().starts_with("2m "));
+        assert!(worker.timeline_timing().contains("last activity 0s ago"));
+        worker.last_activity = Some(Instant::now() - std::time::Duration::from_secs(61));
+        worker
+            .receive(
+                Event::Preparing("Checking 2/4 · Review regression 1 · Preserve focus".into()),
+                &mut store,
+                &mut m,
+            )
+            .unwrap();
+        assert!(worker.timeline_timing().contains("last activity 1m"));
+        worker
+            .receive(
+                Event::Preparing("Checking 3/4 · Next check".into()),
+                &mut store,
+                &mut m,
+            )
+            .unwrap();
+        assert!(worker.timeline_timing().contains("last activity 0s ago"));
         worker.status = Status::Complete;
         assert_eq!(worker.progress(), None);
     }

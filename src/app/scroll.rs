@@ -30,15 +30,51 @@ impl Scroll {
 
 impl App {
     pub(super) fn mouse_scroll(&mut self, mouse: MouseEvent) -> Result<()> {
+        if self.scroll.view != Some(self.view) {
+            return Ok(());
+        }
+        let position = Position::new(mouse.column, mouse.row);
+        if self.view == View::Chat && self.has_timeline() {
+            if mouse.kind == MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left) {
+                if self.timeline.jump_area.contains(position) {
+                    self.timeline.jump();
+                } else if self.scroll.input.contains(position) {
+                    self.timeline.focused = false;
+                } else if self.scroll.content.contains(position) {
+                    let row = self.timeline.top + usize::from(mouse.row - self.scroll.content.y);
+                    if let Some((id, _, _)) = self
+                        .timeline
+                        .rows
+                        .iter()
+                        .find(|(_, start, end)| row >= *start && row < *end)
+                    {
+                        self.timeline.selected = Some(*id);
+                        self.timeline.focused = true;
+                        self.timeline.held = true;
+                    }
+                }
+                return Ok(());
+            }
+            if self.scroll.content.contains(position)
+                && matches!(
+                    mouse.kind,
+                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
+                )
+            {
+                self.timeline
+                    .scroll(if mouse.kind == MouseEventKind::ScrollUp {
+                        -3
+                    } else {
+                        3
+                    });
+                return Ok(());
+            }
+        }
         let up = match mouse.kind {
             MouseEventKind::ScrollUp => true,
             MouseEventKind::ScrollDown => false,
             _ => return Ok(()),
         };
-        if self.scroll.view != Some(self.view) {
-            return Ok(());
-        }
-        let position = Position::new(mouse.column, mouse.row);
         if self.scroll.input.contains(position) {
             self.input.scroll((if up { -3 } else { 3 }, 0));
             return Ok(());

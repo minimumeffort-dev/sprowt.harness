@@ -29,6 +29,7 @@ mod inspector;
 mod scroll;
 mod state;
 mod tasks;
+pub mod timeline;
 pub use actions::{Action, ActionDock, ActionItem, Tone};
 pub use scroll::Scroll;
 
@@ -72,6 +73,7 @@ pub struct App {
     pub plan_details: bool,
     pub show_evidence: bool,
     pub focus_plan: bool,
+    pub timeline: timeline::Timeline,
     pub review: Option<Review>,
     publish_after_review: bool,
     pub queue_selection: BTreeSet<i64>,
@@ -191,6 +193,7 @@ impl App {
             plan_details: false,
             show_evidence: false,
             focus_plan: false,
+            timeline: timeline::Timeline::default(),
             review: None,
             publish_after_review: false,
             queue_selection: BTreeSet::new(),
@@ -317,6 +320,7 @@ impl App {
             Event::Paste(text) => match self.view {
                 View::Chat if self.read_only() => {}
                 View::Chat | View::EditQueue(_) => {
+                    self.timeline.focused = false;
                     self.input
                         .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
                 }
@@ -586,6 +590,9 @@ impl App {
     }
 
     fn chat_key(&mut self, key: KeyEvent) -> Result<()> {
+        if self.timeline_key(key)? {
+            return Ok(());
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => self.quit = true,
@@ -3726,8 +3733,22 @@ mod tests {
         assert!(expanded.contains("Message contract"));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        let request = app
+            .timeline_items()
+            .into_iter()
+            .find(|i| i.key == timeline::Key::Request)
+            .unwrap()
+            .title;
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(queued(&app).is_empty());
+        assert_eq!(
+            app.timeline_items()
+                .into_iter()
+                .find(|i| i.key == timeline::Key::Request)
+                .unwrap()
+                .title,
+            request
+        );
         assert!(app.input.lines().join("").is_empty());
         assert_eq!(app.current_mod().unwrap().question().unwrap().id, second);
         assert!(
@@ -3803,6 +3824,7 @@ mod tests {
     #[test]
     fn mouse_scrolling_keeps_conversation_and_composer_separate() {
         let (_data, mut app, _root) = execution_app();
+        app.plan_details = true;
         app.mods[0]
             .messages
             .extend((0..40).map(|i| crate::store::Message {
@@ -4228,6 +4250,13 @@ mod tests {
             let hints = position("Request edits");
             let menu = position("More");
             let bottom = position("╰");
+            let action = rendered
+                .iter()
+                .enumerate()
+                .skip(top + 1)
+                .find(|(_, row)| row.contains("Review changes"))
+                .map(|(index, _)| index)
+                .unwrap_or(action);
             assert!(top < status && status <= action && action < divider);
             assert!(divider < composer && composer < hints && hints <= menu && menu < bottom);
             assert_eq!(rendered.iter().filter(|r| r.contains('╭')).count(), 1);
@@ -4250,7 +4279,7 @@ mod tests {
                 assert!(rendered[menu].ends_with("ctrl+g More │  "));
             }
             let text = rendered.join("\n");
-            assert!(text.contains("ctrl+o ▸ show details"));
+            assert!(text.contains("Timeline"));
             assert!(!text.contains("Next ·") && !text.contains("message ╶"));
         }
         let error = "AssertionError: expected a successful response.\nFull evidence\n".repeat(30);
@@ -4419,6 +4448,7 @@ mod tests {
     #[test]
     fn open_outline_wraps_tasks_and_prose_without_a_left_gutter() {
         let (_data, mut app, _root) = execution_app();
+        app.plan_details = true;
         app.mods[0].execution = None;
         let plan = app.mods[0]
             .planning
@@ -4632,10 +4662,13 @@ mod tests {
         let mut app = App::load(project, false, store).unwrap();
         app.input.insert_str("keep this draft");
         app.refresh_network_requests().unwrap();
-        let notice = rows(&screen(&mut app, 120, 36)).join("\n");
+        let notice = rows(&screen(&mut app, 120, 36))
+            .join("\n")
+            .replace('\u{a0}', " ");
         assert!(app.action_dock().primary == Some(Action::Network));
         assert!(
-            notice.contains("Network access needed") && notice.contains("ctrl+n Review domains")
+            notice.contains("Needs network access") && notice.contains("ctrl+n Review domains"),
+            "{notice}"
         );
         app.handle(Event::Key(KeyEvent::new(
             KeyCode::Char('n'),
@@ -5945,6 +5978,212 @@ mod tests {
         (data, App::load(project, false, store).unwrap(), root)
     }
 
+    #[test]
+    fn timeline_navigation_preserves_draft_and_opens_existing_evidence() {
+        use timeline::Key;
+        let (_data, mut app, _) = execution_app();
+        let id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
+        screen(&mut app, 100, 40);
+        assert!(!app.timeline_items().iter().any(|i| i.key == Key::Task(id)));
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        app.timeline.selected = Some(Key::Build);
+        key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(app.timeline_items().iter().any(|i| i.key == Key::Task(id)));
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
+        assert_eq!(app.timeline.selected, Some(Key::Task(id)));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Task(task, 0) if task == id));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(queued(&app).is_empty());
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Chat));
+        // Removed rows cannot activate their former action or submit the draft.
+        app.timeline.focused = true;
+        app.timeline.selected = Some(Key::Repair(id));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Chat));
+        assert!(queued(&app).is_empty());
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(!app.timeline.focused && !app.quit);
+        key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        paste(&mut app, " more");
+        assert!(!app.timeline.focused);
+        assert_eq!(app.input.lines(), ["keep this draft more"]);
+    }
+
+    #[test]
+    fn timeline_keeps_repairs_previous_failures_and_current_evidence_distinct() {
+        use timeline::{Key, State};
+        let (_data, mut app, _) = execution_app();
+        let e = app.mods[0].execution.as_mut().unwrap();
+        e.status = "running".into();
+        e.fingerprint = None;
+        e.checks.clear();
+        let run = &mut e.tasks[0];
+        let id = run.id;
+        run.status = "pending".into();
+        run.check_repair = true;
+        run.verification_feedback = std::mem::take(&mut run.checks);
+        run.verification_feedback[0].exit_code = Some(1);
+        run.verification_feedback[0].output = "AssertionError: preserved evidence".into();
+        app.executing_mods.insert(app.mods[0].id);
+        let items = app.timeline_items();
+        let failure = items.iter().find(|i| i.key == Key::Failure(id)).unwrap();
+        assert!(failure.state == State::Previous && failure.action.is_none());
+        assert!(
+            failure
+                .detail
+                .iter()
+                .any(|s| s.contains("preserved evidence"))
+        );
+        let repair = items.iter().find(|i| i.key == Key::Repair(id)).unwrap();
+        assert!(repair.state == State::Waiting && repair.title.contains("Waiting for a worker"));
+        assert!(
+            !repair
+                .detail
+                .iter()
+                .any(|s| s.contains("preserved evidence"))
+        );
+        assert!(items.iter().find(|i| i.key == Key::Checks).unwrap().state == State::Waiting);
+        assert!(!items.iter().any(|i| i.title == "Ready to publish"));
+        let e = app.mods[0].execution.as_mut().unwrap();
+        e.tasks[0].status = "done".into();
+        e.status = "review".into();
+        e.fingerprint = Some("checked-version".into());
+        let m = &mut app.mods[0];
+        m.agent_review = Some(crate::review::State {
+            source: "review:1".into(),
+            plan_source: m.planning.as_ref().unwrap().source.clone(),
+            fingerprint: "checked-version".into(),
+            status: "clean".into(),
+            rounds: 0,
+            report: None,
+        });
+        assert!(
+            app.timeline_items()
+                .iter()
+                .any(|i| i.title == "Ready to publish")
+        );
+        app.mods[0].execution.as_mut().unwrap().fingerprint = None;
+        assert!(
+            !app.timeline_items()
+                .iter()
+                .any(|i| i.title == "Ready to publish")
+        );
+        assert!(
+            app.timeline_items()
+                .iter()
+                .any(|i| i.title.contains("fresh review"))
+        );
+    }
+
+    #[test]
+    fn timeline_scrollback_anchors_to_rows_and_jump_follows_current_work() {
+        use timeline::Key;
+        let (_data, mut app, _) = execution_app();
+        let plan = app.mods[0]
+            .planning
+            .as_mut()
+            .unwrap()
+            .plan
+            .as_mut()
+            .unwrap();
+        for index in 2..16 {
+            let mut task = plan.tasks[0].clone();
+            task.id = format!("task-{index}");
+            task.title = format!("Independent task {index}");
+            plan.tasks.push(task);
+        }
+        app.mods[0].execution = None;
+        screen(&mut app, 100, 36);
+        app.timeline.focused = true;
+        app.timeline.selected = Some(Key::Planned(10));
+        app.timeline.reveal = true;
+        app.timeline.held = true;
+        screen(&mut app, 100, 36);
+        let content = app.scroll.content;
+        wheel(&mut app, true, content);
+        screen(&mut app, 100, 36);
+        let anchor = app.timeline.anchor;
+        let top = app.timeline.top;
+        app.mods[0]
+            .planning
+            .as_mut()
+            .unwrap()
+            .plan
+            .as_mut()
+            .unwrap()
+            .tasks[0]
+            .outcome = "Extra detail before the viewport. ".repeat(15);
+        screen(&mut app, 100, 36);
+        assert_eq!(app.timeline.anchor, anchor);
+        assert!(app.timeline.top > top);
+        assert!(app.timeline.held);
+        let draft = app.input.lines().to_vec();
+        key(&mut app, KeyCode::End, KeyModifiers::NONE);
+        screen(&mut app, 100, 36);
+        assert!(!app.timeline.held);
+        assert_eq!(app.input.lines(), draft);
+        app.mods[0].planning.as_mut().unwrap().source = "next-plan".into();
+        screen(&mut app, 100, 36);
+        assert!(!app.timeline.focused && !app.timeline.held);
+    }
+
+    #[test]
+    fn timeline_mouse_focus_resize_and_request_wrapping_keep_the_composer_usable() {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use timeline::Key;
+        let (_data, mut app, _) = execution_app();
+        app.mods[0].description =
+            "First request line\nSecond request line\nThird request line".into();
+        app.mods[0].messages.clear();
+        for width in [36, 80, 160] {
+            let buffer = screen(&mut app, width, 40);
+            let input = app.scroll.input;
+            assert!(input.height >= 4);
+            let (_, start, _) = *app
+                .timeline
+                .rows
+                .iter()
+                .find(|(k, _, _)| *k == Key::Build)
+                .unwrap();
+            app.timeline.top = start;
+            app.timeline.held = true;
+            app.timeline.anchor = Some((Key::Build, 0));
+            screen(&mut app, width, 40);
+            let content = app.scroll.content;
+            app.handle(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: content.x,
+                row: content.y + (start - app.timeline.top) as u16,
+                modifiers: KeyModifiers::NONE,
+            }))
+            .unwrap();
+            assert!(app.timeline.focused);
+            assert_eq!(app.timeline.selected, Some(Key::Build));
+            app.handle(Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: input.x,
+                row: input.y,
+                modifiers: KeyModifiers::NONE,
+            }))
+            .unwrap();
+            assert!(!app.timeline.focused);
+            assert_eq!(app.input.lines(), ["keep this draft"]);
+            assert!(!rows(&buffer).iter().any(|line| line.contains("\n")));
+        }
+        app.timeline.selected = Some(Key::Request);
+        app.timeline.focused = true;
+        app.timeline.reveal = true;
+        key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        let text = rows(&screen(&mut app, 100, 40)).join("\n");
+        assert_eq!(text.matches("First request line").count(), 1);
+        assert!(text.contains("Second request line") && text.contains("Third request line"));
+        screen(&mut app, 20, 8);
+        assert!(app.scroll.content.is_empty() && app.scroll.input.is_empty());
+    }
+
     fn commit_project(project: &std::path::Path) {
         for args in [
             vec!["init", "--initial-branch", "main"],
@@ -6469,6 +6708,11 @@ mod tests {
         let execution = app.mods[0].execution.as_mut().unwrap();
         execution.status = "running".into();
         execution.tasks[0].status = "running".into();
+        execution.tasks[0].worker = Some(id);
+        app.workers
+            .get_mut(&id)
+            .unwrap()
+            .bind_test_task(execution.tasks[0].source.clone());
         app.mods[0].messages.push(crate::store::Message {
             task: None,
             item_id: Some("previous-reply".into()),
@@ -6697,7 +6941,14 @@ mod tests {
         second.id += 1;
         second.task_id = "two".into();
         second.worker = Some(workers[1]);
+        second.source = crate::store::task_source(second.id, 1);
         execution.tasks.push(second);
+        for run in &execution.tasks {
+            app.workers
+                .get_mut(&run.worker.unwrap())
+                .unwrap()
+                .bind_test_task(run.source.clone());
+        }
         let view = rows(&screen_at(
             &mut app,
             120,
@@ -6709,8 +6960,8 @@ mod tests {
         assert!(view.contains(&format!("muse w{} · task 2", workers[1])));
         let narrow = rows(&screen(&mut app, 90, 36)).join("\n");
         assert!(narrow.contains("2 workers running"));
-        assert!(view.contains(&format!("⠙ 1. Greeting · w{}", workers[0])));
-        assert!(view.contains(&format!("⠙ 2. Second task · w{}", workers[1])));
+        assert!(view.contains("⠙ 1. Greeting · Working"), "{view}");
+        assert!(view.contains("⠙ 2. Second task · Working"), "{view}");
         let queued = app.store.enqueue(id, "Only the second worker").unwrap();
         app.mods[0].queue.push(queued);
         key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
@@ -6824,7 +7075,7 @@ mod tests {
             let compact = rows(&screen(&mut app, width, 40));
             let text = compact.join("\n");
             assert!(text.contains("Checks passed · review pending"));
-            assert!(text.contains("✓ 3/3 checks passed") && text.contains("More"));
+            assert!(text.contains("Combined checks passed") && text.contains("More"));
             assert!(app.action_dock().primary == Some(Action::Review));
             assert!(
                 app.action_dock()
@@ -6832,12 +7083,8 @@ mod tests {
                     .iter()
                     .any(|a| a.action == Action::Publish)
             );
-            let first = compact
-                .iter()
-                .position(|r| r.contains("✓ 1. Greeting"))
-                .unwrap();
-            assert!(compact[first + 1].contains("✓ 2. Build the interface"));
-            assert!(compact[first + 2].contains("✓ 3. Verify together"));
+            assert!(text.contains("Implementation · 3/3 tasks finished"));
+            assert!(!text.contains("1. Greeting") && !text.contains("2. Build the interface"));
             assert!(!text.contains("Print hello") && !text.contains("I will inspect"));
             assert!(!text.contains("Keep task order") && !text.contains("/usr/bin/true"));
             key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
@@ -7167,7 +7414,12 @@ mod tests {
         screen(&mut app, 48, 24);
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         let collapsed = rows(&screen(&mut app, 48, 24)).join("\n");
-        assert!(collapsed.contains("1. Build the API") && !collapsed.contains("app/main.py"));
+        assert!(collapsed.contains("Timeline") && !collapsed.contains("app/main.py"));
+        assert!(
+            app.timeline_items()
+                .iter()
+                .any(|i| i.title.contains("1. Build the API"))
+        );
         let reopened = App::load(project, false, data.store()).unwrap();
         assert!(!reopened.plan_details);
         assert_eq!(

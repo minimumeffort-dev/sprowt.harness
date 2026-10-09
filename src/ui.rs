@@ -1,6 +1,7 @@
 mod findings;
 mod inspector;
 mod tasks;
+mod timeline;
 
 use std::time::Duration;
 
@@ -224,7 +225,9 @@ pub fn draw(
         ])
         .areas(content);
         draw_conversation(frame, app, conversation, elapsed);
-        app.scroll.content = conversation;
+        if !app.has_timeline() {
+            app.scroll.content = conversation;
+        }
         draw_queue_preview(frame, app, queue);
         draw_steering_preview(frame, app, steering);
     }
@@ -410,12 +413,14 @@ pub fn draw(
                 } else {
                     "Add an instruction…"
                 });
-            if menu_open {
+            if menu_open || app.has_timeline() && app.timeline.focused {
                 let mut draft = app.input.clone();
                 draft.set_cursor_style(Style::new());
                 frame.render_widget(&draft, input);
             } else {
                 frame.render_widget(&app.input, input);
+            }
+            if !menu_open {
                 app.scroll.input = input;
             }
         }
@@ -2008,6 +2013,10 @@ fn conversation_blocks<'a>(
 }
 
 fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option<Duration>) {
+    if app.has_timeline() {
+        timeline::draw(frame, app, area, elapsed);
+        return;
+    }
     app.page_size = area.height.max(1);
     if area.is_empty() {
         return;
