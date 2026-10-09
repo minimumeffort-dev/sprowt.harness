@@ -2061,7 +2061,7 @@ mod tests {
         worker.task_source = Some(current.clone());
         worker.complete_review(&mut store, &mut m, false).unwrap();
         assert_eq!(m.agent_review.as_ref().unwrap().status, "paused");
-        assert!(m.has_worker_history());
+        assert!(m.messages.iter().any(|m| m.role == "reviewer"));
         store.begin_review(m.id, &fingerprint).unwrap();
         m.agent_review = store.review_state(m.id).unwrap();
         worker.task_source = Some(m.agent_review.as_ref().unwrap().source.clone());

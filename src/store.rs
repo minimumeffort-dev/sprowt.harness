@@ -14,6 +14,7 @@ pub struct CodeMod {
     pub name: String,
     pub description: String,
     pub closed: bool,
+    pub user_paused: bool,
     pub planning: Option<Planning>,
     pub execution: Option<Execution>,
     pub agent_review: Option<crate::review::State>,
@@ -26,20 +27,6 @@ pub struct CodeMod {
 }
 
 impl CodeMod {
-    pub fn has_worker_history(&self) -> bool {
-        self.messages.iter().any(|m| {
-            m.role == "codex"
-                || m.role == "reviewer"
-                || m.role.starts_with("codex:")
-                || m.role.starts_with("muse:")
-                || m.role == "planner"
-                    && !m
-                        .item_id
-                        .as_deref()
-                        .is_some_and(|id| id.starts_with("plan:"))
-        }) || !self.coordination.is_empty()
-    }
-
     pub fn question(&self) -> Option<&crate::mailbox::Envelope> {
         self.coordination.iter().find(|m| self.needs_answer(m))
     }
@@ -208,6 +195,11 @@ impl Store {
             ),
             (
                 "code_mods",
+                "user_paused",
+                "ALTER TABLE code_mods ADD COLUMN user_paused INTEGER NOT NULL DEFAULT 0",
+            ),
+            (
+                "code_mods",
                 "closed_at",
                 "ALTER TABLE code_mods ADD COLUMN closed_at INTEGER",
             ),
@@ -366,7 +358,7 @@ impl Store {
         )?;
         let mut statement = self
             .0
-            .prepare("SELECT id, name, draft, COALESCE(description,name), closed FROM code_mods WHERE project_id = ?1 ORDER BY id")?;
+            .prepare("SELECT id, name, draft, COALESCE(description,name), closed, user_paused FROM code_mods WHERE project_id = ?1 ORDER BY id")?;
         let mut mods = statement
             .query_map([id], |row| {
                 Ok(CodeMod {
@@ -374,6 +366,7 @@ impl Store {
                     name: row.get(1)?,
                     description: row.get(3)?,
                     closed: row.get(4)?,
+                    user_paused: row.get(5)?,
                     planning: None,
                     execution: None,
                     agent_review: None,
@@ -490,6 +483,7 @@ impl Store {
             name: title,
             description: name.to_owned(),
             closed: false,
+            user_paused: false,
             planning: self.planning(id)?,
             execution: None,
             agent_review: None,
@@ -500,6 +494,14 @@ impl Store {
             steering: Vec::new(),
             coordination: Vec::new(),
         })
+    }
+
+    pub fn set_user_paused(&self, mod_id: i64, paused: bool) -> Result<()> {
+        self.0.execute(
+            "UPDATE code_mods SET user_paused=?2 WHERE id=?1",
+            params![mod_id, paused],
+        )?;
+        Ok(())
     }
 
     pub fn select_mod(&self, project_id: i64, mod_id: i64) -> Result<()> {

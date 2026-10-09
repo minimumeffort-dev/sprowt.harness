@@ -15,14 +15,14 @@ flowchart TB
 
 The current harness supports one planner and up to two executors per mod. Workers in different mods can run at the same time. Planners read the worktree initially and exported source for edit rounds; executors work on its source copy in Linux. See [Plan execution](execution.md).
 
-Publishing creates or updates a PR and keeps the VM for further edits. Closing saves a checkpoint and removes the VM; deletion discards local work. Optional [independent review](review.md) checks the finished version and sends defects back to their file owners.
+Publishing creates or updates a PR and keeps the VM for further edits. Closing saves a checkpoint and removes the VM; deletion discards local work. [Independent review](review.md) starts automatically after successful combined checks. You decide when to send findings back to their owners for fixes.
 
 ## Create, switch, close
 
 - **Create:** open **Ctrl+P**, select **New codemod**, describe the change and press Enter. Confirm Git setup when offered. The project branch is checked and safely updated before creating a worktree; planning and execution start automatically. The first line becomes the title; the full description is saved.
 - **Switch:** open **Ctrl+P**, select a mod and press Enter. Its conversation and draft return. Other mods’ workers keep running.
 - **Edit:** send a message through the composer. After the current version is verified, a fresh plan and execution round start against its source. Published mods use the same composer and PR.
-- **Review:** **Ctrl+E** starts a fresh Sol 6.1 xhigh reviewer. **Ctrl+O** expands its findings; fixes and checks run before review repeats.
+- **Review:** inspect automatic review findings with **Ctrl+T → Review**. Choose **Fix issues** explicitly; successful fixes and checks lead to a fresh review. **Ctrl+E** starts or retries review manually.
 - **Publish:** **Ctrl+S** starts publication after verification; Enter confirms the PR. **Ctrl+D** lets you review the diff first.
 - **Update:** **Ctrl+U** syncs the project branch and checks for merged work. Finished versions update and recheck automatically; running workers finish first. An existing PR becomes draft until you publish the verified update.
 - **Close:** select an active mod, press `c`, then Enter. Save a local checkpoint, keep the worktree and history, and remove the VM. GitHub is not required. Older snapshot mods first offer Git adoption.
@@ -35,7 +35,7 @@ The first launch in an empty project opens creation directly. Ctrl+J adds a newl
 
 ## Draft, queue, conversation
 
-A draft is what you are typing. Enter saves it to the queue, or answers the highlighted worker question when the composer says **answer #ID**. During work, ordinary instructions wait. Once a version is verified, the next instruction starts a new edit plan. Sending edits after a failed run replans against the work saved so far. That request and worker replies appear in the conversation. Drafts remain separate. See [Worker communication](coordination.md) for asks, replies and automatic resumption.
+A draft is what you are typing. Enter saves it to the queue, or answers the highlighted worker question when the composer says **answer #ID**. During work, ordinary instructions show as **Queued for next pass**. Deliberately paused work retains them until you resume. Once a version is verified, the next instruction starts a new edit plan. Sending edits after a failed run replans against the work saved so far. That request and worker replies appear in the conversation. Drafts remain separate. See [Worker communication](coordination.md) for asks, replies and automatic resumption.
 
 Open **Ctrl+Q** to manage pending instructions:
 
@@ -47,7 +47,7 @@ Open **Ctrl+Q** to manage pending instructions:
 | `d` | Remove |
 | Space | Mark or unmark |
 | `t` | Choose a running worker or all workers for steering |
-| `s` | Steer the target with marked instructions, or the selected one |
+| `s` | Send selected instructions to workers; wait for connection when none are running |
 | Esc | Return to the composer |
 
 Editing preserves your composer draft. Removing the last item closes the queue dialog. An instruction awaiting delivery confirmation cannot be edited, removed or steered.

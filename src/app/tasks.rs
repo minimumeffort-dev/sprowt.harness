@@ -57,6 +57,9 @@ impl App {
             .find(|r| r.id == id)
             .and_then(|r| r.worker);
         if self.store.retry_task(mod_id, id)? {
+            if let Some(index) = self.active {
+                self.set_paused(index, false)?;
+            }
             if let Some(owner) = owner
                 && self.workers.get(&owner).is_some_and(|w| !w.busy())
             {

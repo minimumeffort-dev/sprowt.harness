@@ -89,7 +89,7 @@ Each active task has a spinner and worker ID through implementation and checks. 
 
 Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Final verification stops at the first failure: details show that command and its evidence, with skipped commands summarized in muted text. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
 
-Finished versions show compact task rows, the final check count and the publish action. **Ctrl+T** opens [task inspection](terminal.md#inspect-a-task): status, owner, checks and focused history. **Inspect failure** in the dock opens the affected task directly. Questions for you stay visible in the conversation.
+Combined checks passing automatically starts independent review. Current clean reviews recommend publication. **Ctrl+T** opens [Details](terminal.md#details): tasks, check evidence, review findings and activity. Select a task to inspect its failure and retry only that task. Questions for you stay visible in the conversation.
 
 ### Task conflict recovery
 
@@ -175,9 +175,9 @@ Use the queue’s **s** action to steer an active turn immediately. Steering and
 
 ## Pause, review and publish
 
-**Ctrl+R** pauses both workers and any verification or setup command. Files and runtime remain. Reconnecting verifies confirmed turns without repeating their edits; uncertain delivery waits for explicit retry. Failed final checks can rerun without regenerating completed tasks.
+**Ctrl+R** pauses both workers and any verification or setup command. The deliberate pause is saved; reopening does not resume it. Files and runtime remain. Reconnecting verifies confirmed turns without repeating their edits; uncertain delivery waits for explicit retry. Failed final checks can rerun without regenerating completed tasks.
 
-**Ctrl+E** requests [independent review](review.md) of a finished version. Open findings with **Ctrl+G**, then **i**. **x · Fix issues** returns them to existing owners; affected tasks and final checks rerun before a fresh review. **Ctrl+D** opens source changes while workers are idle. **Ctrl+S**, or **p** inside the diff, starts publication after verification. Confirm Git adoption or a GitHub destination if needed, then the PR. Publication commits and pushes to the codemod branch and retains the VM for more edits.
+[Independent review](review.md) starts automatically after successful combined checks during active work. **Ctrl+E** starts or retries it explicitly. Open findings with **Ctrl+T → Review**. **x · Fix issues** returns them to existing owners; affected tasks and final checks rerun before a fresh review. **Ctrl+D** opens source changes while workers are idle. **Ctrl+S**, or **p** inside the diff, starts publication after verification. Confirm Git adoption or a GitHub destination if needed, then the PR. Publication commits and pushes to the codemod branch and retains the VM for more edits.
 
 Closing stops both workers, saves each unfinished draft, then saves a local checkpoint and a Git bundle of the VM’s task branches before removing the VM. Reopening restores unfinished task source and branch relationships. Draft exports include edits from both tasks; overlapping text edits get conflict markers. Binary conflicts retain the VM until resolved. Installed runtimes and dependencies must be prepared again in the fresh VM. Missing executables in final checks use the bounded recovery above; other environment failures stay visible for retry or an edit request. Deleting discards local work. See [Worktrees and PRs](git-workflow.md) for retention and recovery.
 

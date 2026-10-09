@@ -1,4 +1,5 @@
 mod findings;
+mod inspector;
 mod tasks;
 
 use std::time::Duration;
@@ -331,68 +332,25 @@ pub fn draw(
                 ..dialog_area
             },
         );
-    } else if let View::Findings(scroll) = app.view {
-        findings::draw(
+    } else if app.view.details_tab().is_some() {
+        inspector::draw(
             frame,
             app,
-            scroll,
             Rect {
                 width: area.width,
                 ..dialog_area
             },
-        );
-    } else if let View::Tasks(selected) = app.view {
-        tasks::draw_tasks(
-            frame,
-            app,
-            selected,
-            Rect {
-                width: area.width,
-                ..dialog_area
-            },
-        );
-    } else if let View::Task(id, scroll) = app.view {
-        tasks::draw_task(
-            frame,
-            app,
-            id,
-            scroll,
-            Rect {
-                width: area.width,
-                ..dialog_area
-            },
-        );
-    } else if let View::TaskHistory(id, scroll) = app.view {
-        draw_history(
-            frame,
-            app,
-            scroll,
-            Rect {
-                width: area.width,
-                ..dialog_area
-            },
-            Some(id),
-        );
-    } else if let View::History(scroll) = app.view {
-        draw_history(
-            frame,
-            app,
-            scroll,
-            Rect {
-                width: area.width,
-                ..dialog_area
-            },
-            None,
         );
     } else if matches!(app.view, View::Publish) {
         let count = app.review.as_ref().map_or(0, |review| review.count());
         let text = Paragraph::new(format!(
-            "Publish {count} changed files {}?",
+            "Publish {count} changed files {}?\n\n{}",
             if app.git_state().is_some_and(|s| s.pr.is_some()) {
                 "to the existing PR"
             } else {
                 "as a PR"
-            }
+            },
+            app.state_summary().evidence
         ))
         .wrap(Wrap { trim: false });
         let rows = text.line_count(dialog_area.width.saturating_sub(4));
@@ -541,7 +499,7 @@ fn draw_queue_preview(frame: &mut Frame, app: &App, area: Rect) {
         Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
     frame.render_widget(
         Line::from(vec![
-            format!("queue ({count})  ").fg(KEY_HINT),
+            format!("next pass ({count})  ").fg(KEY_HINT),
             "ctrl+q ".fg(ACCENT),
             "manage".fg(KEY_HINT),
         ]),
@@ -564,7 +522,14 @@ fn draw_queue_editor(frame: &mut Frame, app: &mut App, index: usize, area: Rect)
     let mut hints = vec![
         ("↑↓", "focus"),
         ("space", "mark"),
-        ("s", "steer"),
+        (
+            "s",
+            if app.running_workers().is_empty() {
+                "send when workers connect"
+            } else {
+                "send to workers"
+            },
+        ),
         ("↵", "edit"),
         ("d", "remove"),
     ];
@@ -589,9 +554,12 @@ fn draw_queue_editor(frame: &mut Frame, app: &mut App, index: usize, area: Rect)
         ..area
     };
     let title = if app.queue_selection.is_empty() {
-        format!("queue ({count})")
+        format!("queued for next pass ({count})")
     } else {
-        format!("queue ({count}) · {} selected", app.queue_selection.len())
+        format!(
+            "queued for next pass ({count}) · {} selected",
+            app.queue_selection.len()
+        )
     };
     let (messages, _) = draw_dialog(frame, area, &title, count, false, &hints);
     app.scroll.content = messages;
@@ -1176,12 +1144,6 @@ fn dock_header(
     let primary = (!menu_open)
         .then(|| {
             dock.primary
-                .or_else(|| {
-                    dock.actions
-                        .iter()
-                        .any(|a| a.action == Action::Stop)
-                        .then_some(Action::Stop)
-                })
                 .and_then(|id| dock.actions.iter().find(|a| a.action == id))
         })
         .flatten()
@@ -1194,6 +1156,20 @@ fn dock_header(
         })
         .unwrap_or_default();
     let mut lines = dock_row(status, primary, width);
+    if !menu_open && !dock.detail.is_empty() {
+        lines.extend(
+            wrap_line(Line::from(dock.detail.clone()).fg(KEY_HINT), width, 0)
+                .into_iter()
+                .take(2),
+        );
+    }
+    if !menu_open && !dock.evidence.is_empty() {
+        lines.extend(wrap_line(
+            Line::from(dock.evidence.clone()).fg(KEY_HINT),
+            width,
+            0,
+        ));
+    }
     if !menu_open && let Some(error) = &dock.error {
         let mut error = wrap_line(Line::from(error.clone()).fg(Color::Red), width, 0);
         if error.len() > 2 {
@@ -1217,7 +1193,25 @@ fn dock_hints(app: &App, width: u16, menu_open: bool) -> Vec<Line<'static>> {
     }
     let new_mod = matches!(app.composer_view(), View::NewMod);
     let ctrl = if width < 60 { "^" } else { "ctrl+" };
-    let actions = hint(&format!("{ctrl}g"), "Actions".into());
+    let mut actions = Line::default();
+    if !new_mod {
+        if app
+            .action_dock()
+            .actions
+            .iter()
+            .any(|a| a.action == Action::Stop)
+        {
+            actions = hint(&format!("{ctrl}r"), "Pause".into());
+            actions.spans.push(Span::raw("   "));
+        }
+        actions
+            .spans
+            .extend(hint(&format!("{ctrl}t"), "Details".into()).spans);
+        actions.spans.push(Span::raw("   "));
+    }
+    actions
+        .spans
+        .extend(hint(&format!("{ctrl}g"), "More".into()).spans);
     if !new_mod && app.read_only() {
         return dock_row(Line::default(), actions, width);
     }
@@ -1228,7 +1222,7 @@ fn dock_hints(app: &App, width: u16, menu_open: bool) -> Vec<Line<'static>> {
     } else if app.published() || app.version_ready() {
         "Request edits".into()
     } else {
-        "Queue message".into()
+        "Queue for next pass".into()
     };
     let mut input = hint("↵", send);
     let newline = hint(&format!("{ctrl}j"), "Newline".into());
@@ -1266,25 +1260,41 @@ fn dock_row(left: Line<'static>, right: Line<'static>, width: u16) -> Vec<Line<'
 
 fn draw_actions(frame: &mut Frame, app: &mut App, dock: &ActionDock, selected: Action, area: Rect) {
     frame.render_widget(ratatui::widgets::Clear, area);
+    let actions = dock.menu_actions();
     let (body, _) = draw_dialog(
         frame,
         area,
-        "all actions",
-        dock.actions.len(),
+        "actions",
+        actions.len() + 8,
         false,
         &[("↑↓", "select"), ("↵", "choose"), ("esc", "back")],
     );
     app.scroll.content = body;
-    let items = dock.actions.iter().map(|item| {
+    let mut previous = None;
+    let items = actions.iter().map(|item| {
+        let group = item.action.group();
+        let mut lines = Vec::new();
+        if previous != Some(group) {
+            if previous.is_some() {
+                lines.push(Line::default());
+            }
+            lines.push(
+                Line::from(["Work", "Inspect", "Codemod", "Remove"][group as usize])
+                    .fg(KEY_HINT)
+                    .bold(),
+            );
+            previous = Some(group);
+        }
         let mut line = action_control(item, body.width, true);
         if dock.primary == Some(item.action) {
             line.spans.insert(0, "› ".fg(ACCENT));
         } else {
             line.spans.insert(0, Span::raw("  "));
         }
-        line
+        lines.push(line);
+        ratatui::widgets::ListItem::new(lines)
     });
-    let index = dock.actions.iter().position(|a| a.action == selected);
+    let index = actions.iter().position(|a| a.action == selected);
     frame.render_stateful_widget(
         List::new(items).highlight_style(dialog_selection()),
         body,

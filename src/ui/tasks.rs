@@ -44,7 +44,7 @@ pub(super) fn draw_tasks(frame: &mut Frame, app: &mut App, selected: usize, area
     if ids.get(selected).is_some_and(|id| app.can_retry_task(*id)) {
         keys.push(("r", "retry task"));
     }
-    keys.extend([("h", "all history"), ("esc", "back")]);
+    keys.extend([("tab", "section"), ("h", "activity"), ("esc", "back")]);
     let inner = panel(frame, area, format!("tasks ({})", ids.len()), &keys);
     let items: Vec<_> = ids
         .iter()
@@ -104,7 +104,18 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
             _ => {}
         }
     }
-    keys.extend([("esc", "tasks"), ("ctrl+t", "conversation")]);
+    keys.extend([
+        (
+            "e",
+            if app.show_evidence {
+                "hide evidence"
+            } else {
+                "show evidence"
+            },
+        ),
+        ("esc", "tasks"),
+        ("ctrl+t", "conversation"),
+    ]);
     let inner = panel(frame, area, format!("task {}", task.number), &keys);
     let mut lines = vec![
         Line::from(task.task.title.clone()).bold(),
@@ -163,9 +174,13 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
                 .bold(),
         );
         lines.extend(command_lines(&check.command, inner.width));
+        let output = if app.show_evidence {
+            check.output.clone()
+        } else {
+            check.evidence()
+        };
         lines.extend(
-            check
-                .evidence()
+            output
                 .lines()
                 .map(|line| Line::from(line.to_owned()).fg(Color::Red)),
         );
@@ -225,7 +240,10 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
                 KEY_HINT
             }),
         );
-        for check in checks.into_iter().filter(|check| check.failed()) {
+        for check in checks
+            .into_iter()
+            .filter(|check| check.failed() || app.show_evidence)
+        {
             if !task
                 .checks
                 .iter()
@@ -233,12 +251,18 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
                 .is_some_and(|first| std::ptr::eq(*first, *check))
             {
                 lines.extend(command_lines(&check.command, inner.width));
-                lines.extend(
-                    check
-                        .evidence()
-                        .lines()
-                        .map(|line| Line::from(line.to_owned()).fg(Color::Red)),
-                );
+                let output = if app.show_evidence {
+                    check.output.clone()
+                } else {
+                    check.evidence()
+                };
+                lines.extend(output.lines().map(|line| {
+                    Line::from(line.to_owned()).fg(if check.failed() {
+                        Color::Red
+                    } else {
+                        KEY_HINT
+                    })
+                }));
             }
         }
     }

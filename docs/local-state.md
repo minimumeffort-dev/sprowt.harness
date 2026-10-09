@@ -109,3 +109,5 @@ Each edit round consumes its queued request and replaces the current plan and ta
 Reopening leaves unfinished work paused. Finished versions can automatically update when the target branch changes. Codex may retain earlier conversations; credentials stay on the host.
 
 Run one harness instance per project. Shared memory across projects, repository indexing and memory updates after merges are future layers.
+
+A deliberate user pause is saved on the codemod, separate from task failures. Reopening leaves unfinished execution and interrupted review idle. Active sessions advance from successful combined checks to review once per verified version; inspecting saved evidence never starts work.

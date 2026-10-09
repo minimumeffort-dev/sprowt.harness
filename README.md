@@ -14,13 +14,13 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Planning and routing](docs/planning.md): describe the outcome. Astra xhigh defines tasks and contracts. Rust balances Codex and Muse; Jev chooses Sol 6.1 effort.
 - [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
 - [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders, independent checks, one recovery attempt and repair handoffs.
-- [Independent review](docs/review.md): a fresh Sol 6.1 xhigh reviewer inspects the combined result, shows findings for your approval, then returns defects to their owners and reviews verified fixes.
+- [Independent review](docs/review.md): after combined checks pass, a fresh Sol 6.1 xhigh reviewer automatically inspects the result, shows findings for your approval, then returns defects to their owners and reviews verified fixes.
 - [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Workers choose runtimes and dependencies, request OS packages and ask you to approve blocked download domains.
 - [Workers and isolation](docs/workers.md): Codex planning and review, with separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
 - [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup, VM setup and task checks, with caller checks and recorded activity.
 - [Local state](docs/local-state.md): reopen a project and pick up where you left off.
-- [Terminal and companion](docs/terminal.md): a full-width outline with aligned tasks, compact menus and a unified dock with a growing message area. Task inspection, shortcuts, mouse scrolling and a Sprowt pet that reacts to work.
+- [Terminal and companion](docs/terminal.md): a full-width outline, one shared state summary, a growing message dock and a Details inspector for tasks, checks, review and activity. Contextual actions, mouse scrolling and a Sprowt pet that reacts to work.
 
 ### Current limits
 
@@ -45,21 +45,21 @@ flowchart TB
     first <-->|"Saved task mailboxes"| second
     first --> combine["Combine one result at a time · verify together"]
     second --> combine
-    combine -->|"Checks pass"| ready["Version ready"]
+    combine -->|"Checks pass"| reviewer["Automatic review · Sol 6.1 xhigh"]
     combine -->|"Regression found"| repair["Reopen responsible task · rerun affected checks"]
     repair --> schedule
     ready --> edits["Send edits · plan the next round"]
     edits --> planner
-    ready -->|"Optional review"| reviewer["Sol 6.1 xhigh · inspect combined source"]
     reviewer --> findings["View findings"]
     findings -->|"You choose Fix issues"| repair
-    reviewer -->|"No findings"| publish
+    reviewer -->|"No findings"| ready["Ready to publish"]
     ready --> publish["Confirm publish · create or update PR"]
-    publish --> ready
+    publish --> published["PR published"]
+    published --> edits
     upstream["Another PR merges"] --> update["Save checkpoint · combine latest target branch"]
     upstream --> local["Project check · safely update local branch"]
     update --> verify["Codex or Muse resolves conflicts · Rust rechecks"]
-    verify --> ready
+    verify --> reviewer
 ```
 
 Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Codex and Muse share a check runner, with saved scripts and results tied to the tested source. Rust reruns checks independently before accepting changes; identical commands within one task’s verification pass run once. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse uses Spark 1.3 high. Jev routes Codex effort.
@@ -74,7 +74,7 @@ Late handoff acknowledgements keep the worker's valid task report. New blockers 
 
 Publishing keeps the VM and worktree for further edits. Task environments stay through checks, review and repairs; a new plan removes the old task folders. Missing check executables return to their original worker for one bounded recovery attempt. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
 
-You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows plan details; **Ctrl+T** opens tasks with focused checks and history. The dock’s **Inspect failure** action opens the affected task. Finished versions show tasks and check counts. A shared action model drives the dock, menu and shortcuts from current state. One dock groups progress, the next action and message entry; **Ctrl+G** lists all available actions. Small changes can stay with one worker.
+You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows plan details; **Ctrl+T** opens Details: Tasks, Checks, Review and Activity. The dock distinguishes active recovery, a deliberate pause and a problem needing you. Task completion, combined checks and current review are separate evidence. The shared summary drives the dock and Details; one primary action appears when useful. **Ctrl+G · More** groups Work, Inspect and Codemod actions, with deletion separate. An existing PR with newer local work shows **PR open · update pending**. Small changes can stay with one worker.
 
 Blocked downloads show **Network access needed** beside the task. **Ctrl+N** shows the exact domains and reason: **a** allows them for this codemod; **d** denies. Approval reconnects the affected worker and retries its saved task. Other workers continue; the global allowlist stays unchanged.
 
@@ -122,9 +122,9 @@ Start in an empty folder, an existing project or a Git repository. If Git has no
 Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth login` and `gh auth setup-git`.
 
 1. Describe a codemod and press **Enter**. Confirm Git setup if offered. Planning and execution start automatically.
-2. Workers prepare a first version. The unified dock shows progress, the next useful action and your message. **Ctrl+G · Actions** opens the full menu; existing shortcuts still work.
+2. Workers prepare a first version. The unified dock shows progress, the next useful action and your message. **Ctrl+T · Details** shows evidence; **Ctrl+G · More** opens grouped actions; existing shortcuts still work.
 3. Send a message to request edits. Messages sent during work wait for the next round; the queue also supports steering.
-4. Choose **Ask agent to review**, **View diff** or **Publish PR** in the dock or All actions. Review is optional; confirm the GitHub destination if needed, then the PR. Keep editing afterward to update the same PR.
+4. Combined checks lead to an automatic review. Inspect findings in **Details → Review**, then explicitly choose **Fix issues**. Verified fixes get a fresh review. Choose **Publish PR** and confirm its destination and publication; keep editing afterward to update the same PR.
 5. In **Ctrl+P**, **c** closes with a checkpoint, **Tab** shows closed mods, **r** reopens and **d** deletes local data.
 
 Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. Review repairs wait for **Fix issues** and are capped at two rounds per plan. Each finding gets a regression check. Automatic target updates wait for review and repairs; the dock shows their current step and elapsed time.
@@ -145,16 +145,16 @@ Setup saves the key in private local configuration, so the installed harness can
 | --- | --- |
 | Enter | Answer a highlighted question, send edits or queue an instruction |
 | Ctrl+J | Newline |
-| Ctrl+G | All available actions; Esc returns |
+| Ctrl+G | More: grouped applicable actions; Esc returns |
 | Ctrl+P | Switch, create, close, reopen or delete a codemod |
 | Ctrl+Q | Open the queue |
-| Ctrl+R | Run, stop, retry or reopen a closed codemod |
+| Ctrl+R | Pause, resume, retry or reopen a closed codemod |
 | Ctrl+S | Publish verified changes as a PR |
-| Ctrl+E | Ask an agent to review the finished version |
+| Ctrl+E | Start or retry review of the checked version |
 | Ctrl+G, then i | View review findings; x starts fixes |
 | Ctrl+U | Sync the project branch and check the codemod's target |
 | Ctrl+O | Show or hide plan details |
-| Ctrl+T | Tasks and history; Enter inspects a task |
+| Ctrl+T | Details: Tasks, Checks, Review, Activity; 1–4 or Tab switches sections |
 | Ctrl+N | Review a pending network request |
 | Ctrl+D | View diff |
 | Fn + ↑ / ↓ on Mac | Scroll the conversation |

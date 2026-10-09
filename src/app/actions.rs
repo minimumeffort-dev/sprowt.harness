@@ -1,9 +1,9 @@
 use super::{App, View};
-use crate::{plan::Role, worker::Status};
+use crate::worker::Status;
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use rusqlite::Result;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Run,
     Stop,
@@ -29,6 +29,15 @@ pub enum Action {
 }
 
 impl Action {
+    pub fn group(self) -> u8 {
+        match self {
+            Self::History | Self::Details | Self::Failure | Self::Diff | Self::Findings => 1,
+            Self::Mods | Self::NewMod | Self::Close | Self::Reopen => 2,
+            Self::Delete => 3,
+            _ => 0,
+        }
+    }
+
     pub fn shortcut(self) -> Option<char> {
         match self {
             Self::Run | Self::Stop | Self::Retry | Self::RetryGit | Self::Reopen => Some('r'),
@@ -87,10 +96,26 @@ pub enum Tone {
 
 pub struct ActionDock {
     pub status: String,
+    pub detail: String,
+    pub evidence: String,
     pub error: Option<String>,
     pub tone: Tone,
     pub primary: Option<Action>,
     pub actions: Vec<ActionItem>,
+}
+
+impl ActionDock {
+    pub fn menu_actions(&self) -> Vec<&ActionItem> {
+        self.actions
+            .iter()
+            .filter(|item| {
+                !matches!(
+                    item.action,
+                    Action::Details | Action::Findings | Action::Failure
+                ) || self.primary == Some(item.action)
+            })
+            .collect()
+    }
 }
 
 impl App {
@@ -148,27 +173,25 @@ impl App {
 
     pub fn action_dock(&self) -> ActionDock {
         use Action::*;
+        let summary = self.state_summary();
         let mut dock = ActionDock {
-            status: String::new(),
-            error: None,
-            tone: Tone::Quiet,
-            primary: None,
+            tone: summary.tone(),
+            status: summary.status,
+            detail: summary.detail,
+            evidence: summary.evidence,
+            error: summary.error,
+            primary: summary.primary,
             actions: Vec::new(),
         };
         let new_mod = matches!(self.composer_view(), View::NewMod);
         let code_mod = self.current_mod().filter(|_| !new_mod);
         if let Some(m) = code_mod {
             let busy = self.execution_busy();
-            let active = self.workers.values().any(|w| w.mod_id == m.id && w.busy());
             let worker = self.current_worker();
             let details = m
                 .planning
                 .as_ref()
                 .is_some_and(|p| p.status == "ready" && p.plan.is_some());
-            let changed = self.targets.get(&m.id).filter(|t| {
-                t.pr_state.as_deref().is_none_or(|s| s == "OPEN")
-                    && self.git_states.get(&m.id).is_some_and(|s| s.base != t.head)
-            });
             let running = self.workers.values().any(|w| w.mod_id == m.id && w.enabled);
             let retry = self.git_retry_pending();
             let failed_checks = m.execution.as_ref().is_some_and(|e| {
@@ -192,7 +215,9 @@ impl App {
                         && m.execution
                             .as_ref()
                             .is_none_or(|e| !["review", "applied"].contains(&e.status.as_str())));
-            let worker_action = (self.git_activity().is_none()
+            let worker_action = (self
+                .git_activity()
+                .is_none_or(|activity| activity == "checking target branch")
                 && (run || m.closed && m.git_root.is_some()))
             .then_some(if m.closed {
                 Reopen
@@ -200,6 +225,8 @@ impl App {
                 Stop
             } else if retry {
                 RetryGit
+            } else if m.user_paused {
+                Run
             } else if failed_checks
                 || self.worker_error().is_some()
                 || worker.is_some_and(|w| w.error.is_some())
@@ -214,11 +241,11 @@ impl App {
                     action,
                     match action {
                         Reopen => "Reopen codemod",
-                        Stop => "Stop workers",
+                        Stop => "Pause work",
                         RetryGit => "Retry Git operation",
                         Retry if final_blocked => "Retry final checks",
                         Retry => "Retry work",
-                        _ => "Run work",
+                        _ => "Resume work",
                     },
                 ));
             }
@@ -257,8 +284,7 @@ impl App {
                 dock.actions.push(ActionItem::new(Diff, "View diff"));
             }
             if self.version_ready() {
-                dock.actions
-                    .push(ActionItem::new(Review, "Ask agent to review"));
+                dock.actions.push(ActionItem::new(Review, "Review changes"));
                 dock.actions.push(ActionItem::new(Publish, "Publish PR"));
             }
             if m.agent_review.as_ref().is_some_and(|r| r.report.is_some()) {
@@ -281,235 +307,16 @@ impl App {
                     format!("Manage queue ({})", m.queue.len()),
                 ));
             }
-            if m.has_worker_history() || !self.task_ids().is_empty() {
-                dock.actions
-                    .push(ActionItem::new(History, "Tasks and history"));
-            }
-            if m.closed {
-                dock.status = "Closed · work saved".into();
-                dock.primary = worker_action;
-            } else if m.question().is_some() {
-                dock.status = "Worker needs your answer".into();
-                dock.tone = Tone::Attention;
-            } else if self.pending_network().is_some() {
-                dock.status = "Network access needed".into();
-                dock.tone = Tone::Attention;
-                dock.primary = Some(Network);
-            } else if let Some(activity) = self.git_activity().filter(|activity| {
-                *activity != "checking target branch"
-                    || !active
-                        && !self.auto_plans.contains(&m.id)
-                        && !self.auto_runs.contains(&m.id)
-                        && !m.agent_review.as_ref().is_some_and(|r| r.holds_updates(m))
-            }) {
-                dock.status = activity.into();
-                dock.tone = Tone::Busy;
-            } else if retry {
-                dock.status = "Git operation paused".into();
-                dock.tone = Tone::Attention;
-                dock.primary = Some(RetryGit);
-            } else if active || self.auto_plans.contains(&m.id) || self.auto_runs.contains(&m.id) {
-                dock.status = if worker.is_some_and(|w| w.role == Role::Planner) {
-                    "Planning".into()
-                } else if worker.is_some_and(|w| w.role == Role::Reviewer) {
-                    "Reviewing changes".into()
-                } else {
-                    m.execution.as_ref().map_or("Working".into(), |e| {
-                        if e.status == "verifying" {
-                            return "Final verification".into();
-                        }
-                        if let Some((index, _)) = e.tasks.iter().enumerate().find(|(_, run)| {
-                            run.conflict.is_some()
-                                && ["pending", "sending", "running", "checking"]
-                                    .contains(&run.status.as_str())
-                        }) {
-                            return format!("Resolving task {} conflicts", index + 1);
-                        }
-                        if let Some(review) =
-                            m.agent_review.as_ref().filter(|r| r.status == "fixing")
-                        {
-                            let findings = review
-                                .report
-                                .as_ref()
-                                .map_or(&[][..], |r| r.findings.as_slice());
-                            let checked = findings
-                                .iter()
-                                .enumerate()
-                                .filter(|(i, f)| {
-                                    e.tasks.iter().any(|t| {
-                                        t.task_id == f.owner
-                                            && t.status == "done"
-                                            && t.checks.iter().any(|c| {
-                                                c.check == crate::review::regression_check(*i, f)
-                                                    && c.exit_code == Some(0)
-                                            })
-                                    })
-                                })
-                                .count();
-                            return format!(
-                                "Review fixes · {checked}/{} issues checked",
-                                findings.len()
-                            );
-                        }
-                        if e.tasks.len() == 1 && e.tasks[0].task_id == "upstream" {
-                            return "Verifying target update".into();
-                        }
-                        if e.tasks
-                            .iter()
-                            .any(|t| t.status != "done" && t.restoring_runtime())
-                        {
-                            return "Restoring task environment".into();
-                        }
-                        format!(
-                            "Working · {}/{} tasks done",
-                            e.tasks.iter().filter(|t| t.status == "done").count(),
-                            e.tasks.len()
-                        )
-                    })
-                };
-                if let Some(worker) = worker.filter(|w| w.busy()) {
-                    if let Some(progress) = worker.progress() {
-                        dock.status.push_str(&format!(
-                            " · {}",
-                            progress.chars().take(100).collect::<String>()
-                        ));
-                    }
-                    dock.status
-                        .push_str(&format!(" · {}", worker.elapsed_label()));
-                }
-                dock.tone = Tone::Busy;
-            } else if busy {
-                dock.status = "Workers ready".into();
-            } else if let Some(target) = self.targets.get(&m.id)
-                && matches!(target.pr_state.as_deref(), Some("MERGED" | "CLOSED"))
-            {
-                dock.status = if target.pr_state.as_deref() == Some("MERGED") {
-                    "PR merged"
-                } else {
-                    "PR closed"
-                }
-                .into();
-                dock.primary = Some(NewMod);
-            } else if let Some(target) =
-                changed.filter(|_| !m.agent_review.as_ref().is_some_and(|r| r.holds_updates(m)))
-            {
-                dock.status = format!("{} changed · combined checks needed", target.branch);
-                dock.primary = Some(Update);
-                dock.tone = Tone::Attention;
-            } else if final_blocked {
-                dock.status = "Final verification blocked".into();
-                dock.primary = if self.failed_task().is_some() {
-                    Some(Failure)
-                } else {
-                    worker_action
-                };
-                dock.tone = Tone::Attention;
-                dock.error = m
-                    .execution
-                    .as_ref()
-                    .and_then(|e| e.checks.iter().find(|c| c.failed()).map(|c| c.brief()));
-            } else if self.worker_error().is_some() || failed_checks || self.failed_task().is_some()
-            {
-                dock.status = "Work paused".into();
-                dock.primary = if self.failed_task().is_some() || self.worker_error().is_some() {
-                    Some(Failure)
-                } else {
-                    worker_action
-                };
-                dock.tone = Tone::Attention;
-            } else if let Some(review) = m
-                .agent_review
-                .as_ref()
-                .filter(|r| r.status == "findings" && r.current(m))
-            {
-                let count = review.report.as_ref().map_or(0, |r| r.findings.len());
-                dock.status = format!(
-                    "{count} review issue{} found",
-                    if count == 1 { "" } else { "s" }
-                );
-                dock.primary = Some(Findings);
-                dock.tone = Tone::Attention;
-            } else if self.published() {
-                dock.status = "PR published".into();
-                dock.tone = Tone::Ready;
-            } else if self.version_ready() {
-                let review = m.agent_review.as_ref().filter(|r| r.current(m));
-                match review.map(|r| r.status.as_str()) {
-                    Some("clean") => {
-                        dock.status = "Review passed · changes ready".into();
-                        dock.primary = Some(Publish);
-                    }
-                    Some("paused" | "blocked") => {
-                        dock.status = "Review paused".into();
-                        dock.primary = Some(Review);
-                    }
-                    _ => {
-                        dock.status = "Changes ready".into();
-                        dock.primary = Some(Review);
-                    }
-                }
-                dock.tone = Tone::Ready;
-            } else {
-                dock.status = "Work paused".into();
-                dock.primary = worker_action;
-            }
-            if active
-                && m.question().is_none()
-                && self.pending_network().is_none()
-                && self
-                    .git_activity()
-                    .is_none_or(|activity| activity == "checking target branch")
-                && let Some(e) = &m.execution
-            {
-                let attention = e
-                    .tasks
-                    .iter()
-                    .filter(|t| matches!(t.status.as_str(), "paused" | "blocked" | "repair_paused"))
-                    .count();
-                if attention > 0 {
-                    let running = self
-                        .workers
-                        .values()
-                        .filter(|w| w.mod_id == m.id && w.busy())
-                        .count();
-                    dock.status = format!("{running} running · {attention} needs attention");
-                    dock.tone = Tone::Attention;
-                    dock.primary = Some(Failure);
-                }
-            }
-            if matches!(
-                dock.status.as_str(),
-                "Work paused" | "Changes ready" | "PR published" | "Review passed · changes ready"
-            ) && let Some(execution) = &m.execution
-            {
-                dock.status.push_str(&format!(
-                    " · {}/{} tasks done",
-                    execution
-                        .tasks
-                        .iter()
-                        .filter(|task| task.status == "done")
-                        .count(),
-                    execution.tasks.len()
-                ));
-            }
+            dock.actions.push(ActionItem::new(History, "Details"));
             if !m.closed && self.git_activity().is_none() {
                 dock.actions.push(ActionItem::new(Close, "Close codemod"));
             }
             if self.git_activity().is_none() {
                 dock.actions.push(ActionItem::new(Delete, "Delete codemod"));
             }
-        } else {
-            dock.status = "New codemod".into();
-            if let Some(activity) = self.project_activity() {
-                dock.status = activity.into();
-                dock.tone = Tone::Busy;
-            }
-            if self.action_error().is_some() {
-                dock.tone = Tone::Attention;
-                dock.actions
-                    .push(ActionItem::new(Failure, "Show full error"));
-                dock.primary = Some(Failure);
-            }
+        } else if self.action_error().is_some() {
+            dock.actions
+                .push(ActionItem::new(Failure, "Show full error"));
         }
         let update_label = code_mod
             .and_then(|m| self.targets.get(&m.id))
@@ -531,31 +338,26 @@ impl App {
         if !new_mod {
             dock.actions.push(ActionItem::new(NewMod, "New codemod"));
         }
-        if let Some(error) = self
-            .action_error()
-            .filter(|_| !matches!(dock.tone, Tone::Busy))
-        {
-            dock.error = Some(error.lines().next().unwrap_or(error).trim().into());
-        }
-        if let Some(primary) = dock.primary
-            && let Some(index) = dock.actions.iter().position(|a| a.action == primary)
-        {
-            let item = dock.actions.remove(index);
-            dock.actions.insert(0, item);
-        }
+        // Keep a stable category order as state changes. Enter remains bound to its action.
+        dock.actions.sort_by_key(|item| item.action.group());
+        dock.primary = dock
+            .primary
+            .filter(|primary| dock.actions.iter().any(|a| a.action == *primary));
         dock
     }
 
     pub(super) fn open_actions(&mut self) {
         self.action_origin = Some(self.view);
-        if let Some(first) = self.action_dock().actions.first() {
-            self.view = View::Actions(first.action);
+        let dock = self.action_dock();
+        if let Some(first) = dock.menu_actions().first() {
+            self.view = View::Actions(dock.primary.unwrap_or(first.action));
         }
     }
 
     pub(super) fn actions_key(&mut self, key: KeyEvent, selected: Action) -> Result<()> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let actions = self.action_dock().actions;
+        let dock = self.action_dock();
+        let actions = dock.menu_actions();
         let index = actions
             .iter()
             .position(|a| a.action == selected)
@@ -586,7 +388,11 @@ impl App {
                 self.action_shortcut(c)?;
             }
             KeyCode::Char(c) if key.modifiers.is_empty() && key.kind == KeyEventKind::Press => {
-                if let Some(item) = actions.iter().find(|a| a.action.menu_shortcut() == Some(c)) {
+                if let Some(item) = dock
+                    .actions
+                    .iter()
+                    .find(|a| a.action.menu_shortcut() == Some(c))
+                {
                     self.view = self.action_origin.take().unwrap_or(View::Chat);
                     self.perform_action(item.action)?;
                 }
@@ -648,6 +454,7 @@ impl App {
                 if let Some(index) = self.active {
                     let id = self.mods[index].id;
                     if self.store.review_fixes(&self.mods[index])? {
+                        self.set_paused(index, false)?;
                         self.mods[index].planning = self.store.planning(id)?;
                         self.mods[index].execution = self.store.execution(id)?;
                         self.executing_mods.insert(id);
@@ -679,7 +486,20 @@ impl App {
             Action::Queue => self.view = View::Queue(0),
             Action::History => {
                 self.history_origin = None;
-                self.view = if self.task_ids().is_empty() {
+                self.show_evidence = false;
+                self.view = if self
+                    .current_mod()
+                    .and_then(|m| m.agent_review.as_ref())
+                    .is_some_and(|r| r.status == "findings")
+                {
+                    View::Findings(0)
+                } else if self
+                    .current_mod()
+                    .and_then(|m| m.execution.as_ref())
+                    .is_some_and(|e| e.complete() && e.status == "blocked")
+                {
+                    View::Checks(0)
+                } else if self.task_ids().is_empty() {
                     View::History(0)
                 } else {
                     View::Tasks(0)

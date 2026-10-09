@@ -25,7 +25,9 @@ use crate::{
 };
 
 mod actions;
+mod inspector;
 mod scroll;
+mod state;
 mod tasks;
 pub use actions::{Action, ActionDock, ActionItem, Tone};
 pub use scroll::Scroll;
@@ -43,6 +45,7 @@ pub enum View {
     EditQueue(usize),
     Review(u16),
     Findings(u16),
+    Checks(u16),
     History(u16),
     Tasks(usize),
     Task(i64, u16),
@@ -67,6 +70,7 @@ pub struct App {
     pub history_offset: u16,
     pub page_size: u16,
     pub plan_details: bool,
+    pub show_evidence: bool,
     pub focus_plan: bool,
     pub review: Option<Review>,
     publish_after_review: bool,
@@ -78,6 +82,7 @@ pub struct App {
     pub steer_target: Option<i64>,
     auto_plans: BTreeSet<i64>,
     auto_runs: BTreeSet<i64>,
+    auto_reviews: BTreeSet<i64>,
     executing_mods: BTreeSet<i64>,
     git_jobs: BTreeMap<i64, Job>,
     project_job: Option<Job>,
@@ -184,6 +189,7 @@ impl App {
             history_offset: 0,
             page_size: 1,
             plan_details: false,
+            show_evidence: false,
             focus_plan: false,
             review: None,
             publish_after_review: false,
@@ -195,6 +201,7 @@ impl App {
             steer_target: None,
             auto_plans: BTreeSet::new(),
             auto_runs: BTreeSet::new(),
+            auto_reviews: BTreeSet::new(),
             executing_mods: BTreeSet::new(),
             git_jobs: BTreeMap::new(),
             project_job: None,
@@ -324,6 +331,7 @@ impl App {
                 | View::CloseMod(_)
                 | View::Queue(_)
                 | View::Review(_)
+                | View::Checks(_)
                 | View::Findings(_)
                 | View::History(_)
                 | View::Tasks(_)
@@ -347,7 +355,11 @@ impl App {
                     self.perform_action(Action::Update)?;
                     return Ok(());
                 }
+                if self.inspector_key(key) {
+                    return Ok(());
+                }
                 match self.view {
+                    View::Checks(_) => {}
                     View::Actions(selected) => self.actions_key(key, selected)?,
                     View::Failure(scroll) => match key.code {
                         KeyCode::Esc => self.view = self.action_origin.take().unwrap_or(View::Chat),
@@ -375,6 +387,7 @@ impl App {
                                     key.code == KeyCode::Char('a'),
                                 )?;
                                 if key.code == KeyCode::Char('a') {
+                                    self.set_paused(self.active.unwrap(), false)?;
                                     self.executing_mods.insert(mod_id);
                                 }
                                 self.refresh_network_requests()?;
@@ -1029,6 +1042,7 @@ impl App {
                 .collect::<Vec<_>>();
             self.auto_plans.remove(&id);
             self.auto_runs.remove(&id);
+            self.auto_reviews.remove(&id);
             self.executing_mods.remove(&id);
             self.git_jobs.insert(
                 id,
@@ -1110,6 +1124,7 @@ impl App {
             .map(|execution| execution.workspace.clone());
         self.auto_plans.remove(&mod_id);
         self.auto_runs.remove(&mod_id);
+        self.auto_reviews.remove(&mod_id);
         self.executing_mods.remove(&mod_id);
         self.workers.retain(|_, worker| worker.mod_id != mod_id);
         if workspace.is_some()
@@ -1209,6 +1224,7 @@ impl App {
 
     fn start_continuation(&mut self, index: usize) {
         let id = self.mods[index].id;
+        self.auto_reviews.remove(&id);
         self.executing_mods.remove(&id);
         self.workers.retain(|_, worker| worker.mod_id != id);
         if self.mods[index].git_root.is_none() {
@@ -1594,8 +1610,22 @@ impl App {
             return Ok(());
         };
         let id = self.mods[active].id;
-        if self.git_jobs.contains_key(&id) {
+        if self
+            .git_jobs
+            .get(&id)
+            .is_some_and(|job| job.label != "checking target branch")
+        {
             return Ok(());
+        }
+        let stopping = self
+            .workers
+            .values()
+            .any(|w| w.mod_id == id && (w.enabled || w.busy()));
+        self.set_paused(active, stopping)?;
+        if stopping {
+            self.auto_reviews.remove(&id);
+            self.auto_plans.remove(&id);
+            self.auto_runs.remove(&id);
         }
         if let Some(worker) = self
             .workers
@@ -1811,6 +1841,9 @@ impl App {
                 self.mods[active].planning = self.store.planning(mod_id)?;
             }
             worker.toggle();
+            if role == Role::Planner && worker.enabled {
+                self.auto_runs.insert(mod_id);
+            }
             return Ok(());
         }
         self.start_worker(active, role)
@@ -1923,6 +1956,7 @@ impl App {
             .enumerate()
             .filter(|(_, m)| {
                 !m.closed
+                    && !m.user_paused
                     && self.auto_runs.contains(&m.id)
                     && !self.git_jobs.contains_key(&m.id)
                     && m.planning.as_ref().is_some_and(|p| p.status == "ready")
@@ -2028,6 +2062,7 @@ impl App {
             .is_some_and(|e| matches!(e.status.as_str(), "review" | "applied"))
         {
             self.executing_mods.remove(&mod_id);
+            self.auto_reviews.insert(mod_id);
         }
         Ok(())
     }
@@ -2214,6 +2249,7 @@ impl App {
             .filter_map(|key| self.workers.remove(&key))
             .collect::<Vec<_>>();
         self.executing_mods.remove(&id);
+        self.auto_reviews.remove(&id);
         self.git_jobs.insert(
             id,
             Job::start("publishing PR", move |cancelled| {
@@ -2226,6 +2262,12 @@ impl App {
         self.review = None;
         self.view = View::Chat;
         self.notice = None;
+    }
+
+    fn set_paused(&mut self, index: usize, paused: bool) -> Result<()> {
+        self.store.set_user_paused(self.mods[index].id, paused)?;
+        self.mods[index].user_paused = paused;
+        Ok(())
     }
 
     fn begin_agent_review(&mut self, index: usize) -> Result<()> {
@@ -2259,7 +2301,9 @@ impl App {
             return Ok(());
         }
         self.store.begin_review(code_mod.id, &fingerprint)?;
+        self.set_paused(index, false)?;
         let id = self.mods[index].id;
+        self.auto_reviews.remove(&id);
         self.mods[index].agent_review = self.store.review_state(id)?;
         let record = self.store.worker_provider(id, Role::Reviewer, 0, "codex")?;
         self.start_worker_record(index, Role::Reviewer, record)
@@ -2267,53 +2311,80 @@ impl App {
 
     fn maintain_reviews(&mut self) -> Result<()> {
         for index in 0..self.mods.len() {
-            let code_mod = &self.mods[index];
-            let Some(review) = code_mod.agent_review.as_ref() else {
-                continue;
-            };
-            let id = code_mod.id;
-            if code_mod.closed || self.git_jobs.contains_key(&id) {
-                continue;
+            let m = &self.mods[index];
+            let id = m.id;
+            if m.closed || m.user_paused || !m.queue.is_empty() || !m.steering.is_empty() {
+                self.auto_reviews.remove(&id);
             }
-            let same_plan = code_mod
-                .planning
-                .as_ref()
-                .is_some_and(|p| p.source == review.plan_source);
-            let stale = !same_plan
-                || !code_mod.queue.is_empty()
-                || !code_mod.steering.is_empty()
-                || (review.status != "fixing" && !review.current(code_mod));
-            if stale && review.status != "stale" {
-                self.store
-                    .0
-                    .execute("UPDATE reviews SET status='stale' WHERE mod_id=?1", [id])?;
-                self.mods[index].agent_review = self.store.review_state(id)?;
-                for worker in self
-                    .workers
-                    .values_mut()
-                    .filter(|w| w.mod_id == id && w.role == Role::Reviewer && w.enabled)
-                {
-                    worker.toggle();
-                }
-                continue;
-            }
-            if self
-                .workers
-                .values()
-                .any(|w| w.mod_id == id && (w.enabled || w.busy()))
-            {
-                continue;
-            }
-            if review.status == "fixing"
-                && code_mod
-                    .execution
+            if let Some(r) = m.agent_review.as_ref() {
+                let same_plan = m
+                    .planning
                     .as_ref()
-                    .is_some_and(|e| e.complete() && e.status == "review")
-            {
+                    .is_some_and(|p| p.source == r.plan_source);
+                if r.status != "stale"
+                    && (!same_plan
+                        || !m.queue.is_empty()
+                        || !m.steering.is_empty()
+                        || (r.status != "fixing" && !r.current(m)))
+                {
+                    self.store
+                        .0
+                        .execute("UPDATE reviews SET status='stale' WHERE mod_id=?1", [id])?;
+                    self.mods[index].agent_review = self.store.review_state(id)?;
+                    for worker in self
+                        .workers
+                        .values_mut()
+                        .filter(|w| w.mod_id == id && w.role == Role::Reviewer && w.enabled)
+                    {
+                        worker.toggle();
+                    }
+                    continue;
+                }
+            }
+            if self.review_due(index) {
                 self.begin_agent_review(index)?;
             }
         }
         Ok(())
+    }
+
+    fn review_due(&self, index: usize) -> bool {
+        let m = &self.mods[index];
+        let busy = self
+            .workers
+            .values()
+            .any(|w| w.mod_id == m.id && (w.enabled || w.busy()));
+        let confirming = self.current_mod().is_some_and(|current| current.id == m.id)
+            && matches!(
+                self.view,
+                View::Review(_)
+                    | View::Publish
+                    | View::DeleteMod(_)
+                    | View::CloseMod(_)
+                    | View::ProjectSetup(_, _)
+                    | View::Repository(_)
+                    | View::ConfirmRepository(_)
+            );
+        !m.closed
+            && !m.user_paused
+            && !self.git_states.get(&m.id).is_some_and(|s| s.published())
+            && !self
+                .targets
+                .get(&m.id)
+                .is_some_and(|t| matches!(t.pr_state.as_deref(), Some("MERGED" | "CLOSED")))
+            && !busy
+            && !confirming
+            && !self.git_jobs.contains_key(&m.id)
+            && m.queue.is_empty()
+            && m.steering.is_empty()
+            && m.execution
+                .as_ref()
+                .is_some_and(|e| e.complete() && e.status == "review" && e.fingerprint.is_some())
+            && match m.agent_review.as_ref() {
+                Some(r) if r.status == "fixing" => self.auto_reviews.contains(&m.id),
+                Some(r) if r.status != "stale" && r.current(m) => false,
+                _ => self.auto_reviews.contains(&m.id),
+            }
     }
 
     fn poll_workers(&mut self) -> Result<()> {
@@ -2357,6 +2428,7 @@ impl App {
             .filter(|(_, m)| {
                 self.executing_mods.contains(&m.id)
                     && !m.closed
+                    && !m.user_paused
                     && !self.git_jobs.contains_key(&m.id)
                     && editing_mod != Some(m.id)
                     && deleting_mod != Some(m.id)
@@ -2406,6 +2478,7 @@ impl App {
             .enumerate()
             .filter(|(_, m)| {
                 !m.closed
+                    && !m.user_paused
                     && !m.queue.is_empty()
                     && !self.git_jobs.contains_key(&m.id)
                     && m.git_root.as_ref().is_none_or(|root| {
@@ -2517,7 +2590,7 @@ impl App {
             let Some(index) = self
                 .mods
                 .iter()
-                .position(|m| m.id == access.mod_id && !m.closed)
+                .position(|m| m.id == access.mod_id && !m.closed && !m.user_paused)
             else {
                 continue;
             };
@@ -3780,7 +3853,7 @@ mod tests {
         state.base = "new-head".into();
         state.phase = "published".into();
         state.pr = Some("https://github.com/fixture/project/pull/1".into());
-        assert_eq!(app.action_dock().status, "PR published · 1/1 tasks done");
+        assert_eq!(app.action_dock().status, "PR published");
         app.targets.get_mut(&id).unwrap().pr_state = Some("MERGED".into());
         assert!(app.action_dock().primary == Some(Action::NewMod));
         app.mods[0].closed = true;
@@ -3845,7 +3918,8 @@ mod tests {
         for width in [36, 80, 120] {
             app.open_actions();
             let mut columns = Vec::new();
-            for item in app.action_dock().actions {
+            let dock = app.action_dock();
+            for item in dock.menu_actions() {
                 app.view = View::Actions(item.action);
                 let rendered = rows(&screen(&mut app, width, 36));
                 assert!(item.action.shortcut().is_some() || item.action.menu_shortcut().is_some());
@@ -3947,14 +4021,19 @@ mod tests {
         let (_data, mut app, _root) = execution_app();
         for width in [36, 48, 116] {
             let rendered = rows(&screen(&mut app, width, 30));
-            let position = |text: &str| rendered.iter().position(|r| r.contains(text)).unwrap();
+            let position = |text: &str| {
+                rendered
+                    .iter()
+                    .position(|r| r.contains(text))
+                    .unwrap_or_else(|| panic!("Missing {text}:\n{}", rendered.join("\n")))
+            };
             let top = position("╭");
-            let status = position("Changes ready");
-            let action = position("Ask agent to review");
+            let status = position("Checks passed");
+            let action = position("Review changes");
             let divider = position("├");
             let composer = position("keep this draft");
             let hints = position("Request edits");
-            let menu = position("Actions");
+            let menu = position("More");
             let bottom = position("╰");
             assert!(top < status && status <= action && action < divider);
             assert!(divider < composer && composer < hints && hints <= menu && menu < bottom);
@@ -3969,17 +4048,13 @@ mod tests {
                     Some(if row.contains('┤') { '┤' } else { '│' })
                 );
             }
-            assert!(rendered[menu].contains(if width < 68 {
-                "^g Actions"
-            } else {
-                "ctrl+g Actions"
-            }));
+            assert!(rendered[menu].contains(if width < 68 { "^g More" } else { "ctrl+g More" }));
             assert!(rendered[bottom + 1..].iter().all(|r| r.trim().is_empty()));
             if width == 116 {
                 assert_eq!(status, action);
                 assert_eq!(hints, menu);
-                assert_eq!(bottom - top + 1, 9);
-                assert!(rendered[menu].ends_with("ctrl+g Actions │  "));
+                assert_eq!(bottom - top + 1, 11);
+                assert!(rendered[menu].ends_with("ctrl+g More │  "));
             }
             let text = rendered.join("\n");
             assert!(text.contains("ctrl+o ▸ show details"));
@@ -4039,7 +4114,7 @@ mod tests {
             let buffer = screen(&mut app, width, height);
             let input = app.scroll.input;
             assert!(input.height > 0 && input.height <= 8);
-            assert!(rows(&buffer).iter().any(|r| r.contains("Actions")));
+            assert!(rows(&buffer).iter().any(|r| r.contains("More")));
             assert!((input.y..input.bottom()).any(|y| {
                 buffer[(input.x, y)]
                     .modifier
@@ -4073,8 +4148,8 @@ mod tests {
         worker.status = Status::Running;
         app.workers.insert(worker.id, worker);
         let working = rows(&screen(&mut app, 100, 30)).join("\n");
-        assert!(working.contains("Working · 1/1 tasks done"));
-        assert!(working.contains("ctrl+r Stop workers") && working.contains("↵ Queue message"));
+        assert!(working.contains("1/1 tasks finished"));
+        assert!(working.contains("ctrl+r Pause") && working.contains("↵ Queue for next pass"));
         app.git_jobs.insert(
             id,
             Job::start("checking target branch", |_| {
@@ -4082,12 +4157,14 @@ mod tests {
             }),
         );
         let polling = rows(&screen(&mut app, 100, 30)).join("\n");
-        assert!(polling.contains("Working · 1/1 tasks done"));
+        assert!(polling.contains("1/1 tasks finished"));
         assert!(!polling.contains("checking target branch"));
         app.git_jobs.clear();
         app.workers.clear();
         let ready = rows(&screen(&mut app, 100, 30)).join("\n");
-        assert!(ready.contains("Changes ready") && ready.contains("↵ Request edits"));
+        assert!(
+            ready.contains("Checks passed · review pending") && ready.contains("↵ Request edits")
+        );
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert!(matches!(app.view, View::Chat));
 
@@ -4101,7 +4178,7 @@ mod tests {
         app.notice = None;
         app.mods[0].closed = true;
         let closed = rows(&screen(&mut app, 48, 30)).join("\n");
-        assert!(closed.contains("Closed · work saved") && closed.contains("^g Actions"));
+        assert!(closed.contains("Closed · work saved") && closed.contains("^g More"));
         assert!(!closed.contains("Newline") && !closed.contains("keep this draft"));
         assert_eq!(app.scroll.input, ratatui::layout::Rect::default());
         app.view = View::NewMod;
@@ -4223,7 +4300,10 @@ mod tests {
         run.conflict = Some(conflict);
         let id = run.id;
         app.auto_runs.insert(m.id);
-        assert_eq!(app.action_dock().status, "Resolving task 1 conflicts");
+        assert_eq!(
+            app.action_dock().status,
+            "Working · resolving task 1 conflicts"
+        );
         app.view = View::Task(id, 0);
         let rendered = rows(&screen(&mut app, 100, 40)).join("\n");
         assert!(rendered.contains("Conflicting files"));
@@ -4284,7 +4364,7 @@ mod tests {
             app.inspect_task(second_id).unwrap().note,
             "Waiting for task 1."
         );
-        assert!(app.action_dock().primary == Some(Action::Failure));
+        assert!(app.action_dock().primary == Some(Action::RetryTask(first_id)));
         app.perform_action(Action::Failure).unwrap();
         assert!(matches!(app.view, View::Task(id, 0) if id == first_id));
         for width in [36, 100, 160] {
@@ -4330,9 +4410,10 @@ mod tests {
         execution.checks[0].exit_code = Some(1);
         execution.checks[0].output = "final check failed".into();
         assert_eq!(app.inspect_task(id).unwrap().state, "Final checks failed");
-        assert!(app.action_dock().primary == Some(Action::Failure));
+        assert!(app.action_dock().primary == Some(Action::Retry));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-        assert!(matches!(app.view, View::Tasks(0)));
+        assert!(matches!(app.view, View::Checks(0)));
+        key(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let text = rows(&screen(&mut app, 100, 30)).join("\n");
         assert!(
@@ -5092,8 +5173,8 @@ mod tests {
         app.maintain_reviews().unwrap();
         assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 0);
         app.input.insert_str("keep my draft");
-        assert!(app.action_dock().primary == Some(Action::Findings));
-        assert_eq!(app.action_dock().status, "1 review issue found");
+        assert!(app.action_dock().primary == Some(Action::FixIssues));
+        assert_eq!(app.action_dock().status, "Review · 1 open issue");
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
         assert!(matches!(app.view, View::Findings(0)));
@@ -5146,7 +5227,7 @@ mod tests {
         assert!(
             app.action_dock()
                 .status
-                .starts_with("Review fixes · 0/1 issues checked · ")
+                .starts_with("Working · fixing review issues")
         );
         let task = &app.mods[0]
             .planning
@@ -5158,7 +5239,8 @@ mod tests {
             .tasks[0];
         assert!(task.checks[0].starts_with("Review regression 1"));
         let rendered = rows(&screen(&mut app, 100, 30)).join("\n");
-        assert!(rendered.contains("Review fixes · 0/1 issues checked"));
+        assert!(rendered.contains("Working · fixing review issues"));
+        assert!(rendered.contains("0/1 issues checked"));
         assert_eq!(app.input.lines(), ["keep my draft"]);
     }
 
@@ -5340,7 +5422,9 @@ mod tests {
                 .unwrap();
             drop(vm);
             let mut app = App::load(project.clone(), false, store).unwrap();
-            app.begin_agent_review(0).unwrap();
+            app.executing_mods.insert(m.id);
+            app.schedule_execution(0).unwrap();
+            app.maintain_reviews().unwrap();
             let mut saw_fix = false;
             let mut previous = String::new();
             let started = Instant::now();
@@ -5420,6 +5504,209 @@ mod tests {
         if let Err(error) = result {
             std::panic::resume_unwind(error);
         }
+    }
+
+    #[test]
+    fn verified_work_starts_one_review_and_a_deliberate_pause_survives_restart() {
+        let (data, mut app, _) = execution_app();
+        let id = app.mods[0].id;
+        // Loading a saved version is passive; completing an active run starts review.
+        assert!(!app.review_due(0));
+        app.executing_mods.insert(id);
+        app.schedule_execution(0).unwrap();
+        assert!(app.review_due(0));
+        app.maintain_reviews().unwrap();
+        let source = app.mods[0].agent_review.as_ref().unwrap().source.clone();
+        assert!(!app.auto_reviews.contains(&id));
+        app.maintain_reviews().unwrap();
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().source, source);
+        assert_eq!(
+            app.workers
+                .values()
+                .filter(|w| w.role == Role::Reviewer)
+                .count(),
+            1
+        );
+        assert_eq!(app.state_summary().phase, state::Phase::Reviewing);
+        assert!(app.action_dock().primary.is_none());
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(app.mods[0].user_paused);
+        assert_eq!(app.state_summary().phase, state::Phase::Paused);
+        let project = app.project.clone();
+        drop(app);
+        let mut app = App::load(project, false, data.store()).unwrap();
+        app.maintain_reviews().unwrap();
+        assert!(app.workers.is_empty() && app.mods[0].user_paused);
+        assert_eq!(app.action_dock().status, "Paused by you");
+        assert!(app.action_dock().primary == Some(Action::Review));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        app.perform_action(Action::Review).unwrap();
+        assert!(!app.mods[0].user_paused);
+        assert_ne!(app.mods[0].agent_review.as_ref().unwrap().source, source);
+    }
+
+    #[test]
+    fn resumed_planning_restores_continuation_and_publishing_shows_review_state() {
+        let (_data, mut app, _) = execution_app();
+        app.view = View::Publish;
+        let display = rows(&screen(&mut app, 100, 40)).join("\n");
+        assert!(display.contains("Checks 1/1 passed") && display.contains("Review not started"));
+        app.view = View::Chat;
+        app.mods[0].execution = None;
+        app.mods[0].planning.as_mut().unwrap().status = "pending".into();
+        app.start_worker(0, Role::Planner).unwrap();
+        let id = app.mods[0].id;
+        assert!(app.auto_runs.contains(&id));
+        app.toggle_worker().unwrap();
+        assert!(app.mods[0].user_paused && !app.auto_runs.contains(&id));
+        app.toggle_worker().unwrap();
+        assert!(!app.mods[0].user_paused && app.auto_runs.contains(&id));
+    }
+
+    #[test]
+    fn automatic_review_respects_version_decisions_queues_and_pause() {
+        let (_data, mut app, root) = execution_app();
+        let id = app.mods[0].id;
+        app.auto_reviews.insert(id);
+        assert!(app.review_due(0));
+        for view in [
+            View::Publish,
+            View::Review(0),
+            View::DeleteMod(0),
+            View::CloseMod(0),
+        ] {
+            app.view = view;
+            assert!(!app.review_due(0));
+        }
+        app.view = View::Checks(0);
+        assert!(app.review_due(0));
+        app.mods[0]
+            .queue
+            .push(app.store.enqueue(id, "an edit").unwrap());
+        assert!(!app.review_due(0));
+        app.mods[0].queue.clear();
+        app.mods[0].steering.push("pending delivery".into());
+        assert!(!app.review_due(0));
+        app.mods[0].steering.clear();
+        app.mods[0].closed = true;
+        assert!(!app.review_due(0));
+        app.mods[0].closed = false;
+        app.set_paused(0, true).unwrap();
+        assert!(!app.review_due(0));
+        app.set_paused(0, false).unwrap();
+        std::fs::write(root.join("work/hello.sh"), "changed after checks\n").unwrap();
+        app.maintain_reviews().unwrap();
+        assert!(app.workers.is_empty() && app.mods[0].agent_review.is_none());
+        assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "blocked");
+        assert!(!app.review_due(0));
+    }
+
+    #[test]
+    fn current_review_outcomes_never_loop_automatically() {
+        let (_data, mut app, _) = execution_app();
+        let m = &mut app.mods[0];
+        let id = m.id;
+        m.agent_review = Some(crate::review::State {
+            source: "review:1".into(),
+            plan_source: m.planning.as_ref().unwrap().source.clone(),
+            fingerprint: m.execution.as_ref().unwrap().fingerprint.clone().unwrap(),
+            status: "clean".into(),
+            rounds: 0,
+            report: None,
+        });
+        app.auto_reviews.insert(id);
+        for status in [
+            "clean", "findings", "blocked", "paused", "pending", "running",
+        ] {
+            app.mods[0].agent_review.as_mut().unwrap().status = status.into();
+            assert!(!app.review_due(0), "{status}");
+        }
+        app.mods[0].agent_review.as_mut().unwrap().status = "fixing".into();
+        assert!(app.review_due(0));
+        app.auto_reviews.clear();
+        assert!(!app.review_due(0));
+        app.auto_reviews.insert(id);
+        app.mods[0].agent_review.as_mut().unwrap().status = "stale".into();
+        assert!(app.review_due(0));
+    }
+
+    #[test]
+    fn implementation_checks_and_review_have_distinct_truthful_states() {
+        let (_data, mut app, _) = execution_app();
+        let id = app.mods[0].id;
+        let e = app.mods[0].execution.as_mut().unwrap();
+        e.status = "verifying".into();
+        app.executing_mods.insert(id);
+        assert_eq!(app.state_summary().phase, state::Phase::Checking);
+        assert!(app.action_dock().primary.is_none());
+        assert!(!app.action_dock().evidence.contains("Review clear"));
+        app.executing_mods.clear();
+        let e = app.mods[0].execution.as_mut().unwrap();
+        e.status = "blocked".into();
+        e.checks[0].exit_code = Some(1);
+        e.checks[0].output = "AssertionError: current failure".into();
+        assert_eq!(app.state_summary().phase, state::Phase::NeedsYou);
+        assert!(app.action_dock().primary == Some(Action::Retry));
+        assert!(app.action_dock().evidence.contains("1 failed"));
+        let e = app.mods[0].execution.as_mut().unwrap();
+        e.status = "review".into();
+        e.checks[0].exit_code = Some(0);
+        e.checks[0].output.clear();
+        assert_eq!(app.state_summary().phase, state::Phase::Paused);
+        assert!(app.action_dock().primary == Some(Action::Review));
+        let m = &mut app.mods[0];
+        m.agent_review = Some(crate::review::State {
+            source: "review:1".into(),
+            plan_source: m.planning.as_ref().unwrap().source.clone(),
+            fingerprint: m.execution.as_ref().unwrap().fingerprint.clone().unwrap(),
+            status: "clean".into(),
+            rounds: 0,
+            report: None,
+        });
+        assert_eq!(app.state_summary().phase, state::Phase::Ready);
+        assert!(app.action_dock().primary == Some(Action::Publish));
+        app.mods[0].execution.as_mut().unwrap().fingerprint = None;
+        assert!(app.action_dock().evidence.contains("Review outdated"));
+        assert!(!app.action_dock().evidence.contains("Review clear"));
+    }
+
+    #[test]
+    fn details_tabs_evidence_and_mouse_scroll_preserve_the_draft() {
+        let (_data, mut app, _) = execution_app();
+        let e = app.mods[0].execution.as_mut().unwrap();
+        e.checks[0].output = "A saved successful check output".into();
+        for width in [36, 80, 120] {
+            app.view = View::Chat;
+            key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+            assert!(matches!(app.view, View::Tasks(0)));
+            key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+            assert!(matches!(app.view, View::Checks(0)));
+            let text = rows(&screen(&mut app, width, 40)).join("\n");
+            assert!(
+                text.contains("Checks") && text.contains("Review") && text.contains("Activity")
+            );
+            assert!(!text.contains("/usr/bin/true"));
+            key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+            let text = rows(&screen(&mut app, width, 40)).join("\n");
+            assert!(text.contains("/usr/bin/true") && text.contains("saved successful"));
+            key(&mut app, KeyCode::Char('3'), KeyModifiers::NONE);
+            assert!(matches!(app.view, View::Findings(0)));
+            key(&mut app, KeyCode::Char('4'), KeyModifiers::NONE);
+            assert!(matches!(app.view, View::History(0)));
+            key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
+            assert!(matches!(app.view, View::Findings(0)));
+            key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
+            assert!(matches!(app.view, View::Chat));
+            assert_eq!(app.input.lines(), ["keep this draft"]);
+            assert!(app.workers.is_empty() && app.git_jobs.is_empty());
+        }
+        app.mods[0].execution.as_mut().unwrap().checks[0].output = "saved evidence\n".repeat(100);
+        app.view = View::Checks(0);
+        screen(&mut app, 80, 24);
+        let content = app.scroll.content;
+        wheel(&mut app, false, content);
+        assert!(matches!(app.view, View::Checks(offset) if offset > 0));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 
     fn execution_app() -> (TestData, App, PathBuf) {
@@ -5582,12 +5869,22 @@ mod tests {
         .unwrap();
         drop(app);
         let mut app = App::load(project.clone(), false, data.store()).unwrap();
+        app.auto_reviews.insert(id);
+        assert!(
+            !app.review_due(0),
+            "Publishing ends automatic review intent"
+        );
         let display = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(display.contains("PR published") && display.contains("Request edits"));
-        assert!(
-            display.contains("PR published · 1/1 tasks done") && !display.contains("changes ready")
-        );
+        assert!(display.contains("PR published") && !display.contains("changes ready"));
         assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "review");
+        app.git_states.get_mut(&id).unwrap().phase = "ready".into();
+        assert!(
+            app.state_summary()
+                .evidence
+                .contains("PR open · update pending")
+        );
+        app.git_states.get_mut(&id).unwrap().phase = "published".into();
         assert!(!app.read_only() && git_mod::checkout(&root).exists());
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(queued(&app), ["keep this draft"]);
@@ -6022,7 +6319,7 @@ mod tests {
         assert!(
             app.action_dock()
                 .status
-                .starts_with("Final verification · ")
+                .starts_with("Working · combined checks")
         );
         app.workers.values_mut().next().unwrap().status = Status::Ready;
         let idle = rows(&screen_at(
@@ -6101,7 +6398,7 @@ mod tests {
         app.executing_mods.insert(mod_id);
         let before = app.store.execution(mod_id).unwrap().unwrap();
         let dock = app.action_dock();
-        assert_eq!(dock.status, "2 running · 1 needs attention");
+        assert_eq!(dock.status, "Task 2 needs attention");
         assert!(
             dock.actions
                 .iter()
@@ -6109,7 +6406,7 @@ mod tests {
         );
         assert!(dock.actions.iter().any(|a| a.action == Action::Stop));
         let visible = rows(&screen(&mut app, 120, 36)).join("\n");
-        assert!(visible.contains("2 running · 1 needs attention"));
+        assert!(visible.contains("Task 2 needs attention"));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         assert!(matches!(app.view, View::Tasks(1)));
@@ -6333,8 +6630,8 @@ mod tests {
         for width in [48, 116] {
             let compact = rows(&screen(&mut app, width, 40));
             let text = compact.join("\n");
-            assert!(text.contains("Changes ready · 3/3 tasks done"));
-            assert!(text.contains("✓ 3/3 checks passed") && text.contains("Actions"));
+            assert!(text.contains("Checks passed · review pending"));
+            assert!(text.contains("✓ 3/3 checks passed") && text.contains("More"));
             assert!(app.action_dock().primary == Some(Action::Review));
             assert!(
                 app.action_dock()
@@ -6352,7 +6649,7 @@ mod tests {
             assert!(!text.contains("Keep task order") && !text.contains("/usr/bin/true"));
             key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
             let actions = rows(&screen(&mut app, width, 40)).join("\n");
-            assert!(actions.contains("Tasks and history") && actions.contains("Publish PR"));
+            assert!(actions.contains("Details") && actions.contains("Publish PR"));
             key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         }
         let instruction = app.store.enqueue(id, "Keep the current icons").unwrap();
@@ -6406,14 +6703,14 @@ mod tests {
         for width in [48, 116] {
             app.plan_details = true;
             app.focus_plan = true;
-            let expanded = rows(&screen(&mut app, width, 42));
+            let expanded = rows(&screen(&mut app, width, 46));
             assert!(
                 app.action_dock()
                     .actions
                     .iter()
                     .any(|a| a.action == Action::Details && a.label == "Hide plan details")
             );
-            assert!(expanded.iter().any(|row| row.contains("Actions")));
+            assert!(expanded.iter().any(|row| row.contains("More")));
             assert!(expanded.iter().any(|row| row.contains("│     response")));
             let start = expanded
                 .iter()
@@ -6435,7 +6732,7 @@ mod tests {
             );
             key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
             let collapsed = rows(&screen(&mut app, width, 42)).join("\n");
-            assert!(collapsed.contains("Actions"));
+            assert!(collapsed.contains("More"));
             assert!(
                 app.action_dock()
                     .actions
@@ -6499,8 +6796,8 @@ mod tests {
                 .collect();
             app.plan_details = true;
             let dock = app.action_dock();
-            assert_eq!(dock.status, "Final verification blocked");
-            assert!(dock.primary == Some(Action::Failure));
+            assert_eq!(dock.status, "Combined checks need attention");
+            assert!(dock.primary == Some(Action::Retry));
             assert!(dock.actions.iter().any(|a| a.label == "Retry final checks"));
             assert!(dock.error.unwrap().contains("executable is unavailable"));
             let buffer = screen(&mut app, width, 55);
