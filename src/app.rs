@@ -6726,6 +6726,94 @@ mod tests {
     }
 
     #[test]
+    fn clicking_jump_to_current_resets_scrolled_details_and_keeps_the_draft() {
+        use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        use timeline::{Focus, Key};
+        let (data, mut store, mut m, _) = crate::review::tests::fixture();
+        store
+            .begin_review(
+                m.id,
+                m.execution.as_ref().unwrap().fingerprint.as_ref().unwrap(),
+            )
+            .unwrap();
+        m.agent_review = store.review_state(m.id).unwrap();
+        store
+            .finish_review(
+                &m,
+                &m.agent_review.as_ref().unwrap().source,
+                &crate::review::tests::finding(),
+            )
+            .unwrap();
+        store.save_draft(m.id, "keep this draft").unwrap();
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        app.mods[0]
+            .agent_review
+            .as_mut()
+            .unwrap()
+            .report
+            .as_mut()
+            .unwrap()
+            .findings[0]
+            .evidence = "Detailed reproduction evidence. ".repeat(160);
+        for width in [160, 90] {
+            for focus in [Focus::Timeline, Focus::Inspector, Focus::Composer] {
+                if width < 120 && focus == Focus::Inspector {
+                    continue;
+                }
+                screen(&mut app, width, 42);
+                assert_eq!(app.timeline.selected, Some(Key::Review));
+                let area = if width >= 120 {
+                    app.timeline.inspector.area
+                } else {
+                    app.scroll.content
+                };
+                wheel(&mut app, false, area);
+                app.timeline.focus = focus;
+                screen(&mut app, width, 42);
+                if width >= 120 {
+                    assert!(app.timeline.inspector.offset > 0);
+                }
+                let button = app.timeline.jump_area;
+                assert!(!button.is_empty());
+                let event = MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: button.right() - 1,
+                    row: button.y,
+                    modifiers: KeyModifiers::NONE,
+                };
+                app.handle(Event::Mouse(event)).unwrap();
+                let display = rows(&screen(&mut app, width, 42)).join("\n");
+                assert_eq!(app.timeline.inspector.offset, 0);
+                assert_eq!(app.timeline.focus, Focus::Timeline);
+                assert_eq!(app.timeline.selected, Some(Key::Review));
+                assert!(!app.timeline.held && app.timeline.jump_area.is_empty());
+                assert!(display.contains("▸ Timeline"));
+                let (_, start, _) = app
+                    .timeline
+                    .rows
+                    .iter()
+                    .find(|(key, _, _)| *key == Key::Review)
+                    .unwrap();
+                assert!(
+                    *start >= app.timeline.top
+                        && *start < app.timeline.top + app.scroll.content.height as usize
+                );
+                app.handle(Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Up(MouseButton::Left),
+                    ..event
+                }))
+                .unwrap();
+                let top = app.timeline.top;
+                screen(&mut app, width, 42);
+                assert_eq!(app.timeline.top, top);
+                assert!(!app.timeline.held);
+                assert_eq!(app.input.lines(), ["keep this draft"]);
+                assert!(queued(&app).is_empty() && app.workers.is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn timeline_mouse_focus_resize_and_request_wrapping_keep_the_composer_usable() {
         use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         use timeline::Key;

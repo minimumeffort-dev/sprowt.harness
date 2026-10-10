@@ -78,7 +78,7 @@ Close can also stop active work before saving its checkpoint. Delete requires co
 - Finished stages collapse. Active tasks show their owner, model, effort, elapsed time and latest update. Waiting tasks explain dependencies; active repairs follow a muted **previous failure** row. Expanding that row shows its saved evidence.
 - Relevant actions sit beside their stage and remain available from the dock and More. Enter on a timeline row opens evidence; it never starts a repair or publishes.
 - **Tab** focuses the timeline. **↑/↓** selects, **Space** expands, and **Enter** opens details. Clicking a row also selects it. **Esc** returns to the draft. **Ctrl+O** opens the full plan.
-- New activity follows the current step until you scroll or navigate back. Your position then stays anchored to the same row, including the blank space between steps. Scrolling can move the selected task off screen; it does not pull you back to that task. **End** while exploring, or clicking **Jump to current**, resumes following. End in the composer still moves the text cursor.
+- New activity follows the current step until you scroll or navigate back. Your position then stays anchored to the same row, including the blank space between steps. Scrolling can move the selected task off screen; it does not pull you back to that task. **End** in the timeline, or clicking **Jump to current** from any pane, focuses the current step, resets its details to the top and resumes following. This also works when that step is already selected. Your draft stays intact; scrolling again holds your position. End in the composer still moves the text cursor.
 
 ### Timeline and side inspector
 

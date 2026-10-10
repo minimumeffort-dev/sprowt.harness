@@ -117,6 +117,8 @@ impl Timeline {
     }
 
     pub fn jump(&mut self) {
+        self.focus = Focus::Timeline;
+        self.inspector.offset = 0;
         self.held = false;
         self.anchor = None;
         self.selected = None;
