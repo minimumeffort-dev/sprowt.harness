@@ -48,6 +48,21 @@ pub struct State {
 }
 
 impl State {
+    pub fn fixes_verified(&self, code_mod: &CodeMod) -> bool {
+        self.status == "fixing"
+            && !code_mod.closed
+            && code_mod.queue.is_empty()
+            && code_mod.steering.is_empty()
+            && code_mod
+                .planning
+                .as_ref()
+                .is_some_and(|p| p.source == self.plan_source)
+            && code_mod
+                .execution
+                .as_ref()
+                .is_some_and(|e| e.complete() && e.status == "review" && e.fingerprint.is_some())
+    }
+
     pub fn holds_updates(&self, code_mod: &CodeMod) -> bool {
         code_mod
             .planning

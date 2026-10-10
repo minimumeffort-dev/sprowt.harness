@@ -47,6 +47,10 @@ impl GitMod {
             && !self.continuing
             && matches!(self.phase.as_str(), "published" | "cleaned")
     }
+
+    pub fn published_version(&self, fingerprint: Option<&str>) -> bool {
+        self.published() && fingerprint.is_some() && self.fingerprint.as_deref() == fingerprint
+    }
 }
 
 pub enum Result {
@@ -972,7 +976,8 @@ pub fn publish(
     cancelled: &AtomicBool,
 ) -> io::Result<String> {
     let mut state = load(root)?;
-    if state.published()
+    let review = workspace::review(root)?;
+    if state.published_version(Some(&review.fingerprint))
         && let Some(pr) = &state.pr
     {
         return Ok(pr.clone());
@@ -988,11 +993,14 @@ pub fn publish(
     };
     validate(root, &state, cancelled)?;
     let path = checkout(root);
-    let review = workspace::review(root)?;
     if review.count() == 0 && state.pr.is_none() {
         return Err(io::Error::other("No source changes to publish."));
     }
     let head = git(root, &path, &["rev-parse", "HEAD"], cancelled)?;
+    // Repairs can change the checked source without starting a new plan.
+    if state.published() {
+        state.phase = "ready".into();
+    }
     if state.phase == "ready" {
         if head
             != *state

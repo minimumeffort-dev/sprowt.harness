@@ -545,10 +545,10 @@ impl<'a> Dispatcher<'a> {
                     Ok(Output::Done)
                 }
                 Request::PublishPr { draft } => {
+                    let fingerprint = workspace::review(root)?.fingerprint;
                     if !draft
-                        && !git_mod::load(root)?.published()
-                        && self.context.verified.as_deref()
-                            != Some(&workspace::review(root)?.fingerprint)
+                        && !git_mod::load(root)?.published_version(Some(&fingerprint))
+                        && self.context.verified.as_deref() != Some(&fingerprint)
                     {
                         return Err(io::Error::other(
                             "PR publication needs the verified source. Recheck before publishing.",
@@ -928,10 +928,35 @@ mod tests {
         assert_eq!(git_mod::load(&root).unwrap().phase, "pushed");
         let output = tools
             .execute(Request::PublishPr { draft: false }, |_| {})
-            .unwrap();
+            .unwrap()
+            .message();
+        assert_eq!(output, "https://github.com/fixture/project/pull/1");
+        let first = git_mod::load(&root).unwrap().published_head.unwrap();
+        fs::write(root.join("work/a.txt"), "review repairs\n").unwrap();
+        assert!(
+            tools
+                .execute(Request::PublishPr { draft: false }, |_| {})
+                .unwrap_err()
+                .to_string()
+                .contains("verified source")
+        );
         assert_eq!(
-            output.message(),
-            "https://github.com/fixture/project/pull/1"
+            git_mod::load(&root).unwrap().published_head.as_ref(),
+            Some(&first)
+        );
+        context.verified = Some(workspace::review(&root).unwrap().fingerprint);
+        let mut tools = Dispatcher::new(&context, None, &flag);
+        tools.github_cli = &gh;
+        let updated = tools
+            .execute(Request::PublishPr { draft: false }, |_| {})
+            .unwrap();
+        assert_eq!(updated.message(), output);
+        let state = git_mod::load(&root).unwrap();
+        assert_ne!(state.published_head.as_ref(), Some(&first));
+        assert_eq!(state.fingerprint, context.verified);
+        assert_eq!(
+            fs::read_to_string(git_mod::checkout(&root).join("a.txt")).unwrap(),
+            "review repairs\n"
         );
         tools.execute(Request::CleanupMod, |_| {}).unwrap();
         assert!(!git_mod::checkout(&root).exists());

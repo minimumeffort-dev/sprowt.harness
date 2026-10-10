@@ -255,11 +255,36 @@ impl App {
             Summary::new(NeedsYou, "Review needs attention", Some(Review))
         } else if self.worker_error().is_some() {
             Summary::new(NeedsYou, "Work needs attention", Some(Failure))
+        } else if self.can_review()
+            && !review.is_some_and(|r| r.status == "clean")
+            && (!self.published() || m.agent_review.is_some())
+        {
+            Summary::new(
+                if self.review_due(self.active.unwrap()) {
+                    Reviewing
+                } else {
+                    Paused
+                },
+                if m.agent_review.as_ref().is_some_and(|r| r.fixes_verified(m)) {
+                    "Fixes checked · fresh review needed"
+                } else {
+                    "Checks passed · review pending"
+                },
+                Some(Review),
+            )
         } else if self.published() {
             Summary::new(Published, "PR published", None)
         } else if self.version_ready() {
             if review.is_some_and(|r| r.status == "clean") {
-                Summary::new(Ready, "Ready to publish", Some(Publish))
+                Summary::new(
+                    Ready,
+                    if self.git_state().is_some_and(|s| s.pr.is_some()) {
+                        "Ready to update PR"
+                    } else {
+                        "Ready to publish"
+                    },
+                    Some(Publish),
+                )
             } else if self.auto_reviews.contains(&m.id) {
                 Summary::new(Reviewing, "Checks passed · review next", None)
             } else {
@@ -347,6 +372,9 @@ impl App {
                 Some("findings") => "Review has findings",
                 Some("pending" | "running") => "Review running",
                 Some("paused" | "blocked") => "Review incomplete",
+                _ if m.agent_review.as_ref().is_some_and(|r| r.fixes_verified(m)) => {
+                    "Awaiting fresh review"
+                }
                 _ if m
                     .agent_review
                     .as_ref()

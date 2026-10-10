@@ -288,9 +288,25 @@ impl App {
             if m.execution.is_some() && !busy {
                 dock.actions.push(ActionItem::new(Diff, "View diff"));
             }
+            if self.can_review() {
+                dock.actions.push(ActionItem::new(
+                    Review,
+                    if m.agent_review.is_some() {
+                        "Review again"
+                    } else {
+                        "Review changes"
+                    },
+                ));
+            }
             if self.version_ready() {
-                dock.actions.push(ActionItem::new(Review, "Review changes"));
-                dock.actions.push(ActionItem::new(Publish, "Publish PR"));
+                dock.actions.push(ActionItem::new(
+                    Publish,
+                    if self.git_state().is_some_and(|s| s.pr.is_some()) {
+                        "Update PR"
+                    } else {
+                        "Publish PR"
+                    },
+                ));
             }
             if m.agent_review.as_ref().is_some_and(|r| r.report.is_some()) {
                 dock.actions

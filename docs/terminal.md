@@ -146,6 +146,8 @@ The timeline reflects the current saved plan and operation states. Prior passes 
 | Task needs attention | Retry that task, or inspect its evidence in Details |
 | Combined checks need attention | Fix failed check; rerun without edits remains in More |
 | Review issues found, after any repair round | Fix review issues; Details opens Review |
+| Repair checks passed, including an existing PR | Review again; previous findings await fresh review |
+| Repairs reviewed, PR has an older version | Update PR |
 | Review interrupted | Review changes |
 | Paused by you | Resume the relevant work |
 | Ready to publish | Publish PR |

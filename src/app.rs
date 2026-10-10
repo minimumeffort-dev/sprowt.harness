@@ -449,7 +449,7 @@ impl App {
                         KeyCode::PageUp => {
                             self.view = View::Review(scroll.saturating_sub(self.page_size))
                         }
-                        KeyCode::Char('r') if key.modifiers.is_empty() && self.version_ready() => {
+                        KeyCode::Char('r') if key.modifiers.is_empty() && self.can_review() => {
                             if let Some(index) = self.active {
                                 self.begin_agent_review(index)?;
                             }
@@ -1310,7 +1310,16 @@ impl App {
     }
 
     pub fn published(&self) -> bool {
-        self.git_state().is_some_and(GitMod::published)
+        self.current_mod().is_some_and(|m| self.mod_published(m))
+    }
+
+    fn mod_published(&self, m: &CodeMod) -> bool {
+        self.git_states.get(&m.id).is_some_and(|git| {
+            git.published()
+                && m.execution
+                    .as_ref()
+                    .is_none_or(|e| e.complete() && git.published_version(e.fingerprint.as_deref()))
+        })
     }
 
     fn check_target(&mut self, index: usize, publish: bool, explicit: bool) {
@@ -1699,7 +1708,10 @@ impl App {
                     self.reopen_mod(active);
                     return Ok(());
                 }
-                Some(state) if state.published() && self.mods[active].queue.is_empty() => {
+                Some(_)
+                    if self.mod_published(&self.mods[active])
+                        && self.mods[active].queue.is_empty() =>
+                {
                     return Ok(());
                 }
                 state if state.is_none_or(|state| state.phase == "preparing") => {
@@ -2175,6 +2187,32 @@ impl App {
             })
     }
 
+    pub fn can_review(&self) -> bool {
+        self.active.is_some_and(|index| self.review_ready(index))
+    }
+
+    fn review_ready(&self, index: usize) -> bool {
+        let m = &self.mods[index];
+        !m.closed
+            && m.queue.is_empty()
+            && m.steering.is_empty()
+            && !self.git_jobs.contains_key(&m.id)
+            && m.git_root
+                .as_ref()
+                .is_none_or(|root| !root.join("main-update.json").exists())
+            && self
+                .targets
+                .get(&m.id)
+                .is_none_or(|t| t.pr_state.as_deref().is_none_or(|s| s == "OPEN"))
+            && !self
+                .workers
+                .values()
+                .any(|w| w.mod_id == m.id && (w.enabled || w.busy()))
+            && m.execution
+                .as_ref()
+                .is_some_and(|e| e.complete() && e.status == "review" && e.fingerprint.is_some())
+    }
+
     pub fn can_publish(&self) -> bool {
         self.version_ready()
             && self
@@ -2286,25 +2324,11 @@ impl App {
     }
 
     fn begin_agent_review(&mut self, index: usize) -> Result<()> {
-        let code_mod = &self.mods[index];
-        if code_mod.closed
-            || !code_mod.queue.is_empty()
-            || !code_mod.steering.is_empty()
-            || self.git_jobs.contains_key(&code_mod.id)
-            || self
-                .workers
-                .values()
-                .any(|w| w.mod_id == code_mod.id && (w.enabled || w.busy()))
-        {
+        if !self.review_ready(index) {
             return Ok(());
         }
-        let Some(execution) = code_mod
-            .execution
-            .as_ref()
-            .filter(|e| e.complete() && e.status == "review")
-        else {
-            return Ok(());
-        };
+        let code_mod = &self.mods[index];
+        let execution = code_mod.execution.as_ref().unwrap();
         let fingerprint = workspace::review(&execution.workspace)
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
             .fingerprint;
@@ -2365,10 +2389,6 @@ impl App {
 
     fn review_due(&self, index: usize) -> bool {
         let m = &self.mods[index];
-        let busy = self
-            .workers
-            .values()
-            .any(|w| w.mod_id == m.id && (w.enabled || w.busy()));
         let confirming = self.current_mod().is_some_and(|current| current.id == m.id)
             && matches!(
                 self.view,
@@ -2380,21 +2400,11 @@ impl App {
                     | View::Repository(_)
                     | View::ConfirmRepository(_)
             );
-        !m.closed
+        self.review_ready(index)
             && !m.user_paused
-            && !self.git_states.get(&m.id).is_some_and(|s| s.published())
-            && !self
-                .targets
-                .get(&m.id)
-                .is_some_and(|t| matches!(t.pr_state.as_deref(), Some("MERGED" | "CLOSED")))
-            && !busy
+            && (!self.mod_published(m)
+                || m.agent_review.as_ref().is_some_and(|r| r.fixes_verified(m)))
             && !confirming
-            && !self.git_jobs.contains_key(&m.id)
-            && m.queue.is_empty()
-            && m.steering.is_empty()
-            && m.execution
-                .as_ref()
-                .is_some_and(|e| e.complete() && e.status == "review" && e.fingerprint.is_some())
             && match m.agent_review.as_ref() {
                 Some(r) if r.status == "fixing" => self.auto_reviews.contains(&m.id),
                 Some(r) if r.status != "stale" && r.current(m) => false,
@@ -4079,6 +4089,7 @@ mod tests {
         state.base = "new-head".into();
         state.phase = "published".into();
         state.pr = Some("https://github.com/fixture/project/pull/1".into());
+        state.fingerprint = app.mods[0].execution.as_ref().unwrap().fingerprint.clone();
         assert_eq!(app.action_dock().status, "PR published");
         app.targets.get_mut(&id).unwrap().pr_state = Some("MERGED".into());
         assert!(app.action_dock().primary == Some(Action::NewMod));
@@ -5868,6 +5879,153 @@ mod tests {
     }
 
     #[test]
+    fn published_repairs_offer_fresh_review_and_then_update_the_same_pr() {
+        for automatic in [false, true] {
+            for changed in [false, true] {
+                let (data, mut store, mut m, _) = crate::review::tests::fixture();
+                let root = m.execution.as_ref().unwrap().workspace.clone();
+                let project = data.0.join("project");
+                commit_project(&project);
+                git_mod::prepare(&project, &root, &std::sync::atomic::AtomicBool::new(false))
+                    .unwrap();
+                store.save_git_root(m.id, &root).unwrap();
+                let mut git = git_mod::load(&root).unwrap();
+                git.phase = "published".into();
+                git.pr = Some("https://github.com/fixture/project/pull/1".into());
+                git.fingerprint = m.execution.as_ref().unwrap().fingerprint.clone();
+                git_mod::save(&root, &git).unwrap();
+                store
+                    .begin_review(m.id, git.fingerprint.as_ref().unwrap())
+                    .unwrap();
+                m.agent_review = store.review_state(m.id).unwrap();
+                let source = m.agent_review.as_ref().unwrap().source.clone();
+                store
+                    .finish_review(&m, &source, &crate::review::tests::finding())
+                    .unwrap();
+                assert!(store.review_fixes(&m).unwrap());
+                if changed {
+                    std::fs::write(
+                        root.join("work/greet.sh"),
+                        "#!/bin/sh\ntest -n \"${1-}\" || exit 1\nprintf 'hello %s\\n' \"$1\"\n",
+                    )
+                    .unwrap();
+                }
+                let repaired = store.execution(m.id).unwrap().unwrap();
+                let mut checks = Vec::new();
+                for (run, before) in repaired
+                    .tasks
+                    .iter()
+                    .zip(&m.execution.as_ref().unwrap().tasks)
+                {
+                    let mut results = before.checks.clone();
+                    if run.task_id == "runtime" {
+                        let mut regression = results[0].clone();
+                        regression.check = "Review regression 1 · Reject empty names".into();
+                        results.push(regression);
+                    }
+                    store
+                        .finish_task(m.id, &run.source, "done", "Repairs checked", &results)
+                        .unwrap();
+                    checks.extend(results);
+                }
+                let fingerprint = workspace::review(&root).unwrap().fingerprint;
+                store
+                    .execution_checks(m.id, "review", &checks, Some(&fingerprint))
+                    .unwrap();
+                store.save_draft(m.id, "keep my draft").unwrap();
+                drop(store);
+                let mut app = App::load(project, false, data.store()).unwrap();
+                app.maintain_reviews().unwrap();
+                assert!(app.workers.is_empty(), "Reopening waits for the user");
+                assert_eq!(app.published(), !changed);
+                assert!(app.can_review());
+                assert_eq!(app.action_dock().primary, Some(Action::Review));
+                assert_eq!(
+                    app.action_dock().status,
+                    "Fixes checked · fresh review needed"
+                );
+                assert!(app.action_dock().evidence.contains("Awaiting fresh review"));
+                assert!(!app.action_dock().evidence.contains("fixes in progress"));
+                let items = app.timeline_items();
+                let review = items
+                    .iter()
+                    .find(|i| i.key == timeline::Key::Review)
+                    .unwrap();
+                assert_eq!(review.action, Some(Action::Review));
+                for width in [90, 160] {
+                    let display = rows(&screen(&mut app, width, 42)).join("\n");
+                    assert!(display.contains("Review again"), "{display}");
+                    if changed {
+                        assert!(!display.contains("PR published"), "{display}");
+                        assert!(display.contains("PR open · update pending"), "{display}");
+                    }
+                }
+                app.perform_action(Action::Findings).unwrap();
+                let display = rows(&screen(&mut app, 100, 38)).join("\n");
+                assert!(display.contains("Previous review:"));
+                assert!(
+                    display.contains("ctrl+e\u{a0}review\u{a0}again"),
+                    "{display}"
+                );
+                if automatic {
+                    app.auto_reviews.insert(m.id);
+                    assert!(app.review_due(0));
+                    app.maintain_reviews().unwrap();
+                } else {
+                    key(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
+                }
+                let source = app.mods[0].agent_review.as_ref().unwrap().source.clone();
+                assert_ne!(source, m.agent_review.as_ref().unwrap().source);
+                assert_eq!(
+                    app.mods[0].agent_review.as_ref().unwrap().fingerprint,
+                    fingerprint
+                );
+                app.maintain_reviews().unwrap();
+                assert_eq!(app.mods[0].agent_review.as_ref().unwrap().source, source);
+                assert_eq!(
+                    app.workers
+                        .values()
+                        .filter(|w| w.role == Role::Reviewer)
+                        .count(),
+                    1
+                );
+                assert_eq!(app.input.lines(), ["keep my draft"]);
+                app.workers.clear();
+                let report = if automatic {
+                    r#"{"status":"clean","summary":"Repairs confirmed.","findings":[]}"#.into()
+                } else {
+                    crate::review::tests::finding()
+                };
+                app.store
+                    .finish_review(&app.mods[0], &source, &report)
+                    .unwrap();
+                app.mods[0].agent_review = app.store.review_state(m.id).unwrap();
+                if automatic {
+                    assert_eq!(
+                        app.action_dock().status,
+                        if changed {
+                            "Ready to update PR"
+                        } else {
+                            "PR published"
+                        }
+                    );
+                    if changed {
+                        assert_eq!(app.action_dock().primary, Some(Action::Publish));
+                        assert!(
+                            app.action_dock()
+                                .actions
+                                .iter()
+                                .any(|a| a.action == Action::Publish && a.label == "Update PR")
+                        );
+                    }
+                } else {
+                    assert_eq!(app.action_dock().primary, Some(Action::FixIssues));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn resumed_planning_restores_continuation_and_publishing_shows_review_state() {
         let (_data, mut app, _) = execution_app();
         app.view = View::Publish;
@@ -6860,6 +7018,7 @@ mod tests {
         let mut state = git_mod::load(&root).unwrap();
         state.pr = Some("https://github.com/fixture/project/pull/1".into());
         state.phase = "published".into();
+        state.fingerprint = app.mods[0].execution.as_ref().unwrap().fingerprint.clone();
         std::fs::write(
             root.join("git-mod.json"),
             serde_json::to_vec(&state).unwrap(),

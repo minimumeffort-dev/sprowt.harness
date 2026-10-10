@@ -20,6 +20,7 @@ flowchart TB
 - **Fix issues** returns all current findings to the existing task owners. Their providers, file scopes and checks stay intact.
 - Each finding adds a named **Review regression** check to its owner’s task. Owners reproduce and fix that case first; broad suite results alone cannot omit the finding’s check. Original checks remain required.
 - Dependent tasks rerun after the fixes. Rust independently checks the combined result, then starts a fresh review. A passing regression is shown as checked; the fresh reviewer decides whether defects remain.
+- A published PR does not end review repairs. When their combined checks pass, the dock shows **Fixes checked · fresh review needed** and **Ctrl+E · Review again**. Active repair runs start that review automatically; reopening saved work waits for your choice. Previous findings stay labelled as awaiting fresh review.
 - Repair keeps the task folders, installed dependencies and worker download caches. Identical commands in one task verification pass run once, with results mapped to every covered check. New passes and changed source require fresh verification.
 - Every fresh review with open findings offers **Fix review issues**, including after earlier repair rounds and restarts. Each choice starts one round; further findings wait for your choice again. The round count records progress and does not limit manual repairs.
 - Invalid reports, unknown owners and paths outside the owner's scope pause review. They cannot start fixes.
@@ -35,6 +36,8 @@ The dock shows the issue count and recommends **Fix review issues** when a revie
 1. Press **Ctrl+T**, then **3 · Review**, to open the findings. The older **Ctrl+G → i** shortcut also works. Each issue shows its priority, file and line, owner, evidence and proposed fix.
 2. Press **x · Fix issues** to start repairs. This action is also in More. Findings wait for your choice, including after restarting.
 3. Watch issues move from queued to fixing, paused or awaiting a fresh review. Passing checks starts that review automatically. Further findings wait for your choice again.
+
+After a clean review, changed source offers **Update PR** for the existing pull request. **PR published** describes the verified version matching the published source. Later repairs show **PR open · update pending** until you confirm publication. Unchanged published source can still be reviewed explicitly without publishing again.
 
 Details has Tasks, Checks, Review and Activity sections, switched with 1–4 or Tab. The view supports mouse and keyboard scrolling. **Esc** returns to your draft; **h · All history** opens previous reports and reviewer messages. A clean review recommends publication. **Ctrl+O** still expands review details in the conversation.
 

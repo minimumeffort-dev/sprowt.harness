@@ -35,7 +35,9 @@ pub(super) fn finding_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         && let Some(report) = &review.report
     {
         let outdated = review.status == "stale" || review.status != "fixing" && !review.current(m);
-        let status = if outdated {
+        let status = if review.fixes_verified(m) {
+            "Fixes checked · review again to confirm the result.".into()
+        } else if outdated {
             "Outdated · review again after current work passes checks.".into()
         } else if review.status == "findings" {
             "Issues found · choose Fix issues to start repairs.".into()
@@ -43,7 +45,11 @@ pub(super) fn finding_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             review.label()
         };
         lines.push(Line::from(status).fg(ACCENT).bold());
-        lines.push(Line::from(report.summary.clone()));
+        lines.push(Line::from(if review.status == "fixing" {
+            format!("Previous review: {}", report.summary)
+        } else {
+            report.summary.clone()
+        }));
         for (index, finding) in report.findings.iter().enumerate() {
             let run = m
                 .execution

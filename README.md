@@ -129,7 +129,7 @@ Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth lo
 4. Combined checks lead to an automatic review. Inspect findings in **Details → Review**, then explicitly choose **Fix issues**. Verified fixes get a fresh review. Choose **Publish PR** and confirm its destination and publication; keep editing afterward to update the same PR.
 5. In **Ctrl+P**, **c** closes with a checkpoint, **Tab** shows closed mods, **r** reopens and **d** deletes local data.
 
-Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. Every fresh review with findings offers **Fix review issues**; each repair round waits for your choice. Each finding gets a regression check. Automatic target updates wait for review and repairs; the dock shows their current step and elapsed time.
+Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. Every fresh review with findings offers **Fix review issues**; each repair round waits for your choice. Each finding gets a regression check. Checked repairs offer **Review again**, including after PR publication; reviewed changes offer **Update PR**. Automatic target updates wait for review and repairs; the dock shows their current step and elapsed time.
 
 ### Jev routing
 

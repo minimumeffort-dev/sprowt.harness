@@ -424,14 +424,16 @@ impl App {
         items.push(checks);
         let review = m.agent_review.as_ref();
         let current = review.is_some_and(|r| r.current(m));
+        let fixes_verified = review.is_some_and(|r| r.fixes_verified(m));
         let reviewing = self.active_workers().any(|w| w.role == Role::Reviewer);
         let review_state = if reviewing {
             Active
         } else if current && review.is_some_and(|r| r.status == "clean") {
             Done
-        } else if current
-            && review
-                .is_some_and(|r| matches!(r.status.as_str(), "findings" | "paused" | "blocked"))
+        } else if fixes_verified
+            || current
+                && review
+                    .is_some_and(|r| matches!(r.status.as_str(), "findings" | "paused" | "blocked"))
         {
             Attention
         } else {
@@ -441,6 +443,8 @@ impl App {
             Key::Review,
             if reviewing {
                 "Reviewing changes".into()
+            } else if fixes_verified {
+                "Review · fixes checked, fresh review needed".into()
             } else if let Some(r) = review {
                 if current {
                     r.label()

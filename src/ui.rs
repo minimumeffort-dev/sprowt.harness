@@ -758,8 +758,11 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
         return;
     };
     let mut keys = vec![("↑↓", "scroll"), (page_key(), "page")];
+    if app.can_review() {
+        keys.push(("r", "ask agent to review"));
+    }
     if app.can_publish() {
-        keys.extend([("r", "ask agent to review"), ("p", "publish PR")]);
+        keys.push(("p", "publish PR"));
     }
     keys.push(("esc", "back"));
     let hints = key_hints(&keys);
