@@ -301,7 +301,7 @@ impl App {
                 && self.git_activity().is_none()
                 && m.agent_review
                     .as_ref()
-                    .is_some_and(|r| r.status == "findings" && r.rounds < 2 && r.current(m))
+                    .is_some_and(|r| r.status == "findings" && r.current(m))
             {
                 dock.actions
                     .push(ActionItem::new(FixIssues, "Fix review issues"));

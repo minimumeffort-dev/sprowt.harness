@@ -145,7 +145,7 @@ The timeline reflects the current saved plan and operation states. Prior passes 
 | Needs network access | Review the requested domains |
 | Task needs attention | Retry that task, or inspect its evidence in Details |
 | Combined checks need attention | Fix failed check; rerun without edits remains in More |
-| Review issues found | Fix review issues; Details opens Review |
+| Review issues found, after any repair round | Fix review issues; Details opens Review |
 | Review interrupted | Review changes |
 | Paused by you | Resume the relevant work |
 | Ready to publish | Publish PR |

@@ -15,13 +15,13 @@ flowchart TB
     checks -->|"Pass"| review
 ```
 
-## Fixes and limits
+## Fixing findings
 
 - **Fix issues** returns all current findings to the existing task owners. Their providers, file scopes and checks stay intact.
 - Each finding adds a named **Review regression** check to its owner’s task. Owners reproduce and fix that case first; broad suite results alone cannot omit the finding’s check. Original checks remain required.
 - Dependent tasks rerun after the fixes. Rust independently checks the combined result, then starts a fresh review. A passing regression is shown as checked; the fresh reviewer decides whether defects remain.
 - Repair keeps the task folders, installed dependencies and worker download caches. Identical commands in one task verification pass run once, with results mapped to every covered check. New passes and changed source require fresh verification.
-- Each plan gets at most **two user-triggered review fix rounds**. Retrying review keeps that budget. Unresolved findings stay visible; send edits to revise the plan.
+- Every fresh review with open findings offers **Fix review issues**, including after earlier repair rounds and restarts. Each choice starts one round; further findings wait for your choice again. The round count records progress and does not limit manual repairs.
 - Invalid reports, unknown owners and paths outside the owner's scope pause review. They cannot start fixes.
 
 The reviewer cannot write source, call harness tools, publish or grant network access. Its commands run in the existing codemod VM with only its own home and temporary directory writable. Planning remains **Astra xhigh**; Jev still routes executor effort.

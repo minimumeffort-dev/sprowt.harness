@@ -38,11 +38,7 @@ pub(super) fn finding_lines(app: &App, width: u16) -> Vec<Line<'static>> {
         let status = if outdated {
             "Outdated · review again after current work passes checks.".into()
         } else if review.status == "findings" {
-            if review.rounds >= 2 {
-                "Fix limit reached · send edits to revise the plan.".into()
-            } else {
-                "Issues found · choose Fix issues to start repairs.".into()
-            }
+            "Issues found · choose Fix issues to start repairs.".into()
         } else {
             review.label()
         };

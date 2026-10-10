@@ -249,7 +249,7 @@ impl App {
                     "Review · {count} open issue{}",
                     if count == 1 { "" } else { "s" }
                 ),
-                Some(if r.rounds < 2 { FixIssues } else { Findings }),
+                Some(FixIssues),
             )
         } else if review.is_some_and(|r| matches!(r.status.as_str(), "paused" | "blocked")) {
             Summary::new(NeedsYou, "Review needs attention", Some(Review))

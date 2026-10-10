@@ -43,7 +43,7 @@ pub struct State {
     pub plan_source: String,
     pub fingerprint: String,
     pub status: String,
-    pub rounds: u8,
+    pub rounds: u32,
     pub report: Option<Report>,
 }
 
@@ -75,7 +75,7 @@ impl State {
         match self.status.as_str() {
             "pending" | "running" => "reviewing changes".into(),
             "clean" => "✓ review passed".into(),
-            "fixing" => format!("review fixes · round {}/2", self.rounds),
+            "fixing" => format!("review fixes · round {}", self.rounds),
             "findings" => format!(
                 "! review · {} issues found",
                 self.report.as_ref().map_or(0, |r| r.findings.len())
@@ -174,7 +174,7 @@ impl Store {
     pub fn begin_review(&mut self, mod_id: i64, fingerprint: &str) -> Result<()> {
         let tx = self.0.transaction()?;
         let plan_source: String = tx.query_row("SELECT p.source FROM plans p JOIN executions e ON e.mod_id=p.mod_id JOIN code_mods m ON m.id=p.mod_id WHERE p.mod_id=?1 AND p.status='ready' AND e.status='review' AND e.fingerprint=?2 AND m.closed=0 AND NOT EXISTS(SELECT 1 FROM task_runs WHERE mod_id=?1 AND status!='done') AND NOT EXISTS(SELECT 1 FROM queued_messages WHERE mod_id=?1) AND NOT EXISTS(SELECT 1 FROM steering_requests WHERE mod_id=?1)", params![mod_id,fingerprint], |r| r.get(0))?;
-        let (attempt, rounds): (i64, u8) = tx.query_row("SELECT attempt,CASE WHEN plan_source=?2 THEN rounds ELSE 0 END FROM reviews WHERE mod_id=?1", params![mod_id,plan_source], |r| Ok((r.get(0)?,r.get(1)?))).optional()?.unwrap_or((0,0));
+        let (attempt, rounds): (i64, u32) = tx.query_row("SELECT attempt,CASE WHEN plan_source=?2 THEN rounds ELSE 0 END FROM reviews WHERE mod_id=?1", params![mod_id,plan_source], |r| Ok((r.get(0)?,r.get(1)?))).optional()?.unwrap_or((0,0));
         let source = format!("00000006-0000-0000-{:04x}-{:012x}", mod_id, attempt + 1);
         tx.execute("INSERT INTO reviews(mod_id,source,plan_source,fingerprint,status,attempt,rounds) VALUES (?1,?2,?3,?4,'pending',?5,?6) ON CONFLICT(mod_id) DO UPDATE SET source=excluded.source,plan_source=excluded.plan_source,fingerprint=excluded.fingerprint,status='pending',attempt=excluded.attempt,rounds=excluded.rounds,report=NULL", params![mod_id,source,plan_source,fingerprint,attempt+1,rounds])?;
         tx.execute(
@@ -258,7 +258,7 @@ impl Store {
     pub fn review_fixes(&mut self, code_mod: &CodeMod) -> Result<bool> {
         let Some(state) = self
             .review_state(code_mod.id)?
-            .filter(|r| r.status == "findings" && r.rounds < 2 && r.current(code_mod))
+            .filter(|r| r.status == "findings" && r.current(code_mod))
         else {
             return Ok(false);
         };
@@ -307,7 +307,7 @@ impl Store {
             }
         }
         let tx = self.0.transaction()?;
-        let changed = tx.execute("UPDATE reviews SET status='fixing',rounds=rounds+1 WHERE mod_id=?1 AND source=?2 AND status='findings' AND rounds<2 AND NOT EXISTS(SELECT 1 FROM queued_messages WHERE mod_id=?1) AND NOT EXISTS(SELECT 1 FROM steering_requests WHERE mod_id=?1) AND EXISTS(SELECT 1 FROM plans p JOIN executions e ON p.mod_id=e.mod_id WHERE p.mod_id=?1 AND p.source=reviews.plan_source AND e.fingerprint=reviews.fingerprint AND e.status='review')", params![code_mod.id,state.source])?;
+        let changed = tx.execute("UPDATE reviews SET status='fixing',rounds=rounds+1 WHERE mod_id=?1 AND source=?2 AND status='findings' AND NOT EXISTS(SELECT 1 FROM queued_messages WHERE mod_id=?1) AND NOT EXISTS(SELECT 1 FROM steering_requests WHERE mod_id=?1) AND EXISTS(SELECT 1 FROM plans p JOIN executions e ON p.mod_id=e.mod_id WHERE p.mod_id=?1 AND p.source=reviews.plan_source AND e.fingerprint=reviews.fingerprint AND e.status='review')", params![code_mod.id,state.source])?;
         if changed == 0 {
             return Ok(false);
         }
@@ -551,7 +551,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn obsolete_turn_cannot_replace_new_review_and_manual_retry_keeps_budget() {
+    fn obsolete_turn_cannot_replace_new_review_and_manual_retry_keeps_round_count() {
         let (_data, mut store, mut m, _plan) = fixture();
         let old = start(&mut store, &mut m);
         let current = start(&mut store, &mut m);
@@ -568,9 +568,12 @@ pub(crate) mod tests {
             .execute("UPDATE reviews SET rounds=2 WHERE mod_id=?1", [m.id])
             .unwrap();
         store.finish_review(&m, &current, &finding()).unwrap();
-        assert!(!store.review_fixes(&m).unwrap());
-        start(&mut store, &mut m);
+        let retry = start(&mut store, &mut m);
         assert_eq!(store.review_state(m.id).unwrap().unwrap().rounds, 2);
+        store.finish_review(&m, &retry, &finding()).unwrap();
+        assert!(store.review_fixes(&m).unwrap());
+        assert_eq!(store.review_state(m.id).unwrap().unwrap().rounds, 3);
+        assert!(!store.review_fixes(&m).unwrap());
         let project_id: i64 = store
             .0
             .query_row(

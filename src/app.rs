@@ -5492,8 +5492,8 @@ mod tests {
     }
 
     #[test]
-    fn outdated_or_exhausted_reviews_cannot_dispatch_fixes() {
-        for reason in ["queue", "source", "rounds"] {
+    fn outdated_reviews_cannot_dispatch_fixes() {
+        for reason in ["queue", "source"] {
             let (data, mut store, mut m, _) = crate::review::tests::fixture();
             store
                 .begin_review(
@@ -5514,7 +5514,7 @@ mod tests {
                     app.mods[0].queue.push(message);
                     app.maintain_reviews().unwrap();
                 }
-                "source" => {
+                _ => {
                     std::fs::write(
                         m.execution
                             .as_ref()
@@ -5525,25 +5525,99 @@ mod tests {
                     )
                     .unwrap();
                 }
-                _ => {
-                    app.store
-                        .0
-                        .execute("UPDATE reviews SET rounds=2 WHERE mod_id=?1", [m.id])
-                        .unwrap();
-                    app.mods[0].agent_review = app.store.review_state(m.id).unwrap();
-                }
             }
             key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
             assert!(app.mods[0].execution.as_ref().unwrap().complete());
             assert!(app.executing_mods.is_empty());
             let contents = rows(&screen(&mut app, 100, 30)).join("\n");
             assert!(contents.contains("Reject empty names"));
-            assert!(contents.contains(if reason == "rounds" {
-                "Fix limit reached"
-            } else {
-                "Outdated"
-            }));
+            assert!(contents.contains("Outdated"));
             assert!(!contents.contains("x\u{a0}fix\u{a0}issues"));
+        }
+    }
+
+    #[test]
+    fn review_fixes_remain_available_after_repeated_rounds_and_restart() {
+        for rounds in [2, 255] {
+            for from_menu in [false, true] {
+                let (data, mut store, mut m, _) = crate::review::tests::fixture();
+                store
+                    .begin_review(
+                        m.id,
+                        m.execution.as_ref().unwrap().fingerprint.as_ref().unwrap(),
+                    )
+                    .unwrap();
+                m.agent_review = store.review_state(m.id).unwrap();
+                let source = m.agent_review.as_ref().unwrap().source.clone();
+                store
+                    .finish_review(&m, &source, &crate::review::tests::finding())
+                    .unwrap();
+                store
+                    .0
+                    .execute(
+                        "UPDATE reviews SET rounds=?2 WHERE mod_id=?1",
+                        (m.id, rounds),
+                    )
+                    .unwrap();
+                drop(store);
+                let mut app = App::load(data.0.join("project"), false, data.store()).unwrap();
+                app.input.insert_str("keep my draft");
+                app.auto_reviews.insert(m.id);
+                app.maintain_reviews().unwrap();
+                assert!(!app.review_due(0));
+                assert!(app.executing_mods.is_empty());
+                assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, rounds);
+                assert!(app.action_dock().primary == Some(Action::FixIssues));
+                assert_eq!(
+                    app.timeline_items()
+                        .iter()
+                        .find(|item| item.key == timeline::Key::Review)
+                        .unwrap()
+                        .action,
+                    Some(Action::FixIssues)
+                );
+                let contents = rows(&screen(&mut app, 160, 42)).join("\n");
+                assert!(contents.contains("Fix review issues"), "{contents}");
+                if from_menu {
+                    key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+                    assert!(matches!(app.view, View::Actions(Action::FixIssues)));
+                    let contents = rows(&screen(&mut app, 90, 30)).join("\n");
+                    assert!(contents.contains("Fix review issues"));
+                } else {
+                    app.perform_action(Action::Findings).unwrap();
+                    let contents = rows(&screen(&mut app, 90, 30)).join("\n");
+                    assert!(contents.contains("x\u{a0}fix\u{a0}issues"), "{contents}");
+                    assert!(!contents.contains("Fix limit reached"));
+                }
+                key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+                let review = app.mods[0].agent_review.as_ref().unwrap();
+                assert_eq!(review.status, "fixing");
+                assert_eq!(review.rounds, rounds + 1);
+                assert_eq!(
+                    review.label(),
+                    format!("review fixes · round {}", rounds + 1)
+                );
+                assert!(app.executing_mods.contains(&m.id));
+                assert_eq!(app.input.lines(), ["keep my draft"]);
+                // Repeated input cannot dispatch the same findings twice.
+                key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+                assert_eq!(
+                    app.mods[0].agent_review.as_ref().unwrap().rounds,
+                    rounds + 1
+                );
+                let runs = app.mods[0].execution.as_ref().unwrap().tasks.clone();
+                assert!(runs.iter().all(|run| run.status == "pending"));
+                drop(app);
+                let store = data.store();
+                assert_eq!(
+                    store.review_state(m.id).unwrap().unwrap().rounds,
+                    rounds + 1
+                );
+                assert_eq!(
+                    store.execution(m.id).unwrap().unwrap().tasks[0].source,
+                    runs[0].source
+                );
+            }
         }
     }
 
