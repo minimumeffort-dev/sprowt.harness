@@ -85,10 +85,11 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
     );
     app.timeline.jump_area = Rect::default();
     if app.timeline.held {
-        let label = if focused {
-            "end Current"
+        let label = "ctrl+l Jump to current";
+        let label = if heading.width > 12 + label.len() as u16 {
+            label
         } else {
-            "Jump to current"
+            "ctrl+l Current"
         };
         let button = Rect {
             x: heading.right().saturating_sub(label.len() as u16),

@@ -78,7 +78,7 @@ Close can also stop active work before saving its checkpoint. Delete requires co
 - Finished stages collapse. Active tasks show their owner, model, effort, elapsed time and latest update. Waiting tasks explain dependencies; active repairs follow a muted **previous failure** row. Expanding that row shows its saved evidence.
 - Relevant actions sit beside their stage and remain available from the dock and More. Enter on a timeline row opens evidence; it never starts a repair or publishes.
 - **Tab** focuses the timeline. **↑/↓** selects, **Space** expands, and **Enter** opens details. Clicking a row also selects it. **Esc** returns to the draft. **Ctrl+O** opens the full plan.
-- New activity follows the current step until you scroll or navigate back. Your position then stays anchored to the same row, including the blank space between steps. Scrolling can move the selected task off screen; it does not pull you back to that task. **End** in the timeline, or clicking **Jump to current** from any pane, focuses the current step, resets its details to the top and resumes following. This also works when that step is already selected. Your draft stays intact; scrolling again holds your position. End in the composer still moves the text cursor.
+- New activity follows the current step until you scroll or navigate back. Your position then stays anchored to the same row, including the blank space between steps. Scrolling can move the selected task off screen; it does not pull you back to that task. Click **Ctrl+L · Jump to current** or press **Ctrl+L** from the composer, timeline or side inspector to focus the current step, reset its details to the top and resume following. This also works when that step is already selected. Your draft stays intact; scrolling again holds your position. **End** also jumps when the timeline is focused; in the composer it still moves the text cursor.
 
 ### Timeline and side inspector
 
@@ -199,6 +199,7 @@ Use the wheel or trackpad over a view to scroll it, or over the composer to scro
 | Enter | Send from the composer; inspect a selected timeline row |
 | Tab / Shift+Tab | Move between composer, timeline and side inspector |
 | Space / ↑↓ | Expand / select while exploring the timeline |
+| Ctrl+L | Jump to current from the composer, timeline or side inspector |
 | End | Jump to current in the timeline; scroll to the bottom in the inspector |
 | Ctrl+J | Newline |
 | Ctrl+T | Details / return to conversation |

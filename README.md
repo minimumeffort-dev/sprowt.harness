@@ -70,7 +70,7 @@ Muse resumes its native task conversation while the VM disk remains. A dropped c
 
 Muse sends large messages in acknowledged chunks so the VM's output buffer cannot drop them. Failures show the provider's redacted rejection or the guest/transport cause. Permanent request rejections stop automatic retries. A confirmed context limit can rebuild the conversation from saved work on a safe retry; uncertain delivery stays paused.
 
-Muse has a bounded response allowance for reasoning and its verification report. Exhaustion shows a specific retryable failure, including after reconnect. Task updates belong to the current attempt; earlier completions stay in history. In the split timeline, the inspector holds readable review findings, indented reports and colored check results. Scrolling holds your position even when the selected task leaves the screen. Click **Jump to current** to focus the current step and return its details to the top without losing your draft.
+Muse has a bounded response allowance for reasoning and its verification report. Exhaustion shows a specific retryable failure, including after reconnect. Task updates belong to the current attempt; earlier completions stay in history. In the split timeline, the inspector holds readable review findings, indented reports and colored check results. Scrolling holds your position even when the selected task leaves the screen. Click **Jump to current** or press **Ctrl+L** from any pane to focus the current step and return its details to the top without losing your draft.
 
 Late handoff acknowledgements keep the worker's valid task report. New blockers take precedence, and user steering requires a fresh report. Each planned check can have several commands. Rust requires every declared check and reruns every command against current files before accepting completion.
 
@@ -148,6 +148,7 @@ Setup saves the key in private local configuration, so the installed harness can
 | Enter | Answer a highlighted question, send edits or queue an instruction |
 | Tab / Shift+Tab | Cycle through timeline, side inspector and composer |
 | ↑↓ / Space / Enter | Select / expand / inspect a timeline row |
+| Ctrl+L | Jump to current from the composer, timeline or side inspector |
 | End | Jump to current in the timeline / bottom of inspector |
 | Ctrl+J | Newline |
 | Ctrl+G | More: grouped applicable actions; Esc returns |

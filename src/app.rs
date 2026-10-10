@@ -6726,7 +6726,7 @@ mod tests {
     }
 
     #[test]
-    fn clicking_jump_to_current_resets_scrolled_details_and_keeps_the_draft() {
+    fn jump_to_current_click_and_shortcut_reset_details_without_touching_draft() {
         use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         use timeline::{Focus, Key};
         let (data, mut store, mut m, _) = crate::review::tests::fixture();
@@ -6755,60 +6755,76 @@ mod tests {
             .unwrap()
             .findings[0]
             .evidence = "Detailed reproduction evidence. ".repeat(160);
-        for width in [160, 90] {
-            for focus in [Focus::Timeline, Focus::Inspector, Focus::Composer] {
-                if width < 120 && focus == Focus::Inspector {
-                    continue;
+        for keyboard in [false, true] {
+            for width in [160, 90, 36] {
+                for focus in [Focus::Timeline, Focus::Inspector, Focus::Composer] {
+                    if width < 120 && focus == Focus::Inspector {
+                        continue;
+                    }
+                    screen(&mut app, width, 42);
+                    assert_eq!(app.timeline.selected, Some(Key::Review));
+                    let area = if width >= 120 {
+                        app.timeline.inspector.area
+                    } else {
+                        app.scroll.content
+                    };
+                    wheel(&mut app, false, area);
+                    app.timeline.focus = focus;
+                    let display = rows(&screen(&mut app, width, 42)).join("\n");
+                    assert!(
+                        display.contains(if width == 36 {
+                            "ctrl+l Current"
+                        } else {
+                            "ctrl+l Jump to current"
+                        }),
+                        "{display}"
+                    );
+                    if width >= 120 {
+                        assert!(app.timeline.inspector.offset > 0);
+                    }
+                    let button = app.timeline.jump_area;
+                    assert!(!button.is_empty());
+                    let event = MouseEvent {
+                        kind: MouseEventKind::Down(MouseButton::Left),
+                        column: button.right() - 1,
+                        row: button.y,
+                        modifiers: KeyModifiers::NONE,
+                    };
+                    if keyboard {
+                        key(&mut app, KeyCode::Char('l'), KeyModifiers::CONTROL);
+                    } else {
+                        app.handle(Event::Mouse(event)).unwrap();
+                    }
+                    let display = rows(&screen(&mut app, width, 42)).join("\n");
+                    assert_eq!(app.timeline.inspector.offset, 0);
+                    assert_eq!(app.timeline.focus, Focus::Timeline);
+                    assert_eq!(app.timeline.selected, Some(Key::Review));
+                    assert!(!app.timeline.held && app.timeline.jump_area.is_empty());
+                    assert!(display.contains("▸ Timeline"));
+                    let (_, start, _) = app
+                        .timeline
+                        .rows
+                        .iter()
+                        .find(|(key, _, _)| *key == Key::Review)
+                        .unwrap();
+                    assert!(
+                        *start >= app.timeline.top
+                            && *start < app.timeline.top + app.scroll.content.height as usize
+                    );
+                    if !keyboard {
+                        app.handle(Event::Mouse(MouseEvent {
+                            kind: MouseEventKind::Up(MouseButton::Left),
+                            ..event
+                        }))
+                        .unwrap();
+                    }
+                    let top = app.timeline.top;
+                    screen(&mut app, width, 42);
+                    assert_eq!(app.timeline.top, top);
+                    assert!(!app.timeline.held);
+                    assert_eq!(app.input.lines(), ["keep this draft"]);
+                    assert!(queued(&app).is_empty() && app.workers.is_empty());
                 }
-                screen(&mut app, width, 42);
-                assert_eq!(app.timeline.selected, Some(Key::Review));
-                let area = if width >= 120 {
-                    app.timeline.inspector.area
-                } else {
-                    app.scroll.content
-                };
-                wheel(&mut app, false, area);
-                app.timeline.focus = focus;
-                screen(&mut app, width, 42);
-                if width >= 120 {
-                    assert!(app.timeline.inspector.offset > 0);
-                }
-                let button = app.timeline.jump_area;
-                assert!(!button.is_empty());
-                let event = MouseEvent {
-                    kind: MouseEventKind::Down(MouseButton::Left),
-                    column: button.right() - 1,
-                    row: button.y,
-                    modifiers: KeyModifiers::NONE,
-                };
-                app.handle(Event::Mouse(event)).unwrap();
-                let display = rows(&screen(&mut app, width, 42)).join("\n");
-                assert_eq!(app.timeline.inspector.offset, 0);
-                assert_eq!(app.timeline.focus, Focus::Timeline);
-                assert_eq!(app.timeline.selected, Some(Key::Review));
-                assert!(!app.timeline.held && app.timeline.jump_area.is_empty());
-                assert!(display.contains("▸ Timeline"));
-                let (_, start, _) = app
-                    .timeline
-                    .rows
-                    .iter()
-                    .find(|(key, _, _)| *key == Key::Review)
-                    .unwrap();
-                assert!(
-                    *start >= app.timeline.top
-                        && *start < app.timeline.top + app.scroll.content.height as usize
-                );
-                app.handle(Event::Mouse(MouseEvent {
-                    kind: MouseEventKind::Up(MouseButton::Left),
-                    ..event
-                }))
-                .unwrap();
-                let top = app.timeline.top;
-                screen(&mut app, width, 42);
-                assert_eq!(app.timeline.top, top);
-                assert!(!app.timeline.held);
-                assert_eq!(app.input.lines(), ["keep this draft"]);
-                assert!(queued(&app).is_empty() && app.workers.is_empty());
             }
         }
     }

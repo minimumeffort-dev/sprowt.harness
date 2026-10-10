@@ -1,6 +1,6 @@
 use super::{Action, App, View};
 use crate::{plan::Role, worker::Status};
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -524,6 +524,10 @@ impl App {
     pub(super) fn timeline_key(&mut self, key: KeyEvent) -> rusqlite::Result<bool> {
         if !self.has_timeline() {
             return Ok(false);
+        }
+        if key.code == KeyCode::Char('l') && key.modifiers == KeyModifiers::CONTROL {
+            self.timeline.jump();
+            return Ok(true);
         }
         let split = !self.timeline.inspector.area.is_empty();
         if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
