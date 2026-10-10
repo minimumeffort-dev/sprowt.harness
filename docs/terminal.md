@@ -78,7 +78,7 @@ Close can also stop active work before saving its checkpoint. Delete requires co
 - Finished stages collapse. Active tasks show their owner, model, effort, elapsed time and latest update. Waiting tasks explain dependencies; active repairs follow a muted **previous failure** row. Expanding that row shows its saved evidence.
 - Relevant actions sit beside their stage and remain available from the dock and More. Enter on a timeline row opens evidence; it never starts a repair or publishes.
 - **Tab** focuses the timeline. **↑/↓** selects, **Space** expands, and **Enter** opens details. Clicking a row also selects it. **Esc** returns to the draft. **Ctrl+O** opens the full plan.
-- New activity follows the current step until you scroll or navigate back. Your position then stays anchored to the same row. **End** while exploring, or clicking **Jump to current**, resumes following. End in the composer still moves the text cursor.
+- New activity follows the current step until you scroll or navigate back. Your position then stays anchored to the same row, including the blank space between steps. Scrolling can move the selected task off screen; it does not pull you back to that task. **End** while exploring, or clicking **Jump to current**, resumes following. End in the composer still moves the text cursor.
 
 ### Timeline and side inspector
 
@@ -104,6 +104,8 @@ Add an instruction…
 Selection updates the inspector immediately. It uses the same task evidence, check results and review findings as the full Details view. Task rows start collapsed in the split timeline; Space reveals the worker identity, while the inspector holds updates and evidence. Narrow terminals expand that evidence inline. Previous failures and outdated reviews stay labelled as saved evidence.
 
 **Latest update** belongs to the current task attempt. Retrying or repairing a task clears earlier narration from this view; earlier results remain in task Activity. Older saved messages without an identifiable attempt appear only in history. A previous completion cannot appear as progress on a new repair. **Previous failure** rows appear only with saved check or review evidence, and selection shows that evidence separately from the current repair.
+
+Task details use a compact state badge, distinct section headings and indented text. Checks have green passed markers, red failed markers and muted pending markers; wrapped text stays aligned beneath its label. Reports remain scrollable in full. Saved review findings show severity, location, evidence and proposed fix in separate blocks. The split timeline keeps a short findings summary; narrow terminals show the formatted evidence when expanded. This presentation uses the saved finding for that repair, so newer review results cannot replace its history.
 
 - **Tab / Shift+Tab** cycle between message, timeline and inspector. A **▸** heading marks the focused pane; the dock border highlights when the composer is focused.
 - **Enter** or **→** from the timeline focuses the inspector. **←** returns to the timeline. **Esc** returns directly to the draft. Enter in the inspector opens the full view when available; it never executes a workflow action.

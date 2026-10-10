@@ -5421,9 +5421,9 @@ mod tests {
         key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
         assert!(matches!(app.view, View::Findings(0)));
         let contents = rows(&screen(&mut app, 90, 30)).join("\n");
-        assert!(contents.contains("P2 · Reject empty names"));
-        assert!(contents.contains("Open · greet.sh:2 · runtime"));
-        assert!(contents.contains("Proposed fix:"));
+        assert!(contents.contains("P2  Reject empty names"));
+        assert!(contents.contains("greet.sh:2 · runtime") && contents.contains("Open"));
+        assert!(contents.contains("Evidence") && contents.contains("Proposed fix"));
         assert!(contents.contains("x\u{a0}fix\u{a0}issues"), "{contents}");
         // A narrow pane scrolls with the mouse and clamps after resizing.
         let first = screen(&mut app, 48, 20);
@@ -6151,6 +6151,158 @@ mod tests {
                 .iter()
                 .any(|i| i.title.contains("fresh review"))
         );
+    }
+
+    #[test]
+    fn timeline_task_details_use_readable_findings_and_check_statuses() {
+        use ratatui::style::Color;
+        use timeline::{Focus, Key};
+        let (_data, mut app, _) = execution_app();
+        let m = &mut app.mods[0];
+        let plan = m.planning.as_mut().unwrap().plan.as_mut().unwrap();
+        plan.tasks[0].title = "Implement the durable browser repository".into();
+        let mut task = plan.tasks[0].clone();
+        task.id = "interface".into();
+        task.title = "Connect the UI to local storage".into();
+        task.checks = vec![
+            "Reconnect storage after the owning worker fails.".into(),
+            "Preserve drafts, selection, focus and retry state while rejecting stale edits and embeddings from another tab.".into(),
+            "Keyboard access and narrow layouts remain usable.".into(),
+        ];
+        plan.tasks.push(task.clone());
+        let e = m.execution.as_mut().unwrap();
+        e.status = "running".into();
+        e.checks.clear();
+        e.fingerprint = None;
+        let run = &mut e.tasks[0];
+        let id = run.id;
+        run.status = "pending".into();
+        run.checks.clear();
+        let findings = serde_json::json!([
+            {"owner":"database", "file":"app/static/todo-store.mjs", "line":178,
+             "priority":"P1", "title":"Restore the change sequence after owner replacement",
+             "evidence":"After reopening, the worker returns sequence 0. A surviving tab keeps sequence 4 and rejects every refreshed list as stale.",
+             "fix":"Persist and restore the change sequence before accepting requests from surviving tabs."},
+            {"owner":"database", "file":"app/static/database-coordinator.mjs", "line":241,
+             "priority":"P2", "title":"Preserve revision tokens across database reopen",
+             "evidence":"Reopening assigns fresh revision tokens to unchanged tasks. Existing mutation receipts still contain the original tokens.",
+             "fix":"Store revision tokens with each row and reuse them after reopening."}
+        ]);
+        run.review_feedback = Some(format!(
+            "Independent review findings: {findings}\nAddress only these defects within your existing scope."
+        ));
+        let mut done = run.clone();
+        done.id += 1;
+        done.task_id = task.id;
+        done.source = crate::store::task_source(done.id, 1);
+        done.status = "done".into();
+        done.review_feedback = None;
+        done.checks = task
+            .checks
+            .iter()
+            .map(|check| crate::execution::CheckResult {
+                missing_runtime: None,
+                task: None,
+                check: check.clone(),
+                command: vec!["/usr/bin/true".into()],
+                exit_code: Some(0),
+                output: String::new(),
+            })
+            .collect();
+        let done_id = done.id;
+        let summary = "Fixed storage reconnection after owner crashes while preserving drafts and operation IDs. Healthy quota recovery retains its worker.";
+        m.messages.push(crate::store::Message {
+            source: Some(done.source.clone()),
+            task: Some(done_id),
+            item_id: Some(format!("result:{}", done.source)),
+            role: "codex:66".into(),
+            body: format!("✓ task complete · {}\n{summary}", task.title),
+            model: Some("gpt-6.1-sol".into()),
+            effort: Some("xhigh".into()),
+        });
+        e.tasks.push(done);
+        screen(&mut app, 160, 46);
+        app.timeline.focus = Focus::Timeline;
+        app.timeline.held = true;
+        app.timeline.selected = Some(Key::Failure(id));
+        app.timeline.expanded.insert(Key::Failure(id), true);
+        for width in [160, 124, 80] {
+            app.timeline.reveal = true;
+            let buffer = screen(&mut app, width, 46);
+            let text = rows(&buffer).join("\n");
+            assert!(text.contains("Saved review") && text.contains("Evidence"));
+            assert!(!text.contains("\"owner\"") && !text.contains("Address only"));
+            assert!(
+                buffer
+                    .content
+                    .iter()
+                    .any(|cell| cell.symbol() == "P" && cell.fg == Color::Red)
+            );
+        }
+        app.timeline.selected = Some(Key::Task(done_id));
+        app.timeline.reveal = true;
+        let buffer = screen(&mut app, 160, 46);
+        let text = rows(&buffer).join("\n");
+        assert!(text.contains("Worker report") && text.contains("3 passed"));
+        assert!(!text.contains("task complete") && !text.contains("0 failed"));
+        let pane = app.timeline.inspector.area;
+        assert!(
+            (pane.y..pane.bottom()).any(|y| buffer[(pane.x + 2, y)].symbol() == "✓"
+                && buffer[(pane.x + 2, y)].fg == Color::Green)
+        );
+        app.view = View::Task(done_id, 0);
+        let text = rows(&screen(&mut app, 80, 46)).join("\n");
+        assert!(text.contains("Worker report") && text.contains("3 passed"));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
+    fn timeline_scroll_crosses_task_separators_without_snapping_back() {
+        use timeline::{Focus, Key};
+        let (_data, mut app, _) = execution_app();
+        let plan = app.mods[0]
+            .planning
+            .as_mut()
+            .unwrap()
+            .plan
+            .as_mut()
+            .unwrap();
+        for index in 2..24 {
+            let mut task = plan.tasks[0].clone();
+            task.id = format!("task-{index}");
+            task.title = format!("Independent task {index}");
+            plan.tasks.push(task);
+        }
+        app.mods[0].execution = None;
+        screen(&mut app, 160, 36);
+        app.timeline.focus = Focus::Timeline;
+        app.timeline.selected = Some(Key::Planned(0));
+        app.timeline.held = true;
+        app.timeline.top = 0;
+        app.timeline.anchor = None;
+        screen(&mut app, 160, 36);
+        let maximum = app.timeline.rows.last().unwrap().2 - app.scroll.content.height as usize;
+        for up in [false, true] {
+            for _ in 0..maximum {
+                let old = app.timeline.top;
+                let expected = if up {
+                    old.saturating_sub(3)
+                } else {
+                    (old + 3).min(maximum)
+                };
+                let area = app.scroll.content;
+                wheel(&mut app, up, area);
+                screen(&mut app, 160, 36);
+                assert_eq!(app.timeline.top, expected, "wheel movement at row {old}");
+                screen(&mut app, 160, 36);
+                assert_eq!(
+                    app.timeline.top, expected,
+                    "redraw must not move the viewport"
+                );
+                assert_eq!(app.timeline.selected, Some(Key::Planned(0)));
+            }
+        }
+        assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 
     #[test]

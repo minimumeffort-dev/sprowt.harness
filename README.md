@@ -70,7 +70,7 @@ Muse resumes its native task conversation while the VM disk remains. A dropped c
 
 Muse sends large messages in acknowledged chunks so the VM's output buffer cannot drop them. Failures show the provider's redacted rejection or the guest/transport cause. Permanent request rejections stop automatic retries. A confirmed context limit can rebuild the conversation from saved work on a safe retry; uncertain delivery stays paused.
 
-Muse has a bounded response allowance for reasoning and its verification report. Exhaustion shows a specific retryable failure, including after reconnect. Task updates belong to the current attempt; earlier completions stay in history. In the split timeline, the inspector holds task evidence so it is not repeated in expanded rows.
+Muse has a bounded response allowance for reasoning and its verification report. Exhaustion shows a specific retryable failure, including after reconnect. Task updates belong to the current attempt; earlier completions stay in history. In the split timeline, the inspector holds readable review findings, indented reports and colored check results. Scrolling holds your position even when the selected task leaves the screen.
 
 Late handoff acknowledgements keep the worker's valid task report. New blockers take precedence, and user steering requires a fresh report. Each planned check can have several commands. Rust requires every declared check and reruns every command against current files before accepting completion.
 

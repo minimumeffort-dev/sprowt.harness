@@ -205,6 +205,20 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
                 if text.trim().is_empty() {
                     continue;
                 }
+                if matches!(item.key, Key::Failure(_)) && !split {
+                    for mut row in findings::saved_lines(text, width.saturating_sub(5)) {
+                        row.spans.insert(0, prefix.fg(BORDER));
+                        lines.push(row);
+                    }
+                    continue;
+                }
+                let summary;
+                let text = if matches!(item.key, Key::Failure(_)) {
+                    summary = findings::saved_summary(text);
+                    &summary
+                } else {
+                    text
+                };
                 let text = if item.key == Key::Request {
                     text.as_str()
                 } else {
@@ -237,10 +251,14 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
             row.spans.insert(0, "│ ".fg(BORDER));
             lines.extend(wrap_line(row, width, 2));
         }
-        positions.push((item.key, top, lines.len()));
         lines.push(Line::from(if item.key == Key::Request { "" } else { "│" }).fg(BORDER));
+        // The separator belongs to this row's scroll anchor too.
+        positions.push((item.key, top, lines.len()));
     }
     lines.pop();
+    if let Some((_, _, end)) = positions.last_mut() {
+        *end = lines.len();
+    }
     let max = lines.len().saturating_sub(body.height as usize);
     let target = if app.timeline.focus != Focus::Composer {
         app.timeline.selected.unwrap_or(current)
@@ -350,7 +368,15 @@ fn inspector_lines(app: &App, item: &Item, width: u16) -> Vec<Line<'static>> {
     let mut lines = match item.key {
         Key::Task(id) | Key::Repair(id) => tasks::task_lines(app, id, width),
         Key::Checks => inspector::check_summary(app, width),
-        Key::Review => findings::finding_lines(app),
+        Key::Review => findings::finding_lines(app, width),
+        Key::Failure(_) => {
+            let mut lines = wrap_line(Line::from(item.title.clone()).bold(), width, 0);
+            lines.push(Line::default());
+            for detail in &item.detail {
+                lines.extend(findings::saved_lines(detail, width));
+            }
+            lines
+        }
         _ => {
             let mut lines = vec![Line::from(item.title.clone()).bold(), Line::default()];
             for detail in &item.detail {
@@ -359,14 +385,6 @@ fn inspector_lines(app: &App, item: &Item, width: u16) -> Vec<Line<'static>> {
             lines
         }
     };
-    if let Key::Task(id) | Key::Repair(id) = item.key
-        && let Some(worker) = app.active_workers().find(|w| w.task_run_id() == Some(id))
-    {
-        lines.insert(
-            3.min(lines.len()),
-            Line::from(worker.timeline_timing()).fg(KEY_HINT),
-        );
-    }
     if let Some(plan) = app
         .current_mod()
         .and_then(|m| m.planning.as_ref())

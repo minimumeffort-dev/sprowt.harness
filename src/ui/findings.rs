@@ -15,7 +15,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     }
     keys.extend([("h", "all history"), ("esc", "back")]);
     let inner = tasks::panel(frame, area, "review findings".into(), &keys);
-    let lines = finding_lines(app);
+    let lines = finding_lines(app, inner.width.saturating_sub(2));
     let (scroll, _) = draw_text(
         frame,
         Paragraph::new(lines).wrap(Wrap { trim: false }),
@@ -28,7 +28,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     app.view = View::Findings(scroll);
 }
 
-pub(super) fn finding_lines(app: &App) -> Vec<Line<'static>> {
+pub(super) fn finding_lines(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     if let Some(m) = app.current_mod()
         && let Some(review) = &m.agent_review
@@ -65,25 +65,7 @@ pub(super) fn finding_lines(app: &App) -> Vec<Line<'static>> {
             } else {
                 "Open"
             };
-            lines.push(Line::default());
-            lines.push(
-                Line::from(format!(
-                    "{}. {} · {}",
-                    index + 1,
-                    finding.priority,
-                    finding.title
-                ))
-                .bold(),
-            );
-            lines.push(
-                Line::from(format!(
-                    "{state} · {}:{} · {}",
-                    finding.file, finding.line, finding.owner
-                ))
-                .fg(KEY_HINT),
-            );
-            lines.push(Line::from(finding.evidence.clone()));
-            lines.push(Line::from(format!("Proposed fix: {}", finding.fix)));
+            lines.extend(finding_block(index, finding, state, width));
         }
         if report.status == "clean" {
             lines.push(Line::default());
@@ -95,4 +77,133 @@ pub(super) fn finding_lines(app: &App) -> Vec<Line<'static>> {
         lines.push(Line::from("No review findings yet."));
     }
     lines
+}
+
+fn saved_findings(text: &str) -> Option<Vec<crate::review::Finding>> {
+    // Saved feedback includes worker instructions after the JSON value.
+    let json = text.trim().strip_prefix("Independent review findings:")?;
+    serde_json::Deserializer::from_str(json.trim_start())
+        .into_iter::<Vec<crate::review::Finding>>()
+        .next()?
+        .ok()
+        .filter(|findings| !findings.is_empty())
+}
+
+pub(super) fn saved_summary(text: &str) -> String {
+    saved_findings(text).map_or_else(
+        || text.lines().next().unwrap_or(text).to_owned(),
+        |findings| format!("{} review findings · {}", findings.len(), findings[0].title),
+    )
+}
+
+pub(super) fn saved_lines(text: &str, width: u16) -> Vec<Line<'static>> {
+    if let Some(findings) = saved_findings(text) {
+        let mut lines =
+            vec![Line::from(format!("Saved review · {} findings", findings.len())).fg(KEY_HINT)];
+        for (index, finding) in findings.iter().enumerate() {
+            lines.extend(finding_block(index, finding, "", width));
+        }
+        lines
+    } else {
+        let mut lines = vec![Line::from("Saved failure").fg(KEY_HINT).bold()];
+        lines.extend(indented_text(text, width, 2));
+        lines
+    }
+}
+
+fn finding_block(
+    index: usize,
+    finding: &crate::review::Finding,
+    state: &str,
+    width: u16,
+) -> Vec<Line<'static>> {
+    let color = match finding.priority.as_str() {
+        "P0" | "P1" => Color::Red,
+        "P2" => Color::Yellow,
+        _ => KEY_HINT,
+    };
+    let mut lines = vec![Line::default()];
+    lines.extend(wrap_line(
+        Line::from(vec![
+            format!("{}. ", index + 1).fg(KEY_HINT),
+            format!(" {} ", finding.priority)
+                .fg(color)
+                .bg(CONTROL)
+                .bold(),
+            format!(" {}", finding.title).bold(),
+        ]),
+        width,
+        3,
+    ));
+    lines.extend(wrap_line(
+        Line::from(format!(
+            "   {}:{} · {}",
+            finding.file, finding.line, finding.owner
+        ))
+        .fg(KEY_HINT),
+        width,
+        3,
+    ));
+    if !state.is_empty() {
+        lines.push(Line::from(format!("   {state}")).fg(KEY_HINT));
+    }
+    for (label, body) in [
+        ("Evidence", &finding.evidence),
+        ("Proposed fix", &finding.fix),
+    ] {
+        lines.push(Line::default());
+        lines.push(Line::from(format!("   {label}")).fg(ACCENT).bold());
+        lines.extend(indented_text(body, width, 3));
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn saved_findings_keep_evidence_and_ignore_worker_instructions() {
+        let finding = serde_json::json!({
+            "owner":"database", "file":"app/static/todo-store.mjs", "line":178,
+            "priority":"P1", "title":"Restore the change sequence",
+            "evidence":"After reopening, sequence [4] becomes 0.\nSurviving tabs reject the older result.",
+            "fix":"Persist and restore the change sequence before accepting requests."
+        });
+        let feedback = format!(
+            "Independent review findings:\n[{finding}]\nAddress only these defects within your scope."
+        );
+        for width in [32, 64, 100] {
+            let lines = saved_lines(&feedback, width);
+            assert!(lines.iter().all(|line| line.width() <= width as usize));
+            let text = lines
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("Evidence") && text.contains("Proposed fix"));
+            let unwrapped = text.split_whitespace().collect::<Vec<_>>().join(" ");
+            assert!(unwrapped.contains(
+                "After reopening, sequence [4] becomes 0. Surviving tabs reject the older result."
+            ));
+            assert!(!text.contains("Address only") && !text.contains("\"owner\""));
+            assert!(
+                lines
+                    .iter()
+                    .flat_map(|line| &line.spans)
+                    .any(|span| span.content == " P1 " && span.style.fg == Some(Color::Red))
+            );
+        }
+        for text in [
+            "A plain failure with evidence.",
+            "Independent review findings: [invalid",
+        ] {
+            assert!(saved_findings(text).is_none());
+            assert!(
+                saved_lines(text, 100)
+                    .iter()
+                    .any(|line| line.to_string().contains(text))
+            );
+        }
+    }
 }

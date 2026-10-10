@@ -134,31 +134,34 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
     let Some(task) = app.inspect_task(id) else {
         return Vec::new();
     };
-    let mut lines = vec![
-        Line::from(task.task.title.clone()).bold(),
-        Line::from(task.identity).fg(KEY_HINT),
-        Line::from(task.state).style(state_style(task.state)),
-        Line::default(),
-    ];
+    let mut lines = wrap_line(Line::from(task.task.title.clone()).bold(), width, 0);
+    lines.extend(wrap_line(Line::from(task.identity).fg(KEY_HINT), width, 0));
+    lines.push(Line::from(Span::styled(
+        format!(" {} ", task.state),
+        state_style(task.state).bg(CONTROL).bold(),
+    )));
+    if let Some(worker) = app.active_workers().find(|w| w.task_run_id() == Some(id)) {
+        lines.extend(wrap_line(
+            Line::from(worker.timeline_timing()).fg(KEY_HINT),
+            width,
+            0,
+        ));
+    }
+    lines.push(Line::default());
     if !task.note.is_empty() {
-        lines.extend(
-            Text::from(task.note.as_str())
-                .lines
-                .into_iter()
-                .map(|line| Line::from(line.to_string())),
-        );
+        lines.extend(indented_text(&task.note, width, 2));
         lines.push(Line::default());
     }
     if let Some(error) = task.error.filter(|error| *error != task.note) {
         lines.extend(
-            error
-                .lines()
-                .map(|line| Line::from(line.to_owned()).fg(Color::Red)),
+            indented_text(error, width, 2)
+                .into_iter()
+                .map(|line| line.fg(Color::Red)),
         );
         lines.push(Line::default());
     }
     if let Some(conflict) = &task.run.conflict {
-        lines.push(Line::from("Conflicting files").fg(KEY_HINT).bold());
+        lines.push(Line::from("Conflicting files").fg(ACCENT).bold());
         lines.push(
             Line::from(format!(
                 "Automatic attempts used: {}/1",
@@ -167,29 +170,35 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
             .fg(MUTED),
         );
         for file in &conflict.files {
-            lines.push(Line::from(format!(
-                "{} · {} · owners: {}",
-                file.path,
-                if file.text {
-                    "text"
-                } else {
-                    "manual resolution"
-                },
-                if file.owners.is_empty() {
-                    "unassigned".into()
-                } else {
-                    file.owners.join(", ")
-                }
-            )));
+            lines.extend(wrap_line(
+                Line::from(format!(
+                    "  {} · {} · owners: {}",
+                    file.path,
+                    if file.text {
+                        "text"
+                    } else {
+                        "manual resolution"
+                    },
+                    if file.owners.is_empty() {
+                        "unassigned".into()
+                    } else {
+                        file.owners.join(", ")
+                    }
+                )),
+                width,
+                2,
+            ));
         }
         lines.push(Line::default());
     }
     if let Some(check) = task.checks.iter().find(|check| check.failed()) {
-        lines.push(
+        lines.extend(wrap_line(
             Line::from(format!("! {}", check.check))
                 .fg(Color::Red)
                 .bold(),
-        );
+            width,
+            2,
+        ));
         lines.extend(command_lines(&check.command, width));
         let output = if app.show_evidence {
             check.output.clone()
@@ -197,23 +206,39 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
             check.evidence()
         };
         lines.extend(
-            output
-                .lines()
-                .map(|line| Line::from(line.to_owned()).fg(Color::Red)),
+            indented_text(&output, width, 2)
+                .into_iter()
+                .map(|line| line.fg(Color::Red)),
         );
         lines.push(Line::default());
     }
     if let Some(latest) = task.latest {
-        lines.push(Line::from("Latest update").fg(KEY_HINT).bold());
-        let mut body = latest.body.chars().take(600).collect::<String>();
-        if body.len() < latest.body.len() {
-            body.push('…');
-        }
-        lines.extend(Text::from(body).lines);
+        let result = latest
+            .item_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("result:"));
+        lines.push(
+            Line::from(if result {
+                "Worker report"
+            } else {
+                "Latest update"
+            })
+            .fg(ACCENT)
+            .bold(),
+        );
+        let body = if result {
+            latest
+                .body
+                .split_once('\n')
+                .map_or(latest.body.as_str(), |(_, body)| body)
+        } else {
+            &latest.body
+        };
+        lines.extend(indented_text(body, width, 2));
         lines.push(Line::default());
     } else if task.run.status == "done" && !task.run.summary.is_empty() {
-        lines.push(Line::from("Worker report").fg(KEY_HINT).bold());
-        lines.extend(Text::from(task.run.summary.clone()).lines);
+        lines.push(Line::from("Worker report").fg(ACCENT).bold());
+        lines.extend(indented_text(&task.run.summary, width, 2));
         lines.push(Line::default());
     }
     let passed = task
@@ -223,18 +248,23 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         .count();
     let failed = task.checks.iter().filter(|check| check.failed()).count();
     let unrun = task.checks.iter().filter(|check| check.skipped()).count();
-    lines.push(
-        Line::from(if task.checks.is_empty() {
-            "Checks".into()
-        } else {
-            format!(
-                "{} · {passed} passed · {failed} failed · {unrun} not run",
-                task.checks_label
-            )
-        })
-        .fg(KEY_HINT)
-        .bold(),
-    );
+    lines.push(Line::from(task.checks_label).fg(ACCENT).bold());
+    if !task.checks.is_empty() {
+        let mut counts = Vec::new();
+        for (count, label, color) in [
+            (passed, "passed", ACCENT),
+            (failed, "failed", Color::Red),
+            (unrun, "not run", KEY_HINT),
+        ] {
+            if count > 0 {
+                if !counts.is_empty() {
+                    counts.push(" · ".fg(KEY_HINT));
+                }
+                counts.push(format!("{count} {label}").fg(color));
+            }
+        }
+        lines.extend(wrap_line(Line::from(counts), width, 0));
+    }
     for expected in &task.task.checks {
         let checks: Vec<_> = task
             .checks
@@ -250,13 +280,20 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         } else {
             "·"
         };
-        lines.push(
-            Line::from(format!("{marker} {expected}")).fg(if marker == "!" {
-                Color::Red
-            } else {
-                KEY_HINT
-            }),
-        );
+        let color = match marker {
+            "!" => Color::Red,
+            "✓" => ACCENT,
+            _ => KEY_HINT,
+        };
+        lines.push(Line::default());
+        lines.extend(wrap_line(
+            Line::from(vec![
+                format!("  {marker} ").fg(color).bold(),
+                Span::raw(expected.clone()),
+            ]),
+            width,
+            4,
+        ));
         for check in checks
             .into_iter()
             .filter(|check| check.failed() || app.show_evidence)

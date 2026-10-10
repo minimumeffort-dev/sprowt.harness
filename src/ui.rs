@@ -1159,6 +1159,22 @@ fn wrap_line(line: Line<'static>, width: u16, indent: usize) -> Vec<Line<'static
     lines
 }
 
+fn indented_text(text: &str, width: u16, indent: usize) -> Vec<Line<'static>> {
+    text.lines()
+        .flat_map(|line| {
+            if line.is_empty() {
+                vec![Line::default()]
+            } else {
+                wrap_line(
+                    Line::from(format!("{}{line}", " ".repeat(indent))),
+                    width,
+                    indent,
+                )
+            }
+        })
+        .collect()
+}
+
 fn action_control(item: &ActionItem, width: u16, menu: bool) -> Line<'static> {
     let mut spans = Vec::new();
     let ctrl = if width < 60 { "^" } else { "ctrl+" };
