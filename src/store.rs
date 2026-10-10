@@ -1602,10 +1602,11 @@ impl Store {
             Some(run.id) == failure.task
                 && run.status == "done"
                 && run.worker.is_some()
-                && run
-                    .checks
-                    .iter()
-                    .any(|check| check.check == failure.check && check.command == failure.command)
+                && run.checks.iter().any(|check| {
+                    check.check == failure.check
+                        && check.command == failure.command
+                        && check.timeout() == failure.timeout()
+                })
         }) else {
             return Ok(false);
         };
@@ -2159,6 +2160,8 @@ mod tests {
                 code_mod.id,
                 "review",
                 &[crate::execution::CheckResult {
+                    timeout_seconds: None,
+                    duration_ms: None,
                     missing_runtime: None,
                     task: None,
                     check: "tests pass".into(),

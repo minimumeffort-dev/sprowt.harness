@@ -584,6 +584,8 @@ pub(crate) mod tests {
             .remove(0);
         let input = store.task_input(id, worker.id, &plan).unwrap().unwrap();
         let mut check = crate::execution::CheckResult {
+            timeout_seconds: None,
+            duration_ms: None,
             task: Some(store.execution(id).unwrap().unwrap().tasks[0].id),
             check: plan.tasks[0].checks[0].clone(),
             command: vec!["/usr/bin/false".into()],
@@ -661,6 +663,8 @@ pub(crate) mod tests {
                 let input = store.task_input(id, worker.id, &plan).unwrap().unwrap();
                 let run_id = crate::task_worktree::task_id(&input.source).unwrap();
                 let check = crate::execution::CheckResult {
+                    timeout_seconds: None,
+                    duration_ms: None,
                     task: Some(run_id),
                     check: "File is correct".into(),
                     command: vec!["/usr/bin/true".into()],
@@ -770,6 +774,8 @@ pub(crate) mod tests {
         let input = store.task_input(id, worker.id, &plan).unwrap().unwrap();
         let run_id = crate::task_worktree::task_id(&input.source).unwrap();
         let check = crate::execution::CheckResult {
+            timeout_seconds: None,
+            duration_ms: None,
             task: Some(run_id),
             check: "File is correct".into(),
             command: vec!["/usr/bin/true".into()],

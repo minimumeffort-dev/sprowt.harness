@@ -75,107 +75,247 @@ fn draw_checks(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
 
 pub(super) fn check_summary(app: &App, width: u16) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    if let Some(m) = app.current_mod() {
-        if let Some(e) = &m.execution {
-            lines.push(
-                Line::from(if e.checks.is_empty() {
-                    "Combined checks have not run on this version."
-                } else if e.status == "verifying" {
-                    "Combined checks are running."
-                } else if e.status == "review" && e.fingerprint.is_some() && e.complete() {
-                    "Combined results for the verified version."
-                } else {
-                    "Saved results · this version is not yet verified."
-                })
-                .fg(KEY_HINT),
-            );
-            if !e.checks.is_empty() {
-                lines.extend(check_lines(&e.checks, width, app.show_evidence));
+    let Some(m) = app.current_mod() else {
+        return lines;
+    };
+    if let Some(e) = &m.execution {
+        lines.push(Line::from("Combined verification").fg(ACCENT).bold());
+        lines.extend(wrap_line(
+            Line::from(if e.checks.is_empty() {
+                "Combined checks have not run on this version."
+            } else if e.status == "verifying" {
+                "Combined checks are running."
+            } else if e.status == "review" && e.fingerprint.is_some() && e.complete() {
+                "Combined results for the verified version."
+            } else {
+                "Saved results · this version is not yet verified."
+            })
+            .fg(KEY_HINT),
+            width,
+            0,
+        ));
+        if !e.checks.is_empty() {
+            let mut counts = Vec::new();
+            for (count, label, color) in [
+                (
+                    e.checks.iter().filter(|c| c.exit_code == Some(0)).count(),
+                    "passed",
+                    ACCENT,
+                ),
+                (
+                    e.checks.iter().filter(|c| c.failed()).count(),
+                    "failed",
+                    Color::Red,
+                ),
+                (
+                    e.checks.iter().filter(|c| c.skipped()).count(),
+                    "not run",
+                    KEY_HINT,
+                ),
+            ] {
+                if count > 0 {
+                    if !counts.is_empty() {
+                        counts.push(" · ".fg(KEY_HINT));
+                    }
+                    counts.push(format!("{count} {label}").fg(color));
+                }
             }
-        }
-        lines.push(Line::default());
-        for id in app.task_ids() {
-            if let Some(task) = app.inspect_task(id) {
-                lines.push(
-                    Line::from(format!(
-                        "{}. {} · {}",
-                        task.number, task.task.title, task.state
-                    ))
-                    .bold(),
-                );
-                if task.checks.is_empty() {
-                    for expected in &task.task.checks {
-                        lines.push(Line::from(format!("· {expected} · not run")).fg(KEY_HINT));
-                    }
-                } else {
-                    // Combined results already appear above; task details remain available in Tasks.
-                    if !m
-                        .execution
-                        .as_ref()
-                        .is_some_and(|e| e.checks.iter().any(|c| c.task == Some(task.run.id)))
-                    {
-                        if task.run.checks.is_empty() && !task.run.verification_feedback.is_empty()
-                        {
-                            lines.push(Line::from("Previous failed checks").fg(KEY_HINT));
-                        }
-                        lines.extend(check_lines(
-                            &task.checks.iter().map(|c| (*c).clone()).collect::<Vec<_>>(),
-                            width,
-                            app.show_evidence,
-                        ));
-                    }
+            lines.extend(wrap_line(Line::from(counts), width, 0));
+            let mut owners = Vec::new();
+            for check in &e.checks {
+                if !owners.contains(&check.task) {
+                    owners.push(check.task);
+                }
+            }
+            for (phase, label, color) in [
+                (0, "Needs attention", Color::Red),
+                (1, "Passed checks", ACCENT),
+                (2, "Not run", KEY_HINT),
+            ] {
+                let phase_checks: Vec<_> =
+                    e.checks
+                        .iter()
+                        .filter(|check| {
+                            let group = e.checks.iter().filter(|other| {
+                                other.task == check.task && other.check == check.check
+                            });
+                            let state = if group.clone().any(|c| c.failed()) {
+                                0
+                            } else if group.clone().all(|c| c.exit_code == Some(0)) {
+                                1
+                            } else {
+                                2
+                            };
+                            state == phase
+                        })
+                        .collect();
+                if phase_checks.is_empty() {
+                    continue;
                 }
                 lines.push(Line::default());
+                lines.push(Line::from(label).fg(color).bold());
+                for owner in &owners {
+                    let checks: Vec<_> = phase_checks
+                        .iter()
+                        .copied()
+                        .filter(|check| check.task == *owner)
+                        .collect();
+                    if checks.is_empty() {
+                        continue;
+                    }
+                    let title = owner.and_then(|id| app.inspect_task(id)).map_or_else(
+                        || "Saved checks".to_owned(),
+                        |task| format!("{}. {}", task.number, task.task.title),
+                    );
+                    lines.extend(wrap_line(Line::from(title).bold(), width, 0));
+                    if phase == 2 && !app.show_evidence && checks.iter().all(|c| c.skipped()) {
+                        lines.extend(wrap_line(
+                            Line::from(format!(
+                                "  · {} command{} not run · e show evidence",
+                                checks.len(),
+                                if checks.len() == 1 { "" } else { "s" }
+                            ))
+                            .fg(KEY_HINT),
+                            width,
+                            4,
+                        ));
+                        lines.push(Line::default());
+                    } else {
+                        lines.extend(check_lines(&checks, width, app.show_evidence));
+                    }
+                }
             }
         }
-        if app.task_ids().is_empty() {
-            lines.push(Line::from("No checks planned yet."));
+    }
+    for id in app.task_ids() {
+        if let Some(task) = app.inspect_task(id) {
+            if m.execution
+                .as_ref()
+                .is_some_and(|e| e.checks.iter().any(|c| c.task == Some(id)))
+            {
+                continue;
+            }
+            lines.push(Line::default());
+            lines.extend(wrap_line(
+                Line::from(format!(
+                    "{}. {} · {}",
+                    task.number, task.task.title, task.state
+                ))
+                .bold(),
+                width,
+                0,
+            ));
+            if task.checks.is_empty() {
+                for expected in &task.task.checks {
+                    lines.extend(wrap_line(
+                        Line::from(format!("  · {expected} · not run")).fg(KEY_HINT),
+                        width,
+                        4,
+                    ));
+                }
+            } else {
+                lines.push(
+                    Line::from(
+                        if task.run.checks.is_empty() && !task.run.verification_feedback.is_empty()
+                        {
+                            "Previous failed checks"
+                        } else {
+                            "Task verification · before combined checks"
+                        },
+                    )
+                    .fg(KEY_HINT),
+                );
+                lines.extend(check_lines(&task.checks, width, app.show_evidence));
+            }
         }
+    }
+    if app.task_ids().is_empty() {
+        lines.push(Line::from("No checks planned yet."));
     }
     lines
 }
 
 fn check_lines(
-    checks: &[crate::execution::CheckResult],
+    checks: &[&crate::execution::CheckResult],
     width: u16,
     evidence: bool,
 ) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let mut ordered: Vec<_> = checks
-        .iter()
-        .filter(|check| evidence || !check.skipped())
-        .collect();
-    ordered.sort_by_key(|check| !check.failed());
-    for check in ordered {
-        let (glyph, status, color) = if check.exit_code == Some(0) {
-            ("✓", "passed", KEY_HINT)
-        } else if check.failed() {
-            ("!", "failed", Color::Red)
-        } else {
-            ("·", "not run", KEY_HINT)
-        };
-        lines.push(Line::from(format!("{glyph} {} · {status}", check.check)).fg(color));
-        if evidence {
-            lines.extend(command_lines(&check.command, width));
-            lines.extend(
-                check
-                    .output
-                    .lines()
-                    .map(|line| Line::from(line.to_owned()).fg(color)),
-            );
-        } else if check.failed() {
-            lines.push(Line::from(check.brief()).fg(Color::Red));
+    let mut names = Vec::new();
+    for check in checks {
+        if !names.contains(&check.check.as_str()) {
+            names.push(check.check.as_str());
         }
     }
-    let skipped = checks.iter().filter(|check| check.skipped()).count();
-    if !evidence && skipped > 0 {
-        lines.push(
-            Line::from(format!(
-                "· {skipped} command{} not run · e show evidence",
-                if skipped == 1 { "" } else { "s" }
-            ))
-            .fg(KEY_HINT),
-        );
+    for name in names {
+        let group: Vec<_> = checks
+            .iter()
+            .copied()
+            .filter(|check| check.check == name)
+            .collect();
+        let failed = group.iter().any(|check| check.failed());
+        let passed = group.iter().all(|check| check.exit_code == Some(0));
+        let (glyph, color) = if failed {
+            ("!", Color::Red)
+        } else if passed {
+            ("✓", ACCENT)
+        } else {
+            ("·", KEY_HINT)
+        };
+        lines.extend(wrap_line(
+            Line::from(vec![
+                format!("  {glyph} ").fg(color).bold(),
+                Span::raw(name.to_owned()),
+            ]),
+            width,
+            4,
+        ));
+        if group.len() > 1 {
+            let status = if passed {
+                "passed".to_owned()
+            } else {
+                format!(
+                    "{} passed · {} failed · {} not run",
+                    group.iter().filter(|c| c.exit_code == Some(0)).count(),
+                    group.iter().filter(|c| c.failed()).count(),
+                    group.iter().filter(|c| c.skipped()).count()
+                )
+            };
+            lines.extend(wrap_line(
+                Line::from(format!("    {} commands · {}", group.len(), status)).fg(color),
+                width,
+                4,
+            ));
+        }
+        for check in group {
+            if (check.failed() || evidence)
+                && let Some(timing) = check.timing()
+            {
+                lines.extend(wrap_line(
+                    Line::from(format!("    {timing}")).fg(KEY_HINT),
+                    width,
+                    4,
+                ));
+            }
+            if evidence {
+                lines.extend(command_lines(&check.command, width));
+            }
+            let output = if evidence {
+                check.output.clone()
+            } else if check.failed() {
+                check.evidence()
+            } else {
+                String::new()
+            };
+            if !output.is_empty() {
+                lines.extend(
+                    indented_text(&output, width, 4)
+                        .into_iter()
+                        .map(|line| line.fg(if check.failed() { Color::Red } else { KEY_HINT })),
+                );
+            }
+        }
+        lines.push(Line::default());
     }
     lines
 }

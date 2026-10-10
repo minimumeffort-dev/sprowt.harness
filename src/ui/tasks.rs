@@ -199,6 +199,13 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
             width,
             2,
         ));
+        if let Some(timing) = check.timing() {
+            lines.extend(wrap_line(
+                Line::from(format!("  {timing}")).fg(KEY_HINT),
+                width,
+                2,
+            ));
+        }
         lines.extend(command_lines(&check.command, width));
         let output = if app.show_evidence {
             check.output.clone()
@@ -218,7 +225,9 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
             .as_deref()
             .is_some_and(|id| id.starts_with("result:"));
         lines.push(
-            Line::from(if result {
+            Line::from(if result && task.checks_label == "Final checks" {
+                "Earlier task report · before combined checks"
+            } else if result {
                 "Worker report"
             } else {
                 "Latest update"
@@ -237,7 +246,17 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         lines.extend(indented_text(body, width, 2));
         lines.push(Line::default());
     } else if task.run.status == "done" && !task.run.summary.is_empty() {
-        lines.push(Line::from("Worker report").fg(ACCENT).bold());
+        lines.extend(wrap_line(
+            Line::from(if task.checks_label == "Final checks" {
+                "Earlier task report · before combined checks"
+            } else {
+                "Worker report"
+            })
+            .fg(ACCENT)
+            .bold(),
+            width,
+            0,
+        ));
         lines.extend(indented_text(&task.run.summary, width, 2));
         lines.push(Line::default());
     }

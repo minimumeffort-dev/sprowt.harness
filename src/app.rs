@@ -3334,6 +3334,8 @@ mod tests {
                 .source
                 .clone();
             let checks = vec![crate::execution::CheckResult {
+                timeout_seconds: None,
+                duration_ms: None,
                 missing_runtime: None,
                 task: None,
                 check: plan.tasks[0].checks[0].clone(),
@@ -3439,6 +3441,8 @@ mod tests {
                 .checks
                 .iter()
                 .map(|check| crate::execution::CheckResult {
+                    timeout_seconds: None,
+                    duration_ms: None,
                     missing_runtime: None,
                     task: Some(execution.tasks[0].id),
                     check: check.clone(),
@@ -5185,6 +5189,7 @@ mod tests {
                     .unwrap();
                 vm.assign_task(run.id, record.id, &flag).unwrap();
                 let check = crate::execution::Check {
+                    timeout_seconds: None,
                     task: Some(run.id),
                     check: plan.tasks[i].checks[0].clone(),
                     command: vec![
@@ -5635,6 +5640,7 @@ mod tests {
                     .checks
                     .iter()
                     .map(|r| crate::execution::Check {
+                        timeout_seconds: None,
                         task: Some(run.id),
                         check: r.check.clone(),
                         command: r.command.clone(),
@@ -5976,6 +5982,8 @@ mod tests {
             .source
             .clone();
         let checks = vec![crate::execution::CheckResult {
+            timeout_seconds: None,
+            duration_ms: None,
             missing_runtime: None,
             task: None,
             check: "prints hello".into(),
@@ -6154,6 +6162,129 @@ mod tests {
     }
 
     #[test]
+    fn combined_checks_prioritize_failures_group_tasks_and_keep_evidence() {
+        use ratatui::style::Color;
+        let (_data, mut app, _) = execution_app();
+        let m = &mut app.mods[0];
+        m.name = "Browser-only todo app".into();
+        let plan = m.planning.as_mut().unwrap().plan.as_mut().unwrap();
+        plan.tasks[0].title = "Verify the static app".into();
+        let mut other = plan.tasks[0].clone();
+        other.id = "storage".into();
+        other.title = "Preserve local storage".into();
+        plan.tasks.push(other.clone());
+        let e = m.execution.as_mut().unwrap();
+        e.status = "blocked".into();
+        e.fingerprint = None;
+        e.tasks[0].status = "done".into();
+        e.tasks[0].summary = "All task checks passed on the earlier run.".into();
+        let first_id = e.tasks[0].id;
+        let mut second = e.tasks[0].clone();
+        second.id += 1;
+        second.task_id = other.id;
+        e.tasks.push(second);
+        let entries = [
+            (
+                first_id,
+                "Build contains the expected worker and model assets.",
+                Some(0),
+            ),
+            (
+                first_id,
+                "Restart offline, perform real inference and verify semantic search with zero external requests.",
+                Some(1),
+            ),
+            (
+                first_id,
+                "Restart offline, perform real inference and verify semantic search with zero external requests.",
+                Some(0),
+            ),
+            (first_id, "Document the verified deployment.", None),
+            (first_id + 1, "Retain saved tasks after reopening.", Some(0)),
+            (first_id + 1, "Retain saved tasks after reopening.", Some(0)),
+        ];
+        e.checks = entries
+            .iter()
+            .enumerate()
+            .map(|(i, (id, name, exit))| crate::execution::CheckResult {
+                task: Some(*id),
+                check: (*name).into(),
+                command: vec!["/usr/bin/node".into(), format!("scenario-{i}.mjs")],
+                timeout_seconds: Some(120),
+                duration_ms: exit.map(|_| 27821),
+                exit_code: *exit,
+                missing_runtime: None,
+                output: if *exit == Some(1) {
+                    "error: test timed out after 27000ms\ncode: ERR_TEST_FAILURE".into()
+                } else if exit.is_none() {
+                    "Not run.".into()
+                } else {
+                    "Passed output stays hidden".into()
+                },
+            })
+            .collect();
+        for run in &mut e.tasks {
+            run.checks = e
+                .checks
+                .iter()
+                .filter(|c| c.task == Some(run.id))
+                .cloned()
+                .collect();
+        }
+        for width in [160, 124, 80] {
+            app.view = View::Checks(0);
+            app.show_evidence = false;
+            let buffer = screen(&mut app, width, 50);
+            let text = rows(&buffer).join("\n");
+            assert!(text.find("Needs attention").unwrap() < text.find("Passed checks").unwrap());
+            assert!(text.contains("4 passed · 1 failed · 1 not run"));
+            assert!(text.contains("27.8s elapsed · 120s limit"));
+            assert_eq!(
+                text.matches("Retain saved tasks after reopening.").count(),
+                1
+            );
+            assert!(text.contains("2 commands · passed"));
+            assert_eq!(text.matches("Restart offline").count(), 1);
+            assert!(text.contains("2 commands · 1 passed · 1 failed"));
+            assert!(!text.contains("Passed output stays hidden"));
+            assert!(
+                buffer
+                    .content
+                    .iter()
+                    .any(|cell| cell.symbol() == "✓" && cell.fg == Color::Green)
+            );
+            assert!(
+                buffer
+                    .content
+                    .iter()
+                    .any(|cell| cell.symbol() == "!" && cell.fg == Color::Red)
+            );
+        }
+        app.show_evidence = true;
+        app.view = View::Checks(0);
+        let text = rows(&screen(&mut app, 120, 70)).join("\n");
+        for i in 0..6 {
+            assert!(text.contains(&format!("scenario-{i}.mjs")));
+        }
+        app.view = View::Task(first_id, 0);
+        assert!(
+            rows(&screen(&mut app, 100, 50))
+                .join("\n")
+                .contains("Earlier task report · before combined checks")
+        );
+        app.view = View::Chat;
+        app.show_evidence = false;
+        app.timeline.focus = timeline::Focus::Inspector;
+        app.timeline.held = true;
+        app.timeline.selected = Some(timeline::Key::Checks);
+        app.timeline.reveal = true;
+        let buffer = screen(&mut app, 160, 50);
+        let text = rows(&buffer).join("\n");
+        assert!(text.contains("Needs attention") && text.contains("27000ms"));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+
+    #[test]
     fn timeline_task_details_use_readable_findings_and_check_statuses() {
         use ratatui::style::Color;
         use timeline::{Focus, Key};
@@ -6201,6 +6332,8 @@ mod tests {
             .checks
             .iter()
             .map(|check| crate::execution::CheckResult {
+                timeout_seconds: None,
+                duration_ms: None,
                 missing_runtime: None,
                 task: None,
                 check: check.clone(),
@@ -7584,6 +7717,8 @@ mod tests {
             e.status = "blocked".into();
             e.checks = (0..16)
                 .map(|i| crate::execution::CheckResult {
+                    timeout_seconds: None,
+                    duration_ms: None,
                     task: Some(e.tasks[0].id),
                     check: "Verify relevance".into(),
                     command: vec!["/tasks/53/.venv/bin/python".into(), format!("check-{i}")],
@@ -7624,7 +7759,7 @@ mod tests {
         let source = app.mods[0].execution.as_ref().unwrap().tasks[0]
             .source
             .clone();
-        let checks = vec![crate::execution::CheckResult { missing_runtime: None, task: None, check: "Suite".into(), command: vec!["/bin/true".into()], exit_code: Some(0), output: String::new() }, crate::execution::CheckResult { missing_runtime: None, task: None, check: "Browser flows".into(), command: vec!["/bin/false".into()], exit_code: Some(1), output: "DeprecationWarning: dependency\nTraceback\nAssertionError: Upload retry\nactual: undefined\nexpected: true".into() }];
+        let checks = vec![crate::execution::CheckResult { timeout_seconds: None, duration_ms: None, missing_runtime: None, task: None, check: "Suite".into(), command: vec!["/bin/true".into()], exit_code: Some(0), output: String::new() }, crate::execution::CheckResult { timeout_seconds: None, duration_ms: None, missing_runtime: None, task: None, check: "Browser flows".into(), command: vec!["/bin/false".into()], exit_code: Some(1), output: "DeprecationWarning: dependency\nTraceback\nAssertionError: Upload retry\nactual: undefined\nexpected: true".into() }];
         app.store
             .finish_task(id, &source, "blocked", "All checks passed", &checks)
             .unwrap();
@@ -7668,6 +7803,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(i, name)| crate::execution::CheckResult {
+                timeout_seconds: None,
+                duration_ms: None,
                 missing_runtime: None,
                 task: Some(run.id),
                 check: (*name).into(),

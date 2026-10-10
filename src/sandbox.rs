@@ -711,8 +711,24 @@ impl Sandbox {
         loop {
             if cancelled.load(Ordering::Relaxed) || Instant::now() > deadline {
                 rpc.call("process/terminate", json!({"processId":process}))?;
-                return Err(io::Error::other(
-                    "Guest command stopped or exceeded its time limit.",
+                let (kind, message) = if cancelled.load(Ordering::Relaxed) {
+                    (
+                        io::ErrorKind::Interrupted,
+                        "Guest command stopped.".to_owned(),
+                    )
+                } else {
+                    (
+                        io::ErrorKind::TimedOut,
+                        format!("Guest command timed out after {timeout}s."),
+                    )
+                };
+                return Err(io::Error::new(
+                    kind,
+                    format!(
+                        "{message}\n{}{}",
+                        String::from_utf8_lossy(&stdout),
+                        String::from_utf8_lossy(&stderr)
+                    ),
                 ));
             }
             let read = rpc.call(
@@ -988,23 +1004,38 @@ impl Sandbox {
         cancelled: &AtomicBool,
         mut progress: impl FnMut(&str),
     ) -> io::Result<(Snapshot, Vec<CheckResult>)> {
+        if checks
+            .iter()
+            .any(|check| !(1..=crate::execution::MAX_CHECK_TIMEOUT).contains(&check.timeout()))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Check budgets must be 1–180 seconds.",
+            ));
+        }
         self.restore_check_scripts(cancelled)?;
         let before = self.snapshot(&self.task_folder(), cancelled)?;
         let total = checks
             .iter()
-            .map(|c| (&c.task, &c.command))
+            .map(|c| (&c.task, &c.command, c.timeout()))
             .collect::<std::collections::BTreeSet<_>>()
             .len();
         let mut current = 0;
         let results = crate::checks::unique_results(checks, cancelled, |check| {
             current += 1;
-            progress(&format!("Checking {current}/{total} · {}", check.check));
+            progress(&format!(
+                "Checking {current}/{total} · {} · {}s limit",
+                check.check,
+                check.timeout()
+            ));
             let executable = check
                 .command
                 .first()
                 .ok_or_else(|| io::Error::other("Verification requires an executable."))?;
             let probe = vec!["/usr/bin/test".into(), "-x".into(), executable.clone()];
             let mut result = CheckResult {
+                timeout_seconds: Some(check.timeout()),
+                duration_ms: None,
                 task: check.task,
                 check: check.check.clone(),
                 command: check.command.clone(),
@@ -1029,7 +1060,8 @@ impl Sandbox {
                     return Ok(result);
                 }
             }
-            match self.run(&check.command, cancelled, 30, 8192) {
+            let started = Instant::now();
+            match self.run(&check.command, cancelled, check.timeout(), 8192) {
                 Ok((exit, stdout, stderr)) => {
                     result.exit_code = exit;
                     result.output = format!(
@@ -1040,6 +1072,7 @@ impl Sandbox {
                 }
                 Err(error) => result.output = error.to_string(),
             }
+            result.duration_ms = Some(started.elapsed().as_millis() as u64);
             if self.snapshot(&self.task_folder(), &AtomicBool::new(false))? != before {
                 result.exit_code = None;
                 result.output =
@@ -1218,6 +1251,54 @@ mod tests {
     use crate::store::test_support::TestData;
 
     #[test]
+    #[ignore = "verifies longer check budgets and timeout termination in a disposable VM"]
+    fn verification_honors_budgets_and_retains_timeout_evidence() {
+        let data = TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("source.txt"), "unchanged").unwrap();
+        let root = data.0.join(format!("budgets-{}", std::process::id()));
+        workspace::create(&project, &root).unwrap();
+        let flag = AtomicBool::new(false);
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
+                let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
+                vm.prepare_tasks(&[1], &flag)?;
+                vm.activate_task(1, &flag)?;
+                let mut check = Check {
+                    task: Some(1),
+                    check: "Measured slow check".into(),
+                    timeout_seconds: Some(45),
+                    command: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "sleep 31; echo completed".into(),
+                    ],
+                };
+                let mut progress = Vec::new();
+                let (_, results) = vm.verify_with_progress(&[check.clone()], &flag, |line| {
+                    progress.push(line.to_owned())
+                })?;
+                assert_eq!(results[0].exit_code, Some(0));
+                assert_eq!(results[0].timeout(), 45);
+                assert!(results[0].duration_ms.unwrap() >= 31_000);
+                assert!(progress[0].contains("45s limit"));
+                check.timeout_seconds = Some(1);
+                check.command[2] = "echo reached-startup; sleep 15; echo should-not-finish".into();
+                let (_, results) = vm.verify(&[check], &flag)?;
+                assert!(results[0].failed() && !results[0].skipped());
+                assert!(results[0].output.contains("timed out after 1s"));
+                assert!(results[0].output.contains("reached-startup"));
+                assert!(!results[0].output.contains("should-not-finish"));
+                assert!(results[0].duration_ms.unwrap() < 10_000);
+                assert_eq!(fs::read(root.join("work/source.txt"))?, b"unchanged");
+                Ok(())
+            }));
+        delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
+
+    #[test]
     fn exports_only_regular_source_and_preserves_modes() {
         let mut archive = tar::Builder::new(Vec::new());
         for (path, content) in [
@@ -1350,7 +1431,7 @@ mod tests {
                 vm.checkpoint_tasks(&flag)?;
                 drop(vm);
                 let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
-                let check = Check { task: Some(1), check: "Runtime works".into(), command: vec!["/bin/sh".into(), "-c".into(), "test \"$(cat runtime.mjs)\" = runtime && test \"$(cat panel.mjs)\" = panel".into()] };
+                let check = Check { timeout_seconds: None, task: Some(1), check: "Runtime works".into(), command: vec!["/bin/sh".into(), "-c".into(), "test \"$(cat runtime.mjs)\" = runtime && test \"$(cat panel.mjs)\" = panel".into()] };
                 assert_eq!(
                     vm.verify_execution(
                         "00000004-0002-4000-8000-000000000001",
@@ -1445,7 +1526,7 @@ mod tests {
                     ],
                     &flag,
                 )?;
-                let check = Check {
+                let check = Check { timeout_seconds: None,
                     task: Some(1),
                     check: "Combined source builds".into(),
                     command: vec![
@@ -1487,6 +1568,7 @@ mod tests {
         let flag = AtomicBool::new(false);
         let command = |script: &str| vec!["/bin/sh".into(), "-c".into(), script.into()];
         let check = |id: i64, script: &str| Check {
+            timeout_seconds: None,
             task: Some(id),
             check: "Regression check".into(),
             command: command(script),
@@ -1592,6 +1674,7 @@ mod tests {
         let source = |id| crate::store::task_source(id, 1);
         let command = |script: &str| vec!["/bin/sh".into(), "-c".into(), script.into()];
         let check = |id| Check {
+            timeout_seconds: None,
             task: Some(id),
             check: "Runtime sees combined source".into(),
             command: vec![format!("/tasks/{id}/.venv/bin/check")],
@@ -1628,6 +1711,7 @@ mod tests {
                 assert_eq!(vm.run(&command("test \"$(cat \"$XDG_CACHE_HOME/model\")\" = model-fixture && test -x .venv/bin/check"), &flag, 30, 8192)?.0, Some(0));
                 let repeated = command("printf x >> \"$XDG_CACHE_HOME/runs\"; test -s source.txt");
                 let duplicate_checks = ["Smoke", "Review regression"].map(|name| Check {
+                    timeout_seconds: None,
                     task: Some(2),
                     check: name.into(),
                     command: repeated.clone(),
@@ -1714,6 +1798,7 @@ mod tests {
         let flag = AtomicBool::new(false);
         let command = |script: &str| vec!["/bin/sh".into(), "-c".into(), script.into()];
         let check = |task: i64, script: &str| Check {
+            timeout_seconds: None,
             task: Some(task),
             check: "Source is correct".into(),
             command: command(script),
@@ -2058,7 +2143,7 @@ mod tests {
                     &["exec", &vm.name, "/bin/rm", "/root/.ssh/credential-canary"],
                     &cancelled,
                 )?;
-                let checks = vec![Check { task: None, check:"Package installed and source retained".into(),command:vec!["/bin/sh".into(),"-c".into(),"/usr/bin/jq --version && test \"$(cat keep.txt)\" = 'source stays' && ! touch /opt/sprowt-apt/worker-write".into()]}];
+                let checks = vec![Check { timeout_seconds: None, task: None, check:"Package installed and source retained".into(),command:vec!["/bin/sh".into(),"-c".into(),"/usr/bin/jq --version && test \"$(cat keep.txt)\" = 'source stays' && ! touch /opt/sprowt-apt/worker-write".into()]}];
                 assert_eq!(vm.verify(&checks, &cancelled)?.1[0].exit_code, Some(0));
                 drop(vm);
                 let mut vm = Sandbox::prepare(&root, &cancelled, |_| {})?;
@@ -2125,7 +2210,7 @@ mod tests {
             assert_eq!(fs::read_to_string(project.join("delete.txt"))?, "original");
             drop(vm);
             let mut vm = Sandbox::prepare(&root, &cancelled, |label| eprintln!("{label}"))?;
-            let checks = vec![Check { task: None, check: "runtime persisted".into(), command: vec!["/bin/sh".into(), "-c".into(), "test \"$(cat /home/sprowt/runtime-proof)\" = persistent && test \"$(cat result.txt)\" = edited".into()] }];
+            let checks = vec![Check { timeout_seconds: None, task: None, check: "runtime persisted".into(), command: vec!["/bin/sh".into(), "-c".into(), "test \"$(cat /home/sprowt/runtime-proof)\" = persistent && test \"$(cat result.txt)\" = edited".into()] }];
             let (before, results) = vm.verify(&checks, &cancelled)?;
             assert_eq!(results[0].exit_code, Some(0));
             assert_eq!(before, workspace::source_state(&root.join("work"))?);

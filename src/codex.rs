@@ -1169,6 +1169,7 @@ mod tests {
                 vm.assign_task(runs[1].id, peer, &flag)?;
                 vm.assign_task(runs[0].id, worker, &flag)?;
                 let check = Check {
+                    timeout_seconds: None,
                     task: Some(runs[0].id),
                     check: "Browser and boundaries pass".into(),
                     command: command.clone(),
@@ -1276,7 +1277,7 @@ mod tests {
                                 assert!(accepted.iter().all(|v| *v), "Both tasks must start before either finishes");
                                 assert_eq!(message["params"]["turn"]["status"], "completed");
                                 completed[i] = true;
-                                clients[i].send(Action::Verify { source: runs[i].source.clone(), checks: vec![Check {
+                                clients[i].send(Action::Verify { source: runs[i].source.clone(), checks: vec![Check { timeout_seconds: None,
                                     task: Some(runs[i].id), check: "Marker exists".into(),
                                     command: vec!["/bin/sh".into(), "-c".into(), format!("test \"$(cat {file})\" = ok && test \"$HOME\" = /home/sprowt/workers/{}", ids[i])],
                                 }] })?;
@@ -1304,6 +1305,7 @@ mod tests {
                 // Dropping one worker must leave the shared VM usable.
                 let flag = AtomicBool::new(false);
                 let check = Check {
+                    timeout_seconds: None,
                     task: Some(runs[1].id),
                     check: "Combined markers".into(),
                     command: vec![
@@ -1388,6 +1390,7 @@ mod tests {
                 assert_eq!(fs::read_to_string(root.join("work/marker.txt"))?, "ok");
                 let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
                 let check = Check {
+                    timeout_seconds: None,
                     task: Some(run.id),
                     check: "Marker contains ok".into(),
                     command: vec![

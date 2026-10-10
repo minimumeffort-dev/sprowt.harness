@@ -12,7 +12,7 @@ import urllib.error
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from muse_bridge import ManagedRpc, SessionState, connect, recovered_thread, normalize, final_report, host, OUTPUT_TOKENS
+from muse_bridge import ManagedRpc, SessionState, connect, recovered_thread, normalize, final_report, host, mcp, OUTPUT_TOKENS
 from muse_transport import BridgeFailure, Broker, FrameReader, FramedOutput, FRAME_BYTES, provider_failure, failure
 import muse_transport
 
@@ -49,6 +49,22 @@ def wire_frames(value):
 
 
 class StreamTests(unittest.TestCase):
+    def test_mcp_keeps_long_check_batches_connected_until_the_controller_replies(self):
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            (home / ".config/muse").mkdir(parents=True)
+            (home / ".config/muse/auth.json").write_text(json.dumps({"providers": {"meta": {"api_key": "synthetic"}}}))
+            (home / ".sprowt-endpoint.json").write_text(json.dumps({"url": "http://localhost:1234"}))
+            (home / ".sprowt-tools.json").write_text("[]")
+            messages = [json.dumps({"id": i, "method": "tools/call", "params": {"name": name, "arguments": {}}})
+                        for i, name in enumerate(["run_task_checks", "request_network_access"])]
+            output = io.StringIO()
+            with patch("muse_bridge.Path.home", return_value=home), patch("sys.stdin", io.StringIO("\n".join(messages))), \
+                    patch("sys.stdout", output), patch("muse_bridge.urllib.request.urlopen", side_effect=[io.BytesIO(b'{"isError":false}'), io.BytesIO(b'{"isError":false}')]) as request:
+                mcp()
+            self.assertEqual([call.kwargs["timeout"] for call in request.call_args_list], [7200, 960])
+            self.assertEqual(len(output.getvalue().splitlines()), 2)
+
     def test_large_message_waits_for_each_ack_and_round_trips(self):
         value = {"channel": "rpc", "value": "π\\\"\n" * 150_000}
         output, reader, wire = FramedOutput(), FrameReader(), queue.Queue()

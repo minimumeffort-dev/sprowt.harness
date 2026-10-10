@@ -378,6 +378,7 @@ impl Worker {
                         .iter()
                         .flat_map(|run| &run.checks)
                         .map(|result| Check {
+                            timeout_seconds: result.timeout_seconds,
                             task: result.task,
                             check: result.check.clone(),
                             command: result.command.clone(),
@@ -833,11 +834,14 @@ impl Worker {
                             expected.task.is_none_or(|id| result.task == Some(id))
                                 && result.check == expected.check
                                 && result.command == expected.command
+                                && result.timeout() == expected.timeout()
                         });
                 if matched {
                     // Retain commands skipped after a failure or interruption.
                     checks.extend(self.verification.iter().skip(checks.len()).map(|check| {
                         crate::execution::CheckResult {
+                            timeout_seconds: Some(check.timeout()),
+                            duration_ms: None,
                             missing_runtime: None,
                             task: check.task,
                             check: check.check.clone(),
@@ -1665,6 +1669,7 @@ impl Worker {
                     result.exit_code == Some(0)
                         && result.check == expected.check
                         && result.command == expected.command
+                        && result.timeout() == expected.timeout()
                 })
     }
 
@@ -2588,6 +2593,7 @@ mod tests {
         worker.status = Status::Checking;
         worker.task_source = Some(code_mod.execution.as_ref().unwrap().tasks[0].source.clone());
         worker.verification = vec![Check {
+            timeout_seconds: None,
             task: None,
             check: "Run greeting flag test".into(),
             command: vec!["/usr/bin/true".into()],
@@ -2640,6 +2646,8 @@ mod tests {
                         )
                         .unwrap(),
                         checks: vec![crate::execution::CheckResult {
+                            timeout_seconds: None,
+                            duration_ms: None,
                             missing_runtime: None,
                             task: None,
                             check: worker.verification[0].check.clone(),
@@ -2676,7 +2684,13 @@ mod tests {
 
     #[test]
     fn completion_requires_actual_complete_checks_and_unchanged_source() {
-        for case in ["success", "failure", "missing", "source changed"] {
+        for case in [
+            "success",
+            "failure",
+            "missing",
+            "source changed",
+            "wrong budget",
+        ] {
             let (_data, mut store, mut code_mod, mut worker) = executor();
             if case == "source changed" {
                 std::fs::write(
@@ -2694,6 +2708,8 @@ mod tests {
                 vec![]
             } else {
                 vec![crate::execution::CheckResult {
+                    timeout_seconds: (case == "wrong budget").then_some(120),
+                    duration_ms: None,
                     missing_runtime: None,
                     task: None,
                     check: worker.verification[0].check.clone(),
@@ -2743,6 +2759,8 @@ mod tests {
         let checked = |source: String| Event::Checked {
             source,
             checks: vec![crate::execution::CheckResult {
+                timeout_seconds: None,
+                duration_ms: None,
                 missing_runtime: None,
                 task: Some(id),
                 check: worker.verification[0].check.clone(),
@@ -2835,6 +2853,8 @@ mod tests {
                     Event::Checked {
                         source: worker.task_source.clone().unwrap(),
                         checks: vec![crate::execution::CheckResult {
+                            timeout_seconds: None,
+                            duration_ms: None,
                             missing_runtime: None,
                             task: Some(id),
                             check: worker.verification[0].check.clone(),
@@ -2993,6 +3013,8 @@ mod tests {
                     .take(count)
                     .enumerate()
                     .map(|(i, c)| crate::execution::CheckResult {
+                        timeout_seconds: None,
+                        duration_ms: None,
                         missing_runtime: None,
                         task: c.task,
                         check: c.check,
@@ -3123,6 +3145,8 @@ mod tests {
                                 checks: checks
                                     .into_iter()
                                     .map(|check| crate::execution::CheckResult {
+                                        timeout_seconds: None,
+                                        duration_ms: None,
                                         missing_runtime: None,
                                         task: check.task,
                                         check: check.check,
@@ -3360,6 +3384,7 @@ mod tests {
                 .unwrap();
             vm.assign_task(runs[0].id, muse.id, &flag).unwrap();
             let check = Check {
+                timeout_seconds: None,
                 task: Some(runs[0].id),
                 check: plan.tasks[0].checks[0].clone(),
                 command: vec![
@@ -3456,6 +3481,8 @@ mod tests {
                 Event::Checked {
                     source: worker.task_source.clone().unwrap(),
                     checks: vec![crate::execution::CheckResult {
+                        timeout_seconds: None,
+                        duration_ms: None,
                         task: None,
                         check: worker.verification[0].check.clone(),
                         command: worker.verification[0].command.clone(),
@@ -3502,6 +3529,8 @@ mod tests {
                 )
                 .unwrap();
             let mut check = crate::execution::CheckResult {
+                timeout_seconds: None,
+                duration_ms: None,
                 task: Some(id),
                 check: worker.verification[0].check.clone(),
                 command: worker.verification[0].command.clone(),
@@ -3545,6 +3574,8 @@ mod tests {
             let source = m.execution.as_ref().unwrap().tasks[0].source.clone();
             let executable = format!("/tasks/{id}/.venv/bin/python");
             let mut check = crate::execution::CheckResult {
+                timeout_seconds: None,
+                duration_ms: None,
                 task: Some(id),
                 check: verifier.verification[0].check.clone(),
                 command: vec![executable.clone()],
@@ -3564,6 +3595,7 @@ mod tests {
                 .unwrap();
             m.execution = store.execution(m.id).unwrap();
             verifier.verification = vec![Check {
+                timeout_seconds: None,
                 task: Some(id),
                 check: check.check.clone(),
                 command: check.command.clone(),
@@ -3625,6 +3657,8 @@ mod tests {
             let id = m.execution.as_ref().unwrap().tasks[0].id;
             let source = m.execution.as_ref().unwrap().tasks[0].source.clone();
             let mut check = crate::execution::CheckResult {
+                timeout_seconds: None,
+                duration_ms: None,
                 task: Some(id),
                 check: worker.verification[0].check.clone(),
                 command: vec!["/tasks/1/runtime".into()],
@@ -3644,6 +3678,7 @@ mod tests {
                 .unwrap();
             m.execution = store.execution(m.id).unwrap();
             worker.verification = vec![Check {
+                timeout_seconds: None,
                 task: Some(id),
                 check: check.check.clone(),
                 command: check.command.clone(),
@@ -3699,6 +3734,8 @@ mod tests {
         code_mod.execution = store.execution(code_mod.id).unwrap();
         worker.task_source = Some(format!("final:{}", code_mod.id));
         let checks = vec![crate::execution::CheckResult {
+            timeout_seconds: None,
+            duration_ms: None,
             missing_runtime: None,
             task: None,
             check: worker.verification[0].check.clone(),

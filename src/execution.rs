@@ -38,6 +38,10 @@ pub struct TaskRun {
 #[derive(Clone, Deserialize, Serialize)]
 pub struct CheckResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task: Option<i64>,
     pub check: String,
     pub command: Vec<String>,
@@ -48,6 +52,20 @@ pub struct CheckResult {
 }
 
 impl CheckResult {
+    pub fn timeout(&self) -> u64 {
+        self.timeout_seconds.unwrap_or(DEFAULT_CHECK_TIMEOUT)
+    }
+
+    pub fn timing(&self) -> Option<String> {
+        self.duration_ms.map(|ms| {
+            format!(
+                "{:.1}s elapsed · {}s limit",
+                ms as f64 / 1000.0,
+                self.timeout()
+            )
+        })
+    }
+
     pub fn skipped(&self) -> bool {
         self.exit_code.is_none()
             && self.missing_runtime.is_none()
@@ -66,11 +84,17 @@ impl CheckResult {
             .collect::<Vec<_>>();
         let start = lines
             .iter()
-            .rposition(|line| {
-                line.contains("Error")
-                    || line.contains("FAILED")
-                    || line.contains("panicked")
-                    || line.contains("error:")
+            .position(|line| {
+                line.starts_with("Guest command timed out")
+                    || line.starts_with("Guest command stopped")
+            })
+            .or_else(|| {
+                lines.iter().rposition(|line| {
+                    line.contains("Error")
+                        || line.contains("FAILED")
+                        || line.contains("panicked")
+                        || line.contains("error:")
+                })
             })
             .unwrap_or_else(|| lines.len().saturating_sub(6));
         lines[start..]
@@ -103,10 +127,39 @@ impl TaskRun {
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Check {
+    #[serde(default, deserialize_with = "check_timeout")]
+    pub timeout_seconds: Option<u64>,
     #[serde(skip)]
     pub task: Option<i64>,
     pub check: String,
     pub command: Vec<String>,
+}
+
+pub const DEFAULT_CHECK_TIMEOUT: u64 = 30;
+pub const MAX_CHECK_TIMEOUT: u64 = 180;
+
+fn check_timeout<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    let timeout = Option::<u64>::deserialize(d)?;
+    if timeout.is_some_and(|seconds| !(1..=MAX_CHECK_TIMEOUT).contains(&seconds)) {
+        return Err(serde::de::Error::custom(
+            "Check timeout_seconds must be 1–180, or null for 30 seconds.",
+        ));
+    }
+    Ok(timeout)
+}
+
+impl Check {
+    pub fn timeout(&self) -> u64 {
+        self.timeout_seconds.unwrap_or(DEFAULT_CHECK_TIMEOUT)
+    }
+}
+
+pub fn check_schema() -> Value {
+    json!({"type":"object","additionalProperties":false,
+        "properties":{"check":{"type":"string"},
+            "command":{"type":"array","minItems":1,"items":{"type":"string"}},
+            "timeout_seconds":{"type":["integer","null"],"minimum":1,"maximum":MAX_CHECK_TIMEOUT}},
+        "required":["check","command","timeout_seconds"]})
 }
 
 #[derive(Deserialize)]
@@ -167,10 +220,11 @@ impl Execution {
         self.tasks.iter().find(|run| {
             Some(run.id) == failure.task
                 && run.worker.is_some()
-                && run
-                    .checks
-                    .iter()
-                    .any(|check| check.check == failure.check && check.command == failure.command)
+                && run.checks.iter().any(|check| {
+                    check.check == failure.check
+                        && check.command == failure.command
+                        && check.timeout() == failure.timeout()
+                })
         })
     }
 
@@ -244,7 +298,7 @@ impl Report {
 
 pub fn task_prompt(plan: &Plan, task: &Task, id: i64) -> String {
     format!(
-        "Execute only this task from the saved plan in the Linux VM in your task worktree at /tasks/{id}. Resume saved edits and resolve any merge conflict markers. Respect project rules and the declared file scope. The harness checkpoints source separately from generated caches and runtime databases; scope checks use the source diff, not all files created by tests. Inspect project manifests, reuse compatible installed runtimes and dependencies, and install only what is missing using mise or the project's package manager. Keep reusable browser/model downloads in XDG_CACHE_HOME (the retained worker HOME cache), not disposable test fixture directories. If OS dependencies are missing, call install_system_packages with required Debian package names and a short reason; the harness installs them in the VM and you continue. If a download or documentation request returns x-proxy-error: blocked-by-allowlist, call request_network_access with the exact blocked hostnames and a short reason, including blocked redirect hosts. Return status blocked with repair null while access is pending or denied; do not poll or bypass the policy. The harness reconnects and retries after user approval. Run the completion checks; report blocked checks honestly. If a reproducible code regression belongs to an already completed task, return status blocked and a repair object: task is the completed owner's task ID; files are exact paths in that owner's scope; check must copy the exact text of the failing check from Current task.checks, not from the owner's checks; command reproduces that failure; evidence states the observed failure. Do not fix another task's files. Use repair null for success, missing access, environment blockers, uncertainty or product decisions. The harness reopens the owner and reruns affected tasks, with at most two repair attempts per plan. Return the required JSON report. Cover every declared check using its exact text. A check may have several commands; repeat its exact text for each command, and do not add undeclared check names. Provide each repeatable command as an argument array using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each has a 30-second limit. Commands must test the result and exit nonzero on failure, without changing source files. Verification starts in /tasks/{id} with a fresh process environment; shell exports, running servers and privileged setup from earlier commands do not carry over. Keep temporary fixtures and module stubs in a unique directory under /tmp or your HOME, recreate them in the check, and clean up processes afterward. Browser URL paths such as /static are not writable filesystem paths: use an HTTP test server or a scoped module loader in Node, never create root-level directories. Run the reported commands with run_task_checks before returning them. Save standalone check scripts through that tool so retries and final verification can reuse them. For asynchronous browser checks, register the matching response wait before the action, await successful completion and assert rendered state. Exercise relevant stale-response and save races with controlled delays or reordered replies, not sleeps. Keep the summary short.\nPlan: {}\nCurrent task: {}\nRelevant peers (message their task IDs; read_worker_messages gives live assignments): {}",
+        "Execute only this task from the saved plan in the Linux VM in your task worktree at /tasks/{id}. Resume saved edits and resolve any merge conflict markers. Respect project rules and the declared file scope. The harness checkpoints source separately from generated caches and runtime databases; scope checks use the source diff, not all files created by tests. Inspect project manifests, reuse compatible installed runtimes and dependencies, and install only what is missing using mise or the project's package manager. Keep reusable browser/model downloads in XDG_CACHE_HOME (the retained worker HOME cache), not disposable test fixture directories. If OS dependencies are missing, call install_system_packages with required Debian package names and a short reason; the harness installs them in the VM and you continue. If a download or documentation request returns x-proxy-error: blocked-by-allowlist, call request_network_access with the exact blocked hostnames and a short reason, including blocked redirect hosts. Return status blocked with repair null while access is pending or denied; do not poll or bypass the policy. The harness reconnects and retries after user approval. Run the completion checks; report blocked checks honestly. If a reproducible code regression belongs to an already completed task, return status blocked and a repair object: task is the completed owner's task ID; files are exact paths in that owner's scope; check must copy the exact text of the failing check from Current task.checks, not from the owner's checks; command reproduces that failure; evidence states the observed failure. Do not fix another task's files. Use repair null for success, missing access, environment blockers, uncertainty or product decisions. The harness reopens the owner and reruns affected tasks, with at most two repair attempts per plan. Return the required JSON report. Cover every declared check using its exact text. A check may have several commands; repeat its exact text for each command, and do not add undeclared check names. Provide each repeatable command as an argument array using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each defaults to 30 seconds. Set timeout_seconds to null for that default, or 1–180 for a measured bounded budget. Browser startup, cache seeding, model inference and shutdown share that budget: allow headroom and align inner test and wrapper deadlines below the command budget with time for cleanup. Diagnose hangs before increasing limits; preserve every assertion. Existing saved scripts may still have shorter internal deadlines, so update those explicitly when repairing a timeout. Return the same timeout_seconds and commands that you ran with run_task_checks. Commands must test the result and exit nonzero on failure, without changing source files. Verification starts in /tasks/{id} with a fresh process environment; shell exports, running servers and privileged setup from earlier commands do not carry over. Keep temporary fixtures and module stubs in a unique directory under /tmp or your HOME, recreate them in the check, and clean up processes afterward. Browser URL paths such as /static are not writable filesystem paths: use an HTTP test server or a scoped module loader in Node, never create root-level directories. Run the reported commands with run_task_checks before returning them. Save standalone check scripts through that tool so retries and final verification can reuse them. For asynchronous browser checks, register the matching response wait before the action, await successful completion and assert rendered state. Exercise relevant stale-response and save races with controlled delays or reordered replies, not sleeps. Keep the summary short.\nPlan: {}\nCurrent task: {}\nRelevant peers (message their task IDs; read_worker_messages gives live assignments): {}",
         serde_json::to_string(plan).unwrap(),
         serde_json::to_string(task).unwrap(),
         serde_json::to_string(&plan.peers(task)).unwrap()
@@ -255,8 +309,7 @@ pub fn schema() -> Value {
     json!({"type":"object","additionalProperties":false,
         "properties":{"status":{"type":"string","enum":["completed","blocked"]},"summary":{"type":"string"},
             "repair":{"anyOf":[{"type":"null"},crate::repair::schema()]},
-            "checks":{"type":"array","items":{"type":"object","additionalProperties":false,
-                "properties":{"check":{"type":"string"},"command":{"type":"array","items":{"type":"string"}}},"required":["check","command"]}}},
+            "checks":{"type":"array","items":check_schema()}},
         "required":["status","summary","checks","repair"]})
 }
 
@@ -274,6 +327,38 @@ pub fn task_schema(context: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_budgets_are_bounded_and_legacy_reports_keep_the_default() {
+        let base = json!({"check":"Offline browser", "command":["/bin/test"]});
+        let old: Check = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(old.timeout(), 30);
+        for budget in [json!(null), json!(1), json!(120), json!(180)] {
+            let mut value = base.clone();
+            value["timeout_seconds"] = budget.clone();
+            let check: Check = serde_json::from_value(value).unwrap();
+            assert_eq!(check.timeout(), budget.as_u64().unwrap_or(30));
+        }
+        for budget in [json!(0), json!(-1), json!(181), json!(1.5), json!("120")] {
+            let mut value = base.clone();
+            value["timeout_seconds"] = budget;
+            assert!(serde_json::from_value::<Check>(value).is_err());
+        }
+        let value = json!({"check":"Offline browser", "command":["/bin/test"], "exit_code":null,
+            "timeout_seconds":120, "duration_ms":120123,
+            "output":"Guest command timed out after 120s.\nEarlier Error: startup diagnostic"});
+        let result: CheckResult = serde_json::from_value(value).unwrap();
+        assert!(result.failed() && !result.skipped());
+        assert_eq!(result.brief(), "Guest command timed out after 120s.");
+        assert_eq!(
+            result.timing().as_deref(),
+            Some("120.1s elapsed · 120s limit")
+        );
+        let restored: CheckResult =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        assert_eq!(restored.duration_ms, result.duration_ms);
+        assert_eq!(restored.timeout(), 120);
+    }
 
     #[test]
     fn saved_checks_keep_task_identity_and_read_legacy_results() {

@@ -980,7 +980,7 @@ mod tests {
                     |label| eprintln!("{label}"),
                 )?;
                 assert!(output.message().contains("jq"));
-                let check = crate::execution::Check { task: None, check: "Package works; normal permissions remain restricted".into(),
+                let check = crate::execution::Check { timeout_seconds: None, task: None, check: "Package works; normal permissions remain restricted".into(),
                 command: vec!["/bin/sh".into(), "-c".into(), "/usr/bin/jq --version && test \"$(cat a.txt)\" = original && ! touch /usr/local/bin/sprowt-tool-canary".into()] };
                 assert_eq!(vm.verify(&[check], &flag)?.1[0].exit_code, Some(0));
                 drop(vm);

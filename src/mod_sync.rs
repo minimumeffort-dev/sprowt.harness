@@ -1313,6 +1313,7 @@ pub(crate) mod tests {
                     &flag,
                 )?;
                 let check = Check {
+                    timeout_seconds: None,
                     task: Some(original.id),
                     check: plan.tasks[0].checks[0].clone(),
                     command: vec![

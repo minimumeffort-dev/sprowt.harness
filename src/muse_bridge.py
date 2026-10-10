@@ -121,7 +121,9 @@ def mcp():
                 data=json.dumps(message["params"]).encode(),
                 headers={"Authorization": "Bearer " + cap, "Content-Type": "application/json"})
             try:
-                with urllib.request.urlopen(request, timeout=960) as response:
+                # The controller bounds each check; allow a full 32-command batch plus setup.
+                timeout = 7200 if message["params"]["name"] == "run_task_checks" else 960
+                with urllib.request.urlopen(request, timeout=timeout) as response:
                     result = json.load(response)
             except OSError:
                 result = {"isError": True, "content": [{"type": "text", "text": "Harness tool unavailable."}]}

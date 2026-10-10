@@ -28,10 +28,9 @@ pub fn unique_results(
         if cancelled.load(Ordering::Relaxed) {
             break;
         }
-        let mut result = match results
-            .iter()
-            .find(|r| r.task == check.task && r.command == check.command)
-        {
+        let mut result = match results.iter().find(|r| {
+            r.task == check.task && r.command == check.command && r.timeout() == check.timeout()
+        }) {
             Some(result) => result.clone(),
             None => run(check)?,
         };
@@ -154,10 +153,10 @@ impl Request {
 
 pub fn tool() -> Value {
     json!({"type":"function","name":TOOL,
-        "description":"Run all declared task checks in the controller's actual verification environment before returning a completed report. Use your current task attempt source. Commands have absolute executables, run in your task folder with a fresh environment, and have 30 seconds each. Optional scripts replace the saved bundle at /opt/sprowt-checks/<task-run-id>/<name>; null preserves it. Scripts are read-only, survive retries and restart, and must create temporary fixtures under /tmp or HOME, never /static. Do not run concurrent source edits. Returns observed results and the tested source fingerprint; later edits require another run. This does not finish or merge the task; return the same commands in your final report.",
+        "description":"Run all declared task checks in the controller's actual verification environment before returning a completed report. Use your current task attempt source. Commands have absolute executables, run in your task folder with a fresh environment, and default to 30 seconds each. Use timeout_seconds null for the default or 1–180 seconds for longer measured checks. Allow startup, execution and cleanup headroom; align inner test and wrapper deadlines with this budget. Diagnose hangs and preserve assertions when repairing timeouts. Return the same budget in the final report. Optional scripts replace the saved bundle at /opt/sprowt-checks/<task-run-id>/<name>; null preserves it. Scripts are read-only, survive retries and restart, and must create temporary fixtures under /tmp or HOME, never /static. Do not run concurrent source edits. Returns observed results and the tested source fingerprint; later edits require another run. This does not finish or merge the task; return the same commands in your final report.",
         "inputSchema":{"type":"object","additionalProperties":false,
             "properties":{"source":{"type":"string"},
-                "checks":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","additionalProperties":false,"properties":{"check":{"type":"string"},"command":{"type":"array","minItems":1,"items":{"type":"string"}}},"required":["check","command"]}},
+                "checks":{"type":"array","minItems":1,"maxItems":32,"items":crate::execution::check_schema()},
                 "scripts":{"type":["array","null"],"maxItems":16,"items":{"type":"object","additionalProperties":false,"properties":{"name":{"type":"string"},"content":{"type":"string"}},"required":["name","content"]}}},
             "required":["source","checks","scripts"]}})
 }
@@ -436,6 +435,7 @@ mod tests {
     fn duplicate_commands_run_once_per_pass_without_losing_coverage() {
         let flag = AtomicBool::new(false);
         let check = |task, name: &str, command: &str| Check {
+            timeout_seconds: None,
             task: Some(task),
             check: name.into(),
             command: vec![command.into()],
@@ -451,6 +451,8 @@ mod tests {
             let results = unique_results(&checks, &flag, |c| {
                 calls.push((c.task, c.command.clone()));
                 Ok(CheckResult {
+                    timeout_seconds: None,
+                    duration_ms: None,
                     task: c.task,
                     check: c.check.clone(),
                     command: c.command.clone(),
@@ -476,6 +478,8 @@ mod tests {
         let failed = unique_results(&checks, &flag, |c| {
             calls += 1;
             Ok(CheckResult {
+                timeout_seconds: None,
+                duration_ms: None,
                 task: c.task,
                 check: c.check.clone(),
                 command: c.command.clone(),
@@ -493,6 +497,35 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn check_reuse_requires_the_same_budget() {
+        let checks: Vec<Check> = serde_json::from_value(json!([
+            {"check":"Default", "command":["/bin/true"]},
+            {"check":"Longer", "command":["/bin/true"], "timeout_seconds":120},
+            {"check":"Explicit default", "command":["/bin/true"], "timeout_seconds":30}
+        ]))
+        .unwrap();
+        let mut budgets = Vec::new();
+        let results = unique_results(&checks, &AtomicBool::new(false), |check| {
+            budgets.push(check.timeout());
+            Ok(CheckResult {
+                task: check.task,
+                check: check.check.clone(),
+                command: check.command.clone(),
+                timeout_seconds: Some(check.timeout()),
+                duration_ms: Some(25_000),
+                exit_code: Some(0),
+                output: String::new(),
+                missing_runtime: None,
+            })
+        })
+        .unwrap();
+        assert_eq!(budgets, [30, 120]);
+        assert_eq!(results.len(), 3);
+        assert_eq!(results[1].timeout(), 120);
+        assert_eq!(results[2].duration_ms, Some(25_000));
     }
 
     #[test]
