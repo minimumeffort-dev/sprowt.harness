@@ -68,6 +68,7 @@ pub enum Result {
     RepositoryConnected,
     Snapshot,
     Reviewed(Review),
+    PublicationDraft(crate::publication::Draft),
     Published,
     Continued,
     Reopened,
@@ -966,6 +967,97 @@ pub fn connect_repository(
     Ok(())
 }
 
+// Collapse private checkpoints into one public commit; never rewrite a published parent.
+fn publication_commit(
+    root: &Path,
+    state: &GitMod,
+    title: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    let path = checkout(root);
+    let expected = state
+        .checkpoint
+        .as_ref()
+        .or(state.head.as_ref())
+        .unwrap_or(&state.base);
+    let parent = state.published_head.as_ref().unwrap_or(&state.base);
+    let head = git(root, &path, &["rev-parse", "HEAD"], cancelled)?;
+    let receipt_path = root.join("publication-commit.json");
+    let receipt = fs::read(&receipt_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    if let Some(receipt) = receipt.filter(|r| {
+        r["previous"] == *expected
+            && r["fingerprint"].as_str() == state.fingerprint.as_deref()
+            && r["parent"] == *parent
+            && r["base"] == state.base
+    }) && let Some(commit) = receipt["commit"].as_str()
+        && (head == *expected || head == commit)
+    {
+        git(
+            root,
+            &path,
+            &["update-ref", "HEAD", commit, &head],
+            cancelled,
+        )?;
+        git(root, &path, &["read-tree", commit], cancelled)?;
+        return Ok(());
+    }
+    if head != *expected
+        && (git(root, &path, &["rev-parse", "HEAD^"], cancelled)? != *expected
+            || workspace::fingerprint(&workspace::source_state(&path)?)?
+                != state.fingerprint.clone().unwrap_or_default())
+    {
+        return Err(io::Error::other(
+            "The publication checkpoint changed. Work is retained.",
+        ));
+    }
+    let tree = git(root, &path, &["write-tree"], cancelled)?;
+    let ancestor = git(root, &path, &["merge-base", parent, &state.base], cancelled)?;
+    let commit = if ancestor == state.base
+        && git(
+            root,
+            &path,
+            &["rev-parse", &format!("{parent}^{{tree}}")],
+            cancelled,
+        )? == tree
+    {
+        parent.clone()
+    } else {
+        let mut args = vec!["commit-tree", &tree, "-p", parent];
+        if ancestor != state.base {
+            args.extend(["-p", &state.base]);
+        }
+        args.extend(["-m", title]);
+        git(root, &path, &args, cancelled)?
+    };
+    // Retain local history independently of the public branch, including after GC.
+    git(
+        root,
+        &path,
+        &[
+            "update-ref",
+            &format!("refs/sprowt/checkpoints/{}", state.branch),
+            &head,
+        ],
+        cancelled,
+    )?;
+    let receipt = serde_json::json!({"previous":expected,"parent":parent,"base":state.base,"fingerprint":state.fingerprint,"commit":commit});
+    let next = root.join("publication-commit-next.json");
+    fs::write(&next, serde_json::to_vec(&receipt)?)?;
+    private(&next)?;
+    fs::File::open(&next)?.sync_all()?;
+    fs::rename(next, receipt_path)?;
+    git(
+        root,
+        &path,
+        &["update-ref", "HEAD", &commit, &head],
+        cancelled,
+    )?;
+    git(root, &path, &["read-tree", &commit], cancelled)?;
+    Ok(())
+}
+
 pub fn publish(
     root: &Path,
     description: &str,
@@ -980,6 +1072,7 @@ pub fn publish(
     {
         return Ok(pr.clone());
     }
+    let publication = crate::publication::load(root, description)?;
     if state.draft != draft {
         state.draft = draft;
         save(root, &state)?;
@@ -1031,18 +1124,10 @@ pub fn publish(
                 .unwrap_or(&state.base)
         {
             transfer(root, &state, cancelled)?;
-            let title = description
-                .lines()
-                .next()
-                .unwrap_or("Codemod")
-                .chars()
-                .take(120)
-                .collect::<String>();
-            if !git(root, &path, &["diff", "--cached", "--name-only"], cancelled)?.is_empty() {
-                git(root, &path, &["commit", "-m", &title], cancelled)?;
-            }
         }
+        publication_commit(root, &state, &publication.text.commit_title, cancelled)?;
         state.head = Some(git(root, &path, &["rev-parse", "HEAD"], cancelled)?);
+        state.checkpoint = state.head.clone();
         state.phase = "committed".into();
         save(root, &state)?;
     }
@@ -1161,8 +1246,7 @@ pub fn publish(
     }
     if existing.is_some()
         && prs[0]["headRefOid"].as_str() != state.head.as_deref()
-        && !(previous_pr.is_some()
-            && prs[0]["headRefOid"].as_str() == state.published_head.as_deref())
+        && prs[0]["headRefOid"].as_str() != state.published_head.as_deref()
     {
         return Err(io::Error::other(
             "Existing PR has different commits; work is retained.",
@@ -1183,29 +1267,36 @@ pub fn publish(
         state.phase = "pushed".into();
         save(root, &state)?;
     }
+    let body = root.join("pr-body.md");
+    fs::write(
+        &body,
+        format!(
+            "{}\n\n## Verification\n\n{}\n",
+            publication.text.summary, publication.evidence
+        ),
+    )?;
+    private(&body)?;
+    let title = &publication.text.pr_title;
     let pr = if let Some(url) = existing {
+        gh(
+            root,
+            &state,
+            program,
+            &[
+                "pr",
+                "edit",
+                &url,
+                "--repo",
+                repo,
+                "--title",
+                title,
+                "--body-file",
+                body.to_str().unwrap(),
+            ],
+            cancelled,
+        )?;
         url
     } else {
-        let body = root.join("pr-body.md");
-        fs::write(
-            &body,
-            format!(
-                "## goal\n\n{description}\n\n## verification\n\n{}\n",
-                if state.draft {
-                    "Work in progress. Review the diff and saved check results."
-                } else {
-                    "Plan tasks and the combined checks passed in the mod’s Linux VM."
-                }
-            ),
-        )?;
-        private(&body)?;
-        let title = description
-            .lines()
-            .next()
-            .unwrap_or("Codemod")
-            .chars()
-            .take(120)
-            .collect::<String>();
         let mut args = vec![
             "pr",
             "create",
@@ -1351,14 +1442,26 @@ pub fn cleanup(root: &Path, cancelled: &AtomicBool) -> io::Result<()> {
         }
         clear_snapshot(root)?;
     }
+    if state.removing || state.discarding {
+        git(
+            root,
+            &state.repo,
+            &[
+                "update-ref",
+                "-d",
+                &format!("refs/sprowt/checkpoints/{}", state.branch),
+            ],
+            cancelled,
+        )?;
+    }
     state.phase = "cleaned".into();
     save(root, &state)
 }
 
 pub fn mark_closing(root: &Path, discard: bool, delete: bool) -> io::Result<()> {
     let mut state = load(root)?;
-    if discard && state.pr.is_some() && state.phase == "pushed" {
-        // Pushed changes are already in the existing PR.
+    if state.phase == "pushed" {
+        // A successful push remains the public parent even if PR metadata failed.
         state.published_head = state.head.clone();
     }
     state.closing = !delete;
@@ -1699,6 +1802,17 @@ pub(crate) mod tests {
     use super::*;
     use crate::store::test_support::TestData;
 
+    pub(crate) fn publish(
+        root: &Path,
+        description: &str,
+        draft: bool,
+        program: &Path,
+        cancelled: &AtomicBool,
+    ) -> io::Result<String> {
+        crate::publication::tests::seed(root, description);
+        super::publish(root, description, draft, program, cancelled)
+    }
+
     pub(crate) fn fixture() -> (TestData, PathBuf, PathBuf, PathBuf) {
         let data = TestData::new();
         fs::create_dir_all(&data.0).unwrap();
@@ -1773,6 +1887,7 @@ case "$1 $2" in
     printf '%s\n' "$@" >> '{log}'
     if [ -f '{ready_fail}' ]; then rm '{ready_fail}'; exit 1; fi
     if [ "$4" = '--undo' ]; then touch '{draft}'; else rm -f '{draft}'; fi ;;
+  "pr edit") printf '%s\n' "$@" >> '{log}' ;;
   "pr create")
     printf '%s\n' "$@" >> '{log}'
     git -C '{checkout}' rev-parse HEAD > '{pr}'
@@ -2247,8 +2362,170 @@ esac
         );
         assert!(!checkout(&root).join("new.txt").exists());
         let pr = publish(&root, "Saved change", false, &program, &flag).unwrap();
-        assert_eq!(load(&root).unwrap().head.as_deref(), Some(second.as_str()));
+        let published = load(&root).unwrap().head.unwrap();
+        assert_ne!(published, second);
+        assert_eq!(
+            git(
+                &root,
+                &checkout(&root),
+                &["rev-parse", &format!("{published}^{{tree}}")],
+                &flag
+            )
+            .unwrap(),
+            git(
+                &root,
+                &checkout(&root),
+                &["rev-parse", &format!("{second}^{{tree}}")],
+                &flag
+            )
+            .unwrap()
+        );
+        assert_eq!(
+            git(
+                &root,
+                &checkout(&root),
+                &["log", "-1", "--format=%s"],
+                &flag
+            )
+            .unwrap(),
+            "Update the greeting"
+        );
+        assert_eq!(
+            git(&root, &checkout(&root), &["rev-parse", "HEAD^"], &flag).unwrap(),
+            base
+        );
+        let checkpoint_ref = format!("refs/sprowt/checkpoints/{}", load(&root).unwrap().branch);
+        assert_eq!(
+            git(
+                &root,
+                &checkout(&root),
+                &["rev-parse", &checkpoint_ref],
+                &flag
+            )
+            .unwrap(),
+            second
+        );
         assert!(pr.ends_with("/pull/1") && checkout(&root).exists());
+    }
+
+    #[test]
+    fn generated_publication_survives_push_failure_and_saved_checkpoints() {
+        let (data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        save_source(&root, &flag).unwrap();
+        fs::write(root.join("work/a.txt"), "second checkpoint\n").unwrap();
+        save_source(&root, &flag).unwrap();
+        fs::write(data.0.join("fail-once"), "").unwrap();
+        assert!(
+            publish(
+                &root,
+                "User request is not a commit title",
+                false,
+                &program,
+                &flag
+            )
+            .is_err()
+        );
+        let pushed = load(&root).unwrap().head.unwrap();
+        mark_closing(&root, false, false).unwrap();
+        checkpoint(&root, &flag).unwrap();
+        prune(&root, &flag).unwrap();
+        reopen(&root, &flag).unwrap();
+        let pr = publish(
+            &root,
+            "User request is not a commit title",
+            false,
+            &program,
+            &flag,
+        )
+        .unwrap();
+        assert!(pr.ends_with("/pull/1"));
+        assert_eq!(load(&root).unwrap().head.as_ref(), Some(&pushed));
+        let log = fs::read_to_string(data.0.join("gh-args")).unwrap();
+        assert!(log.contains("Refresh the greeting") && log.contains("edit"));
+        assert!(!log.contains("User request is not a commit title"));
+        let body = fs::read_to_string(root.join("pr-body.md")).unwrap();
+        assert!(body.contains("Use the revised greeting") && body.contains("1/1 passed"));
+    }
+
+    #[test]
+    fn unchanged_publication_tree_still_preserves_new_upstream_ancestry() {
+        let (_data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        publish(&root, "Greeting", false, &program, &flag).unwrap();
+        let mut state = load(&root).unwrap();
+        let parent = state.head.clone().unwrap();
+        git(
+            &root,
+            &repo,
+            &["commit", "--allow-empty", "-m", "Advance target"],
+            &flag,
+        )
+        .unwrap();
+        state.base = git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap();
+        publication_commit(&root, &state, "Integrate the updated target", &flag).unwrap();
+        let parents = git(
+            &root,
+            &checkout(&root),
+            &["log", "-1", "--format=%P"],
+            &flag,
+        )
+        .unwrap();
+        assert_eq!(parents, format!("{parent} {}", state.base));
+        assert_eq!(
+            git(
+                &root,
+                &checkout(&root),
+                &["rev-parse", "HEAD^{tree}"],
+                &flag
+            )
+            .unwrap(),
+            git(
+                &root,
+                &checkout(&root),
+                &["rev-parse", &format!("{parent}^{{tree}}")],
+                &flag
+            )
+            .unwrap()
+        );
+    }
+
+    #[test]
+    fn publication_commit_receipt_recovers_before_and_after_branch_update() {
+        for after_update in [false, true] {
+            let (_data, repo, root, program) = fixture();
+            let flag = AtomicBool::new(false);
+            prepare(&repo, &root, &flag).unwrap();
+            edited(&root);
+            save_source(&root, &flag).unwrap();
+            let mut state = load(&root).unwrap();
+            state.phase = "exporting".into();
+            state.fingerprint = Some(workspace::review(&root).unwrap().fingerprint);
+            save(&root, &state).unwrap();
+            let previous = state.checkpoint.clone().unwrap();
+            transfer(&root, &state, &flag).unwrap();
+            publication_commit(&root, &state, "Update the greeting", &flag).unwrap();
+            let commit = git(&root, &checkout(&root), &["rev-parse", "HEAD"], &flag).unwrap();
+            if !after_update {
+                git(
+                    &root,
+                    &checkout(&root),
+                    &["update-ref", "HEAD", &previous, &commit],
+                    &flag,
+                )
+                .unwrap();
+            }
+            publish(&root, "Greeting", false, &program, &flag).unwrap();
+            assert_eq!(load(&root).unwrap().head.as_ref(), Some(&commit));
+            assert_eq!(
+                fs::read_to_string(checkout(&root).join("a.txt")).unwrap(),
+                "changed\n"
+            );
+        }
     }
 
     #[test]

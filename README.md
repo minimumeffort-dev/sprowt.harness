@@ -13,7 +13,7 @@ A local terminal app that takes a software change from a request to a checked, r
 1. **Describe the outcome.** The planner reads your project and splits the work into tasks with file scopes, dependencies and checks.
 2. **Prepare and follow the work.** The controller checks project setup and records baseline results before editing. Up to two Codex or Muse executors work in parallel. The timeline shows progress; Details shows commands, results and failures.
 3. **Verify and review.** The harness reruns checks against the combined changes. A fresh reviewer examines that version. Findings have owners and explicit fix or investigation actions.
-4. **Publish when ready.** Passing checks and a clean current review unlock publication. You confirm the PR, then keep editing to update it.
+4. **Publish when ready.** Passing checks and a clean current review unlock publication. A model writes a concise commit title and PR summary from the diff. Preview the text, confirm publication, then keep editing to update the PR.
 
 ```mermaid
 flowchart LR

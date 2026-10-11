@@ -934,6 +934,7 @@ mod tests {
         assert_eq!(git_mod::load(&root).unwrap().phase, "ready");
         context.verified = Some(workspace::review(&root).unwrap().fingerprint);
         context.reviewed = context.verified.clone();
+        crate::publication::tests::seed(&root, &context.description);
         let mut tools = Dispatcher::new(&context, None, &flag);
         tools.github_cli = &gh;
         fs::write(data.0.join("fail-once"), "").unwrap();
@@ -963,6 +964,7 @@ mod tests {
         );
         context.verified = Some(workspace::review(&root).unwrap().fingerprint);
         context.reviewed = context.verified.clone();
+        crate::publication::tests::seed(&root, &context.description);
         let mut tools = Dispatcher::new(&context, None, &flag);
         tools.github_cli = &gh;
         let updated = tools

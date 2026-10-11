@@ -79,7 +79,7 @@ First complete the [GitHub login setup](quickstart.md#6-publish-the-pr).
 1. Wait for passing combined checks and a clean review of the **current source**.
 2. Inspect the diff with **Ctrl+D**.
 3. Press **Ctrl+S**, or **p** from the diff.
-4. Review the destination and confirm with **Enter**. **Esc** cancels.
+4. Wait for the commit and PR text, then review the titles, summary and verification. **Enter** publishes; **Esc** cancels.
 
 Without an origin, choose **connect existing** or **create private** with Tab, enter `owner/repository`, then confirm. An empty repository receives the starting commit. A populated repository must share history and contain the target branch; unrelated history is never overwritten.
 
@@ -92,6 +92,26 @@ Without an origin, choose **connect existing** or **create private** with Tab, e
 | PR merged or closed | Start a new codemod |
 
 Outside changes to the PR branch or worktree block publication and preserve local work. The PR URL and commit save before success is shown.
+
+### Commit and PR text
+
+A short Codex call using **Sol 6.1, low effort** writes the commit title, PR title and summary. It reads the reviewed diff, the request and recent commit subjects. Follow-up commit titles describe changes since the last published version; PR text describes the whole change.
+
+Titles are limited to **72 characters**. The summary is one paragraph or up to three bullets, at most **100 words**. The controller adds recorded check counts and review status. The writer is instructed to avoid hype, agent attribution and claims about tests or performance.
+
+For example, a live writer check produced:
+
+```text
+Add greeting helper that trims name whitespace
+```
+
+The same text is reused on retry while the source, base, previous published commit, request and verification remain unchanged. Changed context generates a new preview. Generation is bounded to two minutes; a failure preserves work and **Ctrl+S** retries. There is no fallback that copies the request into a commit message.
+
+The writer uses a separate temporary directory with read-only permissions, shell tools disabled and no inherited rules, user configuration, plugins or connectors. It uses your existing Codex login. Large diffs use marked excerpts from each file. Temporary input and provider output are removed after generation; the validated draft stays in private local state.
+
+Publication combines unpublished checkpoints into one commit. Later publications append to the last published commit and retain upstream merge ancestry. Private checkpoint references keep recovery history. Existing PR titles and descriptions are updated with the previewed text; this replaces manual edits to those fields. Published commit messages are not rewritten and publication never force-pushes.
+
+This design draws on [GitHub Copilot's diff-based commit suggestions](https://docs.github.com/en/copilot/responsible-use/chat) and [Devin's concise default PR summary](https://docs.devin.ai/integrations/pr-templates). Repository PR templates and custom publication instructions are not yet supported.
 
 ## Close, reopen or delete
 

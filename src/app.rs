@@ -76,6 +76,7 @@ pub struct App {
     pub focus_plan: bool,
     pub timeline: timeline::Timeline,
     pub review: Option<Review>,
+    pub publication: Option<crate::publication::Draft>,
     publish_after_review: bool,
     pub queue_selection: BTreeSet<i64>,
     pub show_closed: bool,
@@ -198,6 +199,7 @@ impl App {
             focus_plan: false,
             timeline: timeline::Timeline::default(),
             review: None,
+            publication: None,
             publish_after_review: false,
             queue_selection: BTreeSet::new(),
             show_closed: false,
@@ -987,7 +989,19 @@ impl App {
             } else if !git_mod::has_origin(&self.project) {
                 self.open_repository();
             } else {
-                self.view = View::Publish;
+                let id = code_mod.id;
+                let root = root.clone();
+                let description = code_mod.description.clone();
+                let evidence = crate::publication::evidence(code_mod);
+                self.publication = None;
+                self.view = View::Chat;
+                self.git_jobs.insert(
+                    id,
+                    Job::start("writing commit and PR text", move |cancelled| {
+                        crate::publication::prepare(&root, &description, &evidence, cancelled)
+                            .map(git_mod::Result::PublicationDraft)
+                    }),
+                );
             }
         } else {
             self.setup_files = workspace::source_state(
@@ -2305,6 +2319,11 @@ impl App {
         let root = code_mod.git_root.clone().unwrap();
         let context = Context::harness(&self.project, code_mod);
         let id = code_mod.id;
+        if let Err(error) = crate::publication::load(&root, &code_mod.description) {
+            self.notice = Some(format!("{error} Preview the PR again before publishing."));
+            self.view = View::Chat;
+            return;
+        }
         if let Err(error) = git_mod::mark_publishing(&root) {
             self.notice = Some(error.to_string());
             return;
@@ -2745,6 +2764,14 @@ impl App {
             }
             match result {
                 Ok(git_mod::Result::ProjectSynced) => unreachable!(),
+                Ok(git_mod::Result::PublicationDraft(draft)) => {
+                    if self.current_mod().is_some_and(|m| m.id == id) && self.can_publish() {
+                        self.publication = Some(draft);
+                        self.scroll.offset = 0;
+                        self.view = View::Publish;
+                        self.notice = None;
+                    }
+                }
                 Ok(git_mod::Result::Adopted) => {
                     if self.mods[index]
                         .execution
@@ -2933,6 +2960,10 @@ impl App {
                         .err()
                         .filter(|error| error.kind() != io::ErrorKind::NotFound)
                         .map(|error| error.to_string());
+                }
+                Err(error) if label == Some("writing commit and PR text") => {
+                    self.publish_after_review = false;
+                    self.notice = Some(format!("{error} Work is retained; Ctrl+S retries."));
                 }
                 Err(error) if label == Some("checking target branch") => {
                     self.target_errors.insert(id, error.to_string());
@@ -7780,7 +7811,7 @@ mod tests {
         git_mod::prepare(&project, &root, &flag).unwrap();
         workspace::create(&git_mod::checkout(&root), &root).unwrap();
         std::fs::write(root.join("work/a.txt"), "published\n").unwrap();
-        let pr = git_mod::publish(&root, "Greeting", false, &program, &flag).unwrap();
+        let pr = git_mod::tests::publish(&root, "Greeting", false, &program, &flag).unwrap();
         let mut store = data.store();
         let project_id = store.load_project(&project).unwrap().id;
         let code_mod = store.create_mod(project_id, "Greeting").unwrap();
@@ -7886,6 +7917,50 @@ mod tests {
         app.delete_mod(0).unwrap();
         wait_git(&mut app);
         assert!(app.mods.is_empty() && !root.exists());
+    }
+
+    #[test]
+    fn publication_preview_shows_generated_text_and_preserves_drafts() {
+        let (_data, mut app, root) = execution_app();
+        commit_project(&app.project);
+        let flag = std::sync::atomic::AtomicBool::new(false);
+        git_mod::prepare(&app.project, &root, &flag).unwrap();
+        let id = app.mods[0].id;
+        app.mods[0].git_root = Some(root.clone());
+        app.git_states.insert(id, git_mod::load(&root).unwrap());
+        mark_review_clean(&mut app);
+        app.review = Some(workspace::review(&root).unwrap());
+        let draft = crate::publication::tests::seed(&root, &app.mods[0].description);
+        app.git_jobs.insert(
+            id,
+            Job::start("writing commit and PR text", move |_| {
+                Ok(git_mod::Result::PublicationDraft(draft))
+            }),
+        );
+        wait_git(&mut app);
+        assert!(matches!(app.view, View::Publish));
+        for width in [52, 100] {
+            let rendered = rows(&screen(&mut app, width, 36)).join("\n");
+            assert!(
+                rendered.contains("Update the greeting")
+                    && rendered.contains("Refresh the greeting"),
+                "{rendered}"
+            );
+            assert!(
+                rendered.contains("Verification") && rendered.contains("cancel"),
+                "{rendered}"
+            );
+            if width == 100 && std::env::var_os("SPROWT_PUBLICATION_PREVIEW").is_some() {
+                std::fs::write("/tmp/sprowt-publication-preview.txt", &rendered).unwrap();
+            }
+        }
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(git_mod::load(&root).unwrap().pr.is_none());
+        std::fs::write(root.join("work/hello.sh"), "changed after preview\n").unwrap();
+        app.start_publication(0);
+        assert!(app.git_jobs.is_empty());
+        assert!(app.notice.as_ref().unwrap().contains("outdated"));
     }
 
     #[test]

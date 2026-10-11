@@ -1166,7 +1166,8 @@ pub(crate) mod tests {
         git_mod::prepare(&repo, &root, &flag).unwrap();
         workspace::create(&git_mod::checkout(&root), &root).unwrap();
         fs::write(root.join("work/delete.txt"), "codemod version\n").unwrap();
-        let pr = git_mod::publish(&root, "Improve deletion", false, &program, &flag).unwrap();
+        let pr =
+            git_mod::tests::publish(&root, "Improve deletion", false, &program, &flag).unwrap();
         git(&root, &repo, &["checkout", "-b", "other-codemod"], &flag).unwrap();
         fs::write(repo.join("a.txt"), "merged first codemod\n").unwrap();
         git(&root, &repo, &["add", "a.txt"], &flag).unwrap();
@@ -1197,7 +1198,7 @@ pub(crate) mod tests {
         finish(&root, &fingerprint, &flag).unwrap();
         require_current(&root, &program, &flag).unwrap();
         assert_eq!(
-            git_mod::publish(&root, "Improve deletion", false, &program, &flag).unwrap(),
+            git_mod::tests::publish(&root, "Improve deletion", false, &program, &flag).unwrap(),
             pr
         );
         assert!(!data.0.join("pr-draft").exists());

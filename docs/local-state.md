@@ -133,7 +133,7 @@ Mailbox history survives new rounds, but old task addresses retire. Pending stee
 
 ### Git recovery
 
-`git-mod.json` records branch, base, fingerprints, commit, PR URL and operation intent. Closing saves a timestamp. Confirmed initial setup uses a persistent workspace; cancelling an unconfirmed file preview removes that temporary preview.
+`git-mod.json` records branch, base, fingerprints, commit, PR URL and operation intent. `publication.json` holds validated model-written text bound to the source, base and previous published head. `publication-commit.json` records commit creation before the branch moves, allowing interrupted publication to resume without another commit. Local `refs/sprowt/checkpoints/` references retain unpublished checkpoint history. Closing saves a timestamp. Confirmed initial setup uses a persistent workspace; cancelling an unconfirmed file preview removes that temporary preview.
 
 Project sync uses a temporary index and locks the real index during fast-forward. Checkpoints can finish an interrupted index update. A repository lock serializes sync with codemod setup; hooks and project filters are disabled.
 

@@ -349,16 +349,43 @@ pub fn draw(
         );
     } else if matches!(app.view, View::Publish) {
         let count = app.review.as_ref().map_or(0, |review| review.count());
-        let text = Paragraph::new(format!(
-            "Publish {count} changed files {}?\n\n{}",
-            if app.git_state().is_some_and(|s| s.pr.is_some()) {
-                "to the existing PR"
-            } else {
-                "as a PR"
-            },
-            app.state_summary().evidence
-        ))
-        .wrap(Wrap { trim: false });
+        let mut lines = vec![
+            Line::from(format!(
+                "Publish {count} changed {} {}?",
+                if count == 1 { "file" } else { "files" },
+                if app.git_state().is_some_and(|s| s.pr.is_some()) {
+                    "to the existing PR"
+                } else {
+                    "as a PR"
+                }
+            )),
+            Line::default(),
+        ];
+        if let Some(draft) = &app.publication {
+            for (label, title) in [
+                ("Commit  ", &draft.text.commit_title),
+                ("PR      ", &draft.text.pr_title),
+            ] {
+                lines.push(Line::from(vec![
+                    Span::styled(label, Style::new().fg(ACCENT).bold()),
+                    Span::raw(title.clone()),
+                ]));
+            }
+            lines.push(Line::default());
+            lines.extend(
+                draft
+                    .text
+                    .summary
+                    .lines()
+                    .map(|line| Line::from(line.to_owned())),
+            );
+            lines.push(Line::default());
+            lines.push(Line::from("Verification").fg(ACCENT).bold());
+            lines.push(Line::from(draft.evidence.clone()));
+        } else {
+            lines.push(Line::from(app.state_summary().evidence));
+        }
+        let text = Paragraph::new(Text::from(lines)).wrap(Wrap { trim: false });
         let rows = text.line_count(dialog_area.width.saturating_sub(4));
         let (body, _) = draw_dialog(
             frame,
@@ -366,7 +393,7 @@ pub fn draw(
             "publish PR?",
             rows,
             false,
-            &[("↵", "publish"), ("esc", "cancel")],
+            &[("↑↓", "scroll"), ("↵", "publish"), ("esc", "cancel")],
         );
         draw_scrollable_text(frame, app, text, body);
     } else if matches!(app.view, View::EditQueue(_)) {

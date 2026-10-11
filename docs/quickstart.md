@@ -117,7 +117,7 @@ gh auth login
 gh auth setup-git
 ```
 
-When the dock says **Ready to publish**, press **Ctrl+S**. Review the destination and confirm publication. If needed, the harness offers to connect a repository or create a private one.
+When the dock says **Ready to publish**, press **Ctrl+S**. Review the generated commit title, PR title, summary and verification, then confirm publication. If needed, the harness offers to connect a repository or create a private one.
 
 **Expected:** the PR URL is saved and the timeline shows publication. Checks and a clean current review are required for every new or updated PR. The harness does not merge PRs automatically.
 

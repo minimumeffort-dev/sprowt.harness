@@ -14,6 +14,7 @@ mod muse;
 mod network;
 mod packages;
 mod plan;
+mod publication;
 mod repair;
 mod review;
 mod router;

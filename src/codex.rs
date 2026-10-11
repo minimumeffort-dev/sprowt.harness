@@ -392,7 +392,7 @@ impl Drop for Client {
     }
 }
 
-fn configuration(project: &Path) -> io::Result<Vec<String>> {
+pub(crate) fn configuration(project: &Path) -> io::Result<Vec<String>> {
     let home =
         env::var_os("HOME").ok_or_else(|| io::Error::other("Cannot locate the host login."))?;
     let codex_home = env::var_os("CODEX_HOME")
