@@ -233,7 +233,7 @@ impl Sandbox {
                     self.environment_commands(&recipe.setup, cancelled, "setup", &mut progress)?;
                 if let Some(failed) = receipt.setup.iter().find(|r| r.exit_code != Some(0)) {
                     return Err(io::Error::other(format!(
-                        "Environment preflight failed during setup: {}\n{}",
+                        "Setup failed: {}\n{}",
                         failed.check,
                         failed.evidence()
                     )));
@@ -247,7 +247,7 @@ impl Sandbox {
             }
             if let Some(failed) = receipt.capabilities.iter().find(|r| r.exit_code != Some(0)) {
                 return Err(io::Error::other(format!(
-                    "Environment preflight failed: {}\n{}",
+                    "Capability unavailable: {}\n{}",
                     failed.check,
                     failed.evidence()
                 )));
@@ -263,7 +263,7 @@ impl Sandbox {
             if after != before {
                 self.export(cancelled)?;
                 result = Err(io::Error::other(
-                    "Environment preflight failed: setup or baseline changed source. Edits are retained; correct the recipe before retrying.",
+                    "Setup or baseline changed source. Edits are retained; correct the recipe before retrying.",
                 ));
             }
         }
@@ -274,13 +274,7 @@ impl Sandbox {
         let bytes = serde_json::to_vec_pretty(&receipt)?;
         fs::write(&path, &bytes)?;
         fs::write(dir.join(format!("{id}-{source}.json")), bytes)?;
-        result.map_err(|e| {
-            if e.kind() == io::ErrorKind::Interrupted {
-                e
-            } else {
-                io::Error::other(format!("Environment preflight failed: {e}"))
-            }
-        })
+        result
     }
 
     fn environment_commands(

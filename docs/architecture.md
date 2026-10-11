@@ -42,7 +42,7 @@ Source is copied into the VM. Host project folders and Git credentials are not m
 | Planner | Contracts, tasks, scopes, dependencies and checks | [Planning](planning.md) |
 | Scheduler | Ready tasks, two active slots and saved provider assignments | [Execution](execution.md) |
 | Executors | Implementation within a task folder; repeatable check commands | [Workers](workers.md) |
-| VM controller | Setup, checkpoints, integration and independent check execution | [Sandbox](sandbox.md) |
+| VM controller | Environment recipes, capability probes, baselines, checkpoints and independent checks | [Environments](environments.md), [Sandbox](sandbox.md) |
 | Reviewer | Fresh assessment, finding triage and explicit closure decisions | [Review](review.md) |
 | Tool dispatcher | Caller validation and host/guest operation boundaries | [Tools](tools.md) |
 | Store and Git adapters | Durable state, recovery checkpoints and confirmed publication | [Local state](local-state.md), [Git workflow](git-workflow.md) |
@@ -54,13 +54,16 @@ The controller serializes checkpoints, integration, checks and system package in
 ```mermaid
 stateDiagram-v2
     [*] --> Planning: Submit request
-    Planning --> Building: Valid plan
+    Planning --> Preparing: Valid plan
+    Preparing --> Building: Capabilities ready; baseline recorded
+    Preparing --> NeedsAttention: Setup or capability failure
     Building --> Checking: Tasks integrated
     Checking --> Reviewing: Combined checks pass
     Checking --> NeedsAttention: Check fails
     Reviewing --> Ready: Clean current review
     Reviewing --> NeedsAttention: Findings or review failure
     NeedsAttention --> Building: Choose repair
+    NeedsAttention --> Preparing: Revise setup
     NeedsAttention --> Checking: Retry checks
     NeedsAttention --> Reviewing: Investigate or retry review
     Ready --> Published: Confirm publication
