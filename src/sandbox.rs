@@ -32,10 +32,13 @@ const EXPORT_LIMIT: usize = 512 * 1024 * 1024;
 static BUILD: Mutex<()> = Mutex::new(());
 static PROCESS: AtomicU64 = AtomicU64::new(0);
 
+mod environment_gate;
 mod preparation;
 mod resources;
+pub(crate) mod session;
 #[cfg(test)]
 mod skills_tests;
+mod transfer;
 
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
 pub struct Identity {
@@ -55,6 +58,9 @@ pub struct Sandbox {
     identity: Identity,
     state: preparation::State,
     allocation: resources::Allocation,
+    environment: std::sync::Arc<environment_gate::Gate>,
+    transfer_basis: Option<(String, Snapshot)>,
+    environment_read: bool,
 }
 
 impl Sandbox {
@@ -112,11 +118,16 @@ impl Sandbox {
     }
 
     pub(crate) fn muse_configuration(&self, worker: i64) -> Value {
-        let cwd = self.task_folder();
-        let home = crate::task_worktree::worker_home(worker);
+        self.muse_configuration_at(
+            &self.task_folder(),
+            &crate::task_worktree::worker_home(worker),
+        )
+    }
+
+    fn muse_configuration_at(&self, cwd: &str, home: &str) -> Value {
         let mut entries =
             vec![json!({"path":{"type":"special","value":{"kind":"minimal"}},"access":"read"})];
-        entries.extend([("/proc", "read"), ("/opt/sprowt-muse", "read"), ("/opt/sprowt-checks", "read"), (cwd.as_str(), "write"), (home.as_str(), "write"), ("/tmp", "write")]
+        entries.extend([("/proc", "read"), ("/opt/sprowt-muse", "read"), ("/opt/sprowt-checks", "read"), (cwd, "write"), (home, "write"), ("/tmp", "write")]
             .map(|(path,access)| json!({"path":{"type":"path","path":format!("file://{path}")},"access":access})));
         entries.push(json!({"path":{"type":"path","path":format!("file://{}", crate::skills::guest_root())},"access":"read"}));
         entries.push(
@@ -261,39 +272,7 @@ impl Sandbox {
     }
 
     fn control(&self, args: &[&str], cancelled: &AtomicBool) -> io::Result<()> {
-        let log = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.root.join("sandbox.log"))?;
-        private(&self.root.join("sandbox.log"), 0o600)?;
-        let mut command = container();
-        command.args(args).stdout(log.try_clone()?).stderr(log);
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            command.process_group(0);
-        }
-        let mut child = command.spawn()?;
-        let deadline = Instant::now() + Duration::from_secs(900);
-        loop {
-            if let Some(status) = child.try_wait()? {
-                return if status.success() {
-                    Ok(())
-                } else {
-                    Err(io::Error::other(format!(
-                        "Apple Container failed. See {}.",
-                        self.root.join("sandbox.log").display()
-                    )))
-                };
-            }
-            if cancelled.load(Ordering::Relaxed) || Instant::now() > deadline {
-                rpc::terminate(&mut child);
-                return Err(io::Error::other(
-                    "VM setup stopped. Ctrl+R reconnects without changing your project.",
-                ));
-            }
-            thread::sleep(Duration::from_millis(100));
-        }
+        control(args, &self.root.join("sandbox.log"), cancelled, 900)
     }
 
     fn image(
@@ -510,22 +489,12 @@ impl Sandbox {
         config
     }
 
-    fn permissions(&self) -> Value {
-        self.process_permissions(false)
-    }
-
-    fn process_permissions(&self, installing: bool) -> Value {
-        let cwd = self.task_folder();
-        let git = format!("{cwd}/.git");
-        let home = self.runtime_home();
-        let entries = [("/","read"),(cwd.as_str(),"write"),(git.as_str(),"read"),(home.as_str(),"write"),("/tmp","write")].map(|(path,access)| json!({"path":{"type":"path","path":format!("file://{path}")},"access":access}));
-        let filesystem = if installing {
-            json!({"type":"unrestricted"})
-        } else {
-            json!({"type":"restricted","entries":entries})
-        };
-        json!({"permissions":{"type":"managed","file_system":filesystem,"network":"enabled"},
-            "cwd":format!("file://{cwd}"),"workspaceRoots":[format!("file://{cwd}")],"windowsSandboxLevel":"disabled","useLegacyLandlock":false})
+    fn command_scope(&self) -> session::CommandScope {
+        session::CommandScope {
+            cwd: self.task_folder(),
+            home: self.runtime_home(),
+            domains: self.domains.clone(),
+        }
     }
 
     fn run(
@@ -535,7 +504,14 @@ impl Sandbox {
         timeout: u64,
         cap: usize,
     ) -> io::Result<(Option<i64>, Vec<u8>, Vec<u8>)> {
-        self.run_process(argv, cancelled, timeout, cap, false)
+        let lease = if self.environment_read {
+            None
+        } else {
+            Some(self.environment.try_read()?)
+        };
+        let result = self.run_process(argv, cancelled, timeout, cap, false);
+        drop(lease);
+        result
     }
 
     fn run_process(
@@ -546,98 +522,29 @@ impl Sandbox {
         cap: usize,
         installing: bool,
     ) -> io::Result<(Option<i64>, Vec<u8>, Vec<u8>)> {
-        let sandbox = self.process_permissions(installing);
-        let proxy = json!({"proxy":{"enabled":true,"enableSocks5":false,"enableSocks5Udp":false,"allowUpstreamProxy":false,"dangerouslyAllowAllUnixSockets":!installing,"mode":"full","domains":self.domains,"unixSockets":{},"allowLocalBinding":true},"auditMetadata":{}});
-        let task_folder = self.task_folder();
-        let home = self.runtime_home();
-        let rpc = self.rpc.as_mut().unwrap();
-        let process = format!("sprowt-{}", PROCESS.fetch_add(1, Ordering::Relaxed));
-        let mut environment = json!({"HOME":home,"XDG_CACHE_HOME":format!("{home}/.cache"),"PATH":GUEST_PATH,"LANG":"C.UTF-8","NO_PROXY":"localhost,127.0.0.1,::1"});
-        if installing {
-            environment["PATH"] = json!("/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
-            environment["DEBIAN_FRONTEND"] = json!("noninteractive");
-            environment["TMPDIR"] = json!("/opt/sprowt-apt/tmp");
-            environment["APT_CONFIG"] = json!("/opt/sprowt-apt/apt.conf");
-            environment["HOME"] = json!("/opt/sprowt-apt/home");
-        }
-        let cwd = if installing {
-            "file:///opt/sprowt-apt".into()
-        } else {
-            format!("file://{task_folder}")
-        };
-        let start = rpc.call("process/start", json!({"processId":process,"argv":argv,"cwd":cwd,"env":environment,"envPolicy":{"inherit":"none","ignoreDefaultExcludes":true,"exclude":[],"set":{},"includeOnly":[]},"tty":false,"arg0":null,"sandbox":sandbox,"enforceManagedNetwork":true,"networkProxy":proxy}))?;
-        if start["sandboxType"] != "linuxSeccomp" {
-            return Err(io::Error::other(
-                "Guest sandbox enforcement is unavailable.",
-            ));
-        }
-        let mut cursor = 0;
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(timeout);
-        loop {
-            if cancelled.load(Ordering::Relaxed) || Instant::now() > deadline {
-                rpc.call("process/terminate", json!({"processId":process}))?;
-                let (kind, message) = if cancelled.load(Ordering::Relaxed) {
-                    (
-                        io::ErrorKind::Interrupted,
-                        "Guest command stopped.".to_owned(),
-                    )
-                } else {
-                    (
-                        io::ErrorKind::TimedOut,
-                        format!("Guest command timed out after {timeout}s."),
-                    )
-                };
-                return Err(io::Error::new(
-                    kind,
-                    format!(
-                        "{message}\n{}{}",
-                        String::from_utf8_lossy(&stdout),
-                        String::from_utf8_lossy(&stderr)
-                    ),
-                ));
-            }
-            let read = rpc.call(
-                "process/read",
-                json!({"processId":process,"afterSeq":cursor,"maxBytes":65536,"waitMs":100}),
-            )?;
-            for chunk in read["chunks"]
-                .as_array()
-                .ok_or_else(|| io::Error::other("Invalid guest output."))?
-            {
-                let bytes = BASE64
-                    .decode(chunk["chunk"].as_str().unwrap_or_default())
-                    .map_err(io::Error::other)?;
-                let output = if chunk["stream"] == "stdout" {
-                    &mut stdout
-                } else {
-                    &mut stderr
-                };
-                if installing {
-                    output.extend_from_slice(&bytes);
-                    output.drain(..output.len().saturating_sub(cap));
-                } else {
-                    output.extend_from_slice(
-                        &bytes[..bytes.len().min(cap.saturating_sub(output.len()))],
-                    );
-                }
-            }
-            cursor = read["nextSeq"]
-                .as_u64()
-                .map(|next| next.saturating_sub(1))
-                .unwrap_or(cursor);
-            rpc.buffered.clear();
-            if read["closed"] == true && read["chunks"].as_array().is_some_and(Vec::is_empty) {
-                if let Some(error) = read["failure"].as_str() {
-                    return Err(io::Error::other(error.to_owned()));
-                }
-                return Ok((read["exitCode"].as_i64(), stdout, stderr));
-            }
-        }
+        let scope = self.command_scope();
+        session::run_process(
+            self.rpc.as_mut().unwrap(),
+            &scope,
+            argv,
+            cancelled,
+            timeout,
+            cap,
+            installing,
+        )
     }
 
     pub fn install_packages(
+        &mut self,
+        request: &Request,
+        cancelled: &AtomicBool,
+    ) -> io::Result<String> {
+        let gate = self.environment.clone();
+        let _lease = gate.try_write()?;
+        self.install_packages_locked(request, cancelled)
+    }
+
+    pub(crate) fn install_packages_locked(
         &mut self,
         request: &Request,
         cancelled: &AtomicBool,
@@ -766,40 +673,28 @@ impl Sandbox {
 
     pub(crate) fn snapshot(&mut self, path: &str, cancelled: &AtomicBool) -> io::Result<Snapshot> {
         self.require_bound()?;
-        let mut argv = vec![
-            "exec",
+        let prefix = format!(
+            "/opt/sprowt-transfer/controller-{}",
+            PROCESS.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut scope = self.command_scope();
+        scope.cwd = path.into();
+        let basis = self
+            .transfer_basis
+            .as_ref()
+            .filter(|(previous, _)| previous == path)
+            .map(|(_, snapshot)| snapshot);
+        let snapshot = transfer::snapshot(
             &self.name,
-            "/usr/bin/env",
-            "-i",
-            "PATH=/usr/bin:/bin",
-            "/usr/bin/tar",
-            "--format=gnu",
-            "-C",
-            path,
-            "-cf",
-            "/opt/sprowt-transfer/source.tar",
-        ];
-        let exclusions = [
-            ".git",
-            ".codex",
-            "node_modules",
-            "target",
-            ".venv",
-            "venv",
-            "__pycache__",
-            "*.pyc",
-        ]
-        .map(|part| format!("--exclude={part}"));
-        argv.extend(exclusions.iter().map(String::as_str));
-        argv.push(".");
-        // Use a protected transfer file: process/read retains only 1 MiB of output.
-        self.control(&argv, cancelled)?;
-        let bytes = self.read_guest("/opt/sprowt-transfer/source.tar", cancelled)?;
-        self.guest(
-            &["/bin/rm", "-f", "/opt/sprowt-transfer/source.tar"],
-            &AtomicBool::new(false),
+            &self.root,
+            &scope,
+            self.rpc.as_mut().unwrap(),
+            &prefix,
+            basis,
+            cancelled,
         )?;
-        workspace::source_snapshot(&self.root, decode_source(&bytes)?)
+        self.transfer_basis = Some((path.into(), snapshot.clone()));
+        Ok(snapshot)
     }
 
     pub fn export(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
@@ -818,44 +713,8 @@ impl Sandbox {
     }
 
     pub(crate) fn read_guest(&mut self, path: &str, cancelled: &AtomicBool) -> io::Result<Vec<u8>> {
-        let permissions = self.permissions();
-        let rpc = self.rpc.as_mut().unwrap();
-        let handle = format!("export-{}", PROCESS.fetch_add(1, Ordering::Relaxed));
-        rpc.call(
-            "fs/open",
-            json!({"handleId":handle,"path":format!("file://{path}"),"sandbox":permissions}),
-        )?;
-        let result = (|| {
-            let mut bytes = Vec::new();
-            loop {
-                if cancelled.load(Ordering::Relaxed) {
-                    return Err(io::Error::other("Source export stopped."));
-                }
-                let block = rpc.call(
-                    "fs/readBlock",
-                    json!({"handleId":handle,"offset":bytes.len(),"len":262144}),
-                )?;
-                let chunk = BASE64
-                    .decode(block["chunk"].as_str().unwrap_or_default())
-                    .map_err(io::Error::other)?;
-                if chunk.is_empty() && block["eof"] != true {
-                    return Err(io::Error::other(
-                        "The guest source stream stopped unexpectedly.",
-                    ));
-                }
-                if bytes.len() + chunk.len() > EXPORT_LIMIT {
-                    return Err(io::Error::other(
-                        "Source export exceeds 512 MiB. The previous export is retained.",
-                    ));
-                }
-                bytes.extend(chunk);
-                if block["eof"] == true {
-                    return Ok(bytes);
-                }
-            }
-        })();
-        rpc.call("fs/close", json!({"handleId":handle}))?;
-        result
+        let scope = self.command_scope();
+        session::read_guest(self.rpc.as_mut().unwrap(), &scope, path, cancelled)
     }
 
     #[cfg(test)]
@@ -872,51 +731,45 @@ impl Sandbox {
         check: &Check,
         cancelled: &AtomicBool,
     ) -> CheckResult {
-        let mut result = CheckResult {
-            timeout_seconds: Some(check.timeout()),
-            duration_ms: None,
-            task: check.task,
-            check: check.check.clone(),
-            command: check.command.clone(),
-            exit_code: None,
-            output: String::new(),
-            missing_runtime: None,
-        };
-        let Some(executable) = check.command.first() else {
-            result.output = "Verification requires an executable.".into();
-            return result;
-        };
-        let probe = vec!["/usr/bin/test".into(), "-x".into(), executable.clone()];
-        match self.run(&probe, cancelled, 30, 8192) {
-            Ok((Some(0), _, _)) => {}
-            Ok((Some(1), _, _)) => {
-                result.missing_runtime = Some(executable.clone());
-                result.output = format!(
-                    "Check executable is unavailable: {executable}. Its task environment needs rebuilding."
-                );
-                return result;
-            }
-            other => {
-                result.output = match other {
-                    Err(error) => error.to_string(),
-                    Ok(_) => "Executable check was interrupted.".into(),
-                };
-                return result;
-            }
+        let scope = self.command_scope();
+        if self.environment_read {
+            return session::run_check_command(
+                self.rpc.as_mut().unwrap(),
+                &scope,
+                check,
+                cancelled,
+            );
         }
-        let started = Instant::now();
-        match self.run(&check.command, cancelled, check.timeout(), 8192) {
-            Ok((exit, stdout, stderr)) => {
-                result.exit_code = exit;
-                result.output = format!(
-                    "{}{}",
-                    String::from_utf8_lossy(&stdout),
-                    String::from_utf8_lossy(&stderr)
-                );
+        match self.environment.try_read() {
+            Ok(_lease) => {
+                session::run_check_command(self.rpc.as_mut().unwrap(), &scope, check, cancelled)
             }
-            Err(error) => result.output = error.to_string(),
+            Err(error) => CheckResult {
+                timeout_seconds: Some(check.timeout()),
+                duration_ms: None,
+                task: check.task,
+                check: check.check.clone(),
+                command: check.command.clone(),
+                exit_code: None,
+                output: error.to_string(),
+                missing_runtime: None,
+            },
         }
-        result.duration_ms = Some(started.elapsed().as_millis() as u64);
+    }
+
+    pub(crate) fn with_environment_read<T>(
+        &mut self,
+        lease: &environment_gate::Lease,
+        run: impl FnOnce(&mut Self) -> io::Result<T>,
+    ) -> io::Result<T> {
+        if !lease.reads(&self.environment) {
+            return Err(io::Error::other(
+                "Controlled commands require this VM's read lease.",
+            ));
+        }
+        let previous = std::mem::replace(&mut self.environment_read, true);
+        let result = run(self);
+        self.environment_read = previous;
         result
     }
 
@@ -926,41 +779,14 @@ impl Sandbox {
         cancelled: &AtomicBool,
         mut progress: impl FnMut(&str),
     ) -> io::Result<(Snapshot, Vec<CheckResult>)> {
-        if checks
-            .iter()
-            .any(|check| !(1..=crate::execution::MAX_CHECK_TIMEOUT).contains(&check.timeout()))
-        {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "Check budgets must be 1–180 seconds.",
-            ));
+        if !self.environment_read {
+            let lease = self.environment.try_read()?;
+            return self.with_environment_read(&lease, |vm| {
+                vm.verify_with_progress(checks, cancelled, progress)
+            });
         }
         self.restore_check_scripts(cancelled)?;
-        let before = self.snapshot(&self.task_folder(), cancelled)?;
-        let total = checks
-            .iter()
-            .map(|c| (&c.task, &c.command, c.timeout()))
-            .collect::<std::collections::BTreeSet<_>>()
-            .len();
-        let mut current = 0;
-        let results = crate::checks::unique_results(checks, cancelled, |check| {
-            current += 1;
-            progress(&format!(
-                "Checking {current}/{total} · {} · {}s limit",
-                check.check,
-                check.timeout()
-            ));
-            let mut result = self.run_check_command(check, cancelled);
-            if self.snapshot(&self.task_folder(), &AtomicBool::new(false))? != before {
-                result.exit_code = None;
-                result.output =
-                    "Verification changed source files. Fix the check before retrying.".into();
-            }
-            Ok(result)
-        })?;
-        // Cancellation stops checks, but still exports partial edits for review.
-        self.export(&AtomicBool::new(false))?;
-        Ok((before, results))
+        crate::checks::verify_commands(self, checks, cancelled, &mut progress)
     }
 }
 
@@ -983,6 +809,46 @@ impl Drop for Sandbox {
     }
 }
 
+fn control(args: &[&str], log_path: &Path, cancelled: &AtomicBool, timeout: u64) -> io::Result<()> {
+    let log = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path)?;
+    private(log_path, 0o600)?;
+    let mut command = container();
+    command.args(args).stdout(log.try_clone()?).stderr(log);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let mut child = command.spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(timeout);
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return if status.success() {
+                Ok(())
+            } else {
+                Err(io::Error::other(format!(
+                    "Apple Container failed. See {}.",
+                    log_path.display()
+                )))
+            };
+        }
+        if cancelled.load(Ordering::Relaxed) || Instant::now() > deadline {
+            rpc::terminate(&mut child);
+            return Err(io::Error::other(
+                "VM setup stopped. Ctrl+R reconnects without changing your project.",
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+}
+
+pub(crate) fn next_transfer() -> u64 {
+    PROCESS.fetch_add(1, Ordering::Relaxed)
+}
+
 pub fn delete(root: &Path) -> io::Result<()> {
     if !root.join("vm.json").exists() && !root.join("host-codex").exists() {
         return Ok(());
@@ -997,6 +863,9 @@ pub fn delete(root: &Path) -> io::Result<()> {
         started: false,
         state: preparation::State::Preparing,
         allocation: resources::Allocation::SMALL,
+        environment: std::sync::Arc::new(environment_gate::Gate::default()),
+        transfer_basis: None,
+        environment_read: false,
         tasks: Default::default(),
         identity: Identity {
             digest: String::new(),
@@ -1089,6 +958,7 @@ fn private(path: &Path, mode: u32) -> io::Result<()> {
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
 }
 
+#[cfg(test)]
 fn decode_source(bytes: &[u8]) -> io::Result<Snapshot> {
     let mut files = BTreeMap::new();
     for entry in tar::Archive::new(bytes).entries()? {

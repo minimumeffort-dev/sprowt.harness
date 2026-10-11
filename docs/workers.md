@@ -80,9 +80,13 @@ flowchart TB
 
 Both providers can implement, test and integrate. Two slots can hold either provider combination. Rust balances ready tasks by active provider load across codemods; ties alternate. Saved assignments and retries retain their owner. Dependencies still control readiness.
 
-Each worker has its own cancellation signal and runtime HOME. Connecting, running and checking occupy slots; idle identities do not. The controller serializes checkpoints, checks, integration and system package setup, while model turns and ordinary commands can overlap.
+Each worker has its own cancellation signal and runtime HOME. Connecting, running and checking occupy slots; idle identities do not. Independent task preparation and `run_task_checks` commands can overlap in fixed task sessions. Checkpoints, source replacement, integration and package mutations remain serialized. [Execution waits](performance.md#overlap-independent-task-work) describes the boundary.
 
 On each Muse connection, the host verifies the pinned binary and checks the guest binary and bridge against their actual SHA-256 content. Matching files are reused; missing or changed files are recopied. Provider credentials stay on the host. See [recorded startup timings](performance.md) to inspect preparation and response delays.
+
+### Current task handoff
+
+New and resumed executor conversations receive the same fixed tool, report and verification policy. Each assignment then sends the current task, exact checks and attempt ID, shared contracts, ownership/dependency table and relevant peer topics. Saved scripts, repair commands and observed failures stay attached to that assignment. The original goal remains in the conversation instructions; the full saved plan and routing input remain available to the controller.
 
 ### Isolation
 

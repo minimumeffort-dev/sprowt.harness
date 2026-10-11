@@ -222,6 +222,16 @@ impl Context {
         self
     }
 
+    pub(crate) fn execution_identity(&self) -> io::Result<(&Path, i64)> {
+        Ok((
+            self.database
+                .as_deref()
+                .ok_or_else(|| io::Error::other("Task tools need the current execution store."))?,
+            self.mod_id
+                .ok_or_else(|| io::Error::other("Task tools need a codemod."))?,
+        ))
+    }
+
     pub fn workspace(&self) -> Option<&Path> {
         self.worker
             .filter(|(_, role)| *role != Role::Planner)
@@ -324,6 +334,7 @@ pub fn advertised(context: &Context) -> Vec<Value> {
 pub struct Dispatcher<'a> {
     context: &'a Context,
     vm: Option<&'a mut Sandbox>,
+    shared_vm: Option<&'a crate::codex::SharedVm>,
     cancelled: &'a AtomicBool,
     github_cli: &'a Path,
 }
@@ -337,9 +348,20 @@ impl<'a> Dispatcher<'a> {
         Self {
             context,
             vm,
+            shared_vm: None,
             cancelled,
             github_cli: Path::new("gh"),
         }
+    }
+
+    pub(crate) fn shared(
+        context: &'a Context,
+        vm: Option<&'a crate::codex::SharedVm>,
+        cancelled: &'a AtomicBool,
+    ) -> Self {
+        let mut dispatcher = Self::new(context, None, cancelled);
+        dispatcher.shared_vm = vm;
+        dispatcher
     }
 
     pub fn execute(&mut self, request: Request, progress: impl FnMut(&str)) -> io::Result<Output> {
@@ -418,27 +440,39 @@ impl<'a> Dispatcher<'a> {
                 Request::RunTaskChecks(request) => {
                     let store =
                         crate::store::Store::open(self.context.database.as_deref().unwrap())?;
-                    let vm = self
-                        .vm
-                        .as_mut()
-                        .ok_or_else(|| io::Error::other("Task checks require the mod VM."))?;
-                    if vm.root().canonicalize()? != root.canonicalize()? {
-                        return Err(io::Error::new(
-                            io::ErrorKind::PermissionDenied,
-                            "Tool cannot access another mod's VM.",
-                        ));
-                    }
                     progress("running task checks");
-                    checks::run(
-                        &store,
-                        vm,
-                        self.context.mod_id.unwrap(),
-                        self.context.worker_id(),
-                        request,
-                        self.cancelled,
-                        &mut progress,
-                    )
-                    .map(Output::Text)
+                    if let Some(vm) = self.shared_vm {
+                        checks::run_shared(
+                            &store,
+                            vm,
+                            self.context,
+                            request,
+                            self.cancelled,
+                            &mut progress,
+                        )
+                        .map(Output::Text)
+                    } else {
+                        let vm = self
+                            .vm
+                            .as_mut()
+                            .ok_or_else(|| io::Error::other("Task checks require the mod VM."))?;
+                        if vm.root().canonicalize()? != root.canonicalize()? {
+                            return Err(io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "Tool cannot access another mod's VM.",
+                            ));
+                        }
+                        checks::run(
+                            &store,
+                            vm,
+                            self.context.mod_id.unwrap(),
+                            self.context.worker_id(),
+                            request,
+                            self.cancelled,
+                            &mut progress,
+                        )
+                        .map(Output::Text)
+                    }
                 }
                 Request::NetworkAccess(request) => {
                     let store =
@@ -644,22 +678,31 @@ impl<'a> Dispatcher<'a> {
                 }
                 Request::InstallPackages(request) => {
                     let request = request.validate()?;
-                    let vm = self
-                        .vm
-                        .as_mut()
-                        .ok_or_else(|| io::Error::other("System packages require the mod VM."))?;
-                    if vm.root().canonicalize()? != root.canonicalize()? {
-                        return Err(io::Error::new(
-                            io::ErrorKind::PermissionDenied,
-                            "Tool cannot access another mod's VM.",
-                        ));
-                    }
                     progress(&format!(
                         "installing {} system packages",
                         request.packages.len()
                     ));
-                    vm.install_packages(&request, self.cancelled)
+                    if let Some(vm) = self.shared_vm {
+                        crate::sandbox::session::install_packages(
+                            vm,
+                            self.context,
+                            &request,
+                            self.cancelled,
+                        )
                         .map(Output::Text)
+                    } else {
+                        let vm = self.vm.as_mut().ok_or_else(|| {
+                            io::Error::other("System packages require the mod VM.")
+                        })?;
+                        if vm.root().canonicalize()? != root.canonicalize()? {
+                            return Err(io::Error::new(
+                                io::ErrorKind::PermissionDenied,
+                                "Tool cannot access another mod's VM.",
+                            ));
+                        }
+                        vm.install_packages(&request, self.cancelled)
+                            .map(Output::Text)
+                    }
                 }
             }
         })();

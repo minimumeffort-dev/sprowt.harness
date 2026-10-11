@@ -517,17 +517,7 @@ fn flush(
                 if params["threadId"] != thread || !params["namespace"].is_null() {
                     return Err(io::Error::other("This client tool is not available."));
                 }
-                let mut guard = vm
-                    .as_ref()
-                    .filter(|_| {
-                        params["tool"] == crate::packages::TOOL
-                            || params["tool"] == crate::checks::TOOL
-                    })
-                    .map(|vm| vm.lock().unwrap());
-                if let Some(vm) = &mut guard {
-                    vm.tasks.active = task;
-                }
-                Dispatcher::new(context, guard.as_deref_mut(), cancelled)
+                Dispatcher::shared(context, vm.as_ref(), cancelled)
                     .worker_call(
                         params["tool"].as_str().unwrap_or(""),
                         params["arguments"].clone(),
@@ -781,14 +771,16 @@ fn serve(
         while let Ok(action) = actions.try_recv() {
             if let Action::Verify { source, checks } = &action {
                 task = crate::task_worktree::task_id(source).ok();
-                let result = vm
-                    .as_mut()
-                    .ok_or_else(|| io::Error::other("Verification requires the mod VM."))?
-                    .lock()
-                    .unwrap()
-                    .verify_execution_with_progress(source, checks, &cancelled, |label| {
+                let result = crate::sandbox::session::verify_execution(
+                    vm.as_ref()
+                        .ok_or_else(|| io::Error::other("Verification requires the mod VM."))?,
+                    source,
+                    checks,
+                    &cancelled,
+                    |label| {
                         let _ = outgoing.send(Event::Preparing(label.into()));
-                    });
+                    },
+                );
                 if let Some(vm) = &vm {
                     let vm = vm.lock().unwrap();
                     if source.starts_with("final:")
@@ -865,15 +857,11 @@ fn serve(
                         let id = crate::task_worktree::task_id(&source)?;
                         let _ = outgoing.send(Event::Preparing("preparing task worktree".into()));
                         stop_terminals(rpc, &thread)?;
-                        let mut vm = vm.lock().unwrap();
-                        vm.assign_task(id, context.worker_id(), &cancelled)?;
-                        if repair {
-                            vm.refresh_for_repair(id, &source, &cancelled)?;
-                        }
-                        let preflight = match vm.preflight_with_timing(
+                        let mut session = crate::sandbox::session::prepare_task(
+                            vm, &context, &source, repair, &cancelled,
+                        )?;
+                        let preflight = match session.preflight(
                             environment.as_ref(),
-                            id,
-                            &source,
                             &cancelled,
                             |label| {
                                 let _ = outgoing.send(Event::Preparing(label.into()));
@@ -889,13 +877,14 @@ fn serve(
                                 continue;
                             }
                         };
+                        session.authorize(&cancelled)?;
                         params["input"][0]["text"] = json!(format!(
                             "{text}\nController preflight evidence:\n{preflight}"
                         ));
                         task = Some(id);
                         params["permissions"] = json!(format!("sprowt_task_{id}"));
                         params["environments"] =
-                            json!([{"environmentId":"vm","cwd":vm.task_folder()}]);
+                            json!([{"environmentId":"vm","cwd":session.cwd()}]);
                         params["outputSchema"] = report_schema;
                     } else if role == Role::Reviewer {
                         let owners: Vec<String> = routing

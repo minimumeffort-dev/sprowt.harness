@@ -13,7 +13,7 @@ use std::{
     sync::atomic::AtomicBool,
 };
 
-mod cache;
+pub(crate) mod cache;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -250,6 +250,393 @@ impl Receipt {
     }
 }
 
+trait Runner {
+    fn root(&self) -> &Path;
+    fn identity(&self) -> &crate::sandbox::Identity;
+    fn home(&self) -> String;
+    fn snapshot(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot>;
+    fn packages(
+        &mut self,
+        request: &crate::packages::Request,
+        cancelled: &AtomicBool,
+    ) -> io::Result<String>;
+    fn cache(
+        &mut self,
+        action: &str,
+        key: &str,
+        dependencies: bool,
+        cancelled: &AtomicBool,
+    ) -> io::Result<cache::Use>;
+    fn batch(
+        &mut self,
+        commands: &[Command],
+        cancelled: &AtomicBool,
+        phase: &str,
+        progress: &mut dyn FnMut(&str),
+    ) -> io::Result<Vec<CheckResult>>;
+    fn preserve(&mut self, snapshot: &Snapshot, cancelled: &AtomicBool) -> io::Result<()>;
+    fn save_receipt(
+        &self,
+        id: i64,
+        source: &str,
+        receipt: &Receipt,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()>;
+}
+
+fn preflight(
+    runner: &mut impl Runner,
+    recipe: Option<&Recipe>,
+    id: i64,
+    source: &str,
+    cancelled: &AtomicBool,
+    mut progress: impl FnMut(&str),
+    timing: Timing<'_>,
+) -> io::Result<String> {
+    let before = runner.snapshot(cancelled)?;
+    let from_file = before
+        .iter()
+        .find(|(p, _, _)| recipe.is_none() && p == Path::new(".sprowt/environment.json"))
+        .map(|(_, bytes, _)| serde_json::from_slice::<Recipe>(bytes))
+        .transpose()?;
+    let Some(recipe) = recipe.or(from_file.as_ref()) else {
+        return Ok("No saved environment recipe. Inspect manifests and establish setup and baseline before changing source.".into());
+    };
+    recipe.validate().map_err(io::Error::other)?;
+    let key = recipe.key(&before, runner.identity())?;
+    let fingerprint = workspace::fingerprint(&before)?;
+    let emit = |observation| timing.emit(observation);
+    let timing = Timing::new(&fingerprint, &emit).with_environment(&key);
+    let dir = runner.root().join("environments");
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)?;
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
+    let path = dir.join(format!("{id}.json"));
+    let previous = match fs::read(&path) {
+        Ok(bytes) => Some(serde_json::from_slice::<Receipt>(&bytes)?),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+        Err(e) => return Err(e),
+    };
+    let mut receipt = Receipt {
+        recipe: recipe.clone(),
+        error: None,
+        environment: key.clone(),
+        source: fingerprint.clone(),
+        runtime_home: runner.home(),
+        cache: cache::Use::Miss,
+        cache_saved: None,
+        setup: Vec::new(),
+        capabilities: Vec::new(),
+        baseline: Vec::new(),
+    };
+    let mut result = (|| {
+        // Even cached setup must prove its capabilities in the current VM and worker HOME.
+        let retained = previous.as_ref().is_some_and(|r| {
+            r.environment == key && r.runtime_home == receipt.runtime_home && r.error.is_none()
+        });
+        if retained {
+            receipt.cache = cache::Use::Retained;
+        }
+        if !retained {
+            progress("Preflight · copy prepared assets");
+            receipt.cache = timing.measure(Phase::DependencySetup, || {
+                runner.cache(
+                    "restore",
+                    &key,
+                    !recipe.reusable_paths.is_empty(),
+                    cancelled,
+                )
+            })?;
+        }
+        if retained || receipt.cache.dependencies() {
+            receipt.capabilities = timing.measure(Phase::Capabilities, || {
+                commands(
+                    runner,
+                    &recipe.capabilities,
+                    cancelled,
+                    "capabilities",
+                    &mut progress,
+                )
+            })?;
+        }
+        if receipt.capabilities.is_empty()
+            || receipt.capabilities.iter().any(|r| r.exit_code != Some(0))
+        {
+            if !recipe.system_packages.is_empty() {
+                progress("Preflight · system packages");
+                timing.measure(Phase::DependencySetup, || {
+                    runner.packages(&recipe.packages(), cancelled)
+                })?;
+            }
+            receipt.setup = timing.measure(Phase::DependencySetup, || {
+                commands(runner, &recipe.setup, cancelled, "setup", &mut progress)
+            })?;
+            if let Some(failed) = receipt.setup.iter().find(|r| r.exit_code != Some(0)) {
+                return Err(io::Error::other(format!(
+                    "Setup failed: {}\n{}",
+                    failed.check,
+                    failed.evidence()
+                )));
+            }
+            receipt.capabilities = timing.measure(Phase::Capabilities, || {
+                commands(
+                    runner,
+                    &recipe.capabilities,
+                    cancelled,
+                    "capabilities",
+                    &mut progress,
+                )
+            })?;
+        }
+        if let Some(failed) = receipt.capabilities.iter().find(|r| r.exit_code != Some(0)) {
+            return Err(io::Error::other(format!(
+                "Capability unavailable: {}\n{}",
+                failed.check,
+                failed.evidence()
+            )));
+        }
+        // Baselines run once per attempt; saved results are evidence, never a final-check cache.
+        receipt.baseline = timing.measure(Phase::Baseline, || {
+            commands(
+                runner,
+                &recipe.baseline,
+                cancelled,
+                "baseline",
+                &mut progress,
+            )
+        })?;
+        Ok(())
+    })();
+    if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        result = Err(io::Error::new(
+            io::ErrorKind::Interrupted,
+            "Environment preparation stopped.",
+        ));
+    }
+    // Preserve unexpected setup edits even when its command failed.
+    if !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+        let after = runner.snapshot(cancelled)?;
+        if after != before {
+            runner.preserve(&after, cancelled)?;
+            result = Err(io::Error::other(
+                "Setup or baseline changed source. Edits are retained; correct the recipe before retrying.",
+            ));
+        }
+    }
+    if let Err(error) = &result {
+        receipt.error = Some(error.to_string());
+    }
+    if result.is_ok()
+        && (!receipt.setup.is_empty()
+            || matches!(
+                receipt.cache,
+                cache::Use::Miss | cache::Use::Rejected { .. }
+            ))
+    {
+        progress("Preflight · save prepared assets");
+        let saved = timing.measure(Phase::DependencySetup, || {
+            runner.cache(
+                "publish",
+                &key,
+                !recipe.reusable_paths.is_empty(),
+                cancelled,
+            )
+        });
+        match saved {
+            Ok(saved) => receipt.cache_saved = Some(saved),
+            Err(error) => {
+                receipt.error = Some(error.to_string());
+                result = Err(error);
+            }
+        }
+    }
+    runner.save_receipt(id, source, &receipt, cancelled)?;
+    result.map(|()| receipt.summary())
+}
+
+fn save_attempt(root: &Path, id: i64, source: &str, receipt: &Receipt) -> io::Result<PathBuf> {
+    let directory = root.join("environments");
+    let bytes = serde_json::to_vec_pretty(receipt)?;
+    let attempt = directory.join(format!("{id}-{source}.json"));
+    let pending = directory.join(format!("{id}-{source}.pending"));
+    for saved in [&attempt, &pending] {
+        use io::Write;
+        fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(saved)?
+            .write_all(&bytes)?;
+        fs::set_permissions(saved, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(pending)
+}
+
+fn publish_receipt(root: &Path, id: i64, pending: &Path) -> io::Result<()> {
+    fs::rename(
+        pending,
+        root.join("environments").join(format!("{id}.json")),
+    )
+}
+
+fn commands(
+    runner: &mut impl Runner,
+    commands: &[Command],
+    cancelled: &AtomicBool,
+    phase: &str,
+    progress: &mut dyn FnMut(&str),
+) -> io::Result<Vec<CheckResult>> {
+    runner.batch(commands, cancelled, phase, progress)
+}
+
+fn command_batch(
+    commands: &[Command],
+    cancelled: &AtomicBool,
+    phase: &str,
+    progress: &mut dyn FnMut(&str),
+    mut run: impl FnMut(&Check) -> CheckResult,
+) -> io::Result<Vec<CheckResult>> {
+    let mut results = Vec::new();
+    for command in commands {
+        progress(&format!("Preflight · {phase} · {}", command.name));
+        let check = Check {
+            task: None,
+            check: command.name.clone(),
+            command: command.argv.clone(),
+            timeout_seconds: Some(command.timeout_seconds),
+        };
+        let result = run(&check);
+        let failed = result.exit_code != Some(0);
+        results.push(result);
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
+        if failed && phase != "baseline" {
+            break;
+        }
+    }
+    Ok(results)
+}
+
+impl Runner for Sandbox {
+    fn root(&self) -> &Path {
+        self.root()
+    }
+    fn identity(&self) -> &crate::sandbox::Identity {
+        self.identity()
+    }
+    fn home(&self) -> String {
+        self.runtime_home()
+    }
+    fn snapshot(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
+        self.snapshot(&self.task_folder(), cancelled)
+    }
+    fn packages(
+        &mut self,
+        request: &crate::packages::Request,
+        cancelled: &AtomicBool,
+    ) -> io::Result<String> {
+        self.install_packages(request, cancelled)
+    }
+    fn cache(
+        &mut self,
+        action: &str,
+        key: &str,
+        dependencies: bool,
+        cancelled: &AtomicBool,
+    ) -> io::Result<cache::Use> {
+        cache::operation(self, action, key, dependencies, cancelled)
+    }
+    fn batch(
+        &mut self,
+        commands: &[Command],
+        cancelled: &AtomicBool,
+        phase: &str,
+        progress: &mut dyn FnMut(&str),
+    ) -> io::Result<Vec<CheckResult>> {
+        command_batch(commands, cancelled, phase, progress, |check| {
+            self.run_check_command(check, cancelled)
+        })
+    }
+    fn preserve(&mut self, _: &Snapshot, _: &AtomicBool) -> io::Result<()> {
+        self.export(&AtomicBool::new(false)).map(|_| ())
+    }
+    fn save_receipt(
+        &self,
+        id: i64,
+        source: &str,
+        receipt: &Receipt,
+        _: &AtomicBool,
+    ) -> io::Result<()> {
+        let pending = save_attempt(self.root(), id, source, receipt)?;
+        publish_receipt(self.root(), id, &pending)
+    }
+}
+
+impl Runner for crate::sandbox::session::TaskSession {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+    fn identity(&self) -> &crate::sandbox::Identity {
+        self.identity()
+    }
+    fn home(&self) -> String {
+        self.home().into()
+    }
+    fn snapshot(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
+        self.snapshot(cancelled)
+    }
+    fn packages(
+        &mut self,
+        request: &crate::packages::Request,
+        cancelled: &AtomicBool,
+    ) -> io::Result<String> {
+        crate::sandbox::session::TaskSession::packages(self, request, cancelled)
+    }
+    fn cache(
+        &mut self,
+        action: &str,
+        key: &str,
+        dependencies: bool,
+        cancelled: &AtomicBool,
+    ) -> io::Result<cache::Use> {
+        crate::sandbox::session::TaskSession::cache(self, action, key, dependencies, cancelled)
+    }
+    fn batch(
+        &mut self,
+        commands: &[Command],
+        cancelled: &AtomicBool,
+        phase: &str,
+        progress: &mut dyn FnMut(&str),
+    ) -> io::Result<Vec<CheckResult>> {
+        let _lease = self.read_lease(cancelled)?;
+        self.authorize(cancelled)?;
+        command_batch(commands, cancelled, phase, progress, |check| {
+            self.command(check, cancelled)
+        })
+    }
+    fn preserve(&mut self, snapshot: &Snapshot, cancelled: &AtomicBool) -> io::Result<()> {
+        crate::sandbox::session::TaskSession::preserve(self, snapshot, cancelled)
+    }
+    fn save_receipt(
+        &self,
+        id: i64,
+        source: &str,
+        receipt: &Receipt,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let pending = save_attempt(&self.root, id, source, receipt)?;
+        let result = self.accept(cancelled, |_| publish_receipt(&self.root, id, &pending));
+        if result.is_err() {
+            let _ = fs::remove_file(pending);
+        }
+        result
+    }
+}
+
 impl Sandbox {
     #[cfg(test)]
     pub fn preflight(
@@ -260,212 +647,35 @@ impl Sandbox {
         cancelled: &AtomicBool,
         progress: impl FnMut(&str),
     ) -> io::Result<String> {
-        self.preflight_with_timing(recipe, id, source, cancelled, progress, Timing::quiet())
+        preflight(
+            self,
+            recipe,
+            id,
+            source,
+            cancelled,
+            progress,
+            Timing::quiet(),
+        )
     }
+}
 
-    pub(crate) fn preflight_with_timing(
+impl crate::sandbox::session::TaskSession {
+    pub(crate) fn preflight(
         &mut self,
         recipe: Option<&Recipe>,
-        id: i64,
-        source: &str,
         cancelled: &AtomicBool,
-        mut progress: impl FnMut(&str),
+        progress: impl FnMut(&str),
         timing: Timing<'_>,
     ) -> io::Result<String> {
-        let before = self.snapshot(&self.task_folder(), cancelled)?;
-        let from_file = before
-            .iter()
-            .find(|(p, _, _)| recipe.is_none() && p == Path::new(".sprowt/environment.json"))
-            .map(|(_, bytes, _)| serde_json::from_slice::<Recipe>(bytes))
-            .transpose()?;
-        let Some(recipe) = recipe.or(from_file.as_ref()) else {
-            return Ok("No saved environment recipe. Inspect manifests and establish setup and baseline before changing source.".into());
-        };
-        recipe.validate().map_err(io::Error::other)?;
-        let key = recipe.key(&before, self.identity())?;
-        let fingerprint = workspace::fingerprint(&before)?;
-        let emit = |observation| timing.emit(observation);
-        let timing = Timing::new(&fingerprint, &emit).with_environment(&key);
-        let dir = self.root().join("environments");
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(&dir)?;
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700))?;
-        let path = dir.join(format!("{id}.json"));
-        let previous = match fs::read(&path) {
-            Ok(bytes) => Some(serde_json::from_slice::<Receipt>(&bytes)?),
-            Err(e) if e.kind() == io::ErrorKind::NotFound => None,
-            Err(e) => return Err(e),
-        };
-        let mut receipt = Receipt {
-            recipe: recipe.clone(),
-            error: None,
-            environment: key.clone(),
-            source: fingerprint.clone(),
-            runtime_home: self.runtime_home(),
-            cache: cache::Use::Miss,
-            cache_saved: None,
-            setup: Vec::new(),
-            capabilities: Vec::new(),
-            baseline: Vec::new(),
-        };
-        let mut result = (|| {
-            // Even cached setup must prove its capabilities in the current VM and worker HOME.
-            let retained = previous.as_ref().is_some_and(|r| {
-                r.environment == key && r.runtime_home == receipt.runtime_home && r.error.is_none()
-            });
-            if retained {
-                receipt.cache = cache::Use::Retained;
-            }
-            if !retained {
-                progress("Preflight · copy prepared assets");
-                receipt.cache = timing.measure(Phase::DependencySetup, || {
-                    cache::operation(
-                        self,
-                        "restore",
-                        &key,
-                        !recipe.reusable_paths.is_empty(),
-                        cancelled,
-                    )
-                })?;
-            }
-            if retained || receipt.cache.dependencies() {
-                receipt.capabilities = timing.measure(Phase::Capabilities, || {
-                    self.environment_commands(
-                        &recipe.capabilities,
-                        cancelled,
-                        "capabilities",
-                        &mut progress,
-                    )
-                })?;
-            }
-            if receipt.capabilities.is_empty()
-                || receipt.capabilities.iter().any(|r| r.exit_code != Some(0))
-            {
-                if !recipe.system_packages.is_empty() {
-                    progress("Preflight · system packages");
-                    timing.measure(Phase::DependencySetup, || {
-                        self.install_packages(&recipe.packages(), cancelled)
-                    })?;
-                }
-                receipt.setup = timing.measure(Phase::DependencySetup, || {
-                    self.environment_commands(&recipe.setup, cancelled, "setup", &mut progress)
-                })?;
-                if let Some(failed) = receipt.setup.iter().find(|r| r.exit_code != Some(0)) {
-                    return Err(io::Error::other(format!(
-                        "Setup failed: {}\n{}",
-                        failed.check,
-                        failed.evidence()
-                    )));
-                }
-                receipt.capabilities = timing.measure(Phase::Capabilities, || {
-                    self.environment_commands(
-                        &recipe.capabilities,
-                        cancelled,
-                        "capabilities",
-                        &mut progress,
-                    )
-                })?;
-            }
-            if let Some(failed) = receipt.capabilities.iter().find(|r| r.exit_code != Some(0)) {
-                return Err(io::Error::other(format!(
-                    "Capability unavailable: {}\n{}",
-                    failed.check,
-                    failed.evidence()
-                )));
-            }
-            // Baselines run once per attempt; saved results are evidence, never a final-check cache.
-            receipt.baseline = timing.measure(Phase::Baseline, || {
-                self.environment_commands(&recipe.baseline, cancelled, "baseline", &mut progress)
-            })?;
-            Ok(())
-        })();
-        // Preserve unexpected setup edits even when its command failed.
-        if !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-            let after = self.snapshot(&self.task_folder(), cancelled)?;
-            if after != before {
-                self.export(cancelled)?;
-                result = Err(io::Error::other(
-                    "Setup or baseline changed source. Edits are retained; correct the recipe before retrying.",
-                ));
-            }
-        }
-        if let Err(error) = &result {
-            receipt.error = Some(error.to_string());
-        }
-        if result.is_ok()
-            && (!receipt.setup.is_empty()
-                || matches!(
-                    receipt.cache,
-                    cache::Use::Miss | cache::Use::Rejected { .. }
-                ))
-        {
-            progress("Preflight · save prepared assets");
-            let saved = timing.measure(Phase::DependencySetup, || {
-                cache::operation(
-                    self,
-                    "publish",
-                    &key,
-                    !recipe.reusable_paths.is_empty(),
-                    cancelled,
-                )
-            });
-            match saved {
-                Ok(saved) => receipt.cache_saved = Some(saved),
-                Err(error) => {
-                    receipt.error = Some(error.to_string());
-                    result = Err(error);
-                }
-            }
-        }
-        // Keep every attempt and a latest pointer. Failed setup is inspectable after reconnect.
-        let bytes = serde_json::to_vec_pretty(&receipt)?;
-        let attempt = dir.join(format!("{id}-{source}.json"));
-        for saved in [&path, &attempt] {
-            use io::Write;
-            fs::OpenOptions::new()
-                .write(true)
-                .create(true)
-                .truncate(true)
-                .mode(0o600)
-                .open(saved)?
-                .write_all(&bytes)?;
-            fs::set_permissions(saved, fs::Permissions::from_mode(0o600))?;
-        }
-        result.map(|()| receipt.summary())
-    }
-
-    fn environment_commands(
-        &mut self,
-        commands: &[Command],
-        cancelled: &AtomicBool,
-        phase: &str,
-        progress: &mut impl FnMut(&str),
-    ) -> io::Result<Vec<CheckResult>> {
-        let mut results = Vec::new();
-        for command in commands {
-            progress(&format!("Preflight · {phase} · {}", command.name));
-            let check = Check {
-                task: None,
-                check: command.name.clone(),
-                command: command.argv.clone(),
-                timeout_seconds: Some(command.timeout_seconds),
-            };
-            let result = self.run_check_command(&check, cancelled);
-            let failed = result.exit_code != Some(0);
-            results.push(result);
-            if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-                return Err(io::Error::new(
-                    io::ErrorKind::Interrupted,
-                    "Preflight stopped.",
-                ));
-            }
-            if failed && phase != "baseline" {
-                break;
-            }
-        }
-        Ok(results)
+        preflight(
+            self,
+            recipe,
+            self.id,
+            &self.source.clone(),
+            cancelled,
+            progress,
+            timing,
+        )
     }
 }
 

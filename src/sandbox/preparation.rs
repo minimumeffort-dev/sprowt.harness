@@ -104,6 +104,9 @@ impl Sandbox {
             tasks: Default::default(),
             state: saved.as_ref().map_or(State::Preparing, state),
             allocation: resources::Allocation::SMALL,
+            environment: std::sync::Arc::new(super::environment_gate::Gate::default()),
+            transfer_basis: None,
+            environment_read: false,
             identity: Identity {
                 digest: String::new(),
                 architecture: String::new(),
@@ -222,22 +225,7 @@ impl Sandbox {
         timing.measure(Phase::BaseSetup, || vm.prepare_base(cancelled))?;
         let (child, mut rpc) = Rpc::start(&mut vm.executor())?;
         vm.child = Some(child);
-        let initialized = rpc.call("initialize", json!({"clientName":"sprowt_verification"}))?;
-        let info = &initialized["environmentInfo"];
-        let version = container()
-            .args(["exec", &vm.name, "/usr/local/bin/codex", "--version"])
-            .output()?;
-        if !version.status.success()
-            || String::from_utf8_lossy(&version.stdout).trim() != format!("codex-cli {VERSION}")
-            || (info["executorVersion"] != VERSION && info["executorVersion"] != "0.0.0")
-            || info["platformOs"] != "linux"
-            || info["capabilities"]["networkProxyLaunch"] != true
-        {
-            return Err(io::Error::other(
-                "The guest executor has an incompatible version or platform.",
-            ));
-        }
-        rpc.write(json!({"method":"initialized"}))?;
+        super::session::initialize(&vm.name, &mut rpc)?;
         vm.rpc = Some(rpc);
         progress("checking Linux VM isolation");
         timing.measure(Phase::BaseSetup, || {
@@ -686,6 +674,9 @@ mod tests {
                     started: false,
                     state: State::BoundReady,
                     allocation: resources::Allocation::SMALL,
+                    environment: std::sync::Arc::new(super::environment_gate::Gate::default()),
+                    transfer_basis: None,
+                    environment_read: false,
                     tasks: Default::default(),
                     identity: Identity {
                         digest: String::new(),

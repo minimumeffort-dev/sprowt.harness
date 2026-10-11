@@ -67,12 +67,33 @@ pub(super) fn operation(
     dependencies: bool,
     cancelled: &AtomicBool,
 ) -> io::Result<Use> {
-    let result_path = format!(
-        "/opt/sprowt-transfer/environment-cache-{}.json",
-        vm.runtime_home().rsplit('/').next().unwrap_or("controller")
-    );
-    let arguments = json!({"action":action,"key":key,"dependencies":dependencies,
-        "home":vm.runtime_home(),"workspace":vm.task_folder(),"cache":DIRECTORY,"result":result_path});
+    let home = vm.runtime_home();
+    let workspace = vm.task_folder();
+    operation_at(
+        vm,
+        action,
+        key,
+        dependencies,
+        &home,
+        &workspace,
+        "controller",
+        cancelled,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn operation_at(
+    vm: &mut Sandbox,
+    action: &str,
+    key: &str,
+    dependencies: bool,
+    home: &str,
+    workspace: &str,
+    token: &str,
+    cancelled: &AtomicBool,
+) -> io::Result<Use> {
+    let result_path = format!("/opt/sprowt-transfer/environment-cache-{token}.json");
+    let arguments = json!({"action":action,"key":key,"dependencies":dependencies,"home":home,"workspace":workspace,"cache":DIRECTORY,"result":result_path});
     let result = (|| {
         vm.guest(&["/bin/rm", "-f", &result_path], cancelled)?;
         vm.guest(

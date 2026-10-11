@@ -79,7 +79,40 @@ An [explicit recipe memory request](environments.md#recipe-fields) can select 8 
 
 Task slot observations use the accepted source fingerprint when available, otherwise an empty source field, and retain the exact attempt identifier. Admission during early preparation has no accepted source or attempt. Unknown environment identity remains unknown.
 
+## Overlap independent task work
+
+Two independent workers no longer wait for one long controller check to finish before starting their own preparation or `run_task_checks` commands.
+
+```mermaid
+flowchart LR
+    capture["Authorize owner + attempt"] --> a["Task A: own process connection, cwd + HOME"]
+    capture --> b["Task B: own process connection, cwd + HOME"]
+    a --> accept["Recheck owner, attempt + source"]
+    b --> accept
+    accept --> checkpoint["Serialized evidence + checkpoint"]
+```
+
+| Work | Scheduling |
+| --- | --- |
+| Task-private setup, capability probes, baselines and controlled checks | Independent batches can overlap |
+| System package installation | Exclusive lease; waits for controlled batches before taking the controller lock |
+| Prepared-asset copy, publication and pruning | Complete operations serialized under the controller lock |
+| Repair source replacement, Git integration and shared checkpoints | Serialized; repairs wait for controlled check readers |
+| Final combined verification | Fresh commands against current source; no saved-result shortcut |
+
+Waiting package writers take precedence over later controlled batches. Waiting for a lease or controller is cancellable. Each session keeps the VM alive, but owns only its own process connection; stopping one leaves its sibling connected.
+
+The lease covers controller-managed commands and standalone sandbox commands. Ordinary Codex executor tools and Muse CLI commands use their provider connections and do not acquire it. It does not make all agent commands mutually exclusive with package setup.
+
+Changed-file exports reduce transferred bytes for unchanged trees. They still hash the complete source and validate it after transfer. No cached check result replaces final verification. The [current task handoff](workers.md#current-task-handoff) also avoids repeating the full plan and fixed protocol on each assignment.
+
+Reasoning effort and provider routing are unchanged. A separate benchmark would need paired task outcomes, regressions and total turn time before changing those settings.
+
 ## Measured results
+
+A disposable dispatcher fixture confirmed two task check batches reached their barriers together. It also verified private cwd/HOME boundaries, package waiting, sibling cancellation and rejection of stale owner/attempt receipts. This proves overlap and isolation, not a complete agent-turn speedup.
+
+For an unchanged 128 KiB source fixture, the changed-file archive was under 16 KiB. Binary edits, executable modes, deletions, empty trees and corrupt archives were checked separately. The controller still hashes and validates the whole tree; transfer savings do not measure total verification time.
 
 A disposable VM fixture exercised boot, isolation, source export and reconnect on the same host, with the image already cached:
 

@@ -2,7 +2,7 @@
 
 # Project preparation
 
-Before a task starts editing, the controller prepares its Linux environment and records the starting test results. Codex and Muse use the same preparation path.
+Before a task starts editing, the controller prepares its Linux environment and records the starting test results. Codex and Muse use the same preparation path. Independent task setup, capability probes and baselines can overlap in fixed task sessions; package mutation and complete cache operations remain serialized.
 
 ```mermaid
 flowchart LR
@@ -145,7 +145,7 @@ The cache retains up to **3 environments per codemod**, each at most **512 MiB /
 
 Setup and baseline commands must leave source and lockfiles unchanged. Put generated dependencies and caches in their usual excluded locations. Commands retain normal worker permissions.
 
-Private `environments/` receipts preserve commands, output, source fingerprints, worker HOME, cache decisions and errors across restart. Receipt files use mode `0600`. New task IDs get their own preparation records. The cache stays inside the codemod VM; deleting that VM also removes its prepared assets.
+Private `environments/` receipts preserve commands, output, source fingerprints, worker HOME, cache decisions and errors across restart. Each attempt has its own file, including stopped or superseded attempts. The latest pointer updates only for the current task owner, attempt and VM identity. Receipt files use mode `0600`. New task IDs get their own preparation records. The cache stays inside the codemod VM; deleting that VM also removes its prepared assets.
 
 Older plans without a recipe continue with worker-managed setup. They gain controller preparation when replanned or when the project supplies the recipe file. Existing recipes without `reusable_paths` retain the default `[]`. Reuse does not reproduce external package registries; declared inputs, immutable assets and current probes bound what is reused.
 

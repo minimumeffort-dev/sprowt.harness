@@ -161,7 +161,7 @@ pub fn tool() -> Value {
             "required":["source","checks","scripts"]}})
 }
 
-fn authorize(
+pub(crate) fn authorize(
     store: &Store,
     root: &Path,
     mod_id: i64,
@@ -200,6 +200,184 @@ fn authorize(
     Ok((run.id, task))
 }
 
+pub(crate) trait Verification {
+    fn checked_source(&mut self, cancelled: &AtomicBool) -> io::Result<workspace::Snapshot>;
+    fn check_command(&mut self, check: &Check, cancelled: &AtomicBool) -> CheckResult;
+    fn preserve_checked_source(
+        &mut self,
+        source: &workspace::Snapshot,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()>;
+}
+
+pub(crate) fn verify_commands(
+    runner: &mut impl Verification,
+    checks: &[Check],
+    cancelled: &AtomicBool,
+    mut progress: impl FnMut(&str),
+) -> io::Result<(workspace::Snapshot, Vec<CheckResult>)> {
+    if checks
+        .iter()
+        .any(|check| !(1..=crate::execution::MAX_CHECK_TIMEOUT).contains(&check.timeout()))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Check budgets must be 1–180 seconds.",
+        ));
+    }
+    let before = runner.checked_source(cancelled)?;
+    let total = checks
+        .iter()
+        .map(|c| (&c.task, &c.command, c.timeout()))
+        .collect::<BTreeSet<_>>()
+        .len();
+    let mut current = 0;
+    let results = unique_results(checks, cancelled, |check| {
+        current += 1;
+        progress(&format!(
+            "Checking {current}/{total} · {} · {}s limit",
+            check.check,
+            check.timeout()
+        ));
+        let mut result = runner.check_command(check, cancelled);
+        if runner.checked_source(&AtomicBool::new(false))? != before {
+            result.exit_code = None;
+            result.output =
+                "Verification changed source files. Fix the check before retrying.".into();
+        }
+        Ok(result)
+    })?;
+    let after = runner.checked_source(&AtomicBool::new(false))?;
+    runner.preserve_checked_source(&after, cancelled)?;
+    Ok((before, results))
+}
+
+impl Verification for Sandbox {
+    fn checked_source(&mut self, cancelled: &AtomicBool) -> io::Result<workspace::Snapshot> {
+        self.snapshot(&self.task_folder(), cancelled)
+    }
+    fn check_command(&mut self, check: &Check, cancelled: &AtomicBool) -> CheckResult {
+        self.run_check_command(check, cancelled)
+    }
+    fn preserve_checked_source(
+        &mut self,
+        _: &workspace::Snapshot,
+        _: &AtomicBool,
+    ) -> io::Result<()> {
+        self.export(&AtomicBool::new(false)).map(|_| ())
+    }
+}
+
+impl Verification for crate::sandbox::session::TaskSession {
+    fn checked_source(&mut self, cancelled: &AtomicBool) -> io::Result<workspace::Snapshot> {
+        self.snapshot(cancelled)
+    }
+    fn check_command(&mut self, check: &Check, cancelled: &AtomicBool) -> CheckResult {
+        self.command(check, cancelled)
+    }
+    fn preserve_checked_source(
+        &mut self,
+        source: &workspace::Snapshot,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        self.preserve(source, cancelled)
+    }
+}
+
+trait Runner {
+    fn root(&self) -> &Path;
+    fn authorize(&self, id: i64, worker: i64, cancelled: &AtomicBool) -> io::Result<()>;
+    fn verify(
+        &mut self,
+        checks: &[Check],
+        cancelled: &AtomicBool,
+        progress: &mut dyn FnMut(&str),
+    ) -> io::Result<(workspace::Snapshot, Vec<CheckResult>)>;
+    fn snapshot(&mut self, id: i64, cancelled: &AtomicBool) -> io::Result<workspace::Snapshot>;
+    fn accept(
+        &self,
+        id: i64,
+        worker: i64,
+        cancelled: &AtomicBool,
+        accept: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()>;
+}
+
+impl Runner for Sandbox {
+    fn root(&self) -> &Path {
+        self.root()
+    }
+    fn authorize(&self, id: i64, worker: i64, _: &AtomicBool) -> io::Result<()> {
+        if self.tasks.active == Some(id) && self.tasks.owners.get(&id) == Some(&worker) {
+            Ok(())
+        } else {
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Check runner is not assigned to this task.",
+            ))
+        }
+    }
+    fn verify(
+        &mut self,
+        checks: &[Check],
+        cancelled: &AtomicBool,
+        progress: &mut dyn FnMut(&str),
+    ) -> io::Result<(workspace::Snapshot, Vec<CheckResult>)> {
+        self.verify_with_progress(checks, cancelled, progress)
+    }
+    fn snapshot(&mut self, id: i64, cancelled: &AtomicBool) -> io::Result<workspace::Snapshot> {
+        self.snapshot(&task_worktree::folder(id), cancelled)
+    }
+    fn accept(
+        &self,
+        id: i64,
+        worker: i64,
+        cancelled: &AtomicBool,
+        accept: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.authorize(id, worker, cancelled)?;
+        accept()
+    }
+}
+
+impl Runner for crate::sandbox::session::TaskSession {
+    fn root(&self) -> &Path {
+        &self.root
+    }
+    fn authorize(&self, id: i64, worker: i64, cancelled: &AtomicBool) -> io::Result<()> {
+        if id != self.id || worker != self.owner {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "Check runner belongs to another task.",
+            ));
+        }
+        self.authorize(cancelled)
+    }
+    fn verify(
+        &mut self,
+        checks: &[Check],
+        cancelled: &AtomicBool,
+        progress: &mut dyn FnMut(&str),
+    ) -> io::Result<(workspace::Snapshot, Vec<CheckResult>)> {
+        let _lease = self.read_lease(cancelled)?;
+        self.restore_scripts(cancelled)?;
+        self.authorize(cancelled)?;
+        verify_commands(self, checks, cancelled, progress)
+    }
+    fn snapshot(&mut self, _: i64, cancelled: &AtomicBool) -> io::Result<workspace::Snapshot> {
+        self.snapshot(cancelled)
+    }
+    fn accept(
+        &self,
+        _: i64,
+        _: i64,
+        cancelled: &AtomicBool,
+        accept: impl FnOnce() -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.accept(cancelled, |_| accept())
+    }
+}
+
 pub fn run(
     store: &Store,
     vm: &mut Sandbox,
@@ -209,14 +387,55 @@ pub fn run(
     cancelled: &AtomicBool,
     progress: impl FnMut(&str),
 ) -> io::Result<String> {
+    run_checks(store, vm, mod_id, worker, request, cancelled, progress)
+}
+
+pub(crate) fn run_shared(
+    store: &Store,
+    vm: &crate::codex::SharedVm,
+    context: &crate::tools::Context,
+    request: Request,
+    cancelled: &AtomicBool,
+    progress: impl FnMut(&str),
+) -> io::Result<String> {
     request.validate()?;
-    let (id, task) = authorize(store, vm.root(), mod_id, worker, &request.source)?;
-    if vm.tasks.active != Some(id) || vm.tasks.owners.get(&id) != Some(&worker) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "Check runner is not assigned to this task.",
-        ));
-    }
+    let (_, mod_id) = context.execution_identity()?;
+    let root = context
+        .workspace()
+        .ok_or_else(|| io::Error::other("Task checks need their codemod root."))?;
+    let worker = context.worker_id();
+    let mut session = crate::sandbox::session::checked_session(
+        vm,
+        store,
+        root,
+        mod_id,
+        worker,
+        &request.source,
+        cancelled,
+    )?;
+    run_checks(
+        store,
+        &mut session,
+        mod_id,
+        worker,
+        request,
+        cancelled,
+        progress,
+    )
+}
+
+fn run_checks(
+    store: &Store,
+    runner: &mut impl Runner,
+    mod_id: i64,
+    worker: i64,
+    request: Request,
+    cancelled: &AtomicBool,
+    mut progress: impl FnMut(&str),
+) -> io::Result<String> {
+    request.validate()?;
+    let (id, task) = authorize(store, runner.root(), mod_id, worker, &request.source)?;
+    runner.authorize(id, worker, cancelled)?;
     let checks = Report::parse(
         &json!({"status":"completed","summary":"Check run","checks":request.checks}).to_string(),
         &task,
@@ -229,16 +448,16 @@ pub fn run(
             "Task checks stopped.",
         ));
     }
-    let mut bundle = load(vm.root(), id)?;
+    let mut bundle = load(runner.root(), id)?;
     if let Some(scripts) = request.scripts {
         bundle.scripts = scripts;
     }
     bundle.receipt = None;
-    save(vm.root(), id, &bundle)?;
-    let (before, results) = vm.verify_with_progress(&checks, cancelled, progress)?;
-    let after = vm.snapshot(&task_worktree::folder(id), &AtomicBool::new(false))?;
+    runner.accept(id, worker, cancelled, || save(runner.root(), id, &bundle))?;
+    let (before, results) = runner.verify(&checks, cancelled, &mut progress)?;
+    let after = runner.snapshot(id, &AtomicBool::new(false))?;
     // A stop or replacement attempt cannot save successful evidence for the old run.
-    authorize(store, vm.root(), mod_id, worker, &request.source)?;
+    authorize(store, runner.root(), mod_id, worker, &request.source)?;
     let passed = !cancelled.load(Ordering::Relaxed)
         && before == after
         && results.len() == checks.len()
@@ -256,7 +475,7 @@ pub fn run(
         "results":receipt.results,"unrun":checks.len().saturating_sub(receipt.results.len())})
     .to_string();
     bundle.receipt = Some(receipt);
-    save(vm.root(), id, &bundle)?;
+    runner.accept(id, worker, cancelled, || save(runner.root(), id, &bundle))?;
     Ok(result)
 }
 
@@ -269,50 +488,10 @@ fn script_snapshot(scripts: &[Script]) -> workspace::Snapshot {
 
 impl Sandbox {
     pub(crate) fn restore_check_scripts(&self, cancelled: &AtomicBool) -> io::Result<()> {
-        let Some(id) = self.tasks.active else {
-            return Ok(());
-        };
-        if !path(self.root(), id).exists() {
-            return Ok(());
+        match self.tasks.active {
+            Some(id) => restore_scripts(self, id, crate::sandbox::next_transfer(), cancelled),
+            None => Ok(()),
         }
-        let bundle = load(self.root(), id)?;
-        validate_scripts(&bundle.scripts)?;
-        let archive = path(self.root(), id).with_extension("tar");
-        let mut tar = tar::Builder::new(Vec::new());
-        for (path, bytes, mode) in script_snapshot(&bundle.scripts) {
-            let mut header = tar::Header::new_gnu();
-            header.set_size(bytes.len() as u64);
-            header.set_mode(mode);
-            header.set_cksum();
-            tar.append_data(&mut header, path, bytes.as_slice())?;
-        }
-        fs::write(&archive, tar.into_inner()?)?;
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&archive, fs::Permissions::from_mode(0o600))?;
-        let result = (|| {
-            self.copy_in(&archive, "/opt/sprowt-transfer/checks.tar", cancelled)?;
-            // This protected directory is read-only to workers; the archive contains only validated regular files.
-            self.guest(&["/bin/rm", "-rf", &folder(id)], cancelled)?;
-            self.guest(&["/bin/mkdir", "-p", &folder(id)], cancelled)?;
-            self.guest(
-                &[
-                    "/bin/tar",
-                    "--no-same-owner",
-                    "--same-permissions",
-                    "-xf",
-                    "/opt/sprowt-transfer/checks.tar",
-                    "-C",
-                    &folder(id),
-                ],
-                cancelled,
-            )
-        })();
-        let _ = fs::remove_file(archive);
-        let _ = self.guest(
-            &["/bin/rm", "-f", "/opt/sprowt-transfer/checks.tar"],
-            &AtomicBool::new(false),
-        );
-        result
     }
 
     pub(crate) fn remove_check_scripts(&self, id: i64, cancelled: &AtomicBool) -> io::Result<()> {
@@ -323,6 +502,53 @@ impl Sandbox {
         }
         Ok(())
     }
+}
+
+pub(crate) fn restore_scripts(
+    vm: &Sandbox,
+    id: i64,
+    token: u64,
+    cancelled: &AtomicBool,
+) -> io::Result<()> {
+    if !path(vm.root(), id).exists() {
+        return Ok(());
+    }
+    let bundle = load(vm.root(), id)?;
+    validate_scripts(&bundle.scripts)?;
+    let archive = vm.root().join(format!("checks-{id}-{token}.tar"));
+    let guest = format!("/opt/sprowt-transfer/checks-{id}-{token}.tar");
+    let mut tar = tar::Builder::new(Vec::new());
+    for (path, bytes, mode) in script_snapshot(&bundle.scripts) {
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(mode);
+        header.set_cksum();
+        tar.append_data(&mut header, path, bytes.as_slice())?;
+    }
+    fs::write(&archive, tar.into_inner()?)?;
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(&archive, fs::Permissions::from_mode(0o600))?;
+    let result = (|| {
+        vm.copy_in(&archive, &guest, cancelled)?;
+        // This protected directory is read-only to workers; the archive contains only validated regular files.
+        vm.guest(&["/bin/rm", "-rf", &folder(id)], cancelled)?;
+        vm.guest(&["/bin/mkdir", "-p", &folder(id)], cancelled)?;
+        vm.guest(
+            &[
+                "/bin/tar",
+                "--no-same-owner",
+                "--same-permissions",
+                "-xf",
+                &guest,
+                "-C",
+                &folder(id),
+            ],
+            cancelled,
+        )
+    })();
+    let _ = fs::remove_file(archive);
+    let _ = vm.guest(&["/bin/rm", "-f", &guest], &AtomicBool::new(false));
+    result
 }
 
 #[cfg(test)]
@@ -557,13 +783,7 @@ mod tests {
                 let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
                 vm.prepare_tasks(&[id, id + 1], &flag)?;
                 vm.assign_task(id, worker, &flag)?;
-                vm.install_packages(
-                    &crate::packages::Request {
-                        packages: vec!["python3".into()],
-                        reason: "Run the saved-check repair regression".into(),
-                    },
-                    &flag,
-                )?;
+                vm.guest(&["/usr/bin/python3", "--version"], &flag)?;
                 let first = call(&mut vm, &m, &store, args(&source, bad))?;
                 assert_eq!(first["passed"], true, "{first}");
                 let mut checks = Request::parse(args(&source, bad))?.checks;
@@ -609,7 +829,14 @@ mod tests {
                     .finish_task(m.id, &input.source, "done", "Repaired", &repaired)
                     .unwrap();
                 assert!(store.execution(m.id).unwrap().unwrap().needs_final_checks());
-                let (_, final_checks) = vm.verify_execution("final:test", &checks, &flag)?;
+                let shared = std::sync::Arc::new(std::sync::Mutex::new(vm));
+                let (_, final_checks) = crate::sandbox::session::verify_execution(
+                    &shared,
+                    "final:test",
+                    &checks,
+                    &flag,
+                    |_| {},
+                )?;
                 assert_eq!(final_checks[0].exit_code, Some(0));
                 assert!(root.join("work/static/task-backup.mjs").exists());
                 assert_eq!(

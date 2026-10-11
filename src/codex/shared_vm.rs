@@ -51,7 +51,7 @@ impl<T> Registry<T> {
     }
 }
 
-pub(super) fn cancellable_lock<'a, T>(
+pub(crate) fn cancellable_lock<'a, T>(
     mutex: &'a Mutex<T>,
     cancelled: &AtomicBool,
 ) -> io::Result<MutexGuard<'a, T>> {

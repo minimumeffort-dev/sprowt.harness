@@ -284,40 +284,35 @@ fn serve_connection(
                         .and_then(|s| s["plan"]["environment"].as_object())
                         .map(|v| serde_json::from_value(json!(v)))
                         .transpose()?;
-                    let preflight;
                     let id = crate::task_worktree::task_id(&source)?;
-                    let config = {
-                        let mut vm = vm.lock().unwrap();
-                        vm.assign_muse_task(id, context.worker_id(), cancelled)?;
-                        if routing.as_ref().is_some_and(|state| {
-                            !state["repair"].is_null()
-                                || state["review_fix"] == true
-                                || state["runtime_recovery"] == true
-                                || state["check_repair"] == true
-                        }) {
-                            vm.refresh_for_repair(id, &source, cancelled)?;
+                    let repair = routing.as_ref().is_some_and(|state| {
+                        !state["repair"].is_null()
+                            || state["review_fix"] == true
+                            || state["runtime_recovery"] == true
+                            || state["check_repair"] == true
+                    });
+                    let mut session = crate::sandbox::session::prepare_task(
+                        vm, context, &source, repair, cancelled,
+                    )?;
+                    let preflight = match session.preflight(
+                        environment.as_ref(),
+                        cancelled,
+                        |label| {
+                            let _ = outgoing.send(Event::Preparing(label.into()));
+                        },
+                        timing,
+                    ) {
+                        Ok(summary) => summary,
+                        Err(error) => {
+                            let _ = outgoing.send(Event::Rejected {
+                                source: source.clone(),
+                                message: format!("Environment preflight failed: {error}"),
+                            });
+                            continue;
                         }
-                        preflight = match vm.preflight_with_timing(
-                            environment.as_ref(),
-                            id,
-                            &source,
-                            cancelled,
-                            |label| {
-                                let _ = outgoing.send(Event::Preparing(label.into()));
-                            },
-                            timing,
-                        ) {
-                            Ok(summary) => summary,
-                            Err(error) => {
-                                let _ = outgoing.send(Event::Rejected {
-                                    source: source.clone(),
-                                    message: format!("Environment preflight failed: {error}"),
-                                });
-                                continue;
-                            }
-                        };
-                        vm.muse_configuration(context.worker_id())
                     };
+                    session.authorize(cancelled)?;
+                    let config = session.muse_configuration(cancelled)?;
                     task = Some(id);
                     let _ = outgoing.send(Event::TaskConfigured {
                         source: source.clone(),
@@ -352,7 +347,8 @@ fn serve_connection(
                 ),
                 Action::Stop { turn } => ("turn/interrupt", String::new(), json!({"turn":turn})),
                 Action::Verify { source, checks } => {
-                    let result = vm.lock().unwrap().verify_execution_with_progress(
+                    let result = crate::sandbox::session::verify_execution(
+                        vm,
                         &source,
                         &checks,
                         cancelled,
@@ -431,13 +427,7 @@ fn serve_connection(
                     continue;
                 }
                 let params = &message["params"];
-                let mut guard = (params["name"] == crate::packages::TOOL
-                    || params["name"] == crate::checks::TOOL)
-                    .then(|| vm.lock().unwrap());
-                if let Some(vm) = &mut guard {
-                    vm.tasks.active = task;
-                }
-                let result = Dispatcher::new(context, guard.as_deref_mut(), cancelled)
+                let result = Dispatcher::shared(context, Some(vm), cancelled)
                     .worker_call(
                         params["name"].as_str().unwrap_or(""),
                         params["arguments"].clone(),

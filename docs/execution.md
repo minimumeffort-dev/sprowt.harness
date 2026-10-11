@@ -32,7 +32,7 @@ flowchart TB
 
 Each codemod has two active slots: two Codex workers, two Muse workers or one of each. Connecting and verification occupy slots. Idle workers are parked and reused. Review repairs run one owner at a time.
 
-A single controller serializes VM setup, checkpoints, integration, checks and system package installation. Independent model turns and ordinary commands can overlap. Workers with unanswered [peer questions](coordination.md) wait; unrelated work can continue.
+Independent task preparation and `run_task_checks` can overlap in their own task folders and HOMEs. Shared cache operations, checkpoints, source replacement, integration and system package mutations remain serialized. Combined checks rerun on current source. See [execution waits](performance.md#overlap-independent-task-work). Workers with unanswered [peer questions](coordination.md) wait; unrelated work can continue.
 
 ## Working folder
 

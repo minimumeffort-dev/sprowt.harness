@@ -52,7 +52,7 @@ Source is copied into the VM. Host project folders and Git credentials are not m
 | Skill bundle | Pinned instructions, role policies and read-only host/VM delivery | [Coding skills](skills.md) |
 | Store and Git adapters | Durable state, recovery checkpoints and confirmed publication | [Local state](local-state.md), [Git workflow](git-workflow.md) |
 
-The controller serializes checkpoints, integration, checks and system package installation. Independent model turns and ordinary task commands can run concurrently. Review repairs run one owner at a time.
+The controller serializes checkpoints, source replacement, integration and system package installation. Independent task preparation and controlled checks use separate process connections with fixed task paths and runtime homes. Final combined checks remain fresh and serialized. Review repairs run one owner at a time.
 
 ## The workflow
 

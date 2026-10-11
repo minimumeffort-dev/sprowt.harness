@@ -40,7 +40,7 @@ flowchart LR
 | Ordinary worker | System files remain read-only |
 | Failure | Preserve source and report the cause |
 
-The controller serializes setup with checkpoints, checks and integration. **Ctrl+R** stops setup; retry completes pending package configuration. Progress appears beside the worker. `packages.jsonl` records requests/results; `sandbox.log` retains setup output.
+Package mutation waits for active controlled preparation/check batches, then holds an exclusive environment lease. A waiting installer blocks later batches, and cancellation releases its wait. Checkpoints and integration remain serialized. Ordinary provider commands do not acquire this lease; it is a controller-command coordination boundary. **Ctrl+R** stops setup; retry completes pending package configuration. Progress appears beside the worker. `packages.jsonl` records requests/results; `sandbox.log` retains setup output.
 
 Trusted Debian install scripts run without host mounts or credentials. Packages requiring install-time network access fail. The syscall filter reports kernel auditing unavailable so package scripts can create users without audit/network sockets. An empty Debian-created `/root/.ssh` is allowed on reconnect; contents or links are rejected.
 
@@ -67,7 +67,7 @@ Use `run_task_checks` to exercise the controller environment before reporting co
 
 A disconnected VM stops execution; tools never fall back to the host. Inherited host apps, MCPs, plugins and hooks are disabled.
 
-Exports preserve regular files, modes and deletions. Common credentials/dependencies are excluded; links and special files are rejected. Limits are **512 MiB per export** and **64 MiB per source file**.
+Exports preserve regular files, modes, binary bytes and deletions. After the first full snapshot, the controller transfers changed files against its verified basis. SHA-256 content, modes and the complete manifest are checked, including a fresh whole-tree check after transfer. A changing tree gets at most three exports, with a full snapshot on the last retry. Invalid paths, links, special files, corrupt hashes and bounds fail without replacing accepted source. Common credentials/dependencies remain excluded. Limits are **512 MiB per export**, **64 MiB per source file** and **100,000 files**. Source fingerprints and full import behavior are unchanged.
 
 ## Downloads
 

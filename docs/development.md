@@ -59,6 +59,8 @@ Use the [supported provider versions](workers.md#supported-versions), sign in an
 | Commit and PR text (Codex only; no push) | `cargo test live_publication_writer -- --ignored --nocapture` |
 | Project preparation and setup reuse | `cargo test live_preflight_retains_evidence_and_reuses_only_proven_setup -- --ignored` |
 | Prepared assets, private HOMEs and locked dependencies (no inference or downloads) | `cargo test --locked live_prepared_assets_are_private_and_locked_dependencies_reuse_only_exact_inputs -- --ignored --nocapture` |
+| Independent checks, private paths, package waits and stale receipt rejection (no inference or downloads; cached image required) | `cargo test --locked shared_dispatcher_overlaps_isolated_checks_and_rejects_stale_receipts -- --ignored --nocapture` |
+| Saved-check repair, peer source and fresh combined verification (no inference or downloads; cached image required) | `cargo test --locked requested_check_repair_preserves_combined_source_and_saved_scripts -- --ignored --nocapture` |
 | Saved check scripts and restart | `cargo test shared_check_runner_recovers_and_survives_restart -- --ignored` |
 | Task worktree isolation and cleanup | `cargo test task_worktrees_isolate_combine_restore_and_clean -- --ignored` |
 | Network and source export | `cargo test persistent_vm_checks_network_exports_source_and_reconnects -- --ignored` |
@@ -114,6 +116,7 @@ Standalone compatibility probes live in [examples](../examples). They are separa
 | Checks and recovery | [`checks.rs`](../src/checks.rs), [`execution.rs`](../src/execution.rs), [`repair.rs`](../src/repair.rs), [`conflict.rs`](../src/conflict.rs) |
 | Review and findings | [`review.rs`](../src/review.rs), [`review/ledger.rs`](../src/review/ledger.rs) |
 | Tools, messaging and permissions | [`tools.rs`](../src/tools.rs), [`mailbox.rs`](../src/mailbox.rs), [`network.rs`](../src/network.rs), [`packages.rs`](../src/packages.rs) |
+| Immutable task commands and verified changed-file exports | [`sandbox/session.rs`](../src/sandbox/session.rs), [`sandbox/environment_gate.rs`](../src/sandbox/environment_gate.rs), [`sandbox/transfer.rs`](../src/sandbox/transfer.rs), [`source_transfer.py`](../sandbox/source_transfer.py) |
 | VM setup, admission and task worktrees | [`sandbox.rs`](../src/sandbox.rs), [`sandbox/preparation.rs`](../src/sandbox/preparation.rs), [`sandbox/resources.rs`](../src/sandbox/resources.rs), [`task_worktree.rs`](../src/task_worktree.rs) |
 | Git and checkpoints | [`git_mod.rs`](../src/git_mod.rs), [`git_sync.rs`](../src/git_sync.rs), [`mod_sync.rs`](../src/mod_sync.rs), [`workspace.rs`](../src/workspace.rs) |
 | Commit and PR text | [`publication.rs`](../src/publication.rs) |

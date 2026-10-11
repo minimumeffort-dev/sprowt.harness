@@ -345,10 +345,17 @@ impl Report {
     }
 }
 
+pub(crate) const EXECUTOR_PROTOCOL: &str = "Execute only this task from the saved plan in the Linux VM in your task worktree at the path in Current task instruction. Resume saved edits and resolve any merge conflict markers. Respect project rules and the declared file scope. The harness checkpoints source separately from generated caches and runtime databases; scope checks use the source diff, not all files created by tests. Inspect project manifests, reuse compatible installed runtimes and dependencies, and install only what is missing using mise or the project's package manager. Keep reusable browser/model downloads in XDG_CACHE_HOME (the retained worker HOME cache), not disposable test fixture directories. If OS dependencies are missing, call install_system_packages with required Debian package names and a short reason; the harness installs them in the VM and you continue. If a download or documentation request returns x-proxy-error: blocked-by-allowlist, call request_network_access with the exact blocked hostnames and a short reason, including blocked redirect hosts. Return status blocked with repair null while access is pending or denied; do not poll or bypass the policy. The harness reconnects and retries after user approval. Run the completion checks; report blocked checks honestly. If a reproducible code regression belongs to an already completed task, return status blocked and a repair object: task is the completed owner's task ID; files are exact paths in that owner's scope; check must copy the exact text of the failing check from Current task.checks, not from the owner's checks; command reproduces that failure; evidence states the observed failure. Do not fix another task's files. Use repair null for success, missing access, environment blockers, uncertainty or product decisions. The harness reopens the owner and reruns affected tasks, with at most two repair attempts per plan. Return the required JSON report. Cover every declared check using its exact text. A check may have several commands; repeat its exact text for each command, and do not add undeclared check names. Provide each repeatable command as an argument array using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each defaults to 30 seconds. Set timeout_seconds to null for that default, or 1–180 for a measured bounded budget. Browser startup, cache seeding, model inference and shutdown share that budget: allow headroom and align inner test and wrapper deadlines below the command budget with time for cleanup. Diagnose hangs before increasing limits; preserve every assertion. Existing saved scripts may still have shorter internal deadlines, so update those explicitly when repairing a timeout. Return the same timeout_seconds and commands that you ran with run_task_checks. Commands must test the result and exit nonzero on failure, without changing source files. Verification starts in the assigned task worktree with a fresh process environment; shell exports, running servers and privileged setup from earlier commands do not carry over. Keep temporary fixtures and module stubs in a unique directory under /tmp or your HOME, recreate them in the check, and clean up processes afterward. Browser URL paths such as /static are not writable filesystem paths: use an HTTP test server or a scoped module loader in Node, never create root-level directories. Run the reported commands with run_task_checks before returning them. Save standalone check scripts through that tool so retries and final verification can reuse them. For asynchronous browser checks, register the matching response wait before the action, await successful completion and assert rendered state. Exercise relevant stale-response and save races with controlled delays or reordered replies, not sleeps. Keep the summary short.";
+
 pub fn task_prompt(plan: &Plan, task: &Task, id: i64) -> String {
+    let owners: Vec<_> = plan
+        .tasks
+        .iter()
+        .map(|task| json!({"id":task.id,"files":task.files,"depends_on":task.depends_on}))
+        .collect();
+    let context = json!({"summary":plan.summary,"contracts":plan.contracts,"assumptions":plan.assumptions,"non_goals":plan.non_goals,"owners":owners});
     format!(
-        "Execute only this task from the saved plan in the Linux VM in your task worktree at /tasks/{id}. Resume saved edits and resolve any merge conflict markers. Respect project rules and the declared file scope. The harness checkpoints source separately from generated caches and runtime databases; scope checks use the source diff, not all files created by tests. Inspect project manifests, reuse compatible installed runtimes and dependencies, and install only what is missing using mise or the project's package manager. Keep reusable browser/model downloads in XDG_CACHE_HOME (the retained worker HOME cache), not disposable test fixture directories. If OS dependencies are missing, call install_system_packages with required Debian package names and a short reason; the harness installs them in the VM and you continue. If a download or documentation request returns x-proxy-error: blocked-by-allowlist, call request_network_access with the exact blocked hostnames and a short reason, including blocked redirect hosts. Return status blocked with repair null while access is pending or denied; do not poll or bypass the policy. The harness reconnects and retries after user approval. Run the completion checks; report blocked checks honestly. If a reproducible code regression belongs to an already completed task, return status blocked and a repair object: task is the completed owner's task ID; files are exact paths in that owner's scope; check must copy the exact text of the failing check from Current task.checks, not from the owner's checks; command reproduces that failure; evidence states the observed failure. Do not fix another task's files. Use repair null for success, missing access, environment blockers, uncertainty or product decisions. The harness reopens the owner and reruns affected tasks, with at most two repair attempts per plan. Return the required JSON report. Cover every declared check using its exact text. A check may have several commands; repeat its exact text for each command, and do not add undeclared check names. Provide each repeatable command as an argument array using an absolute guest executable path. The harness reruns these commands independently in the same VM with the same permissions and download allowlist; each defaults to 30 seconds. Set timeout_seconds to null for that default, or 1–180 for a measured bounded budget. Browser startup, cache seeding, model inference and shutdown share that budget: allow headroom and align inner test and wrapper deadlines below the command budget with time for cleanup. Diagnose hangs before increasing limits; preserve every assertion. Existing saved scripts may still have shorter internal deadlines, so update those explicitly when repairing a timeout. Return the same timeout_seconds and commands that you ran with run_task_checks. Commands must test the result and exit nonzero on failure, without changing source files. Verification starts in /tasks/{id} with a fresh process environment; shell exports, running servers and privileged setup from earlier commands do not carry over. Keep temporary fixtures and module stubs in a unique directory under /tmp or your HOME, recreate them in the check, and clean up processes afterward. Browser URL paths such as /static are not writable filesystem paths: use an HTTP test server or a scoped module loader in Node, never create root-level directories. Run the reported commands with run_task_checks before returning them. Save standalone check scripts through that tool so retries and final verification can reuse them. For asynchronous browser checks, register the matching response wait before the action, await successful completion and assert rendered state. Exercise relevant stale-response and save races with controlled delays or reordered replies, not sleeps. Keep the summary short.\nPlan: {}\nCurrent task: {}\nRelevant peers (message their task IDs; read_worker_messages gives live assignments): {}",
-        serde_json::to_string(plan).unwrap(),
+        "Current task instruction: execute only this task in /tasks/{id}.\nShared context: {context}\nCurrent task: {}\nRelevant peers (message their task IDs; read_worker_messages gives live assignments): {}",
         serde_json::to_string(task).unwrap(),
         serde_json::to_string(&plan.peers(task)).unwrap()
     )
@@ -376,6 +383,56 @@ pub fn task_schema(context: Option<&Value>) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_handoff_keeps_contracts_scopes_and_checks_without_repeating_protocol() {
+        let plan = Plan::parse(&json!({"summary":"Implement the accepted goal","contracts":["Preserve revision tokens"],"assumptions":["Local only"],"non_goals":["No backend"],"tasks":[
+            {"id":"core","title":"Core","outcome":"Core ready","files":["core.rs"],"depends_on":[],"coordination":[{"task":"ui","topic":"Revision-token interface"}],"worker":"codex","checks":["Exact core check"]},
+            {"id":"ui","title":"Interface","outcome":"Interface ready","files":["ui.rs"],"depends_on":[],"worker":"muse","checks":["Irrelevant UI check"]},
+            {"id":"docs","title":"Docs","outcome":"Documented","files":["README.md"],"depends_on":["core"],"worker":"codex","checks":["Irrelevant docs check"]}
+        ]}).to_string()).unwrap();
+        let handoff = task_prompt(&plan, &plan.tasks[0], 42);
+        for preserved in [
+            "/tasks/42",
+            "Preserve revision tokens",
+            "Local only",
+            "No backend",
+            "Exact core check",
+            "Revision-token interface",
+            "ui.rs",
+            "README.md",
+            "depends_on",
+        ] {
+            assert!(handoff.contains(preserved), "{preserved}");
+        }
+        assert_eq!(handoff.matches("Exact core check").count(), 1);
+        assert!(!handoff.contains("Irrelevant UI check"));
+        assert!(!handoff.contains("Irrelevant docs check"));
+        assert!(!handoff.contains(EXECUTOR_PROTOCOL));
+        let instructions = crate::plan::instructions(
+            crate::plan::Role::Executor,
+            "Original user goal",
+            Some(&plan),
+            true,
+        );
+        assert!(instructions.contains("Original user goal"));
+        assert!(instructions.contains(EXECUTOR_PROTOCOL));
+        for protocol in [
+            "run_task_checks",
+            "request_network_access",
+            "install_system_packages",
+            "repair null",
+            "1–180",
+            "Do not fix another task's files",
+        ] {
+            assert!(instructions.contains(protocol));
+        }
+        assert_eq!(
+            task_schema(Some(&json!({"task":plan.tasks[0]})))["properties"]["checks"]["items"]["properties"]
+                ["check"]["enum"],
+            json!(["Exact core check"])
+        );
+    }
 
     #[test]
     fn check_budgets_are_bounded_and_legacy_reports_keep_the_default() {
