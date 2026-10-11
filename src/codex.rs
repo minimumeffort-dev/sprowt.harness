@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Child, Command},
     sync::{
-        Arc, Mutex, Weak,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering},
         mpsc::{self, Receiver, Sender},
     },
@@ -15,6 +15,7 @@ use std::{
 use serde_json::{Value, json};
 
 use crate::{
+    diagnostics::timing::{Phase, Timing},
     execution::{Check, CheckResult},
     plan::{self, Plan, Role},
     router::Selection,
@@ -23,6 +24,8 @@ use crate::{
     tools::{self, Context, Dispatcher, Output},
     workspace::Snapshot,
 };
+
+mod shared_vm;
 
 pub enum Action {
     Run {
@@ -49,6 +52,7 @@ pub enum Event {
     MailboxChanged,
     Reconnecting,
     Preparing(String),
+    Timing(crate::diagnostics::timing::Observation),
     Configured(Selection),
     TaskConfigured {
         source: String,
@@ -104,26 +108,6 @@ pub(crate) fn verification_event(
 }
 
 pub(crate) type SharedVm = Arc<Mutex<Sandbox>>;
-static VMS: Mutex<BTreeMap<PathBuf, Weak<Mutex<Sandbox>>>> = Mutex::new(BTreeMap::new());
-
-fn shared_vm(
-    root: &Path,
-    tasks: &[i64],
-    cancelled: &AtomicBool,
-    progress: impl Fn(&str),
-) -> io::Result<SharedVm> {
-    let mut registry = VMS.lock().unwrap();
-    registry.retain(|_, vm| vm.strong_count() > 0);
-    if let Some(vm) = registry.get(root).and_then(Weak::upgrade) {
-        vm.lock().unwrap().refresh_network()?;
-        return Ok(vm);
-    }
-    let mut vm = Sandbox::prepare(root, cancelled, progress)?;
-    vm.prepare_tasks(tasks, cancelled)?;
-    let vm = Arc::new(Mutex::new(vm));
-    registry.insert(root.to_owned(), Arc::downgrade(&vm));
-    Ok(vm)
-}
 
 pub struct Resume {
     pub id: String,
@@ -219,12 +203,30 @@ impl Client {
         let last_task = active_task.clone();
         let task = thread::spawn(move || {
             let result = (|| {
+                let source = workspace
+                    .as_ref()
+                    .map(|path| {
+                        crate::workspace::source_state(path)
+                            .and_then(|source| crate::workspace::fingerprint(&source))
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                let emit = |observation| {
+                    let _ = outgoing.send(Event::Timing(observation));
+                };
+                let timing = Timing::new(&source, &emit);
                 let vm = workspace
                     .as_ref()
                     .map(|path| {
-                        shared_vm(path.parent().unwrap(), &context.tasks, &stopped, |label| {
-                            let _ = outgoing.send(Event::Preparing(label.into()));
-                        })
+                        shared_vm::prepare(
+                            path.parent().unwrap(),
+                            &context.tasks,
+                            &stopped,
+                            |label| {
+                                let _ = outgoing.send(Event::Preparing(label.into()));
+                            },
+                            timing,
+                        )
                     })
                     .transpose()?;
                 let skill_root = if let Some(vm) = &vm {
@@ -262,6 +264,13 @@ impl Client {
                         &outgoing,
                     );
                 }
+                let digest = vm
+                    .as_ref()
+                    .map(|vm| vm.lock().unwrap().identity().digest.clone());
+                let connection_timing = digest
+                    .as_deref()
+                    .map_or(timing, |digest| timing.with_environment(digest));
+                let connecting = connection_timing.span(Phase::ProviderConnection);
                 let permissions = if role == Role::Reviewer {
                     "sprowt_review"
                 } else if vm.is_some() {
@@ -316,7 +325,7 @@ impl Client {
                     vm,
                     context,
                 };
-                serve(&mut rpc, &cwd, resume, setup, inbox, &outgoing)
+                serve(&mut rpc, &cwd, resume, setup, inbox, &outgoing, connecting)
             })();
             if let Some(child) = process.lock().unwrap().as_mut() {
                 rpc::terminate(child);
@@ -482,6 +491,7 @@ pub(crate) fn configuration(project: &Path) -> io::Result<Vec<String>> {
     Ok(config)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn flush(
     rpc: &mut Rpc,
     outgoing: &Sender<Event>,
@@ -490,8 +500,12 @@ fn flush(
     cancelled: &AtomicBool,
     context: &Context,
     task: Option<i64>,
+    response: &mut crate::diagnostics::timing::FirstResponse,
 ) -> io::Result<()> {
     for message in std::mem::take(&mut rpc.buffered) {
+        if let Some(observation) = response.observe(&message) {
+            let _ = outgoing.send(Event::Timing(observation));
+        }
         if message["method"] == "item/tool/call" && message.get("id").is_some() {
             let params = &message["params"];
             let result = (|| {
@@ -606,6 +620,7 @@ fn serve(
     setup: Setup,
     actions: Receiver<Action>,
     outgoing: &Sender<Event>,
+    connecting: crate::diagnostics::timing::Span<'_>,
 ) -> io::Result<()> {
     let Setup {
         role,
@@ -616,6 +631,9 @@ fn serve(
         mut vm,
         context,
     } = setup;
+    let emit = |observation| {
+        let _ = outgoing.send(Event::Timing(observation));
+    };
     rpc.call("initialize", json!({"clientInfo":{"name":"sprowt_harness","title":"Sprowt Harness","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}}))?;
     rpc.write(json!({"method":"initialized"}))?;
     let account = rpc.call("account/read", json!({"refreshToken":false}))?;
@@ -739,9 +757,20 @@ fn serve(
             effort: effort.clone(),
         })
         .map_err(io::Error::other)?;
+    connecting.finish();
     let router = (role == Role::Executor).then(crate::router::Router::start);
     let mut task = None;
-    flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context, task)?;
+    let mut response = crate::diagnostics::timing::FirstResponse::new();
+    flush(
+        rpc,
+        outgoing,
+        &mut vm,
+        &thread,
+        &cancelled,
+        &context,
+        task,
+        &mut response,
+    )?;
     let mut last_turn = None;
     loop {
         while let Ok(action) = actions.try_recv() {
@@ -764,7 +793,16 @@ fn serve(
                     }
                 }
                 let _ = outgoing.send(verification_event(source.clone(), result)?);
-                flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context, task)?;
+                flush(
+                    rpc,
+                    outgoing,
+                    &mut vm,
+                    &thread,
+                    &cancelled,
+                    &context,
+                    task,
+                    &mut response,
+                )?;
                 continue;
             }
             let (method, source, params) = match action {
@@ -827,7 +865,7 @@ fn serve(
                         if repair {
                             vm.refresh_for_repair(id, &source, &cancelled)?;
                         }
-                        let preflight = match vm.preflight(
+                        let preflight = match vm.preflight_with_timing(
                             environment.as_ref(),
                             id,
                             &source,
@@ -835,6 +873,7 @@ fn serve(
                             |label| {
                                 let _ = outgoing.send(Event::Preparing(label.into()));
                             },
+                            Timing::new("", &emit),
                         ) {
                             Ok(summary) => summary,
                             Err(error) => {
@@ -906,6 +945,12 @@ fn serve(
                 }
                 Action::Verify { .. } => unreachable!(),
             };
+            if method == "turn/start" {
+                let digest = vm
+                    .as_ref()
+                    .map(|vm| vm.lock().unwrap().identity().digest.clone());
+                response.start(&source, digest.as_deref());
+            }
             match rpc.call(method, params) {
                 Ok(result) if method != "turn/interrupt" => {
                     let turn = result["turn"]["id"]
@@ -927,12 +972,30 @@ fn serve(
                 Err(error) => return Err(error),
                 _ => {}
             }
-            flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context, task)?;
+            flush(
+                rpc,
+                outgoing,
+                &mut vm,
+                &thread,
+                &cancelled,
+                &context,
+                task,
+                &mut response,
+            )?;
         }
         match rpc.receiver.recv_timeout(Duration::from_millis(25)) {
             Ok(message) => {
                 rpc.receive(message?)?;
-                flush(rpc, outgoing, &mut vm, &thread, &cancelled, &context, task)?;
+                flush(
+                    rpc,
+                    outgoing,
+                    &mut vm,
+                    &thread,
+                    &cancelled,
+                    &context,
+                    task,
+                    &mut response,
+                )?;
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(error) => return Err(io::Error::other(error)),

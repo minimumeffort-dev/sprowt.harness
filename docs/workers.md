@@ -44,7 +44,7 @@ For supported Muse, sign in on the Mac:
 muse login
 ```
 
-The host resolves that account login. No separate Meta API key is used, and the provider header stays in host memory. First use downloads the verified Linux binary; guest Python is installed through the VM package controller.
+The host resolves that account login. No separate Meta API key is used, and the provider header stays in host memory. First use downloads the verified Linux binary. New VMs already include Python; older retained VMs receive it through signed package setup.
 
 Automatic login refresh is not implemented. After changing login or installed providers, restart the harness. See [startup troubleshooting](troubleshooting.md#worker-startup).
 
@@ -81,6 +81,8 @@ flowchart TB
 Both providers can implement, test and integrate. Two slots can hold either provider combination. Rust balances ready tasks by active provider load across codemods; ties alternate. Saved assignments and retries retain their owner. Dependencies still control readiness.
 
 Each worker has its own cancellation signal and runtime HOME. Connecting, running and checking occupy slots; idle identities do not. The controller serializes checkpoints, checks, integration and system package setup, while model turns and ordinary commands can overlap.
+
+On each Muse connection, the host verifies the pinned binary and checks the guest binary and bridge against their actual SHA-256 content. Matching files are reused; missing or changed files are recopied. Provider credentials stay on the host. See [recorded startup timings](performance.md) to inspect preparation and response delays.
 
 ### Isolation
 

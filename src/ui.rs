@@ -931,7 +931,9 @@ fn draw_history(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect, task:
     let mut rows = Vec::new();
     let mut total: usize = 0;
     if task.is_none()
-        && (!code_mod.diagnostics.phases.is_empty() || !code_mod.diagnostics.failures.is_empty())
+        && (!code_mod.diagnostics.phases.is_empty()
+            || !code_mod.diagnostics.failures.is_empty()
+            || !code_mod.diagnostics.timings.is_empty())
     {
         let paragraph = Paragraph::new(code_mod.diagnostics.packet()).wrap(Wrap { trim: false });
         let height = paragraph.line_count(inner.width);

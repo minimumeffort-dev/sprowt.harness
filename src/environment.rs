@@ -1,4 +1,5 @@
 use crate::{
+    diagnostics::timing::{Phase, Timing},
     execution::{Check, CheckResult},
     sandbox::Sandbox,
     workspace::{self, Snapshot},
@@ -175,13 +176,26 @@ impl Receipt {
 }
 
 impl Sandbox {
+    #[cfg(test)]
     pub fn preflight(
         &mut self,
         recipe: Option<&Recipe>,
         id: i64,
         source: &str,
         cancelled: &AtomicBool,
+        progress: impl FnMut(&str),
+    ) -> io::Result<String> {
+        self.preflight_with_timing(recipe, id, source, cancelled, progress, Timing::quiet())
+    }
+
+    pub(crate) fn preflight_with_timing(
+        &mut self,
+        recipe: Option<&Recipe>,
+        id: i64,
+        source: &str,
+        cancelled: &AtomicBool,
         mut progress: impl FnMut(&str),
+        timing: Timing<'_>,
     ) -> io::Result<String> {
         let before = self.snapshot(&self.task_folder(), cancelled)?;
         let from_file = before
@@ -195,6 +209,8 @@ impl Sandbox {
         recipe.validate().map_err(io::Error::other)?;
         let key = recipe.key(&before)?;
         let fingerprint = workspace::fingerprint(&before)?;
+        let emit = |observation| timing.emit(observation);
+        let timing = Timing::new(&fingerprint, &emit).with_environment(&key);
         let dir = self.root().join("environments");
         fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{id}.json"));
@@ -215,22 +231,27 @@ impl Sandbox {
         let mut result = (|| {
             // Even cached setup must prove its capabilities in the current VM and worker HOME.
             if previous.as_ref().is_some_and(|r| r.environment == key) {
-                receipt.capabilities = self.environment_commands(
-                    &recipe.capabilities,
-                    cancelled,
-                    "capabilities",
-                    &mut progress,
-                )?;
+                receipt.capabilities = timing.measure(Phase::Capabilities, || {
+                    self.environment_commands(
+                        &recipe.capabilities,
+                        cancelled,
+                        "capabilities",
+                        &mut progress,
+                    )
+                })?;
             }
             if receipt.capabilities.is_empty()
                 || receipt.capabilities.iter().any(|r| r.exit_code != Some(0))
             {
                 if !recipe.system_packages.is_empty() {
                     progress("Preflight · system packages");
-                    self.install_packages(&recipe.packages(), cancelled)?;
+                    timing.measure(Phase::DependencySetup, || {
+                        self.install_packages(&recipe.packages(), cancelled)
+                    })?;
                 }
-                receipt.setup =
-                    self.environment_commands(&recipe.setup, cancelled, "setup", &mut progress)?;
+                receipt.setup = timing.measure(Phase::DependencySetup, || {
+                    self.environment_commands(&recipe.setup, cancelled, "setup", &mut progress)
+                })?;
                 if let Some(failed) = receipt.setup.iter().find(|r| r.exit_code != Some(0)) {
                     return Err(io::Error::other(format!(
                         "Setup failed: {}\n{}",
@@ -238,12 +259,14 @@ impl Sandbox {
                         failed.evidence()
                     )));
                 }
-                receipt.capabilities = self.environment_commands(
-                    &recipe.capabilities,
-                    cancelled,
-                    "capabilities",
-                    &mut progress,
-                )?;
+                receipt.capabilities = timing.measure(Phase::Capabilities, || {
+                    self.environment_commands(
+                        &recipe.capabilities,
+                        cancelled,
+                        "capabilities",
+                        &mut progress,
+                    )
+                })?;
             }
             if let Some(failed) = receipt.capabilities.iter().find(|r| r.exit_code != Some(0)) {
                 return Err(io::Error::other(format!(
@@ -253,8 +276,9 @@ impl Sandbox {
                 )));
             }
             // Baselines run once per attempt; saved results are evidence, never a final-check cache.
-            receipt.baseline =
-                self.environment_commands(&recipe.baseline, cancelled, "baseline", &mut progress)?;
+            receipt.baseline = timing.measure(Phase::Baseline, || {
+                self.environment_commands(&recipe.baseline, cancelled, "baseline", &mut progress)
+            })?;
             Ok(receipt.summary())
         })();
         // Preserve unexpected setup edits even when its command failed.

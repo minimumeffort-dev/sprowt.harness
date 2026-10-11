@@ -152,6 +152,37 @@ fn workbench_tabs_preserve_draft_and_independent_offsets() {
 }
 
 #[test]
+fn activity_displays_persisted_operation_timings_with_the_draft_intact() {
+    let (_data, mut app, _) = execution_app();
+    let mod_id = app.mods[0].id;
+    app.store
+        .record_timing(
+            mod_id,
+            0,
+            &crate::diagnostics::timing::Observation {
+                phase: crate::diagnostics::timing::Phase::Boot,
+                duration_ms: 1234,
+                source: "observed-source".into(),
+                environment: Some("sha256:observed-guest".into()),
+                completed: true,
+                attempt: None,
+            },
+        )
+        .unwrap();
+    app.mods[0].diagnostics = app.store.diagnostics(mod_id).unwrap();
+    screen(&mut app, 160, 44);
+    click(&mut app, Control::Stage(Key::Build));
+    screen(&mut app, 160, 44);
+    click(&mut app, Control::Tab(EvidenceTab::Activity));
+    let output = rows(&screen(&mut app, 160, 44)).join("\n");
+    assert!(output.contains("VM boot: 1.234s"), "{output}");
+    assert!(output.contains("Recorded setup timings"));
+    assert_eq!(app.timeline.inspector.tab, EvidenceTab::Activity);
+    assert_eq!(app.input.lines(), ["keep this draft"]);
+    assert!(queued(&app).is_empty());
+}
+
+#[test]
 fn workbench_selected_repair_keeps_successful_evidence_after_completion() {
     for width in [80, 160] {
         let (_data, mut app, _) = execution_app();

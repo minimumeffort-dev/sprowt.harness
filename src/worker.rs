@@ -477,6 +477,9 @@ impl Worker {
         code_mod: &mut CodeMod,
     ) -> rusqlite::Result<()> {
         match event {
+            Event::Timing(observation) => {
+                store.record_timing(self.mod_id, self.id, &observation)?;
+            }
             Event::Reconnecting => {
                 self.reconnecting = true;
                 self.recovery = self

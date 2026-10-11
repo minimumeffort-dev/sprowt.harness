@@ -6,6 +6,8 @@ use crate::{
 };
 use rusqlite::{OptionalExtension, params};
 
+pub mod timing;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cause {
     Environment,
@@ -106,6 +108,7 @@ pub fn cause(run: &TaskRun) -> Cause {
 pub struct History {
     pub phases: Vec<(String, u64)>,
     pub failures: Vec<Failure>,
+    pub timings: Vec<(i64, timing::Observation)>,
 }
 pub struct Failure {
     pub source: String,
@@ -114,6 +117,26 @@ pub struct Failure {
     pub fingerprint: String,
 }
 impl History {
+    pub fn timing_packet(&self, worker: Option<i64>) -> String {
+        let mut totals = std::collections::BTreeMap::new();
+        for (_, observation) in self
+            .timings
+            .iter()
+            .filter(|(id, _)| worker.is_none_or(|worker| worker == *id || *id == 0))
+        {
+            *totals.entry(observation.phase.label()).or_insert(0_u64) += observation.duration_ms;
+        }
+        if totals.is_empty() {
+            return String::new();
+        }
+        let mut lines = vec!["Recorded setup timings · operation wall time".into()];
+        lines.extend(
+            totals
+                .into_iter()
+                .map(|(phase, ms)| format!("{phase}: {}.{:03}s", ms / 1000, ms % 1000)),
+        );
+        lines.join("\n")
+    }
     pub fn repeats(&self, run: &TaskRun) -> usize {
         let evidence = evidence(run);
         self.failures
@@ -128,6 +151,10 @@ impl History {
                 .iter()
                 .map(|(phase, seconds)| format!("{phase}: {}m {:02}s", seconds / 60, seconds % 60)),
         );
+        let timings = self.timing_packet(None);
+        if !timings.is_empty() {
+            lines.push(timings);
+        }
         if !self.failures.is_empty() {
             lines.push(format!(
                 "{} saved failed attempts · newest first",
@@ -178,6 +205,26 @@ impl Store {
             id INTEGER PRIMARY KEY, mod_id INTEGER NOT NULL REFERENCES code_mods(id) ON DELETE CASCADE,
             source TEXT NOT NULL, task TEXT NOT NULL, evidence TEXT NOT NULL, fingerprint TEXT NOT NULL,
             UNIQUE(mod_id,source,evidence));")
+            ?;
+        self.0.execute_batch("CREATE TABLE IF NOT EXISTS operation_time (
+            id INTEGER PRIMARY KEY, mod_id INTEGER NOT NULL REFERENCES code_mods(id) ON DELETE CASCADE,
+            worker INTEGER NOT NULL, observation TEXT NOT NULL);")
+    }
+
+    pub fn record_timing(
+        &self,
+        mod_id: i64,
+        worker: i64,
+        observation: &timing::Observation,
+    ) -> rusqlite::Result<()> {
+        let json = serde_json::to_string(observation).expect("timing observation is serializable");
+        let tx = self.0.unchecked_transaction()?;
+        tx.execute(
+            "INSERT INTO operation_time(mod_id,worker,observation) VALUES(?1,?2,?3)",
+            params![mod_id, worker, json],
+        )?;
+        tx.execute("DELETE FROM operation_time WHERE mod_id=?1 AND id NOT IN (SELECT id FROM operation_time WHERE mod_id=?1 ORDER BY id DESC LIMIT 256)", [mod_id])?;
+        tx.commit()
     }
 
     pub fn record_phase(
@@ -229,6 +276,11 @@ impl Store {
         Ok(History {
             phases: self.0.prepare("SELECT phase,SUM(seconds) FROM phase_time WHERE mod_id=?1 GROUP BY phase ORDER BY SUM(seconds) DESC")?.query_map([id], |r| Ok((r.get(0)?,r.get::<_, i64>(1)? as u64)))?.collect::<rusqlite::Result<_>>()?,
             failures: self.0.prepare("SELECT source,task,evidence,fingerprint FROM run_failures WHERE mod_id=?1 ORDER BY id")?.query_map([id], |r| Ok(Failure {source:r.get(0)?,task:r.get(1)?,evidence:r.get(2)?,fingerprint:r.get(3)?}))?.collect::<rusqlite::Result<_>>()?,
+            timings: self.0.prepare("SELECT worker,observation FROM operation_time WHERE mod_id=?1 ORDER BY id")?.query_map([id], |r| {
+                let json: String = r.get(1)?;
+                let observation = serde_json::from_str(&json).map_err(|error| rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(error)))?;
+                Ok((r.get(0)?, observation))
+            })?.collect::<rusqlite::Result<_>>()?,
         })
     }
 }
@@ -271,6 +323,43 @@ impl Worker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn operation_receipts_survive_restart_and_are_bounded_per_codemod() {
+        let data = crate::store::test_support::TestData::new();
+        let mut store = data.store();
+        let project = store.load_project(&data.0.join("project")).unwrap();
+        let m = store.create_mod(project.id, "Timings").unwrap();
+        for attempt in 0..260 {
+            store
+                .record_timing(
+                    m.id,
+                    7,
+                    &timing::Observation {
+                        phase: timing::Phase::Boot,
+                        duration_ms: 1234,
+                        source: format!("source-{attempt}"),
+                        environment: Some("sha256:image".into()),
+                        completed: true,
+                        attempt: None,
+                    },
+                )
+                .unwrap();
+        }
+        drop(store);
+        let history = data.store().diagnostics(m.id).unwrap();
+        assert_eq!(history.timings.len(), 256);
+        assert_eq!(history.timings[0].1.source, "source-4");
+        assert_eq!(history.timings[255].1.source, "source-259");
+        assert_eq!(
+            history.timings[0].1.environment.as_deref(),
+            Some("sha256:image")
+        );
+        assert_eq!(
+            history.timing_packet(Some(7)),
+            "Recorded setup timings · operation wall time\nVM boot: 315.904s"
+        );
+        assert_eq!(history.timing_packet(Some(8)), "");
+    }
     #[test]
     fn timing_survives_restart_and_excludes_unobserved_time() {
         let data = crate::store::test_support::TestData::new();

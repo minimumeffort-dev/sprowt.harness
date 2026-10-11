@@ -16,6 +16,7 @@ use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use serde_json::{Value, json};
 
 use crate::{
+    diagnostics::timing::{Phase, Timing},
     execution::{Check, CheckResult},
     packages::Request,
     rpc::{self, Rpc},
@@ -23,15 +24,23 @@ use crate::{
 };
 
 pub const VERSION: &str = "0.159.2";
-const IMAGE: &str = "sprowt-sandbox:0.159.2-v1";
+const IMAGE: &str = "sprowt-sandbox:0.159.2-v2";
+const LEGACY_IMAGE: &str = "sprowt-sandbox:0.159.2-v1";
 const OWNER: &str = "dev.minimumeffort.sprowt.workspace";
 const GUEST_PATH: &str = "/usr/local/bin:/usr/bin:/bin";
 const EXPORT_LIMIT: usize = 512 * 1024 * 1024;
 static BUILD: Mutex<()> = Mutex::new(());
 static PROCESS: AtomicU64 = AtomicU64::new(0);
 
+mod preparation;
 #[cfg(test)]
 mod skills_tests;
+
+#[derive(Clone, Debug, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+pub struct Identity {
+    pub digest: String,
+    pub architecture: String,
+}
 
 pub struct Sandbox {
     root: PathBuf,
@@ -42,6 +51,7 @@ pub struct Sandbox {
     rpc: Option<Rpc>,
     started: bool,
     pub(crate) tasks: crate::task_worktree::TaskWorktrees,
+    identity: Identity,
 }
 
 impl Sandbox {
@@ -51,6 +61,9 @@ impl Sandbox {
     }
     pub fn root(&self) -> &Path {
         &self.root
+    }
+    pub fn identity(&self) -> &Identity {
+        &self.identity
     }
 
     pub(crate) fn prepare_skills(&self, cancelled: &AtomicBool) -> io::Result<()> {
@@ -92,25 +105,7 @@ impl Sandbox {
         binary: &Path,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        self.install_packages(
-            &Request {
-                packages: vec!["python3".into()],
-                reason: "Muse's credential-free VM transport".into(),
-            },
-            cancelled,
-        )?;
-        self.guest(
-            &["/bin/mkdir", "-p", "/opt/sprowt-muse", "/opt/sprowt-checks"],
-            cancelled,
-        )?;
-        for (path, name) in [
-            (binary.to_owned(), "muse"),
-            (helper.join("bridge.py"), "bridge.py"),
-            (helper.join("muse_transport.py"), "muse_transport.py"),
-        ] {
-            self.copy_in(&path, &format!("/opt/sprowt-muse/{name}"), cancelled)?;
-        }
-        self.guest(&["/bin/chmod", "755", "/opt/sprowt-muse/muse"], cancelled)
+        self.install_muse(helper, binary, cancelled)
     }
 
     pub(crate) fn muse_configuration(&self, worker: i64) -> Value {
@@ -152,6 +147,15 @@ impl Sandbox {
         cancelled: &AtomicBool,
         progress: impl Fn(&str),
     ) -> io::Result<Self> {
+        Self::prepare_with_timing(root, cancelled, progress, Timing::quiet())
+    }
+
+    pub(crate) fn prepare_with_timing(
+        root: &Path,
+        cancelled: &AtomicBool,
+        progress: impl Fn(&str),
+        timing: Timing<'_>,
+    ) -> io::Result<Self> {
         if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
             return Err(io::Error::other(
                 "Linux VMs require Apple silicon and macOS 26+.",
@@ -166,6 +170,10 @@ impl Sandbox {
             rpc: None,
             started: false,
             tasks: Default::default(),
+            identity: Identity {
+                digest: String::new(),
+                architecture: String::new(),
+            },
         };
         progress("preparing Linux VM");
         vm.login()?;
@@ -196,22 +204,24 @@ impl Sandbox {
             if existing.is_some() {
                 vm.control(&["delete", "--force", &vm.name], cancelled)?;
             }
-            vm.image(cancelled, &progress)?;
-            vm.control(
-                &[
-                    "create",
-                    "--name",
-                    &vm.name,
-                    "--cpus",
-                    "2",
-                    "--memory",
-                    "2G",
-                    "--label",
-                    &format!("{OWNER}={}", vm.name),
-                    IMAGE,
-                ],
-                cancelled,
-            )?;
+            vm.image(cancelled, &progress, timing)?;
+            timing.measure(Phase::Boot, || {
+                vm.control(
+                    &[
+                        "create",
+                        "--name",
+                        &vm.name,
+                        "--cpus",
+                        "2",
+                        "--memory",
+                        "2G",
+                        "--label",
+                        &format!("{OWNER}={}", vm.name),
+                        IMAGE,
+                    ],
+                    cancelled,
+                )
+            })?;
             let inspect = vm
                 .inspect()?
                 .ok_or_else(|| io::Error::other("VM creation could not be confirmed."))?;
@@ -222,9 +232,9 @@ impl Sandbox {
                     &json!({"ready":false,"digest":inspect["configuration"]["image"]["descriptor"]["digest"]}),
                 )?,
             )?;
-            vm.control(&["start", &vm.name], cancelled)?;
+            timing.measure(Phase::Boot, || vm.control(&["start", &vm.name], cancelled))?;
             vm.started = true;
-            vm.import(cancelled)?;
+            timing.measure(Phase::Source, || vm.import(cancelled))?;
             fs::write(
                 &marker,
                 serde_json::to_vec(
@@ -235,56 +245,30 @@ impl Sandbox {
             if existing.as_ref().unwrap()["status"]["state"] == "running" {
                 vm.control(&["stop", &vm.name], cancelled)?;
             }
-            vm.control(&["start", &vm.name], cancelled)?;
+            timing.measure(Phase::Boot, || vm.control(&["start", &vm.name], cancelled))?;
         }
+        let inspect = vm
+            .inspect()?
+            .ok_or_else(|| io::Error::other("Prepared VM is missing."))?;
+        vm.identity = Identity {
+            digest: inspect["configuration"]["image"]["descriptor"]["digest"]
+                .as_str()
+                .ok_or_else(|| io::Error::other("VM image digest is missing."))?
+                .into(),
+            architecture: inspect["configuration"]["platform"]["architecture"]
+                .as_str()
+                .ok_or_else(|| io::Error::other("VM architecture is missing."))?
+                .into(),
+        };
         vm.started = true;
         vm.control(
             &["exec", &vm.name, "/bin/mkdir", "-p", "/opt/sprowt-transfer"],
             cancelled,
         )?;
-        vm.control(
-            &[
-                "exec",
-                &vm.name,
-                "/bin/mkdir",
-                "-p",
-                "/opt/sprowt-apt/conf.d",
-            ],
-            cancelled,
-        )?;
-        let setup = root.join("setup");
-        fs::create_dir_all(&setup)?;
-        for (name, contents) in [
-            ("apt.conf", include_str!("../sandbox/apt.conf")),
-            ("debian.sources", include_str!("../sandbox/debian.sources")),
-            ("offline.c", include_str!("../sandbox/offline.c")),
-        ] {
-            let path = setup.join(name);
-            fs::write(&path, contents)?;
-            vm.control(
-                &[
-                    "copy",
-                    path.to_str().unwrap(),
-                    &format!("{}:/opt/sprowt-apt/{name}", vm.name),
-                ],
-                cancelled,
-            )?;
-        }
-        vm.control(
-            &[
-                "exec",
-                &vm.name,
-                "/usr/bin/cc",
-                "-O2",
-                "-Wall",
-                "-Wextra",
-                "-Werror",
-                "/opt/sprowt-apt/offline.c",
-                "-o",
-                "/opt/sprowt-apt/offline",
-            ],
-            cancelled,
-        )?;
+        let digest = vm.identity.digest.clone();
+        timing
+            .with_environment(&digest)
+            .measure(Phase::BaseSetup, || vm.prepare_base(cancelled))?;
         let (child, mut rpc) = Rpc::start(&mut vm.executor())?;
         vm.child = Some(child);
         let initialized = rpc.call("initialize", json!({"clientName":"sprowt_verification"}))?;
@@ -305,9 +289,18 @@ impl Sandbox {
         rpc.write(json!({"method":"initialized"}))?;
         vm.rpc = Some(rpc);
         progress("checking Linux VM isolation");
-        vm.boundary(cancelled)?;
-        vm.restore_tasks(cancelled)?;
-        vm.import_update(cancelled)?;
+        timing
+            .with_environment(&digest)
+            .measure(Phase::BaseSetup, || {
+                vm.boundary(cancelled)?;
+                vm.ensure_python(cancelled)
+            })?;
+        timing
+            .with_environment(&digest)
+            .measure(Phase::Source, || {
+                vm.restore_tasks(cancelled)?;
+                vm.import_update(cancelled)
+            })?;
         let active = vm.tasks.active;
         if !vm.tasks.round.is_empty() {
             vm.tasks.active = None;
@@ -430,7 +423,7 @@ impl Sandbox {
             || config["ssh"] != false
             || config["platform"]["os"] != "linux"
             || config["labels"][OWNER] != self.name
-            || config["image"]["reference"] != IMAGE
+            || !preparation::valid_image(config, saved, &self.identity.digest)
             || saved.is_some_and(|value| value["digest"] != config["image"]["descriptor"]["digest"])
         {
             return Err(io::Error::other(
@@ -476,16 +469,23 @@ impl Sandbox {
         }
     }
 
-    fn image(&self, cancelled: &AtomicBool, progress: &impl Fn(&str)) -> io::Result<()> {
-        let _build = loop {
-            if let Ok(guard) = BUILD.try_lock() {
-                break guard;
+    fn image(
+        &self,
+        cancelled: &AtomicBool,
+        progress: &impl Fn(&str),
+        timing: Timing<'_>,
+    ) -> io::Result<()> {
+        let _build = timing.measure(Phase::ImageWait, || {
+            loop {
+                if let Ok(guard) = BUILD.try_lock() {
+                    break Ok(guard);
+                }
+                if cancelled.load(Ordering::Relaxed) {
+                    break Err(io::Error::other("VM setup stopped."));
+                }
+                thread::sleep(Duration::from_millis(100));
             }
-            if cancelled.load(Ordering::Relaxed) {
-                return Err(io::Error::other("VM setup stopped."));
-            }
-            thread::sleep(Duration::from_millis(100));
-        };
+        })?;
         if container()
             .args(["image", "inspect", IMAGE])
             .stdout(Stdio::null())
@@ -502,17 +502,20 @@ impl Sandbox {
             context.join("Containerfile"),
             include_str!("../sandbox/Containerfile"),
         )?;
-        self.control(
-            &[
-                "build",
-                "--progress",
-                "plain",
-                "--tag",
-                IMAGE,
-                context.to_str().unwrap(),
-            ],
-            cancelled,
-        )
+        preparation::write_assets(&context)?;
+        timing.measure(Phase::ImageBuild, || {
+            self.control(
+                &[
+                    "build",
+                    "--progress",
+                    "plain",
+                    "--tag",
+                    IMAGE,
+                    context.to_str().unwrap(),
+                ],
+                cancelled,
+            )
+        })
     }
 
     fn import(&self, cancelled: &AtomicBool) -> io::Result<()> {
@@ -1164,6 +1167,10 @@ pub fn delete(root: &Path) -> io::Result<()> {
         rpc: None,
         started: false,
         tasks: Default::default(),
+        identity: Identity {
+            digest: String::new(),
+            architecture: String::new(),
+        },
     };
     if let Some(inspect) = vm.inspect()? {
         let saved = fs::read(root.join("vm.json"))

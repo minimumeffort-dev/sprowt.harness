@@ -536,6 +536,14 @@ fn activity(app: &App, item: &Item, d: &mut Document) {
         Key::Task(id) | Key::Failure(id) => Some(id),
         _ => None,
     };
+    let worker = task
+        .and_then(|id| app.inspect_task(id))
+        .and_then(|task| task.run.worker);
+    let timings = m.diagnostics.timing_packet(worker);
+    if !timings.is_empty() {
+        d.gap();
+        d.text(&timings);
+    }
     let messages: Vec<_> = m
         .messages
         .iter()

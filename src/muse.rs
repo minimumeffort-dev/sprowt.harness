@@ -15,6 +15,7 @@ use serde_json::{Value, json};
 
 use crate::{
     codex::{Action, Event, Resume, SharedVm},
+    diagnostics::timing::{FirstResponse, Phase, Timing},
     router::Selection,
     rpc::Rpc,
     tools::{self, Context, Dispatcher, Output},
@@ -206,6 +207,13 @@ fn serve_connection(
 ) -> io::Result<()> {
     let (instructions, context) = setup;
     let _ = outgoing.send(Event::Preparing("preparing Muse".into()));
+    let emit = |observation| {
+        let _ = outgoing.send(Event::Timing(observation));
+    };
+    let timing = Timing::new("", &emit);
+    let digest = vm.lock().unwrap().identity().digest.clone();
+    let timing = timing.with_environment(&digest);
+    let preparing = timing.span(Phase::ProviderPreparation);
     let binary = root.join(format!("muse-{VERSION}"));
     // Verify the pinned artifact on every connection, even when cached.
     let output = command(root)
@@ -217,6 +225,8 @@ fn serve_connection(
         )));
     }
     vm.lock().unwrap().prepare_muse(root, &binary, cancelled)?;
+    preparing.finish();
+    let connecting = timing.span(Phase::ProviderConnection);
     let (child, mut rpc) = Rpc::start(&mut command(root))?;
     *process.lock().unwrap() = Some(child);
     rpc.client_tools = true;
@@ -258,6 +268,8 @@ fn serve_connection(
         model: Some(MODEL.into()),
         effort: Some("high".into()),
     });
+    connecting.finish();
+    let mut response = FirstResponse::new();
     loop {
         while let Ok(action) = actions.try_recv() {
             let (method, source, params) = match action {
@@ -285,7 +297,7 @@ fn serve_connection(
                         }) {
                             vm.refresh_for_repair(id, &source, cancelled)?;
                         }
-                        preflight = match vm.preflight(
+                        preflight = match vm.preflight_with_timing(
                             environment.as_ref(),
                             id,
                             &source,
@@ -293,6 +305,7 @@ fn serve_connection(
                             |label| {
                                 let _ = outgoing.send(Event::Preparing(label.into()));
                             },
+                            timing,
                         ) {
                             Ok(summary) => summary,
                             Err(error) => {
@@ -365,6 +378,9 @@ fn serve_connection(
                     .filter_map(|text| text.as_str().map(str::to_owned))
                     .collect()
             });
+            if method == "turn/start" {
+                response.start(&source, Some(&digest));
+            }
             match rpc.call(method, params) {
                 Ok(result) if !source.is_empty() => {
                     let turn = result["turnId"]
@@ -407,6 +423,9 @@ fn serve_connection(
             }
         }
         for message in std::mem::take(&mut rpc.buffered) {
+            if let Some(observation) = response.observe(&message) {
+                let _ = outgoing.send(Event::Timing(observation));
+            }
             if message["method"] == "item/tool/call" && message.get("id").is_some() {
                 if receive_error.is_some() {
                     continue;

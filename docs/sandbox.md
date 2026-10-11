@@ -10,7 +10,7 @@ Each executing codemod gets an Apple Container VM. Workers install project runti
 
 Complete the [quickstart](quickstart.md) first. A valid plan starts VM execution automatically. First use builds a shared image; later runs reuse it.
 
-The image includes general build tools, Bubblewrap, Codex and mise. It does not preselect a project language. The [project recipe](environments.md) installs and probes declared runtimes before editing. Workers can install additional requirements during their task. Runtime installations live under their own HOME:
+The versioned image includes general build tools, Bubblewrap, Codex, mise, Python 3 and the compiled offline package helper. Stable package configuration is built once. The [project recipe](environments.md) installs and probes declared runtimes before editing. Workers can install additional requirements during their task. Runtime installations live under their own HOME:
 
 ```text
 /home/sprowt/workers/<worker-id>/
@@ -118,6 +118,12 @@ Allowed services can receive data. Domain filtering does not guarantee that data
 | Delete | Remove VM and local codemod data |
 
 Reconnection clears leftover guest processes. Shared images and the container service remain for reuse. A task Git bundle preserves source branches, not runtime installations.
+
+VM preparation is shared within one codemod. Different codemods can prepare concurrently; building the shared image remains serialized. Cancelling a waiting worker leaves the preparing worker running.
+
+Existing VMs from the previous image remain usable when their saved image digest matches. Reconnection checks the stable helper content and migrates missing Python through signed package setup. It retains source and runtime data. Unknown images or changed digests still stop reconnection.
+
+See [startup timings](performance.md#read-startup-timings) to distinguish preparation from model response time.
 
 Older pre-VM unfinished work enters Linux only on explicit run, with old host check results cleared. Completed snapshot work can be adopted into Git. A missing or altered VM blocks reconnect and preserves the last exported source.
 
