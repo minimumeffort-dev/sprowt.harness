@@ -152,6 +152,63 @@ fn workbench_tabs_preserve_draft_and_independent_offsets() {
 }
 
 #[test]
+fn workbench_selected_repair_keeps_successful_evidence_after_completion() {
+    for width in [80, 160] {
+        let (_data, mut app, _) = execution_app();
+        let execution = app.mods[0].execution.as_mut().unwrap();
+        execution.status = "running".into();
+        execution.checks.clear();
+        let run = &mut execution.tasks[0];
+        let source = run.source.clone();
+        run.status = "checking".into();
+        run.check_repair = true;
+        run.checks[0].exit_code = Some(1);
+        run.checks[0].output = "Repair has not passed yet".into();
+        let mut passed = run.checks.clone();
+        passed[0].exit_code = Some(0);
+        passed[0].output = "Repair passed".into();
+        screen(&mut app, width, 46);
+        app.timeline.expanded.insert(Key::Build, true);
+        screen(&mut app, width, 46);
+        let selected = app
+            .navigation_items()
+            .iter()
+            .find(|item| item.title.starts_with("Repair 1."))
+            .unwrap()
+            .key;
+        click(&mut app, Control::Stage(selected));
+        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        screen(&mut app, width, 46);
+        click(&mut app, Control::Tab(EvidenceTab::Checks));
+        app.show_evidence = true;
+        let before = rows(&screen(&mut app, width, 46)).join("\n");
+        assert!(before.contains("Repair has not passed yet"));
+
+        let mod_id = app.mods[0].id;
+        app.store
+            .finish_task(mod_id, &source, "done", "Repair passed", &passed)
+            .unwrap();
+        app.mods[0].execution = app.store.execution(mod_id).unwrap();
+        let after = rows(&screen(&mut app, width, 46)).join("\n");
+        assert!(after.contains("✓ prints hello"), "{width}:\n{after}");
+        assert!(after.contains("Repair passed"));
+        assert!(!after.contains("no longer in the current plan"));
+        assert_eq!(app.timeline.selected, Some(selected));
+        assert_eq!(app.timeline.inspector.key, Some(selected));
+        assert_eq!(app.timeline.inspector.tab, EvidenceTab::Checks);
+        assert_eq!(app.timeline.focus, Focus::Inspector);
+        assert!(app.timeline.held);
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(queued(&app).is_empty());
+
+        key(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        let summary = rows(&screen(&mut app, width, 46)).join("\n");
+        assert!(summary.contains("Greeting") && summary.contains("Done"));
+        assert_eq!(app.timeline.selected, Some(selected));
+    }
+}
+
+#[test]
 fn workbench_narrow_tabs_and_task_drilldown_are_accessible() {
     let (_data, mut app, _) = execution_app();
     let id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;

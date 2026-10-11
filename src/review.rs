@@ -666,6 +666,52 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn incomplete_blocked_review_keeps_reason_after_restart_and_blocks_publication() {
+        let (data, mut store, mut m, _plan) = fixture();
+        let source = start(&mut store, &mut m);
+        let reason = "Browser socket restrictions prevented the remaining inspection.";
+        let report = json!({
+            "complete": false,
+            "status": "blocked",
+            "summary": reason,
+            "findings": [],
+            "assessments": []
+        });
+        store
+            .finish_review(&m, &source, &report.to_string())
+            .unwrap();
+        drop(store);
+        let mut store = data.store();
+        let state = store.review_state(m.id).unwrap().unwrap();
+        assert_eq!(state.status, "blocked");
+        assert_eq!(state.report.as_ref().unwrap().summary, reason);
+        assert!(!state.report.as_ref().unwrap().complete);
+        assert!(state.current(&m));
+        assert!(!state.clear(&m));
+        assert!(!store.review_fixes(&m).unwrap());
+    }
+
+    #[test]
+    fn incomplete_reviews_cannot_claim_clean_or_actionable_findings() {
+        for text in [
+            json!({"status":"clean", "summary":"Inspection stopped before checking errors.", "findings":[]}).to_string(),
+            finding(),
+        ] {
+            let (_data, mut store, mut m, plan) = fixture();
+            let source = start(&mut store, &mut m);
+            let mut report: Value = serde_json::from_str(&text).unwrap();
+            report["complete"] = json!(false);
+            assert!(Report::parse(&report.to_string(), &plan).is_err());
+            store.finish_review(&m, &source, &report.to_string()).unwrap();
+            let state = store.review_state(m.id).unwrap().unwrap();
+            assert_eq!(state.status, "blocked");
+            assert!(state.current(&m));
+            assert!(!state.clear(&m));
+            assert!(!store.review_fixes(&m).unwrap());
+        }
+    }
+
+    #[test]
     fn structural_findings_keep_evidence_and_verifiable_acceptance() {
         let (_data, mut store, mut m, plan) = fixture();
         let source = start(&mut store, &mut m);

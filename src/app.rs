@@ -3077,6 +3077,7 @@ impl Drop for App {
 
 #[cfg(test)]
 mod tests {
+    mod git_errors;
     mod workbench;
     use super::*;
     use crate::store::test_support::TestData;
