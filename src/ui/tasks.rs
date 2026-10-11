@@ -194,6 +194,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
                 .fg(ACCENT)
                 .bold(),
         );
+        lines.extend(indented_text(&receipt.cache_summary(), width, 2));
         for (phase, results) in [
             ("Setup", &receipt.setup),
             ("Capabilities", &receipt.capabilities),

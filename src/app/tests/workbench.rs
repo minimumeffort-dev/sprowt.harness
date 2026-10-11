@@ -607,6 +607,7 @@ fn workbench_environment_receipts_open_tasks_when_review_needs_attention() {
         .as_mut()
         .unwrap()
         .environment = Some(crate::environment::Recipe {
+        reusable_paths: vec![],
         inputs: Vec::new(),
         system_packages: Vec::new(),
         setup: Vec::new(),

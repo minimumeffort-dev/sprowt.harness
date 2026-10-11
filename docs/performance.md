@@ -41,13 +41,15 @@ The private diagnostics database keeps the latest 256 operation observations per
 flowchart LR
     image["Versioned base image"] --> a["Codemod A VM"]
     image --> b["Codemod B VM"]
-    a --> a1["Worker A1 HOME + task"]
-    a --> a2["Worker A2 HOME + task"]
+    a --> prepared["Verified prepared assets"]
+    prepared -->|"Private copy"| a1["Worker A1 HOME + task"]
+    prepared -->|"Private copy"| a2["Worker A2 HOME + task"]
 ```
 
 - **Base setup:** Python, package configuration and the compiled offline helper are built into the image. Reconnection checks content and repairs changed helpers.
 - **VM preparation:** Workers in one codemod share preparation. Different codemods can prepare at the same time. Shared image builds remain serialized.
 - **Muse artifacts:** The pinned binary and bridge are recopied only when guest content differs. Credentials are never cached in the guest.
+- **Project preparation:** Matching tasks copy bounded runtime/download assets into private paths. Locked `node_modules` snapshots require explicit opt-in and complete setup inputs. Current capability probes and starting baselines always rerun. See [project reuse](environments.md#reuse-across-tasks).
 
 Old retained VMs with a matching saved digest migrate missing stable setup on reconnect. Their source and runtime data remain. See [VM lifecycle](sandbox.md#vm-lifecycle).
 
@@ -63,6 +65,8 @@ A disposable VM fixture exercised boot, isolation, source export and reconnect o
 This is one trial per version, showing a modest reduction. It is not a full worker-turn benchmark; it excludes model inference, project dependency setup and shared image builds. More repeated measurements are needed to establish a stable improvement.
 
 The separate helper-corruption fixture took 171.07s including the first v2 image build. The retained-v1 migration fixture took 41.96s. These validate recovery and compatibility; their durations are not directly comparable to the cached startup fixture. [Run the disposable checks](development.md#live-checks).
+
+Prepared-asset checks use fixture contents to verify private copies, lockfile invalidation and corruption recovery without network downloads. They establish reuse behavior, not a dependency-installation speed benchmark. Actual savings depend on download size, setup commands and whether the project declares reproducible dependencies.
 
 ## If startup is slow
 

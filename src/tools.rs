@@ -245,7 +245,7 @@ pub enum Request {
     CheckTarget,
     UpdateTarget {
         target: mod_sync::Target,
-        plan: Plan,
+        plan: Box<Plan>,
     },
     FinishUpdate,
     PublishPr {
@@ -608,7 +608,7 @@ impl<'a> Dispatcher<'a> {
                         ));
                     }
                     mod_sync::hold_pr(root, self.github_cli, self.cancelled)?;
-                    mod_sync::prepare(root, &target, &plan, self.cancelled)?;
+                    mod_sync::prepare(root, &target, plan.as_ref(), self.cancelled)?;
                     Ok(Output::Done)
                 }
                 Request::FinishUpdate => {

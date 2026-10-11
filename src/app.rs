@@ -1419,8 +1419,13 @@ impl App {
             id,
             Job::start("updating from target branch", move |cancelled| {
                 drop(workers);
-                Dispatcher::new(&context, None, cancelled)
-                    .execute(Request::UpdateTarget { target, plan }, |_| {})?;
+                Dispatcher::new(&context, None, cancelled).execute(
+                    Request::UpdateTarget {
+                        target,
+                        plan: Box::new(plan),
+                    },
+                    |_| {},
+                )?;
                 Ok(git_mod::Result::Updated)
             }),
         );

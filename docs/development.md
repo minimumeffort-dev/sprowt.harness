@@ -57,6 +57,7 @@ Use the [supported provider versions](workers.md#supported-versions), sign in an
 | Retained v1 VM setup migration (no inference; local v1 image required) | `cargo test --locked retained_v1_vm_migrates_stable_helpers_and_keeps_source_and_runtime -- --ignored --nocapture` |
 | Commit and PR text (Codex only; no push) | `cargo test live_publication_writer -- --ignored --nocapture` |
 | Project preparation and setup reuse | `cargo test live_preflight_retains_evidence_and_reuses_only_proven_setup -- --ignored` |
+| Prepared assets, private HOMEs and locked dependencies (no inference or downloads) | `cargo test --locked live_prepared_assets_are_private_and_locked_dependencies_reuse_only_exact_inputs -- --ignored --nocapture` |
 | Saved check scripts and restart | `cargo test shared_check_runner_recovers_and_survives_restart -- --ignored` |
 | Task worktree isolation and cleanup | `cargo test task_worktrees_isolate_combine_restore_and_clean -- --ignored` |
 | Network and source export | `cargo test persistent_vm_checks_network_exports_source_and_reconnects -- --ignored` |
@@ -104,7 +105,7 @@ Standalone compatibility probes live in [examples](../examples). They are separa
 | Dock and full evidence views | [`ui/dock.rs`](../src/ui/dock.rs), [`ui/timeline.rs`](../src/ui/timeline.rs), [`ui/inspector.rs`](../src/ui/inspector.rs) |
 | Terminal rendering and companion | [`ui.rs`](../src/ui.rs), [`sprout.rs`](../src/sprout.rs) |
 | Plans, assignment and routing | [`plan.rs`](../src/plan.rs), [`scheduler.rs`](../src/scheduler.rs), [`router.rs`](../src/router.rs) |
-| Project preparation and baseline receipts | [`environment.rs`](../src/environment.rs) |
+| Project preparation, bounded asset reuse and baseline receipts | [`environment.rs`](../src/environment.rs), [`environment/cache.rs`](../src/environment/cache.rs), [`environment_cache.py`](../sandbox/environment_cache.py) |
 | Worker orchestration | [`worker.rs`](../src/worker.rs), [`agents.rs`](../src/agents.rs) |
 | Startup coordination and measurements | [`codex/shared_vm.rs`](../src/codex/shared_vm.rs), [`diagnostics.rs`](../src/diagnostics.rs), [`diagnostics/timing.rs`](../src/diagnostics/timing.rs) |
 | Provider connections | [`codex.rs`](../src/codex.rs), [`muse.rs`](../src/muse.rs), [`muse_bridge.py`](../src/muse_bridge.py), [`muse_transport.py`](../src/muse_transport.py) |
