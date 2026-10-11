@@ -79,6 +79,12 @@ impl State {
     }
 
     pub fn progress(&self) -> String {
+        if self.status == "stale" {
+            return format!(
+                "{} saved findings · awaiting fresh review",
+                self.issues.len()
+            );
+        }
         let resolved = self
             .issues
             .iter()

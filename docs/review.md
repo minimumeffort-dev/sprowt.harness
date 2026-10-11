@@ -83,7 +83,7 @@ The separate integration-repair handoff limit uses the same action. See [recover
 
 - **Ctrl+R** pauses active work. Reopening leaves unfinished execution and review paused, even when an authorized pass remains.
 - Queued instructions, steering, changed source/plans, foreground Git work and confirmation dialogs defer automatic advancement.
-- Source changes invalidate the old review. Its findings remain available as saved history; obsolete responses cannot replace current results.
+- Source changes invalidate the old review. Its findings are labeled **saved findings · awaiting fresh review**, so historical counts are not presented as current defects. Obsolete responses cannot replace current results.
 - Background GitHub errors stay separate from local review progress. Automatic target updates wait for a clean review; an explicit update invalidates previous evidence.
 
 SQLite saves finding IDs, reports, decisions, fingerprints and repair budgets. Legacy findings are imported once and need fresh triage before another repair. Closing retains history; deleting the codemod removes it.
