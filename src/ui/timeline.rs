@@ -197,7 +197,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option
                 "│ "
             };
             // The side pane owns task evidence; expanded rows only identify the worker.
-            let limit = if split && matches!(item.key, Key::Task(_) | Key::Repair(_)) {
+            let limit = if split && matches!(item.key, Key::Task(_)) {
                 1
             } else {
                 usize::MAX
@@ -330,7 +330,7 @@ fn draw_inspector(frame: &mut Frame, app: &mut App, items: &[Item], area: Rect) 
         if selected.is_some_and(|i| i.inspect.is_some() || i.key == Key::Plan) {
             keys.push(("↵", "full view"));
         }
-        if selected.is_some_and(|i| matches!(i.key, Key::Task(_) | Key::Repair(_) | Key::Checks)) {
+        if selected.is_some_and(|i| matches!(i.key, Key::Task(_) | Key::Checks)) {
             keys.push((
                 "e",
                 if app.show_evidence {
@@ -367,7 +367,7 @@ fn draw_inspector(frame: &mut Frame, app: &mut App, items: &[Item], area: Rect) 
 
 fn inspector_lines(app: &App, item: &Item, width: u16) -> Vec<Line<'static>> {
     let mut lines = match item.key {
-        Key::Task(id) | Key::Repair(id) => tasks::task_lines(app, id, width),
+        Key::Task(id) => tasks::task_lines(app, id, width),
         Key::Checks => inspector::check_summary(app, width),
         Key::Review => findings::finding_lines(app, width),
         Key::Failure(_) => {

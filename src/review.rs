@@ -177,7 +177,7 @@ impl Report {
         if !["clean", "findings", "blocked"].contains(&report.status.as_str())
             || report.summary.trim().is_empty()
             || report.summary.len() > 8000
-            || !report.complete
+            || (!report.complete && report.status != "blocked")
             || report.findings.len() > 64
             || report.assessments.len() > 256
             || (report.status == "findings" && report.findings.is_empty())

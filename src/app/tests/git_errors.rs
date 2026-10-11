@@ -103,15 +103,139 @@ fn successful_git_operation_clears_only_its_own_failure() {
     );
     assert!(failed.contains("Merge save failed"), "{failed}");
 
+    let (resume, waiting) = std::sync::mpsc::channel();
     app.git_jobs.insert(
         id,
-        Job::start("saving verified merge", |_| {
+        Job::start("saving verified merge", move |_| {
+            waiting.recv().unwrap();
             Ok(git_mod::Result::UpdateFinished)
         }),
     );
+    app.poll_git_jobs().unwrap();
+    assert_eq!(
+        app.worker_error(),
+        Some("Merge save failed Work is retained; Ctrl+R retries.")
+    );
+    resume.send(()).unwrap();
     wait_git(&mut app);
     let recovered = rows(&screen(&mut app, 120, 36)).join("\n");
     assert!(app.worker_error().is_none(), "{recovered}");
     assert!(!recovered.contains("Merge save failed"), "{recovered}");
+    assert_eq!(app.input.lines(), ["keep this draft"]);
+}
+
+#[test]
+fn git_setup_retry_clears_the_initial_failure_even_when_its_label_changes() {
+    for saved in [false, true] {
+        let (_data, mut app, root) = execution_app();
+        commit_project(&app.project);
+        app.mods[0].git_root = Some(root.clone());
+        let id = app.mods[0].id;
+        if saved {
+            std::fs::write(root.join("project-setup"), "saved").unwrap();
+        }
+        fail_job(
+            &mut app,
+            id,
+            if saved {
+                "adopting saved codemod"
+            } else {
+                "checking project branch"
+            },
+            "Git setup failed",
+        );
+        assert!(app.worker_error().unwrap().contains("Git setup failed"));
+        key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
+
+        let visible = rows(&screen(&mut app, 120, 36)).join("\n");
+        assert!(app.worker_error().is_none(), "{visible}");
+        assert!(!visible.contains("Git setup failed"), "{visible}");
+        assert_eq!(app.git_state().unwrap().phase, "ready");
+        assert!(git_mod::checkout(&root).join("hello.sh").exists());
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(app.workers.is_empty());
+    }
+}
+
+#[test]
+fn publication_writer_recovery_keeps_the_publish_error_until_publication_succeeds() {
+    let (_data, mut app, root) = execution_app();
+    commit_project(&app.project);
+    git_mod::prepare(
+        &app.project,
+        &root,
+        &std::sync::atomic::AtomicBool::new(false),
+    )
+    .unwrap();
+    let id = app.mods[0].id;
+    app.mods[0].git_root = Some(root.clone());
+    app.git_states.insert(id, git_mod::load(&root).unwrap());
+    mark_review_clean(&mut app);
+    app.review = Some(workspace::review(&root).unwrap());
+    let draft = crate::publication::tests::seed(&root, &app.mods[0].description);
+    fail_job(&mut app, id, "writing commit and PR text", "Writer failed");
+    assert_eq!(
+        app.worker_error(),
+        Some("Writer failed Work is retained; Ctrl+S retries.")
+    );
+    fail_job(&mut app, id, "publishing PR", "Push failed");
+    app.git_jobs.insert(
+        id,
+        Job::start("writing commit and PR text", move |_| {
+            Ok(git_mod::Result::PublicationDraft(draft))
+        }),
+    );
+    wait_git(&mut app);
+    assert!(matches!(app.view, View::Publish));
+    assert_eq!(
+        app.worker_error(),
+        Some("Push failed Work is retained; Ctrl+R retries.")
+    );
+    app.git_jobs.insert(
+        id,
+        Job::start("publishing PR", |_| Ok(git_mod::Result::Published)),
+    );
+    wait_git(&mut app);
+    assert!(app.worker_error().is_none());
+    key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+    assert_eq!(app.input.lines(), ["keep this draft"]);
+}
+
+#[test]
+fn saving_a_merge_keeps_recovery_for_an_unresolved_update_failure() {
+    let (data, project, root, target, plan) = crate::mod_sync::tests::fixture();
+    let flag = std::sync::atomic::AtomicBool::new(false);
+    crate::mod_sync::prepare(&root, &target, &plan, &flag).unwrap();
+    let mut update = crate::mod_sync::load(&root).unwrap().unwrap();
+    update.installed = true;
+    update.imported = true;
+    crate::mod_sync::save(&root, &update).unwrap();
+    let mut store = data.store();
+    let project_id = store.load_project(&project).unwrap().id;
+    let code_mod = store.create_mod(project_id, "Recover update").unwrap();
+    let id = code_mod.id;
+    store.save_git_root(id, &root).unwrap();
+    store.save_draft(id, "keep this draft").unwrap();
+    let mut app = App::load(project, false, store).unwrap();
+    fail_job(&mut app, id, "updating from target branch", "Update failed");
+    fail_job(&mut app, id, "saving verified merge", "Merge save failed");
+    let fingerprint = workspace::review(&root).unwrap().fingerprint;
+    app.git_jobs.insert(
+        id,
+        Job::start("saving verified merge", move |cancelled| {
+            crate::mod_sync::finish(&root, &fingerprint, cancelled)?;
+            Ok(git_mod::Result::UpdateFinished)
+        }),
+    );
+    wait_git(&mut app);
+
+    assert_eq!(
+        app.worker_error(),
+        Some("Update failed Work is retained; Ctrl+R retries.")
+    );
+    assert_eq!(app.action_dock().primary, Some(Action::RetryGit));
+    let visible = rows(&screen(&mut app, 120, 36)).join("\n");
+    assert!(visible.contains("Update failed"), "{visible}");
+    assert!(!visible.contains("Merge save failed"), "{visible}");
     assert_eq!(app.input.lines(), ["keep this draft"]);
 }

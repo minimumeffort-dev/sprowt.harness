@@ -209,6 +209,96 @@ fn workbench_selected_repair_keeps_successful_evidence_after_completion() {
 }
 
 #[test]
+fn overview_inspected_repair_keeps_result_when_implementation_finishes() {
+    let (_data, mut app, _) = execution_app();
+    let execution = app.mods[0].execution.as_mut().unwrap();
+    execution.status = "running".into();
+    execution.checks.clear();
+    let run = &mut execution.tasks[0];
+    let source = run.source.clone();
+    let id = run.id;
+    run.status = "checking".into();
+    run.check_repair = true;
+    run.checks[0].exit_code = Some(1);
+    run.checks[0].output = "Repair has not passed yet".into();
+    let mut passed = run.checks.clone();
+    passed[0].exit_code = Some(0);
+    passed[0].output = "Repair passed".into();
+    let record = app.store.worker(app.mods[0].id).unwrap();
+    let mut worker =
+        Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+    worker.role = Role::Executor;
+    worker.status = Status::Checking;
+    worker.bind_test_task(source.clone());
+    app.mods[0].execution.as_mut().unwrap().tasks[0].worker = Some(worker.id);
+    app.workers.insert(worker.id, worker);
+    let following = rows(&overview_screen(&mut app, 160, 46)).join("\n");
+    assert_eq!(app.timeline.selected, Some(Key::Task(id)), "{following}");
+    assert!(!app.timeline.held);
+    assert!(!app.timeline.expanded.contains_key(&Key::Build));
+    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+    app.show_evidence = true;
+    let before = rows(&overview_screen(&mut app, 160, 46)).join("\n");
+    assert!(before.contains("Repair has not passed yet"));
+    assert_eq!(app.timeline.focus, Focus::Inspector);
+    assert!(app.timeline.held);
+
+    let mod_id = app.mods[0].id;
+    app.store
+        .finish_task(mod_id, &source, "done", "Repair passed", &passed)
+        .unwrap();
+    app.mods[0].execution = app.store.execution(mod_id).unwrap();
+    app.workers.values_mut().next().unwrap().status = Status::Complete;
+    let after = rows(&overview_screen(&mut app, 160, 46)).join("\n");
+    assert!(after.contains("Repair passed"), "{after}");
+    assert!(after.contains("✓ prints hello"));
+    assert!(!after.contains("no longer in the current plan"));
+    assert_eq!(app.timeline.selected, Some(Key::Task(id)));
+    assert_eq!(app.timeline.focus, Focus::Inspector);
+    assert!(!app.timeline.expanded.contains_key(&Key::Build));
+    assert_eq!(app.input.lines(), ["keep this draft"]);
+
+    let mut peer = app.mods[0]
+        .planning
+        .as_ref()
+        .unwrap()
+        .plan
+        .as_ref()
+        .unwrap()
+        .tasks[0]
+        .clone();
+    peer.id = "completed-peer".into();
+    peer.title = "Another completed task".into();
+    let mut peer_run = app.mods[0].execution.as_ref().unwrap().tasks[0].clone();
+    peer_run.id += 1;
+    peer_run.task_id = peer.id.clone();
+    peer_run.source = crate::store::task_source(peer_run.id, 1);
+    app.mods[0]
+        .planning
+        .as_mut()
+        .unwrap()
+        .plan
+        .as_mut()
+        .unwrap()
+        .tasks
+        .push(peer);
+    app.mods[0].execution.as_mut().unwrap().tasks.push(peer_run);
+    app.timeline.expanded.insert(Key::Build, false);
+    let collapsed = rows(&overview_screen(&mut app, 160, 46)).join("\n");
+    assert!(collapsed.contains("Repair passed") && collapsed.contains("✓ prints hello"));
+    assert!(!collapsed.contains("Another completed task"));
+    assert_eq!(app.timeline.expanded.get(&Key::Build), Some(&false));
+
+    key(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
+    screen(&mut app, 160, 46);
+    click(&mut app, Control::Tab(EvidenceTab::Checks));
+    let checks = rows(&screen(&mut app, 160, 46)).join("\n");
+    assert!(checks.contains("✓ prints hello") && checks.contains("Repair passed"));
+    assert_eq!(app.timeline.selected, Some(Key::Task(id)));
+}
+
+#[test]
 fn workbench_narrow_tabs_and_task_drilldown_are_accessible() {
     let (_data, mut app, _) = execution_app();
     let id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;

@@ -20,6 +20,8 @@ A fresh reviewer inspects correctness and structural quality after combined chec
 
 The same fix action remains available after a PR has been published. New local work shows **PR open · update pending** until it passes checks and review and you confirm the update.
 
+If inspection cannot finish, the review stays blocked and keeps the reviewer's explanation in its saved report. Publication waits for a complete, clean review. Inspect the reason, then press **Ctrl+E** to retry review.
+
 ## Understand a finding
 
 Each finding keeps a stable **R1, R2, …** identity across wording and line changes. Open findings appear first; resolved and dismissed findings remain in history.

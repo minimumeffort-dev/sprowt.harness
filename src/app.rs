@@ -26,6 +26,7 @@ use crate::{
 
 mod actions;
 pub mod controls;
+mod git_errors;
 mod inspector;
 mod scroll;
 mod state;
@@ -91,6 +92,7 @@ pub struct App {
     auto_reviews: BTreeSet<i64>,
     executing_mods: BTreeSet<i64>,
     git_jobs: BTreeMap<i64, Job>,
+    git_errors: git_errors::Errors,
     project_job: Option<Job>,
     project_check: Option<Instant>,
     project_error: Option<String>,
@@ -215,6 +217,7 @@ impl App {
             auto_reviews: BTreeSet::new(),
             executing_mods: BTreeSet::new(),
             git_jobs: BTreeMap::new(),
+            git_errors: git_errors::Errors::default(),
             project_job: None,
             project_check: None,
             project_error: None,
@@ -1611,6 +1614,7 @@ impl App {
                     .values()
                     .filter(|w| w.mod_id == m.id)
                     .find_map(|w| w.error.as_deref())
+                    .or_else(|| self.git_errors.current(m.id))
             })
             .or(self.notice.as_deref())
     }
@@ -1705,21 +1709,28 @@ impl App {
                 let context = Context::harness(&self.project, &self.mods[active]);
                 self.git_jobs.insert(
                     id,
-                    Job::start("setting up Git", move |cancelled| {
-                        Dispatcher::new(&context, None, cancelled).execute(
-                            if saved {
-                                Request::AdoptSnapshot
-                            } else {
-                                Request::InitializeProject
-                            },
-                            |_| {},
-                        )?;
-                        Ok(if saved {
-                            git_mod::Result::Adopted
+                    Job::start(
+                        if saved {
+                            "adopting saved codemod"
                         } else {
-                            git_mod::Result::Prepared
-                        })
-                    }),
+                            "setting up Git"
+                        },
+                        move |cancelled| {
+                            Dispatcher::new(&context, None, cancelled).execute(
+                                if saved {
+                                    Request::AdoptSnapshot
+                                } else {
+                                    Request::InitializeProject
+                                },
+                                |_| {},
+                            )?;
+                            Ok(if saved {
+                                git_mod::Result::Adopted
+                            } else {
+                                git_mod::Result::Prepared
+                            })
+                        },
+                    ),
                 );
                 return Ok(());
             }
@@ -2323,12 +2334,17 @@ impl App {
         let context = Context::harness(&self.project, code_mod);
         let id = code_mod.id;
         if let Err(error) = crate::publication::load(&root, &code_mod.description) {
-            self.notice = Some(format!("{error} Preview the PR again before publishing."));
+            self.git_errors.record(
+                id,
+                "writing commit and PR text",
+                format!("{error} Preview the PR again before publishing."),
+            );
             self.view = View::Chat;
             return;
         }
         if let Err(error) = git_mod::mark_publishing(&root) {
-            self.notice = Some(error.to_string());
+            self.git_errors
+                .record(id, "publishing PR", error.to_string());
             return;
         }
         let keys = self
@@ -2728,7 +2744,7 @@ impl App {
             .filter_map(|(id, job)| job.poll().map(|result| (*id, result)))
             .collect::<Vec<_>>();
         for (id, result) in finished {
-            let label = self.git_jobs.remove(&id).map(|job| job.label);
+            let label = self.git_jobs.remove(&id).unwrap().label;
             let Some(index) = self.mods.iter().position(|m| m.id == id) else {
                 continue;
             };
@@ -2765,6 +2781,17 @@ impl App {
                 }
                 self.git_states.insert(id, state);
             }
+            if result.is_ok() {
+                self.git_errors.clear(id, label);
+                if matches!(
+                    label,
+                    "updating from target branch" | "saving verified merge"
+                ) && !self.git_errors.contains(id, "updating from target branch")
+                    && !self.git_errors.contains(id, "saving verified merge")
+                {
+                    self.update_errors.remove(&id);
+                }
+            }
             match result {
                 Ok(git_mod::Result::ProjectSynced) => unreachable!(),
                 Ok(git_mod::Result::PublicationDraft(draft)) => {
@@ -2772,7 +2799,6 @@ impl App {
                         self.publication = Some(draft);
                         self.scroll.offset = 0;
                         self.view = View::Publish;
-                        self.notice = None;
                     }
                 }
                 Ok(git_mod::Result::Adopted) => {
@@ -2784,7 +2810,6 @@ impl App {
                         self.store.execution_status(id, "review")?;
                         self.mods[index].execution = self.store.execution(id)?;
                     }
-                    self.notice = None;
                     if root.join("close-request").exists() {
                         git_mod::mark_closing(&root, false, false)
                             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -2795,7 +2820,6 @@ impl App {
                     }
                 }
                 Ok(git_mod::Result::RepositoryConnected) => {
-                    self.notice = None;
                     if self.current_mod().is_some_and(|m| m.id == id) {
                         if self.git_states.get(&id).is_some_and(|state| state.closing) {
                             self.finish_mod(index, false, false)?;
@@ -2812,13 +2836,11 @@ impl App {
                     {
                         self.auto_plans.insert(id);
                     }
-                    self.notice = None;
                 }
                 Ok(git_mod::Result::Refreshed) => {
                     self.store.restart_plan(id)?;
                     self.mods[index].planning = self.store.planning(id)?;
                     self.auto_plans.insert(id);
-                    self.notice = None;
                 }
                 Ok(git_mod::Result::TargetChecked {
                     target,
@@ -2861,11 +2883,9 @@ impl App {
                     let state = self.store.load_project(&self.project)?;
                     self.mods[index] = state.mods.into_iter().find(|m| m.id == id).unwrap();
                     self.start_worker(index, Role::Executor)?;
-                    self.notice = None;
                 }
                 Ok(git_mod::Result::UpdateFinished) => {
                     self.target_checks.remove(&id);
-                    self.notice = None;
                 }
                 Ok(git_mod::Result::Snapshot) => {
                     let plan = self.mods[index]
@@ -2899,15 +2919,12 @@ impl App {
                     }
                 }
                 Ok(git_mod::Result::Pruned) => {}
-                Ok(git_mod::Result::Published) => {
-                    self.notice = None;
-                }
+                Ok(git_mod::Result::Published) => {}
                 Ok(git_mod::Result::Continued) => {
                     self.finish_edit(index)?;
                     git_mod::finish_continuation(&root)
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                     self.git_states.insert(id, git_mod::load(&root).unwrap());
-                    self.notice = None;
                 }
                 Ok(git_mod::Result::Reopened) => {
                     self.store.reopen_mod(id)?;
@@ -2916,7 +2933,6 @@ impl App {
                         self.show_closed = false;
                         self.restore_input();
                     }
-                    self.notice = None;
                 }
                 Ok(git_mod::Result::Closed) => {
                     self.target_errors.remove(&id);
@@ -2933,12 +2949,12 @@ impl App {
                         };
                         self.restore_input();
                     }
-                    self.notice = None;
                 }
                 Ok(git_mod::Result::Removed) => {
                     let was_active = self.current_mod().is_some_and(|m| m.id == id);
                     let selected = self.store.delete_mod(self.project_id, id)?;
                     self.mods.remove(index);
+                    self.git_errors.remove(id);
                     self.git_states.remove(&id);
                     self.target_errors.remove(&id);
                     self.active = self.mods.iter().position(|m| Some(m.id) == selected);
@@ -2964,11 +2980,17 @@ impl App {
                         .filter(|error| error.kind() != io::ErrorKind::NotFound)
                         .map(|error| error.to_string());
                 }
-                Err(error) if label == Some("writing commit and PR text") => {
-                    self.publish_after_review = false;
-                    self.notice = Some(format!("{error} Work is retained; Ctrl+S retries."));
+                Err(error) if label == "writing commit and PR text" => {
+                    if self.current_mod().is_some_and(|m| m.id == id) {
+                        self.publish_after_review = false;
+                    }
+                    self.git_errors.record(
+                        id,
+                        label,
+                        format!("{error} Work is retained; Ctrl+S retries."),
+                    );
                 }
-                Err(error) if label == Some("checking target branch") => {
+                Err(error) if label == "checking target branch" => {
                     self.target_errors.insert(id, error.to_string());
                     if self.current_mod().is_some_and(|m| m.id == id) {
                         self.publish_after_review = false;
@@ -2977,7 +2999,7 @@ impl App {
                 Err(error) => {
                     if matches!(
                         label,
-                        Some("updating from target branch" | "saving verified merge")
+                        "updating from target branch" | "saving verified merge"
                     ) {
                         self.update_errors.insert(id);
                     }
@@ -2986,16 +3008,15 @@ impl App {
                     }
                     let detail = error.to_string();
                     let detail = detail.trim_end_matches(" Work is retained.");
-                    self.notice = Some(if error.kind() == io::ErrorKind::Unsupported {
-                        error.to_string()
-                    } else if self.current_mod().is_some_and(|m| m.id == id) {
-                        format!("{detail} Work is retained; Ctrl+R retries.")
-                    } else {
-                        format!(
-                            "{}: {detail} Work is retained; select this mod with Ctrl+P to retry.",
-                            self.mods[index].name
-                        )
-                    });
+                    self.git_errors.record(
+                        id,
+                        label,
+                        if error.kind() == io::ErrorKind::Unsupported {
+                            error.to_string()
+                        } else {
+                            format!("{detail} Work is retained; Ctrl+R retries.")
+                        },
+                    );
                 }
             }
         }
@@ -3752,8 +3773,7 @@ mod tests {
             assert!(app.mods[0].execution.as_ref().unwrap().complete());
             assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "review");
             assert_eq!(
-                app.notice
-                    .as_ref()
+                app.worker_error()
                     .unwrap()
                     .matches("Work is retained")
                     .count(),
@@ -6757,8 +6777,8 @@ mod tests {
         for width in [80, 124, 160] {
             app.view = View::Chat;
             overview_screen(&mut app, width, 42);
-            app.timeline.selected = Some(Key::Repair(id));
-            app.timeline.expanded.insert(Key::Repair(id), true);
+            app.timeline.selected = Some(Key::Task(id));
+            app.timeline.expanded.insert(Key::Task(id), true);
             let preview = overview_screen(&mut app, width, 42);
             let text = rows(&preview).join("\n");
             assert!(!text.contains("Earlier repair passed") && !text.contains("task complete"));
@@ -6800,7 +6820,7 @@ mod tests {
         assert!(matches!(app.view, View::Chat));
         // Removed rows cannot activate their former action or submit the draft.
         app.timeline.focus = timeline::Focus::Timeline;
-        app.timeline.selected = Some(Key::Repair(id));
+        app.timeline.selected = Some(Key::Task(-1));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(matches!(app.view, View::Chat));
         assert!(queued(&app).is_empty());
@@ -6838,7 +6858,7 @@ mod tests {
                 .iter()
                 .any(|s| s.contains("preserved evidence"))
         );
-        let repair = items.iter().find(|i| i.key == Key::Repair(id)).unwrap();
+        let repair = items.iter().find(|i| i.key == Key::Task(id)).unwrap();
         assert!(repair.state == State::Waiting && repair.title.contains("Waiting for a worker"));
         assert!(
             !repair
@@ -7481,7 +7501,7 @@ mod tests {
         assert_eq!(app.timeline.focus, Focus::Inspector);
         assert!(app.timeline.held);
         // A vanished row must not open a different stage or send the draft.
-        app.timeline.selected = Some(Key::Repair(-1));
+        app.timeline.selected = Some(Key::Task(-1));
         assert!(
             rows(&overview_screen(&mut app, 160, 45))
                 .join("\n")
@@ -7494,7 +7514,7 @@ mod tests {
         overview_screen(&mut app, 160, 45);
         assert_eq!(app.timeline.focus, Focus::Composer);
         assert!(!app.timeline.held);
-        assert_ne!(app.timeline.selected, Some(Key::Repair(-1)));
+        assert_ne!(app.timeline.selected, Some(Key::Task(-1)));
         assert_eq!(app.timeline.inspector.offset, 0);
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
@@ -7983,7 +8003,7 @@ mod tests {
         std::fs::write(root.join("work/hello.sh"), "changed after preview\n").unwrap();
         app.start_publication(0);
         assert!(app.git_jobs.is_empty());
-        assert!(app.notice.as_ref().unwrap().contains("outdated"));
+        assert!(app.worker_error().unwrap().contains("outdated"));
     }
 
     #[test]

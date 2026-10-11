@@ -77,7 +77,7 @@ fn summary(app: &App, item: &Item, d: &mut Document) {
         checks(app, item, d, false);
         return;
     }
-    if let Key::Task(id) | Key::Repair(id) = item.key {
+    if let Key::Task(id) = item.key {
         task(app, id, d);
         return;
     }
@@ -110,18 +110,7 @@ fn summary(app: &App, item: &Item, d: &mut Document) {
                     .and_then(|m| m.execution.as_ref())
                     .and_then(|e| e.tasks.iter().find(|r| r.task_id == planned.id));
                 let task = run.and_then(|r| app.inspect_task(r.id));
-                let key = run.map_or(Key::Planned(i), |r| {
-                    if r.status != "done"
-                        && (r.check_repair
-                            || r.review_feedback.is_some()
-                            || r.conflict.is_some()
-                            || !r.verification_feedback.is_empty())
-                    {
-                        Key::Repair(r.id)
-                    } else {
-                        Key::Task(r.id)
-                    }
-                });
+                let key = run.map_or(Key::Planned(i), |r| Key::Task(r.id));
                 d.control(
                     format!("{}. {}", i + 1, planned.title),
                     Control::Drill(key),
@@ -411,7 +400,7 @@ fn review(app: &App, d: &mut Document) {
 
 fn checks(app: &App, item: &Item, d: &mut Document, detailed: bool) {
     let task = match item.key {
-        Key::Task(id) | Key::Repair(id) => app.inspect_task(id),
+        Key::Task(id) => app.inspect_task(id),
         _ => None,
     };
     if let Some(task) = task {
@@ -514,7 +503,7 @@ fn changes(app: &App, item: &Item, d: &mut Document) {
         return;
     };
     let task = match item.key {
-        Key::Task(id) | Key::Repair(id) => app.inspect_task(id).map(|t| t.task),
+        Key::Task(id) => app.inspect_task(id).map(|t| t.task),
         Key::Planned(index) => plan.tasks.get(index),
         _ => None,
     };
@@ -544,7 +533,7 @@ fn activity(app: &App, item: &Item, d: &mut Document) {
     d.muted("Saved messages · latest first");
     let Some(m) = app.current_mod() else { return };
     let task = match item.key {
-        Key::Task(id) | Key::Repair(id) | Key::Failure(id) => Some(id),
+        Key::Task(id) | Key::Failure(id) => Some(id),
         _ => None,
     };
     let messages: Vec<_> = m

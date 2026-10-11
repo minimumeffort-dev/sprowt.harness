@@ -65,6 +65,8 @@ Following current work <───── Ctrl+L ──────── Explorin
 
 The stage rail stays compact. Expand Implementation with **Space** to inspect individual tasks, or use **Timeline overview**. Task evidence shows the worker, model, latest update and dependencies. A repair can have a separate **Previous failure** row containing its saved evidence.
 
+Keep a repair selected as it finishes: its evidence changes to the completed result while your selected tab, focus and draft stay in place.
+
 **Latest update** belongs to the current attempt. Earlier narration remains in Activity. Worker elapsed time measures the current connected turn; last activity measures observed events. Neither is a completion estimate or proof of progress.
 
 ## Details

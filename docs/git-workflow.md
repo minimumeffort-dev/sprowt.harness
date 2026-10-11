@@ -42,6 +42,16 @@ Background failures show **Sync needs attention** separately from local work. Op
 
 Retrying a sync warning does not invalidate the current review or start a source update. Foreground setup, publication and integration failures keep their own recovery actions.
 
+### Codemod operation failures
+
+Git failures stay with the codemod and operation that failed. Switch codemods with **Ctrl+P** to inspect another codemod's error; returning keeps its error and draft. A successful operation clears its own error. Other failures remain, with the latest shown in the dock.
+
+| Failed operation | Recovery |
+| --- | --- |
+| Commit and PR text | **Ctrl+S** generates a new preview |
+| Setup, publication or saved merge | **Ctrl+R** retries from saved work |
+| Project or target sync | **Ctrl+G → s · Sync details**, then **Ctrl+U** |
+
 ## When another codemod merges
 
 Build codemods concurrently and merge PRs one at a time on GitHub. The harness checks each PR target every 30 seconds.

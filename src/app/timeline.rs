@@ -12,7 +12,6 @@ pub enum Key {
     Planned(usize),
     Task(i64),
     Failure(i64),
-    Repair(i64),
     Checks,
     Review,
     Publish,
@@ -341,11 +340,7 @@ impl App {
                     || run.conflict.is_some()
                     || !run.verification_feedback.is_empty());
             let mut item = Item::new(
-                if repairing {
-                    Key::Repair(run.id)
-                } else {
-                    Key::Task(run.id)
-                },
+                Key::Task(run.id),
                 format!(
                     "{}{}. {} · {}",
                     if repairing { "Repair " } else { "" },
@@ -429,7 +424,10 @@ impl App {
                     repairs.push(failure);
                 }
                 repairs.push(item);
-            } else if show_tasks || matches!(state, Active | Attention) {
+            } else if show_tasks
+                || matches!(state, Active | Attention)
+                || self.timeline.held && self.timeline.selected == Some(item.key)
+            {
                 items.push(item);
             }
         }
@@ -682,10 +680,7 @@ impl App {
                         }
                 }
                 KeyCode::Char('e')
-                    if matches!(
-                        self.timeline.selected,
-                        Some(Key::Task(_) | Key::Repair(_) | Key::Checks)
-                    ) =>
+                    if matches!(self.timeline.selected, Some(Key::Task(_) | Key::Checks)) =>
                 {
                     self.show_evidence = !self.show_evidence
                 }

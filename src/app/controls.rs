@@ -117,7 +117,7 @@ impl App {
                 self.timeline.overview = !self.timeline.overview;
                 if matches!(
                     self.timeline.selected,
-                    Some(Key::Task(_) | Key::Planned(_) | Key::Repair(_) | Key::Failure(_))
+                    Some(Key::Task(_) | Key::Planned(_) | Key::Failure(_))
                 ) {
                     self.timeline.expanded.insert(Key::Build, true);
                 }
@@ -127,10 +127,7 @@ impl App {
                 self.timeline.reveal = true;
             }
             Control::Stage(key) => {
-                if matches!(
-                    key,
-                    Key::Task(_) | Key::Planned(_) | Key::Repair(_) | Key::Failure(_)
-                ) {
+                if matches!(key, Key::Task(_) | Key::Planned(_) | Key::Failure(_)) {
                     self.timeline.expanded.insert(Key::Build, true);
                 }
                 if self.timeline_items().iter().any(|item| item.key == key) {
