@@ -25,6 +25,8 @@ flowchart LR
 
 Stalled repairs stop with evidence and a next action. Reopening restores saved work; you choose when unfinished work resumes.
 
+Agents receive the same [pinned coding skills](docs/skills.md) on new and resumed work. Role instructions cover planning, implementation and correctness plus structural review.
+
 ## Run it
 
 Requires Apple silicon, macOS 26+, Rust, Apple Container and the supported Codex CLI. Muse is optional. Follow the [quickstart](docs/quickstart.md) for versions, login and first-time setup.

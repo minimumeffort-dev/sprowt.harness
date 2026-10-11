@@ -30,6 +30,9 @@ const EXPORT_LIMIT: usize = 512 * 1024 * 1024;
 static BUILD: Mutex<()> = Mutex::new(());
 static PROCESS: AtomicU64 = AtomicU64::new(0);
 
+#[cfg(test)]
+mod skills_tests;
+
 pub struct Sandbox {
     root: PathBuf,
     name: String,
@@ -48,6 +51,39 @@ impl Sandbox {
     }
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    pub(crate) fn prepare_skills(&self, cancelled: &AtomicBool) -> io::Result<()> {
+        let destination = crate::skills::guest_root();
+        if self.guest_exists(&format!("{destination}/.ready"))? {
+            return Ok(());
+        }
+        let archive = self.root.join("skills.tar");
+        crate::skills::archive(fs::File::create(&archive)?)?;
+        private(&archive, 0o600)?;
+        let pending = format!("{destination}.pending");
+        let result = (|| {
+            self.guest(&["/bin/rm", "-rf", &pending], cancelled)?;
+            self.guest(&["/bin/mkdir", "-p", &pending], cancelled)?;
+            self.copy_in(&archive, "/opt/sprowt-transfer/skills.tar", cancelled)?;
+            self.guest(
+                &[
+                    "/bin/tar",
+                    "-xf",
+                    "/opt/sprowt-transfer/skills.tar",
+                    "-C",
+                    &pending,
+                ],
+                cancelled,
+            )?;
+            self.guest(&["/usr/bin/touch", &format!("{pending}/.ready")], cancelled)?;
+            self.guest(&["/bin/chmod", "-R", "a-w", &pending], cancelled)?;
+            self.guest(&["/bin/rm", "-rf", &destination], cancelled)?;
+            self.guest(&["/bin/mv", &pending, &destination], cancelled)?;
+            self.guest(&["/bin/rm", "/opt/sprowt-transfer/skills.tar"], cancelled)
+        })();
+        fs::remove_file(archive)?;
+        result
     }
 
     pub(crate) fn prepare_muse(
@@ -84,6 +120,7 @@ impl Sandbox {
             vec![json!({"path":{"type":"special","value":{"kind":"minimal"}},"access":"read"})];
         entries.extend([("/proc", "read"), ("/opt/sprowt-muse", "read"), ("/opt/sprowt-checks", "read"), (cwd.as_str(), "write"), (home.as_str(), "write"), ("/tmp", "write")]
             .map(|(path,access)| json!({"path":{"type":"path","path":format!("file://{path}")},"access":access})));
+        entries.push(json!({"path":{"type":"path","path":format!("file://{}", crate::skills::guest_root())},"access":"read"}));
         entries.push(
             json!({"path":{"type":"path","path":format!("file://{cwd}/.git")},"access":"read"}),
         );

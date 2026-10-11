@@ -11,7 +11,7 @@ use std::{
 };
 
 use directories::ProjectDirs;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use crate::{
     codex::{Action, Event, Resume, SharedVm},
@@ -315,15 +315,17 @@ fn serve_connection(
                             evidence: None,
                         },
                     });
-                    let prompt = format!(
-                        "{instructions}\nAccepted user instructions: {}\n{text}\nController preflight evidence:\n{preflight}",
-                        accepted.join("\n\n")
-                    );
                     (
                         "turn/start",
                         source.clone(),
-                        json!({"source":source,"text":prompt,"config":config,"state":state,
-                            "tools":tools::advertised(context),"schema":report_schema}),
+                        turn_params(
+                            instructions,
+                            accepted,
+                            &text,
+                            &preflight,
+                            json!({"source":source,"config":config,"state":state,
+                                "tools":tools::advertised(context),"schema":report_schema}),
+                        ),
                     )
                 }
                 Action::Steer {
@@ -440,5 +442,63 @@ fn serve_connection(
             return Err(error);
         }
         thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn turn_params(
+    instructions: &str,
+    accepted: &[String],
+    text: &str,
+    preflight: &str,
+    mut params: Value,
+) -> Value {
+    params["text"] = json!(format!(
+        "{instructions}\nAccepted user instructions: {}\n{text}\nController preflight evidence:\n{preflight}",
+        accepted.join("\n\n")
+    ));
+    params
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_muse_turn_includes_current_skills_and_preserves_accepted_instructions() {
+        let policy = crate::skills::instructions(
+            crate::plan::Role::Executor,
+            std::path::Path::new(&crate::skills::guest_root()),
+        );
+        for accepted in [
+            vec![],
+            vec![
+                "Keep the saved draft".into(),
+                "Preserve the public API".into(),
+            ],
+        ] {
+            let base = json!({"source":"task:1:2", "state":"saved.json", "config":{"cwd":"/tasks/1"},"schema":{"required":["status"]},"tools":[{"name":"run_task_checks"}]});
+            let params = turn_params(
+                &policy,
+                &accepted,
+                "Repair the assigned task",
+                "baseline passed",
+                base.clone(),
+            );
+            let text = params["text"].as_str().unwrap();
+            assert!(text.starts_with(&policy));
+            assert!(!text.contains("{{SKILLS_ROOT}}"));
+            assert!(text.contains("/upstream/ponytail/skills/ponytail/SKILL.md"));
+            assert!(text.contains(
+                "/upstream/cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md"
+            ));
+            assert!(text.contains("Repair the assigned task"));
+            assert!(text.contains("baseline passed"));
+            for instruction in accepted {
+                assert!(text.contains(&instruction));
+            }
+            for key in ["source", "state", "config", "schema", "tools"] {
+                assert_eq!(params[key], base[key]);
+            }
+        }
     }
 }

@@ -49,6 +49,7 @@ Source is copied into the VM. Host project folders and Git credentials are not m
 | Reviewer | Fresh assessment, finding triage and explicit closure decisions | [Review](review.md) |
 | Publication writer | Commit title, PR title and summary from the reviewed diff | [Publication](git-workflow.md#commit-and-pr-text) |
 | Tool dispatcher | Caller validation and host/guest operation boundaries | [Tools](tools.md) |
+| Skill bundle | Pinned instructions, role policies and read-only host/VM delivery | [Coding skills](skills.md) |
 | Store and Git adapters | Durable state, recovery checkpoints and confirmed publication | [Local state](local-state.md), [Git workflow](git-workflow.md) |
 
 The controller serializes checkpoints, integration, checks and system package installation. Independent model turns and ordinary task commands can run concurrently. Review repairs run one owner at a time.

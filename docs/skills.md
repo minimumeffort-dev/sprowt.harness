@@ -2,7 +2,7 @@
 
 # Coding skills
 
-Harness development uses pinned Ponytail, pstack and Thermo-Nuclear review instructions. The upstream files stay unchanged. Sprowt's [compatibility policy](../skills/POLICY.md) defines how they work with our roles, permissions and reports.
+Harness development and harness agents use pinned Ponytail, pstack and Thermo-Nuclear review instructions. The upstream files stay unchanged. Sprowt's [compatibility policy](../skills/POLICY.md) defines how they work with our roles, permissions and reports.
 
 ## Use them in development
 
@@ -16,6 +16,39 @@ Start with [AGENTS.md](../AGENTS.md#use-the-pinned-coding-skills), then read the
 | Review | Correctness and Thermo-Nuclear structural review together |
 
 The [skill index](../skills/INDEX.md) links the specific files. Read only the pstack instructions and references needed for the task. Retaining the full plugin preserves local references; it does not enable every workflow.
+
+## Harness agents
+
+Each agent connection receives the shared policy and its role instructions. The role lists mandatory skill files to read first, followed by relevant pstack workflows. The full plugin stays out of the initial prompt.
+
+| Agent | Delivery |
+| --- | --- |
+| Planner | Policy and planner instructions; pinned files readable in the host sandbox |
+| Codex executor | Policy and executor instructions in thread start, resume and fresh fallback |
+| Muse executor | Policy and executor instructions in each task turn, including resumed sessions |
+| Reviewer | Policy and reviewer instructions with correctness and structural review in the same report |
+| Publication writer | Shared policy with its existing evidence-only, no-tools JSON contract |
+
+The compiled binary contains the bundle. No upstream downloads or global plugin installation happen at agent startup.
+
+```text
+Repository skills/ -> compiled harness
+                         |
+                         +-- planner: private host copy, read-only
+                         +-- executor/reviewer: /opt/sprowt-skills/<version>
+```
+
+The bundle version changes when its contents change. VM copies sit outside project source and task worktrees. Workers receive read-only access; these copies are excluded from task source snapshots.
+
+To activate an updated bundle, install from the harness repository:
+
+```sh
+cargo install --path . --locked --force
+```
+
+Restart the harness before creating or resuming work. Already-running connections retain the instructions from their current harness process. Resumed work preserves accepted user instructions and receives the current build's policy.
+
+The harness verifies bundle delivery and read permissions. Applying the instructions remains model behavior. Existing checks, independent review and publication gates still decide whether the work is ready.
 
 ## What is pinned
 

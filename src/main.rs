@@ -21,6 +21,7 @@ mod router;
 mod rpc;
 mod sandbox;
 mod scheduler;
+mod skills;
 mod sprout;
 mod store;
 mod task_worktree;

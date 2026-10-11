@@ -227,6 +227,16 @@ impl Client {
                         })
                     })
                     .transpose()?;
+                let skill_root = if let Some(vm) = &vm {
+                    vm.lock().unwrap().prepare_skills(&stopped)?;
+                    PathBuf::from(crate::skills::guest_root())
+                } else {
+                    crate::skills::prepare_host()?
+                };
+                instructions = format!(
+                    "{}\n{instructions}",
+                    crate::skills::instructions(role, &skill_root)
+                );
                 if role == Role::Reviewer
                     && let Some(vm) = &vm
                 {
@@ -411,6 +421,10 @@ pub(crate) fn configuration(project: &Path) -> io::Result<Vec<String>> {
         ),
     ]);
     filesystem.insert(
+        crate::skills::host_root()?.to_string_lossy().into_owned(),
+        "read",
+    );
+    filesystem.insert(
         crate::router::directory()?
             .join("router.env")
             .to_string_lossy()
@@ -549,6 +563,42 @@ fn stop_terminals(rpc: &mut Rpc, thread: &str) -> io::Result<()> {
     Ok(())
 }
 
+fn start_thread(
+    params: Value,
+    resume: Option<Resume>,
+    resume_allowed: bool,
+    mut call: impl FnMut(&str, Value) -> io::Result<Value>,
+) -> io::Result<Value> {
+    let mut fresh = params.clone();
+    if let Some(resume) = &resume
+        && !resume.accepted_instructions.is_empty()
+    {
+        fresh["developerInstructions"] = json!(format!(
+            "{}\nPreviously accepted user instructions, in order (later corrections take precedence): {}",
+            params["developerInstructions"].as_str().unwrap(),
+            json!(resume.accepted_instructions)
+        ));
+    }
+    let Some(resume) = resume.filter(|_| resume_allowed) else {
+        return call("thread/start", fresh);
+    };
+    let mut params = params;
+    params["threadId"] = json!(resume.id);
+    params.as_object_mut().unwrap().remove("dynamicTools");
+    match call("thread/resume", params) {
+        Err(error)
+            if resume.restart_if_missing
+                && error.kind() == io::ErrorKind::InvalidInput
+                && error
+                    .to_string()
+                    .starts_with("no rollout found for thread id") =>
+        {
+            call("thread/start", fresh)
+        }
+        result => result,
+    }
+}
+
 fn serve(
     rpc: &mut Rpc,
     project: &Path,
@@ -638,47 +688,19 @@ fn serve(
     if let Some(selection) = &selection {
         params["model"] = json!(selection.model);
     }
-    let mut fresh = params.clone();
-    if let Some(resume) = &resume
-        && !resume.accepted_instructions.is_empty()
-    {
-        fresh["developerInstructions"] = json!(format!(
-            "{instructions}\nPreviously accepted user instructions, in order (later corrections take precedence): {}",
-            json!(resume.accepted_instructions)
-        ));
-    }
     let marker = vm
         .as_ref()
         .map(|vm| vm.lock().unwrap().worker_home(context.worker_id()))
         .transpose()?
         .map(|home| home.join("worker-checks-v1-thread"));
-    let resume = resume.filter(|resume| {
+    let resume_allowed = resume.as_ref().is_none_or(|resume| {
         marker
             .as_ref()
             .is_none_or(|path| fs::read_to_string(path).ok().as_deref() == Some(resume.id.as_str()))
     });
-    let result = if let Some(resume) = resume {
-        let mut resume_params = params.clone();
-        resume_params["threadId"] = json!(resume.id);
-        resume_params
-            .as_object_mut()
-            .unwrap()
-            .remove("dynamicTools");
-        match rpc.call("thread/resume", resume_params) {
-            Err(error)
-                if resume.restart_if_missing
-                    && error.kind() == io::ErrorKind::InvalidInput
-                    && error
-                        .to_string()
-                        .starts_with("no rollout found for thread id") =>
-            {
-                rpc.call("thread/start", fresh)?
-            }
-            result => result?,
-        }
-    } else {
-        rpc.call("thread/start", fresh)?
-    };
+    let result = start_thread(params, resume, resume_allowed, |method, params| {
+        rpc.call(method, params)
+    })?;
     let thread = result["thread"]["id"]
         .as_str()
         .ok_or_else(|| io::Error::other("Codex returned no conversation ID."))?
@@ -1018,6 +1040,59 @@ fn check_boundary(rpc: &mut Rpc, project: &Path, permissions: &str) -> io::Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn skills_survive_new_resumed_and_missing_codex_threads() {
+        for role in [Role::Planner, Role::Executor, Role::Reviewer] {
+            let policy = crate::skills::instructions(role, Path::new("/trusted/skills"));
+            let params = json!({"developerInstructions":policy,"dynamicTools":[{"name":"run_task_checks"}],"permissions":"existing-profile"});
+            for mode in ["new", "resume", "missing", "incompatible"] {
+                let resume = (mode != "new").then(|| Resume {
+                    id: "saved-thread".into(),
+                    restart_if_missing: true,
+                    accepted_instructions: vec!["Keep existing edits".into()],
+                });
+                let mut calls = Vec::new();
+                let result = start_thread(
+                    params.clone(),
+                    resume,
+                    mode != "incompatible",
+                    |method, sent| {
+                        let text = sent["developerInstructions"].as_str().unwrap();
+                        assert!(text.starts_with(&policy));
+                        assert!(text.contains(
+                            "/trusted/skills/upstream/ponytail/skills/ponytail/SKILL.md"
+                        ));
+                        assert!(text.contains("/trusted/skills/INDEX.md"));
+                        if method == "thread/start" && mode != "new" {
+                            assert!(text.contains("Keep existing edits"));
+                        }
+                        assert_eq!(sent["permissions"], "existing-profile");
+                        assert_eq!(sent.get("dynamicTools").is_some(), method == "thread/start");
+                        calls.push(method.to_owned());
+                        if mode == "missing" && method == "thread/resume" {
+                            Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "no rollout found for thread id saved-thread",
+                            ))
+                        } else {
+                            Ok(json!({"thread":{"id":"ready"}}))
+                        }
+                    },
+                )
+                .unwrap();
+                assert_eq!(result["thread"]["id"], "ready");
+                assert_eq!(
+                    calls,
+                    match mode {
+                        "new" | "incompatible" => vec!["thread/start"],
+                        "resume" => vec!["thread/resume"],
+                        _ => vec!["thread/resume", "thread/start"],
+                    }
+                );
+            }
+        }
+    }
 
     #[test]
     #[ignore = "runs one Astra xhigh planning turn with the host ChatGPT subscription"]

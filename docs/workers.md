@@ -62,6 +62,8 @@ Automatic login refresh is not implemented. After changing login or installed pr
 
 The [publication writer](git-workflow.md#commit-and-pr-text) drafts commit and PR text from the reviewed diff. You confirm publication in the terminal.
 
+Every new or resumed agent receives the shared [coding skill policy](skills.md#harness-agents). Coding roles read their pinned instructions from a read-only bundle. Ponytail uses full mode, pstack loads by task, and review checks correctness and structural quality together. Native plugin discovery stays disabled.
+
 ## Two execution paths, one scheduler
 
 ```mermaid

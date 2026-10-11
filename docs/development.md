@@ -40,6 +40,7 @@ Use the [supported provider versions](workers.md#supported-versions), sign in an
 
 | Area | Focused command |
 | --- | --- |
+| Pinned skill delivery and read-only access (no inference) | `cargo test --locked pinned_skills_are_read_only_for_host_and_vm_agents -- --ignored --nocapture` |
 | Commit and PR text (Codex only; no push) | `cargo test live_publication_writer -- --ignored --nocapture` |
 | Project preparation and setup reuse | `cargo test live_preflight_retains_evidence_and_reuses_only_proven_setup -- --ignored` |
 | Saved check scripts and restart | `cargo test shared_check_runner_recovers_and_survives_restart -- --ignored` |
@@ -91,6 +92,7 @@ Standalone compatibility probes live in [examples](../examples). They are separa
 | Project preparation and baseline receipts | [`environment.rs`](../src/environment.rs) |
 | Worker orchestration | [`worker.rs`](../src/worker.rs), [`agents.rs`](../src/agents.rs) |
 | Provider connections | [`codex.rs`](../src/codex.rs), [`muse.rs`](../src/muse.rs), [`muse_bridge.py`](../src/muse_bridge.py), [`muse_transport.py`](../src/muse_transport.py) |
+| Pinned skill delivery | [`skills.rs`](../src/skills.rs), [`build.rs`](../build.rs), [`skills`](../skills/INDEX.md) |
 | Checks and recovery | [`checks.rs`](../src/checks.rs), [`execution.rs`](../src/execution.rs), [`repair.rs`](../src/repair.rs), [`conflict.rs`](../src/conflict.rs) |
 | Review and findings | [`review.rs`](../src/review.rs), [`review/ledger.rs`](../src/review/ledger.rs) |
 | Tools, messaging and permissions | [`tools.rs`](../src/tools.rs), [`mailbox.rs`](../src/mailbox.rs), [`network.rs`](../src/network.rs), [`packages.rs`](../src/packages.rs) |

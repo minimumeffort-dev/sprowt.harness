@@ -2,7 +2,7 @@
 
 # Review and repairs
 
-A fresh reviewer inspects the combined change after checks pass. Publication requires a clean review of the current source, including updates to an existing PR.
+A fresh reviewer inspects correctness and structural quality after combined checks pass. Publication requires a clean review of the current source, including updates to an existing PR. The reviewer applies the [pinned Thermo-Nuclear standards](skills.md) alongside contract and regression checks.
 
 ## Find the issues and start fixes
 
@@ -42,12 +42,14 @@ R1  P1  Duplicate task after retry                         Open
 | Severity and location | Impact, file and line |
 | Owner | Task responsible for the affected code |
 | Triage | Confirmed, investigate or information |
-| Evidence and reproduction | What failed and how the reviewer observed it |
-| Acceptance criterion | Behavior required to resolve it |
+| Evidence and reproduction | Observed behavioral failure or exact source evidence of a structural regression |
+| Acceptance criterion | Verifiable behavior or structural change required to resolve it |
 | Origin | Introduced by a repair, missed earlier or unknown, with supporting evidence |
 | Decision history | Prior assessments and the source each decision examined |
 
-**Information** does not require a product change and does not block publication. **Confirmed** requires concrete reproduction evidence and an acceptance criterion. The reviewer supplies those assessments; the harness validates their structure. It does not independently execute the reviewer's initial reproduction text.
+**Information** does not require a product change and does not block publication. **Confirmed** requires observed evidence and an acceptance criterion. A behavioral defect needs reproduction evidence. A structural defect needs exact changed-source evidence, impact and repeatable verification. The reviewer supplies those assessments; the harness validates their structure. It does not independently execute the reviewer's initial reproduction text.
+
+Material duplication, tangled state ownership and unjustified file growth can require repairs. Cosmetic preferences and unrelated redesigns remain informational. A structural review cannot invent a behavioral failure or broaden a task's authorized scope.
 
 ## What happens after you choose fixes
 
@@ -66,7 +68,7 @@ Choosing **Fix review issues** authorizes up to **two repair passes for the curr
 
 Owners are instructed to:
 
-1. Reproduce the failure before editing.
+1. Reproduce the failure or confirm the cited structural defect before editing.
 2. State the root cause and expected behavior.
 3. Make a focused fix while preserving existing contracts.
 4. Test the defect and adjacent boundary/error cases.

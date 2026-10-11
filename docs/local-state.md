@@ -39,6 +39,7 @@ On macOS, the main database is:
 | `workspaces/<mod>-<stamp>/` | Source, Git recovery, task drafts and check bundles |
 | `network.json` | Global download allowlist |
 | `router.env` | Optional host-only Jev key |
+| `skills/<version>/` | Read-only coding instructions embedded in the installed harness |
 
 <details>
 <summary>Complete workspace directory reference</summary>
@@ -50,6 +51,7 @@ On macOS, the main database is:
 ├── state.db-shm      SQLite shared memory, when present
 ├── network.json      guest download allowlist
 ├── router.env        host-only Jev API key; owner-only permissions
+├── skills/           versioned instruction bundles, shared across codemods
 ├── projects/         project sync state, independent of codemods
 │   └── <project>/
 │       ├── sync-project.json pending fast-forward; removed when complete
