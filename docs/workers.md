@@ -56,8 +56,11 @@ Automatic login refresh is not implemented. After changing login or installed pr
 | Codex executor | Host app server + guest execution server | Sol 6.1 medium, high or xhigh |
 | Muse executor | Full Muse CLI inside the VM | Muse Spark 1.3 high |
 | Independent reviewer | Fresh Codex conversation, reads VM source | Sol 6.1 xhigh |
+| Publication writer | Separate read-only host Codex call | Sol 6.1 low |
 
 [Jev](planning.md#jev-task-routing) selects Codex executor effort only. The reviewer cannot edit source, publish, approve access or call harness tools; its network access is disabled.
+
+The [publication writer](git-workflow.md#commit-and-pr-text) drafts commit and PR text from the reviewed diff. You confirm publication in the terminal.
 
 ## Two execution paths, one scheduler
 

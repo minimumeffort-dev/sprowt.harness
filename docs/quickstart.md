@@ -61,6 +61,8 @@ sprowt-harness --help
 
 Change to the project you want to work on, then launch:
 
+Replace `/path/to/your/project` with your project directory.
+
 ```sh
 cd /path/to/your/project
 sprowt-harness

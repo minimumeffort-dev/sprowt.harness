@@ -24,6 +24,19 @@ The same fix action remains available after a PR has been published. New local w
 
 Each finding keeps a stable **R1, R2, …** identity across wording and line changes. Open findings appear first; resolved and dismissed findings remain in history.
 
+Example finding, shown as a simplified illustration:
+
+```text
+R1  P1  Duplicate task after retry                         Open
+    app/store.mjs:126 · database · Confirmed
+
+    Evidence    Retrying the same operation creates two tasks.
+    Acceptance  The retry returns the original task ID.
+    Fix         Restore the saved receipt before accepting writes.
+```
+
+**To act:** press **Ctrl+G**, then **x** for confirmed findings. The owner receives the finding and its required regression check.
+
 | Field | Meaning |
 | --- | --- |
 | Severity and location | Impact, file and line |
@@ -64,10 +77,11 @@ A contradictory reproduction returns to triage. After a successful pass, combine
 
 Every confirmed finding adds a stable **Review regression** check. Rust independently runs the owner's submitted commands.
 
-Closure requires both:
-
-- All commands for that named regression passing on the current combined source.
-- An explicit resolution decision from a fresh reviewer.
+| Evidence | Finding status |
+| --- | --- |
+| Worker reports a fix | Still open |
+| Named regression passes on the current combined source | Awaiting fresh review |
+| Regression passes and a fresh reviewer explicitly resolves it | Resolved |
 
 Omitting a finding leaves it open. Dismissal needs a recorded reason and counterevidence. Relabelling an open defect as information cannot close it. Passing tests alone do not prove correctness.
 

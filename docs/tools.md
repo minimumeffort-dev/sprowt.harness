@@ -19,6 +19,8 @@ These are internal agent/controller interfaces, not shell subcommands or a publi
 
 Codex receives JSON schemas; Muse uses a guest MCP bridge to the same dispatcher. Unknown tools, worker requests for host operations, and planner/reviewer calls to these executor tools are rejected. External host MCP servers are not exposed.
 
+[Checks](#run-task-checks-example) · [Access requests](#request-access-example) · [Worker messages](#coordinate-with-another-task) · [Controller operations](#operation-registry)
+
 ## Run task checks example
 
 This example assumes task run **42**, attempt **1**, an installed task virtual environment, and a declared check named **Run the Python suite**. A real worker must use the source identity, check names and executable from its current assignment.
@@ -80,7 +82,57 @@ A package request uses names and a reason:
 
 **Expected:** installation or a specific setup error in the caller's VM. No shell command, repository modification or removal can be supplied. See [system packages](sandbox.md#system-packages).
 
+## Coordinate with another task
+
+These are tool payloads sent by a connected executor. Replace `database` with an exact peer task ID from the accepted plan.
+
+### Ask
+
+Call **`send_worker_message`**:
+
+```json
+{
+  "to": "database",
+  "kind": "ask",
+  "body": "Does saveTask return the stored revision after a successful write?",
+  "key": "save-task-revision-contract",
+  "reply_to": null
+}
+```
+
+Example response; the real message ID is allocated by the store:
+
+```json
+{"id": 17, "saved": true, "delivery": "pending"}
+```
+
+**Expected:** the message is saved. This does not prove delivery or agreement. Retry the same message with the same `key`; changed content needs a new key.
+
+### Acknowledge and reply
+
+The recipient calls **`read_worker_messages`** with `{}`, then acknowledges the received ID using **`ack_worker_messages`**:
+
+```json
+{"ids": [17]}
+```
+
+It replies with **`send_worker_message`**, using the sender's actual task ID in `to` and the ask's ID in `reply_to`:
+
+```json
+{
+  "to": "interface",
+  "kind": "reply",
+  "body": "Yes. A successful saveTask returns the stored revision; keep the draft until it resolves.",
+  "key": "save-task-revision-answer",
+  "reply_to": 17
+}
+```
+
+**Expected:** the original ask is answered. Acknowledgement alone does not answer it. Bodies allow 4,000 bytes; keys allow 80 bytes. Only an `ask` can target `user`. See [delivery and ownership rules](coordination.md#delivery-states).
+
 ## Operation registry
+
+These operations belong to the harness. Executors use only the [worker-facing tools](#worker-facing-tools) above.
 
 | Operation | Caller | Execution |
 | --- | --- | --- |
@@ -99,13 +151,6 @@ A package request uses names and a reason:
 | `reopen_mod` | Harness | Restore the saved worktree and reopen |
 | `prune_mod` | Harness | Remove an unchanged closed worktree; retain its branch |
 | `cleanup_mod` | Harness | VM deletion and Git worktree cleanup |
-| `install_system_packages` | Executor | Package setup inside its own Linux VM |
-| `run_task_checks` | Executor | Save check scripts and run declared checks through the controller |
-| `request_network_access` | Executor | Save exact download domains and a reason for user approval |
-| `send_worker_message` | Executor | Save an ask, reply or update in its codemod |
-| `read_worker_messages` | Executor | Read its mailbox, live assignments and relevant peer scopes and topics |
-| `ack_worker_messages` | Executor | Acknowledge its inbox messages |
-
 
 Harness operations originate in workflow state and relevant user confirmations. Workers cannot invoke them through the dispatcher. Initial Git setup, repository destination and publication require confirmation. Publication requires current verified source and a clean review.
 

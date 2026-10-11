@@ -28,11 +28,14 @@
 
 ## Keep docs current
 
-- Update the README whenever the architecture changes. Keep it short and in our voice.
-- Document every feature in our voice, with concise explanations and clear diagrams.
-- Keep code, the README and feature docs in sync with every commit.
-- Docs describe the latest implemented state. Replace outdated content; keep history in Git.
-- Keep one canonical page per topic. Update or consolidate existing docs instead of creating versioned pages, batch logs or duplicate explanations.
+- Documentation is part of finishing every behavior, CLI, configuration or architecture change. Update affected guides, examples and diagrams in the same commit; update the README when its overview or setup changes.
+- Verify docs against the current source and CLI. Describe implemented behavior; label proposals and illustrations explicitly. Replace stale content and keep history in Git.
+- Follow the concise, example-led style of Stripe's docs: lead with the outcome, show the smallest usable example, state the expected result, then give the next action or recovery step.
+- Prefer copyable commands and code examples to long explanations. State prerequisites and the working directory, label placeholders, and distinguish shell commands from internal agent payloads. Use fenced blocks with a language.
+- Use small diagrams, tables and labelled visuals when they make a workflow or boundary easier to understand. Keep examples beside the instructions they explain; avoid decorative assets and filler.
+- Keep paragraphs short and concrete, in our voice. Put optional internals below everyday instructions or in a collapsed reference section.
+- Keep one canonical page per topic. Link to it instead of duplicating instructions, version pins or limits. Keep the docs index and incoming links current.
+- Before committing, check changed commands, examples, links, keyboard hints and visuals. Report what was verified and any live behavior that was not exercised.
 
 ## Finish each batch
 

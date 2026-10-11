@@ -94,6 +94,39 @@ Standalone scripts can be included in `run_task_checks`. They live outside proje
 
 Guest scripts are read-only. Use an absolute interpreter and script path, read project files from the task working directory, and write fixtures elsewhere.
 
+Example **`run_suite.py`** for a project with a Python `unittest` suite in `tests/`:
+
+```python
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+with tempfile.TemporaryDirectory(prefix="sprowt-check-") as fixtures:
+    subprocess.run(
+        [sys.executable, "-m", "unittest", "discover", "-s", "tests"],
+        cwd=Path.cwd(),
+        env={**os.environ, "TMPDIR": fixtures},
+        check=True,
+        timeout=45,
+    )
+```
+
+The worker includes this file's text in `scripts` as `{"name": "run_suite.py", "content": "…"}`. That fragment shows the shape; use the complete script as `content`.
+
+For task run **42** with an installed virtual environment, the check entry is:
+
+```json
+{
+  "check": "Run the Python suite",
+  "command": ["/tasks/42/.venv/bin/python", "/opt/sprowt-checks/42/run_suite.py"],
+  "timeout_seconds": 60
+}
+```
+
+Replace the task path and check name with the current assignment. **Expected:** test output and exit status 0 when the suite passes; a failed test or the 45-second inner timeout fails the command. The 60-second outer budget leaves room for startup and cleanup. Run only suites that leave source unchanged.
+
 Scripts survive retries, review and restart, including VM recreation. Runtimes still need installation in a fresh VM. A replacement plan removes retired bundles. Older checks referencing `/tmp` scripts need those scripts resubmitted as saved bundles.
 
 ### Reports and later messages

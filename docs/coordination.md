@@ -52,6 +52,8 @@ A late acknowledgement cannot replace a valid task report with an empty result. 
 
 Replies reference the original ask. Stable keys make repeated sends idempotent. Rust binds codemod and worker identity; model arguments cannot impersonate a peer. Messages carry context and cannot change scope, permissions or the user's goal.
 
+See the [ask, acknowledgement and reply payloads](tools.md#coordinate-with-another-task).
+
 ## Limits and retention
 
 - Messages stay within one codemod and follow current task ownership, including unassigned tasks.

@@ -81,6 +81,14 @@ First complete the [GitHub login setup](quickstart.md#6-publish-the-pr).
 3. Press **Ctrl+S**, or **p** from the diff.
 4. Wait for the commit and PR text, then review the titles, summary and verification. **Enter** publishes; **Esc** cancels.
 
+```mermaid
+flowchart LR
+    ready["Current checks + clean review"] --> draft["Ctrl+S: generate text"]
+    draft --> preview["Review preview"]
+    preview -->|"Enter"| publish["Commit, push and create/update PR"]
+    preview -->|"Esc"| retained["Keep work unpublished"]
+```
+
 Without an origin, choose **connect existing** or **create private** with Tab, enter `owner/repository`, then confirm. An empty repository receives the starting commit. A populated repository must share history and contain the target branch; unrelated history is never overwritten.
 
 | Publication detail | Value |
@@ -99,17 +107,35 @@ A short Codex call using **Sol 6.1, low effort** writes the commit title, PR tit
 
 Titles are limited to **72 characters**. The summary is one paragraph or up to three bullets, at most **100 words**. The controller adds recorded check counts and review status. The writer is instructed to avoid hype, agent attribution and claims about tests or performance.
 
-For example, a live writer check produced:
+Example titles and summary, shown as a simplified illustration:
 
 ```text
-Add greeting helper that trims name whitespace
+Commit  Preserve task IDs when retrying a saved operation
+PR      Preserve task IDs when retrying a saved operation
+
+Restore saved operation receipts before accepting retries so a
+reconnected client receives the original task instead of a duplicate.
 ```
 
-The same text is reused on retry while the source, base, previous published commit, request and verification remain unchanged. Changed context generates a new preview. Generation is bounded to two minutes; a failure preserves work and **Ctrl+S** retries. There is no fallback that copies the request into a commit message.
+The controller adds actual verification results below the generated summary.
+
+| Situation | What happens |
+| --- | --- |
+| Retry with unchanged source, base, published head, request and verification | Reuse the validated text |
+| Any of that context changes | Generate a new preview |
+| Generation fails or exceeds two minutes | Keep work saved; **Ctrl+S** retries |
+| Update an existing PR | Replace its title and description with the previewed text, including manual edits to those fields |
+
+There is no fallback that copies your request into a commit message. Published commit messages are not rewritten; publication never force-pushes.
+
+<details>
+<summary>Writer isolation and Git history</summary>
 
 The writer uses a separate temporary directory with read-only permissions, shell tools disabled and no inherited rules, user configuration, plugins or connectors. It uses your existing Codex login. Large diffs use marked excerpts from each file. Temporary input and provider output are removed after generation; the validated draft stays in private local state.
 
-Publication combines unpublished checkpoints into one commit. Later publications append to the last published commit and retain upstream merge ancestry. Private checkpoint references keep recovery history. Existing PR titles and descriptions are updated with the previewed text; this replaces manual edits to those fields. Published commit messages are not rewritten and publication never force-pushes.
+Publication combines unpublished checkpoints into one commit. Later publications append to the last published commit and retain upstream merge ancestry. Private checkpoint references keep recovery history.
+
+</details>
 
 This design draws on [GitHub Copilot's diff-based commit suggestions](https://docs.github.com/en/copilot/responsible-use/chat) and [Devin's concise default PR summary](https://docs.devin.ai/integrations/pr-templates). Repository PR templates and custom publication instructions are not yet supported.
 

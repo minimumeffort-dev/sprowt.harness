@@ -85,6 +85,7 @@ Standalone compatibility probes live in [examples](../examples). They are separa
 | Timeline and inspection | [`app/timeline.rs`](../src/app/timeline.rs), [`ui/timeline.rs`](../src/ui/timeline.rs), [`ui/inspector.rs`](../src/ui/inspector.rs) |
 | Terminal rendering and companion | [`ui.rs`](../src/ui.rs), [`sprout.rs`](../src/sprout.rs) |
 | Plans, assignment and routing | [`plan.rs`](../src/plan.rs), [`scheduler.rs`](../src/scheduler.rs), [`router.rs`](../src/router.rs) |
+| Project preparation and baseline receipts | [`environment.rs`](../src/environment.rs) |
 | Worker orchestration | [`worker.rs`](../src/worker.rs), [`agents.rs`](../src/agents.rs) |
 | Provider connections | [`codex.rs`](../src/codex.rs), [`muse.rs`](../src/muse.rs), [`muse_bridge.py`](../src/muse_bridge.py), [`muse_transport.py`](../src/muse_transport.py) |
 | Checks and recovery | [`checks.rs`](../src/checks.rs), [`execution.rs`](../src/execution.rs), [`repair.rs`](../src/repair.rs), [`conflict.rs`](../src/conflict.rs) |
@@ -92,20 +93,39 @@ Standalone compatibility probes live in [examples](../examples). They are separa
 | Tools, messaging and permissions | [`tools.rs`](../src/tools.rs), [`mailbox.rs`](../src/mailbox.rs), [`network.rs`](../src/network.rs), [`packages.rs`](../src/packages.rs) |
 | VM and task worktrees | [`sandbox.rs`](../src/sandbox.rs), [`task_worktree.rs`](../src/task_worktree.rs) |
 | Git and checkpoints | [`git_mod.rs`](../src/git_mod.rs), [`git_sync.rs`](../src/git_sync.rs), [`mod_sync.rs`](../src/mod_sync.rs), [`workspace.rs`](../src/workspace.rs) |
+| Commit and PR text | [`publication.rs`](../src/publication.rs) |
 | Persistence | [`store.rs`](../src/store.rs) |
 
 ## Keep documentation usable
 
-Use [docs/README.md](README.md) as the navigation hub. Keep one canonical page per topic and link to it from related guides.
+Follow the [documentation rules in AGENTS.md](../AGENTS.md#keep-docs-current). Use [docs/README.md](README.md) as the navigation hub and link to the canonical guide for each topic.
 
 - **Quickstarts:** outcome, prerequisites, runnable steps, expected results, next action.
 - **Task guides:** what to do, what happens, and how to recover.
 - **References:** exact fields, limits, defaults and ownership.
 - **Architecture:** responsibilities and boundaries, with a small diagram when helpful.
 
-Put implementation detail below everyday instructions. Use tables for comparisons, code blocks with a language for commands/payloads, and labelled illustrations for concepts. Keep real sessions, credentials and local environment values out of examples.
+### Check a documentation change
 
-When behavior changes, check linked pages, keyboard hints, version pins, examples and diagrams together. Remove outdated claims rather than appending a history of fixes. Verify links and render visuals before committing.
+From the harness repository, inspect the public CLI and patch:
+
+```sh
+cargo run --locked -- --help
+git diff --check
+git diff -- README.md AGENTS.md docs/
+```
+
+**Expected:** help matches the documented flags; the whitespace check prints nothing; the diff describes current behavior.
+
+| Changed content | Verify before committing |
+| --- | --- |
+| Command or example | Syntax, prerequisites, working directory and expected result; run safe examples in a disposable fixture |
+| Tool payload or recipe | Parse the JSON and compare fields and limits with the current schema |
+| Link or heading | Open the destination, including relative paths and anchors |
+| Keyboard hint or status | Compare with the action handler and visible label |
+| Diagram or illustration | Render it and check labels, wrapping and correspondence with the workflow |
+
+Keep credentials and real session data out of examples. State when a live provider or VM check was not run.
 
 <details>
 <summary>Documentation references</summary>

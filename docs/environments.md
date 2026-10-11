@@ -13,9 +13,25 @@ flowchart LR
 
 ## Where the recipe comes from
 
-The planner reads manifests and supplies setup commands, capability probes and baseline checks. A project can provide **`.sprowt/environment.json`** as its reusable default. The planner reads it; an explicit recipe in the accepted plan takes precedence, allowing a failed setup to be corrected during replanning. Older plans fall back to the file. Keep it in source control with placeholders instead of credentials.
+The planner reads project manifests and supplies setup commands, capability probes and baseline checks.
 
-Example for a Node project whose lockfile and test script already exist:
+| Available recipe | Used by the controller |
+| --- | --- |
+| Explicit recipe in the accepted plan | The plan's recipe, including corrections made during replanning |
+| No plan recipe, but `.sprowt/environment.json` exists | The project file |
+| Neither | Worker-managed setup |
+
+## Add a project recipe
+
+This Node example needs a committed `package-lock.json` and an existing `npm test` script. Choose the pinned Node version supported by your project.
+
+From the **project root**, create the configuration directory:
+
+```sh
+mkdir -p .sprowt
+```
+
+Save the following as **`.sprowt/environment.json`**:
 
 ```json
 {
@@ -43,7 +59,29 @@ Example for a Node project whose lockfile and test script already exist:
 }
 ```
 
-Choose the runtime version supported by your project. Browser projects should add a real browser startup probe and required Debian libraries. Start any local server and its browser inside one probe so they share loopback access. See [browser checks](sandbox.md#browser-checks).
+Check the file's JSON syntax on your Mac:
+
+```sh
+python3 -m json.tool .sprowt/environment.json > /dev/null
+```
+
+**Expected:** exit status 0 with no output. This checks JSON syntax only. The harness validates the recipe and runs its Linux commands when a task starts.
+
+Commit the recipe with the project. Keep it free of credentials. If a revised plan corrects setup, update this file for future codemods too.
+
+Browser projects also need a real browser startup probe and the required Debian libraries. Start the server and browser inside one probe. See [browser checks](sandbox.md#browser-checks).
+
+### Recipe fields
+
+| Field | Use | Limit |
+| --- | --- | --- |
+| `inputs` | Exact project-relative files that affect setup reuse | Up to 32 paths |
+| `system_packages` | Required signed Debian package names | [Package policy](sandbox.md#system-packages) |
+| `setup` | Install the pinned runtime and locked dependencies | Up to 12 commands |
+| `capabilities` | Prove the runtime or browser actually starts | 1–12 commands |
+| `baseline` | Record tests before editing | Up to 12 commands |
+
+Each command needs `name`, `argv` and `timeout_seconds` (1–180). Begin `argv` with an absolute executable. Use project-relative file arguments; temporary task and worker paths are rejected.
 
 ## What the results mean
 
@@ -54,20 +92,19 @@ Choose the runtime version supported by your project. Browser projects should ad
 | Baseline tests | Save the failure and let the worker repair the starting source |
 | Source changed during preparation | Preserve the edits and pause; fix the recipe |
 
-**Task Details** shows saved preparation results. Press **e** to include passed commands. A setup failure offers **Revise repair plan**, carrying the recipe and evidence into planning. A revised plan can correct setup before the next worker starts. Keep the project file in sync with the corrected recipe for future plans. Network policy still applies; configure required download domains using the [network guide](sandbox.md#downloads).
+Open **Task Details** for preparation results; **e** includes passed commands. On setup failure, **Revise repair plan** carries the recipe and evidence into planning. Blocked downloads still require [network approval](sandbox.md#downloads).
 
 Baseline results never satisfy completion checks, clear review findings or unlock publication. Final checks still run on the combined source.
 
 ## Reuse and limits
 
-- Setup reuse is scoped to the task and keyed by recipe, declared input files, common manifests/lockfiles and the sandbox version.
-- Reuse always reruns capability probes in the current VM and worker HOME. Failed probes rerun setup once, then probe again.
-- Baselines rerun for each editing attempt. They are evidence of its starting source, not cached verification.
-- Commands use absolute executables, project-relative file arguments and pinned runtime versions. Temporary task or worker paths are rejected.
-- Recipes allow up to 32 input paths, 12 commands per phase and 1–180 seconds per command. At least one capability probe is required.
-- System packages use the existing signed Debian installer. Shell commands retain normal worker permissions.
-- Setup and baseline commands must leave source and lockfiles unchanged. Put generated dependencies and caches in their usual excluded locations.
-- Private `environments/` receipts retain each attempt's commands, output, source fingerprint and error across restart. Retiring tasks does not reuse their preparation receipts for new task IDs.
+- Reuse stays within one task. A changed recipe, declared input, common manifest/lockfile or sandbox version invalidates it.
+- Every reuse reruns capability probes in the current VM and worker HOME. Failed probes trigger one setup retry.
+- Baselines run on every editing attempt. Final checks remain separate.
+
+Setup and baseline commands must leave source and lockfiles unchanged. Put generated dependencies and caches in their usual excluded locations. Commands retain normal worker permissions.
+
+Private `environments/` receipts preserve commands, output, source fingerprints and errors across restart. New task IDs get their own preparation records.
 
 Older plans without a recipe continue with worker-managed setup. They gain controller preparation when replanned or when the project supplies the recipe file. Reusing setup does not reproduce external package registries or guarantee identical VM images; pins, lockfiles and probes make changes visible.
 

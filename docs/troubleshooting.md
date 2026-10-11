@@ -10,7 +10,9 @@ Start with the state in the dock. **Ctrl+T** opens its evidence; **Ctrl+G** list
 | --- | --- |
 | Startup asks for a different Muse or Codex version | [Worker startup](#worker-startup) |
 | Muse disconnected, returned no report or delivery is unknown | [Muse stopped](#muse-stopped) |
+| Setup or a capability probe fails before editing | [Project preparation](#project-preparation-fails) |
 | A check fails, times out or never finishes | [Checks](#checks-fail-or-take-too-long) |
+| A tests-only task blocks the production fix | [Revise the diagnostic task](#a-reproduction-is-blocking-its-repair) |
 | Review keeps finding issues | [Review](#review-is-not-converging) |
 | GitHub error while local work continues | [GitHub and sync](#github-and-sync-errors) |
 | Task changes conflict | [Conflicts](#task-changes-conflict) |
@@ -20,6 +22,15 @@ Start with the state in the dock. **Ctrl+T** opens its evidence; **Ctrl+G** list
 ## Worker startup
 
 Check the [supported versions and login requirements](workers.md#supported-versions). Codex is required; Muse joins automatically if installed. An installed Muse with the wrong version or missing account login stops startup.
+
+In a host terminal, inspect installed versions:
+
+```sh
+codex --version
+sprowt-harness --version
+```
+
+If Muse is installed, also run `muse --version`. Compare provider versions with the [supported versions table](workers.md#supported-versions); the harness version is a separate value.
 
 1. Install the supported provider CLI version.
 2. Sign in using the [login instructions](workers.md#login).
@@ -46,6 +57,20 @@ Reinstalling does not resume paused tasks or reset repair budgets. If Apple Cont
 
 Select the failed task in **Details → Tasks**, then press **r**. Independent peers can continue. Unknown delivery stays paused until reconciled; the harness does not blindly resend it. See [Muse recovery](workers.md#muse-recovery).
 
+## Project preparation fails
+
+Open the task's Details and inspect the saved preparation command and output.
+
+| Failure | Next step |
+| --- | --- |
+| Invalid runtime version or setup command | **Revise repair plan** with the failed recipe and evidence |
+| Download denied | **Ctrl+N** to inspect the requested domain |
+| Setup succeeds, capability probe fails | Check the actual runtime/browser startup error; installation alone is insufficient |
+| Only baseline tests fail | The worker can proceed with that starting failure recorded |
+| Preparation changes source or a lockfile | Correct the recipe so setup leaves source unchanged |
+
+See [the recipe example](environments.md#add-a-project-recipe). Keep the project recipe in sync with any accepted correction.
+
 ## Checks fail or take too long
 
 Open **Ctrl+T → 2 · Checks**, then press **e** for the saved command, output, elapsed time and limit.
@@ -65,6 +90,20 @@ Checks start in fresh processes. Earlier shell exports and background servers ar
 
 The command budget defaults to 30 seconds and can be set to 1–180 seconds. Raising the outer limit cannot fix a shorter inner deadline or a deadlock. Inspect the blocked operation first. See [repeatable checks](execution.md#write-repeatable-checks).
 
+## A reproduction is blocking its repair
+
+Choose **Revise repair plan** when a tests-only prerequisite fails and its production repair is waiting. The revised plan keeps the reproduction and gives one owner responsibility for the fix and its test.
+
+```mermaid
+flowchart LR
+    failed["Reproduction fails"] --> waiting["Dependent repair cannot start"]
+    waiting --> revise["Revise repair plan"]
+    revise --> owner["One owner: reproduce + fix + test"]
+    owner --> verify["Combined checks + fresh review"]
+```
+
+Completed source and regression assertions stay intact. See [diagnostic recovery](execution.md#a-diagnostic-task-blocks-its-repair).
+
 ## Review is not converging
 
 Open **Details → Review** and compare the stable finding IDs. A new issue can be a regression from a repair, an earlier missed defect or uncertain evidence; the reviewer must distinguish these with evidence.
@@ -77,7 +116,23 @@ An old review cannot be used as current proof. If it says **Awaiting fresh revie
 
 A background sync failure is a separate warning. Local tasks and review can continue. Press **Ctrl+G → s** for the full error and **Ctrl+U** to retry that check after connectivity or authentication is restored.
 
-For authentication setup, use `gh auth login` and `gh auth setup-git`. For a failed foreground publication, follow its saved retry action. The harness retains Git checkpoints and records publication progress before showing success.
+From the affected **project root**, inspect local state and GitHub authentication:
+
+```sh
+git status --short --branch
+gh auth status
+```
+
+If authentication is missing or invalid:
+
+```sh
+gh auth login
+gh auth setup-git
+```
+
+**Expected:** `gh auth status` confirms an active account. A successful login does not prove that GitHub is reachable or that the account can access this repository; inspect the saved sync error too.
+
+For failed foreground publication, use its saved retry action. Git checkpoints remain available; publication progress is recorded before success appears.
 
 If history diverged, local edits overlap, or Git is already mid-operation, resolve that project condition first. The harness does not force-push, rebase or discard edits to make sync succeed. See [Git workflow](git-workflow.md#keep-the-project-current).
 
@@ -101,8 +156,15 @@ If a codemod was closed, its next execution creates a fresh VM and may need to r
 
 ## Evidence to keep when reporting a problem
 
-Include the visible state, task or finding ID, the failed check command, its output and whether the source changed since that result. **Details → Activity** and [metadata-only tool logs](tools.md#progress-and-activity) help establish the sequence. Redact secrets and private project content before sharing.
+Copy this outline and fill it from **Details → Checks / Activity**:
 
-## A reproduction is blocking its repair
+```text
+Visible state:
+Task or finding ID:
+Failed command:
+Observed error and elapsed time:
+Source changed since this result? Yes / No / Unknown
+Action tried and what happened:
+```
 
-Choose **Revise repair plan** when a tests-only prerequisite fails and its production repair is waiting. The planner retains the reproduction and combines it with the fix under one owner. Passing a reproduction is different from proving that the product is repaired; combined checks and fresh review remain required. See [diagnostic recovery](execution.md#a-diagnostic-task-blocks-its-repair).
+Redact secrets and private project content before sharing. [Metadata-only tool logs](tools.md#progress-and-activity) can help establish the sequence.

@@ -4,6 +4,16 @@ Build a change, understand its progress, and publish a checked PR.
 
 **New here? [Start with your first codemod →](quickstart.md)**
 
+## Do something specific
+
+| I need to… | Go directly to… |
+| --- | --- |
+| Fix what the reviewer found | [Find issues and start fixes](review.md#find-the-issues-and-start-fixes) |
+| Diagnose a failed or slow check | [Read the command and failure](troubleshooting.md#checks-fail-or-take-too-long) |
+| Configure dependency setup | [Copy an environment recipe](environments.md#add-a-project-recipe) |
+| Understand a commit or PR preview | [Commit and PR text](git-workflow.md#commit-and-pr-text) |
+| Return from old evidence to active work | [Scroll and jump to current](terminal.md#scroll-and-return-to-current-work) |
+
 ## Use the harness
 
 | Guide | What you will learn |

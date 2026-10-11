@@ -60,6 +60,8 @@ On macOS, the main database is:
     └── <mod>-<stamp>/
         ├── checkout/ Git worktree; retained until deletion or closed retention
         ├── git-mod.json branch, base, checkpoint commit, PR URL and recovery phase
+        ├── publication.json validated commit/PR draft tied to source and evidence
+        ├── publication-commit.json interrupted publication commit receipt
         ├── project-setup pending initial Git setup or snapshot adoption
         ├── repository-setup.json confirmed GitHub destination and recovery
         ├── snapshot-ready completed Git mod source transfer
@@ -74,6 +76,7 @@ On macOS, the main database is:
         ├── base.git/ private diff metadata
         ├── tasks.json task round, worker ownership and integration state
         ├── checks/   saved scripts and receipts, one <task-run-id>.json per task
+        ├── environments/ latest preparation receipts and prior attempts
         ├── tasks.bundle sanitized guest Git branches for VM recovery
         ├── task-drafts/ sanitized task baselines and unfinished source
         ├── checkpoint-error present if a worker checkpoint needs recovery
@@ -133,7 +136,14 @@ Mailbox history survives new rounds, but old task addresses retire. Pending stee
 
 ### Git recovery
 
-`git-mod.json` records branch, base, fingerprints, commit, PR URL and operation intent. `publication.json` holds validated model-written text bound to the source, base and previous published head. `publication-commit.json` records commit creation before the branch moves, allowing interrupted publication to resume without another commit. Local `refs/sprowt/checkpoints/` references retain unpublished checkpoint history. Closing saves a timestamp. Confirmed initial setup uses a persistent workspace; cancelling an unconfirmed file preview removes that temporary preview.
+| Record | Recovery purpose |
+| --- | --- |
+| `git-mod.json` | Branch, base, source fingerprints, commit, PR URL and pending operation |
+| `publication.json` | Model-written text tied to the reviewed source, base and previous published head |
+| `publication-commit.json` | Resume an interrupted publication without creating another commit |
+| `refs/sprowt/checkpoints/` | Git references retaining unpublished checkpoint history |
+
+Closing saves a timestamp. Confirmed initial setup uses a persistent workspace; cancelling an unconfirmed file preview removes that temporary preview.
 
 Project sync uses a temporary index and locks the real index during fast-forward. Checkpoints can finish an interrupted index update. A repository lock serializes sync with codemod setup; hooks and project filters are disabled.
 

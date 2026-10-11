@@ -33,7 +33,14 @@ Clicking a row selects it. Enter on a timeline row opens evidence; it never star
 
 Use the wheel or trackpad over the pane you want to scroll. The timeline and inspector scroll independently. Lists move selection; the composer scrolls its own draft. Keyboard scrolling uses **Page Up/Down** or **Fn+↑/↓** on Mac.
 
-Exploring holds your position as new activity arrives, even when the selected task moves off screen. **Ctrl+L**, or clicking **Jump to current**, focuses the current step, resets its details to the top and resumes following. Scrolling again holds your position. **End** also jumps when the timeline is focused.
+Exploring holds your position as new activity arrives, even when the selected task moves off screen.
+
+```text
+Following current work ── scroll or select ──> Exploring saved steps
+Following current work <───── Ctrl+L ──────── Exploring saved steps
+```
+
+**Ctrl+L**, or clicking **Jump to current**, selects the current step, resets its details to the top and resumes following. **End** also jumps when the timeline is focused. Your draft stays intact.
 
 ### Read task progress
 
@@ -54,13 +61,16 @@ Press **Ctrl+T**. Use **1–4**, **Tab** or **Shift+Tab** to switch sections.
 
 Details opens Review when findings need attention, Checks after a combined failure, and otherwise Tasks. Before tasks exist, it opens Activity. Opening evidence does not start work.
 
-Check colors have matching glyphs: **✓ passed**, **! failed**, **· not run**. Repeated check names group their commands; a check passes only when all its commands pass. **e** expands command/output evidence, including elapsed time and time limits. Worker reports remain distinct from controller results.
+| Evidence label | Read it as |
+| --- | --- |
+| **✓ passed** / **! failed** / **· not run** | Observed command result; a grouped check passes only when every command passes |
+| **Earlier task report · before combined checks** | The worker's success predates the combined result |
+| **Saved results** after a source change | Historical evidence; the current version still needs verification |
+| **Observed worker time** | Time by phase across restarts/plans; concurrent workers count separately and offline gaps are excluded |
 
-Saved results are labelled when the source has changed. **Earlier task report · before combined checks** means a task's earlier success predates the final combined result.
+Press **e** to expand commands, output, elapsed time and limits. Worker narration and elapsed time do not prove progress.
 
-Activity also retains **observed worker time** by phase across restarts and replacement plans. Concurrent workers count separately. Offline gaps are excluded; older runs have no retroactive timing. This is effort, not an ETA. Repeated messages do not establish verified progress.
-
-Failed tasks show the likely failure category and a corresponding recovery explanation. Unknown check failures remain unclassified until diagnosed. Three attempts with identical saved failure evidence recommend **Revise repair plan**; the attempt history is included in the new plan. Passing checks and fresh review are still required.
+Failed tasks include recovery guidance when the cause is known. Three attempts with identical saved failure evidence recommend **Revise repair plan**, carrying that history forward. New checks and review are still required.
 
 ### Inspect a task
 

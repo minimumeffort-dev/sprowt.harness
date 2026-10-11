@@ -12,9 +12,12 @@ flowchart TB
         ui["Terminal + Rust controller"]
         state[("Saved state + source checkpoints")]
         planner["Read-only planner"]
+        writer["Read-only publication writer"]
         git["Git + GitHub publication"]
         ui <--> state
         ui --> planner
+        ui --> writer
+        writer -->|"Text for your confirmation"| git
         ui --> git
     end
     subgraph guest["One Linux VM per executing codemod"]
@@ -44,6 +47,7 @@ Source is copied into the VM. Host project folders and Git credentials are not m
 | Executors | Implementation within a task folder; repeatable check commands | [Workers](workers.md) |
 | VM controller | Environment recipes, capability probes, baselines, checkpoints and independent checks | [Environments](environments.md), [Sandbox](sandbox.md) |
 | Reviewer | Fresh assessment, finding triage and explicit closure decisions | [Review](review.md) |
+| Publication writer | Commit title, PR title and summary from the reviewed diff | [Publication](git-workflow.md#commit-and-pr-text) |
 | Tool dispatcher | Caller validation and host/guest operation boundaries | [Tools](tools.md) |
 | Store and Git adapters | Durable state, recovery checkpoints and confirmed publication | [Local state](local-state.md), [Git workflow](git-workflow.md) |
 
@@ -53,9 +57,11 @@ The controller serializes checkpoints, integration, checks and system package in
 
 ```mermaid
 stateDiagram-v2
+    state "Needs attention" as NeedsAttention
+    state "Ready to publish" as Ready
     [*] --> Planning: Submit request
     Planning --> Preparing: Valid plan
-    Preparing --> Building: Capabilities ready; baseline recorded
+    Preparing --> Building: Capabilities ready and baseline recorded
     Preparing --> NeedsAttention: Setup or capability failure
     Building --> Checking: Tasks integrated
     Checking --> Reviewing: Combined checks pass
