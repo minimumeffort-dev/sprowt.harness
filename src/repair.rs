@@ -184,7 +184,7 @@ impl Store {
         };
         if affected(&plan, &reporter.id, &reporter.id).contains(&owner.id) {
             return Ok(Err(
-                "Repair owner cannot depend on the task reporting the failure.".into(),
+                "Plan dependency needs revision: the repair owner is waiting for this reporting task. Preserve the reproduction and replan diagnosis and repair together; do not retry the same blocked prerequisite.".into(),
             ));
         }
         if !execution

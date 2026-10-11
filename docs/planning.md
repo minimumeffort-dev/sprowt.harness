@@ -23,6 +23,7 @@ The starting brief contains up to 120 paths across three levels, short root rule
 
 | Part | Purpose |
 | --- | --- |
+| Environment | Setup recipe, capability probes and starting test commands |
 | Summary | The requested outcome |
 | Contracts | Shared interfaces, data shapes and error behavior |
 | Assumptions and non-goals | Material choices and boundaries |
@@ -32,6 +33,8 @@ The starting brief contains up to 120 paths across three levels, short root rule
 | Provider choice | Automatic by default; capability-specific when justified |
 
 Separate ownership permits parallel implementation against shared contracts. An interface consumer can test with a stub while a dependent integration task later checks the real components together. Shared files and genuine prerequisites require dependencies. Small changes can stay with one task.
+
+For repairs, give reproduction and its production fix to the same owner when they cannot finish independently. A diagnostic prerequisite can prove that a defect exists; it must not need the downstream repair to pass. Whole-project green checks belong after the repair.
 
 **Ctrl+O** shows the full plan and routing decisions. Display toggles preserve your draft and queue.
 

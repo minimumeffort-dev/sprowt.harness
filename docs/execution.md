@@ -128,6 +128,12 @@ These are separate limits, saved across restart and explicit retry. A new plan s
 | Integration repair handoff | Two handoffs per plan | Persistent failure offers **Revise repair plan** |
 | Review repair | Two authorized passes per plan | No progress, uncertain evidence or remaining issues after the limit |
 
+### A diagnostic task blocks its repair
+
+If a tests-only task has a failed check and a dependent task is still pending, the dock offers **Revise repair plan**. This identifies a possible planning deadlock: the reproduction may need the very production fix that is waiting for it.
+
+The revised plan receives saved source, failure evidence and the finding ledger. It is instructed to give reproduction and repair one owner while retaining every regression and final gate. The controller does not mark the diagnostic task passed, remove dependency checks or start the waiting owner with unverified source. Connection and timeout failures keep their own recovery paths.
+
 ### Verification feedback
 
 A failed controller task check returns the command and output to its original owner. The worker keeps its folder and scope, preserves coverage and reruns all checks, including previously skipped ones. Repeated failure pauses that task and its dependents; independent peers can finish.

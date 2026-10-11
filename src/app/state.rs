@@ -137,7 +137,15 @@ impl App {
                 "Repair stalled · a revised plan is needed",
                 Some(ReviseRepair),
             );
-            s.error = m
+            let diagnosis = m
+                .planning
+                .as_ref()
+                .and_then(|p| p.plan.as_ref())
+                .and_then(|p| execution.and_then(|e| e.blocked_diagnosis(p)));
+            if diagnosis.is_some() {
+                s.status = "Plan blocked · diagnosis is holding up its repair".into();
+            }
+            s.error = diagnosis.map(|_| "A tests-only task has failing checks and a dependent task is waiting. Revise ownership so reproduction and repair can finish together; saved work and checks are retained.".into()).or_else(|| m
                 .execution
                 .as_ref()
                 .and_then(|e| {
@@ -163,7 +171,7 @@ impl App {
                                 .and_then(|e| e.tasks.iter().find(|r| r.repair_stalled()))
                                 .map(|r| r.summary.chars().take(240).collect())
                         })
-                });
+                }));
             s
         } else if let Some(id) = failed.filter(|_| !final_failed) {
             let task = self.inspect_task(id);

@@ -102,3 +102,7 @@ If a codemod was closed, its next execution creates a fresh VM and may need to r
 ## Evidence to keep when reporting a problem
 
 Include the visible state, task or finding ID, the failed check command, its output and whether the source changed since that result. **Details → Activity** and [metadata-only tool logs](tools.md#progress-and-activity) help establish the sequence. Redact secrets and private project content before sharing.
+
+## A reproduction is blocking its repair
+
+Choose **Revise repair plan** when a tests-only prerequisite fails and its production repair is waiting. The planner retains the reproduction and combines it with the fix under one owner. Passing a reproduction is different from proving that the product is repaired; combined checks and fresh review remain required. See [diagnostic recovery](execution.md#a-diagnostic-task-blocks-its-repair).

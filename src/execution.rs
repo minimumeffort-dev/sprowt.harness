@@ -227,6 +227,32 @@ impl Execution {
         })
     }
 
+    pub fn blocked_diagnosis(&self, plan: &Plan) -> Option<&TaskRun> {
+        self.tasks.iter().find(|run| {
+            run.status == "blocked"
+                && run.checks.iter().any(CheckResult::failed)
+                && crate::diagnostics::cause(run) == crate::diagnostics::Cause::Check
+                && plan
+                    .tasks
+                    .iter()
+                    .find(|task| task.id == run.task_id)
+                    .is_some_and(|task| {
+                        !task.files.is_empty()
+                            && task
+                                .files
+                                .iter()
+                                .all(|path| path.starts_with("tests/") || path.starts_with("test/"))
+                    })
+                && plan.tasks.iter().any(|task| {
+                    task.depends_on.contains(&run.task_id)
+                        && self
+                            .tasks
+                            .iter()
+                            .any(|r| r.task_id == task.id && r.status == "pending")
+                })
+        })
+    }
+
     pub fn complete(&self) -> bool {
         !self.tasks.is_empty() && self.tasks.iter().all(|task| task.status == "done")
     }

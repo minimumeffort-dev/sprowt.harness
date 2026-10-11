@@ -23,7 +23,7 @@ flowchart LR
     review -->|"Choose fixes"| build
 ```
 
-Repairs have limits. A pass that makes no progress stops with its evidence and a next action. Reopening restores saved work without restarting unfinished workers.
+Repairs have limits. A pass that makes no progress stops with its evidence and a next action. Blocked diagnostic prerequisites offer a revised repair plan. Reopening restores saved work without restarting unfinished workers.
 
 ## Run it
 

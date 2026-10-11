@@ -5863,6 +5863,55 @@ mod tests {
     }
 
     #[test]
+    fn blocked_diagnosis_keeps_gates_and_offers_a_viable_replan() {
+        let (data, store, m, _) = crate::review::tests::fixture();
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        let plan = app.mods[0]
+            .planning
+            .as_mut()
+            .unwrap()
+            .plan
+            .as_mut()
+            .unwrap();
+        plan.tasks[0].files = vec!["tests/repro.mjs".into()];
+        plan.tasks[1].depends_on = vec![plan.tasks[0].id.clone()];
+        let e = app.mods[0].execution.as_mut().unwrap();
+        e.status = "blocked".into();
+        e.tasks[0].status = "blocked".into();
+        e.tasks[0].summary = "Reproduced failure; production owner is waiting".into();
+        e.tasks[0].checks[0].exit_code = Some(1);
+        e.tasks[0].checks[0].output = "AssertionError: timestamp precision lost".into();
+        e.tasks[1].status = "pending".into();
+        app.input.insert_str("keep draft");
+        assert_eq!(app.action_dock().primary, Some(Action::ReviseRepair));
+        assert!(app.state_summary().status.contains("diagnosis"));
+        let plan = app.mods[0]
+            .planning
+            .as_ref()
+            .unwrap()
+            .plan
+            .as_ref()
+            .unwrap();
+        assert!(
+            app.mods[0]
+                .execution
+                .as_ref()
+                .unwrap()
+                .ready_tasks(plan)
+                .next()
+                .is_none()
+        );
+        assert!(!app.mods[0].execution.as_ref().unwrap().complete());
+        app.perform_action(Action::ReviseRepair).unwrap();
+        assert!(app.auto_plans.contains(&m.id));
+        assert_eq!(app.input.lines(), ["keep draft"]);
+        assert!(app.mods[0].messages.iter().any(|m| {
+            m.body
+                .contains("combine reproduction and production repair")
+        }));
+    }
+
+    #[test]
     fn preparation_failure_offers_replanning_with_saved_evidence() {
         let (data, mut store, m, _) = crate::review::tests::fixture();
         let run = &m.execution.as_ref().unwrap().tasks[0];
