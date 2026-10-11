@@ -106,9 +106,9 @@ impl Job {
         match self.receiver.try_recv() {
             Ok(result) => Some(result),
             Err(mpsc::TryRecvError::Empty) => None,
-            Err(mpsc::TryRecvError::Disconnected) => Some(Err(io::Error::other(
-                "Git operation stopped; Ctrl+R retries.",
-            ))),
+            Err(mpsc::TryRecvError::Disconnected) => {
+                Some(Err(io::Error::other("Git operation stopped.")))
+            }
         }
     }
 }
@@ -293,7 +293,7 @@ pub(crate) fn run(
     cancelled: &AtomicBool,
 ) -> io::Result<Vec<u8>> {
     if cancelled.load(Ordering::Relaxed) {
-        return Err(io::Error::other("Git operation paused; Ctrl+R retries."));
+        return Err(io::Error::other("Git operation paused."));
     }
     let out = root.join("git-output");
     let err = root.join("git-error");
@@ -344,9 +344,7 @@ pub(crate) fn run(
             }
             let _ = child.kill();
             let _ = child.wait();
-            return Err(io::Error::other(
-                "Git operation stopped or timed out; Ctrl+R retries.",
-            ));
+            return Err(io::Error::other("Git operation stopped or timed out."));
         }
         thread::sleep(Duration::from_millis(25));
     }

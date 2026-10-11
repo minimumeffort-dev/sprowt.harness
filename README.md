@@ -80,7 +80,7 @@ You describe what you want built. The planner identifies useful parallel work an
 
 Blocked downloads show **Network access needed** beside the task. **Ctrl+N** shows the exact domains and reason: **a** allows them for this codemod; **d** denies. Approval reconnects the affected worker and retries its saved task. Other workers continue; the global allowlist stays unchanged.
 
-Merge PRs one at a time on GitHub. The harness syncs your project branch on startup and every 30 seconds while open, even with no codemods. Codemod checks fetch into separate references, so they can run alongside project sync. Local edits and staging stay; unsafe updates pause. **Ctrl+U** checks immediately.
+Merge PRs one at a time on GitHub. The harness syncs your project branch on startup and every 30 seconds while open, even with no codemods. Codemod checks fetch into separate references, so they can run alongside project sync. Local edits and staging stay; unsafe updates pause. A background sync failure has its own warning and leaves local work controls available. **Ctrl+U** retries sync; **Ctrl+G → s** opens its details. The warning clears when that check succeeds.
 
 Other codemods finish their current work, save a checkpoint and update in their existing VM. A worker resolves text conflicts and rechecks the combined code. Open PRs become drafts during the update; Publish updates the same PR and marks it ready again. Product decisions pause for your input; binary conflicts need manual resolution.
 

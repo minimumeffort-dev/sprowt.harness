@@ -46,6 +46,8 @@ Local edits and staging are preserved. Files previously left untracked after pub
 
 Overlapping tracked edits, divergent history, unavailable remotes and active Git operations pause sync with an error. Resolve the cause and press **Ctrl+U**, or wait for the next check. Failed codemod setup uses **Ctrl+R**. No planner starts with stale source. Detached commits, local-only branches and projects without a remote keep their local starting point; a missing configured upstream is an error.
 
+Background project or target check failures show **Sync needs attention** separately from worker progress. Local repairs and review actions remain available. **Ctrl+G → s · Sync details** shows the full cause, labelled Project branch or Codemod target; **Ctrl+U** retries from there too. Target errors belong to their codemod. Each warning clears only after its corresponding check succeeds; retrying shows **Retrying sync** until the result arrives. A sync retry does not request a source update or invalidate a review. Failed setup, publication and source updates retain their own recovery actions.
+
 If planning failed before execution, **Ctrl+R** refreshes an untouched worktree from the updated project and starts a fresh planner conversation. History, queued instructions and the draft stay. Executing codemods use the update flow below.
 
 ## When another codemod merges
@@ -65,7 +67,7 @@ flowchart TB
     ready --> merge["Merge B on GitHub"]
 ```
 
-An open PR becomes a draft as soon as a newer target is detected. Its workers finish before source changes. Finished versions update automatically once their review is clear. An unfinished review, open findings or repairs hold the automatic update; paused or failed work waits for retry or edits. **Ctrl+U** explicitly updates a finished version and invalidates its previous review. This updates B's branch and VM source separately from the project's fast-forward above.
+An open PR becomes a draft as soon as a newer target is detected. Its workers finish before source changes. Finished versions update automatically once their review is clear. An unfinished review, open findings or repairs hold the automatic update; paused or failed work waits for retry or edits. When there is no sync warning, **Ctrl+U** from the conversation explicitly updates a finished version and invalidates its previous review. This updates B's branch and VM source separately from the project's fast-forward above.
 
 The integration plan carries the codemod's checks and adds combined regression checks. A resolution worker receives the original goals, upstream commit messages and conflicting versions. Technical text conflicts are resolved in B's existing VM. Conflicting product intent pauses with a question; answer through the composer. Clean merges get the same verification.
 

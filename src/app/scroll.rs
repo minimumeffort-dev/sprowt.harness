@@ -132,6 +132,7 @@ impl App {
             View::Task(id, offset) => View::Task(id, shift(offset)),
             View::TaskHistory(id, offset) => View::TaskHistory(id, shift(offset)),
             View::Failure(offset) => View::Failure(shift(offset)),
+            View::Sync(offset) => View::Sync(shift(offset)),
             View::Review(offset) => View::Review(shift(offset)),
             View::Checks(offset) => View::Checks(shift(offset)),
             View::Findings(offset) => View::Findings(shift(offset)),

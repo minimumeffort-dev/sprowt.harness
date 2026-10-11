@@ -15,6 +15,7 @@ pub enum Action {
     Network,
     Details,
     Failure,
+    SyncDetails,
     Diff,
     Review,
     Findings,
@@ -32,7 +33,12 @@ pub enum Action {
 impl Action {
     pub fn group(self) -> u8 {
         match self {
-            Self::History | Self::Details | Self::Failure | Self::Diff | Self::Findings => 1,
+            Self::History
+            | Self::Details
+            | Self::Failure
+            | Self::SyncDetails
+            | Self::Diff
+            | Self::Findings => 1,
             Self::Mods | Self::NewMod | Self::Close | Self::Reopen => 2,
             Self::Delete => 3,
             _ => 0,
@@ -65,6 +71,7 @@ impl Action {
             Self::Close => Some('c'),
             Self::Delete => Some('d'),
             Self::Failure => Some('f'),
+            Self::SyncDetails => Some('s'),
             Self::Findings => Some('i'),
             Self::FixIssues | Self::FixCheck(_) => Some('x'),
             Self::RetryTask(_) => Some('r'),
@@ -100,6 +107,7 @@ pub struct ActionDock {
     pub detail: String,
     pub evidence: String,
     pub error: Option<String>,
+    pub sync: Option<&'static str>,
     pub tone: Tone,
     pub primary: Option<Action>,
     pub actions: Vec<ActionItem>,
@@ -159,14 +167,55 @@ impl App {
         }
     }
 
-    pub fn action_error(&self) -> Option<&str> {
-        let origin = if matches!(self.view, View::Actions(_) | View::Failure(_)) {
+    fn action_context(&self) -> View {
+        if matches!(
+            self.view,
+            View::Actions(_) | View::Failure(_) | View::Sync(_)
+        ) {
             self.action_origin.unwrap_or(View::Chat)
         } else {
             self.view
-        };
-        if matches!(origin, View::NewMod) {
-            self.notice.as_deref().or(self.project_error.as_deref())
+        }
+    }
+
+    pub fn sync_errors(&self) -> Vec<(&'static str, &str)> {
+        let mut errors = Vec::new();
+        if let Some(error) = self.project_error.as_deref() {
+            errors.push(("Project branch", error));
+        }
+        if self.action_context() != View::NewMod
+            && let Some(error) = self
+                .current_mod()
+                .filter(|m| !m.closed)
+                .and_then(|m| self.target_errors.get(&m.id))
+        {
+            errors.push(("Codemod target", error.as_str()));
+        }
+        errors
+    }
+
+    pub fn sync_status(&self) -> Option<&'static str> {
+        if self.sync_errors().is_empty() {
+            None
+        } else if self.project_job.is_some() && self.project_error.is_some()
+            || self.action_context() != View::NewMod
+                && self.current_mod().is_some_and(|m| {
+                    self.target_errors.contains_key(&m.id)
+                        && self
+                            .git_jobs
+                            .get(&m.id)
+                            .is_some_and(|job| job.label == "checking target branch")
+                })
+        {
+            Some("Retrying sync")
+        } else {
+            Some("Sync needs attention")
+        }
+    }
+
+    pub fn action_error(&self) -> Option<&str> {
+        if self.action_context() == View::NewMod {
+            self.notice.as_deref()
         } else {
             self.worker_error()
         }
@@ -181,6 +230,7 @@ impl App {
             detail: summary.detail,
             evidence: summary.evidence,
             error: summary.error,
+            sync: self.sync_status(),
             primary: summary.primary,
             actions: Vec::new(),
         };
@@ -339,6 +389,10 @@ impl App {
             dock.actions
                 .push(ActionItem::new(Failure, "Show full error"));
         }
+        if dock.sync.is_some() {
+            dock.actions
+                .push(ActionItem::new(SyncDetails, "Sync details"));
+        }
         let update_label = code_mod
             .and_then(|m| self.targets.get(&m.id))
             .filter(|t| self.git_state().is_some_and(|s| s.base != t.head))
@@ -347,7 +401,9 @@ impl App {
             });
         dock.actions.push(ActionItem::new(
             Update,
-            if code_mod.is_some() {
+            if dock.sync.is_some() {
+                "Retry sync".into()
+            } else if code_mod.is_some() {
                 update_label
             } else {
                 "Sync project".into()
@@ -465,6 +521,10 @@ impl App {
                     .failed_task()
                     .map_or(View::Failure(0), |id| View::Task(id, 0));
             }
+            Action::SyncDetails => {
+                self.action_origin = Some(self.view);
+                self.view = View::Sync(0);
+            }
             Action::Diff => self.open_review()?,
             Action::Review => {
                 if let Some(index) = self.active {
@@ -495,14 +555,16 @@ impl App {
                 }
             }
             Action::Update => {
+                let explicit_update =
+                    self.sync_status().is_none() && !matches!(self.view, View::Sync(_));
                 self.project_check = None;
                 self.maintain_project();
-                if matches!(self.view, View::Chat)
+                if matches!(self.action_context(), View::Chat)
                     && let Some(index) = self.active
                     && !self.mods[index].closed
                     && self.mods[index].execution.is_some()
                 {
-                    self.check_target(index, false, true);
+                    self.check_target(index, false, explicit_update);
                 }
             }
             Action::Queue => self.view = View::Queue(0),

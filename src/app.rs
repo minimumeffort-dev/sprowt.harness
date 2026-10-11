@@ -38,6 +38,7 @@ pub enum View {
     Chat,
     Actions(Action),
     Failure(u16),
+    Sync(u16),
     Mods(usize),
     DeleteMod(usize),
     CloseMod(usize),
@@ -94,6 +95,7 @@ pub struct App {
     git_states: BTreeMap<i64, GitMod>,
     targets: BTreeMap<i64, crate::mod_sync::Target>,
     target_checks: BTreeMap<i64, Instant>,
+    target_errors: BTreeMap<i64, String>,
     update_errors: BTreeSet<i64>,
     notice: Option<String>,
     store: Store,
@@ -214,6 +216,7 @@ impl App {
             git_states,
             targets: BTreeMap::new(),
             target_checks: BTreeMap::new(),
+            target_errors: BTreeMap::new(),
             update_errors: BTreeSet::new(),
             notice: None,
             store,
@@ -332,6 +335,7 @@ impl App {
                 View::Mods(_)
                 | View::Actions(_)
                 | View::Failure(_)
+                | View::Sync(_)
                 | View::DeleteMod(_)
                 | View::CloseMod(_)
                 | View::Queue(_)
@@ -355,7 +359,10 @@ impl App {
                 }
                 if ctrl
                     && key.code == KeyCode::Char('u')
-                    && matches!(self.view, View::Chat | View::NewMod | View::Mods(_))
+                    && matches!(
+                        self.view,
+                        View::Chat | View::NewMod | View::Mods(_) | View::Sync(_)
+                    )
                 {
                     self.perform_action(Action::Update)?;
                     return Ok(());
@@ -366,15 +373,24 @@ impl App {
                 match self.view {
                     View::Checks(_) => {}
                     View::Actions(selected) => self.actions_key(key, selected)?,
-                    View::Failure(scroll) => match key.code {
+                    View::Failure(scroll) | View::Sync(scroll) => match key.code {
                         KeyCode::Esc => self.view = self.action_origin.take().unwrap_or(View::Chat),
-                        KeyCode::Down => self.view = View::Failure(scroll.saturating_add(1)),
-                        KeyCode::Up => self.view = View::Failure(scroll.saturating_sub(1)),
-                        KeyCode::PageDown => {
-                            self.view = View::Failure(scroll.saturating_add(self.page_size))
-                        }
-                        KeyCode::PageUp => {
-                            self.view = View::Failure(scroll.saturating_sub(self.page_size))
+                        KeyCode::Down | KeyCode::Up | KeyCode::PageDown | KeyCode::PageUp => {
+                            let step = if matches!(key.code, KeyCode::PageDown | KeyCode::PageUp) {
+                                self.page_size
+                            } else {
+                                1
+                            };
+                            let next = if matches!(key.code, KeyCode::Down | KeyCode::PageDown) {
+                                scroll.saturating_add(step)
+                            } else {
+                                scroll.saturating_sub(step)
+                            };
+                            self.view = if matches!(self.view, View::Sync(_)) {
+                                View::Sync(next)
+                            } else {
+                                View::Failure(next)
+                            };
                         }
                         _ => {}
                     },
@@ -1580,7 +1596,6 @@ impl App {
                     .find_map(|w| w.error.as_deref())
             })
             .or(self.notice.as_deref())
-            .or(self.project_error.as_deref())
     }
 
     fn companion_mood(&self) -> sprout::Mood {
@@ -2636,7 +2651,7 @@ impl App {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                     self.project_error.take()
                 }
-                Err(error) => Some(format!("Project sync paused: {error} Ctrl+U retries.")),
+                Err(error) => Some(error.to_string()),
                 _ => unreachable!(),
             };
         }
@@ -2735,6 +2750,7 @@ impl App {
                     publish,
                     explicit,
                 }) => {
+                    self.target_errors.remove(&id);
                     if explicit
                         && let Some(target) = &target
                         && self
@@ -2828,6 +2844,7 @@ impl App {
                     self.notice = None;
                 }
                 Ok(git_mod::Result::Closed) => {
+                    self.target_errors.remove(&id);
                     let selected = self.store.close_mod(self.project_id, id)?;
                     self.mods[index].closed = true;
                     self.mods[index].planning = self.store.planning(id)?;
@@ -2848,6 +2865,7 @@ impl App {
                     let selected = self.store.delete_mod(self.project_id, id)?;
                     self.mods.remove(index);
                     self.git_states.remove(&id);
+                    self.target_errors.remove(&id);
                     self.active = self.mods.iter().position(|m| Some(m.id) == selected);
                     if was_active {
                         self.view = if self.active.is_some() {
@@ -2870,6 +2888,12 @@ impl App {
                         .err()
                         .filter(|error| error.kind() != io::ErrorKind::NotFound)
                         .map(|error| error.to_string());
+                }
+                Err(error) if label == Some("checking target branch") => {
+                    self.target_errors.insert(id, error.to_string());
+                    if self.current_mod().is_some_and(|m| m.id == id) {
+                        self.publish_after_review = false;
+                    }
                 }
                 Err(error) => {
                     if matches!(
@@ -3106,7 +3130,10 @@ mod tests {
         app.input.insert_str("Next feature");
         app.poll_workers().unwrap();
         wait_git(&mut app);
-        assert!(app.worker_error().unwrap().contains("Project sync paused"));
+        assert!(app.worker_error().is_none());
+        assert_eq!(app.sync_status(), Some("Sync needs attention"));
+        assert_eq!(app.sync_errors()[0].0, "Project branch");
+        assert_eq!(app.state_summary().phase, state::Phase::New);
         assert_eq!(
             git_mod::git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
             before
@@ -3116,8 +3143,14 @@ mod tests {
             "local edit\n"
         );
         std::fs::write(repo.join("a.txt"), "original\n").unwrap();
+        key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Sync(0)));
         key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
         assert!(app.worker_error().is_none());
+        assert!(app.sync_status().is_none());
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.view, View::NewMod));
         assert_eq!(
             git_mod::git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
             target
@@ -3327,6 +3360,154 @@ mod tests {
     }
 
     #[test]
+    fn background_sync_errors_keep_workers_running_and_ctrl_u_recovers() {
+        let (_data, mut app, root) = execution_app();
+        commit_project(&app.project);
+        git_mod::prepare(
+            &app.project,
+            &root,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .unwrap();
+        let id = app.mods[0].id;
+        app.mods[0].git_root = Some(root);
+        let record = app.store.worker_for(id, Role::Planner).unwrap();
+        let mut worker =
+            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        worker.role = Role::Executor;
+        worker.status = Status::Running;
+        app.workers.insert(worker.id, worker);
+        let error = "fatal: unable to access 'https://github.com/fixture/project.git/': Failed to connect to github.com port 443";
+        app.git_jobs.insert(
+            id,
+            Job::start("checking target branch", move |_| {
+                Err(io::Error::other(error))
+            }),
+        );
+        app.project_job = Some(Job::start("syncing project branch", move |_| {
+            Err(io::Error::other(error))
+        }));
+        wait_git(&mut app);
+        assert!(app.worker_error().is_none() && app.action_dock().error.is_none());
+        assert_eq!(app.state_summary().phase, state::Phase::Building);
+        assert_eq!(app.sync_errors().len(), 2);
+        assert!(!app.git_retry_pending());
+        assert!(
+            !app.action_dock()
+                .actions
+                .iter()
+                .any(|a| matches!(a.action, Action::Retry | Action::RetryGit | Action::Failure))
+        );
+        for width in [48, 100, 160] {
+            let rendered = rows(&screen(&mut app, width, 42)).join("\n");
+            assert!(rendered.contains("Sync needs attention"), "{rendered}");
+            assert!(rendered.contains("Retry sync") && rendered.contains("Sync details"));
+            assert!(!rendered.contains("fatal:") && !rendered.contains("Work needs attention"));
+            assert!(app.scroll.input.height >= 4);
+        }
+        key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+        key(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
+        assert!(matches!(app.view, View::Sync(0)));
+        let rendered = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(rendered.contains("Project branch") && rendered.contains("Codemod target"));
+        assert!(rendered.contains("fatal:") && !rendered.contains("Ctrl+R retries"));
+        screen(&mut app, 48, 20);
+        let content = app.scroll.content;
+        wheel(&mut app, false, content);
+        assert!(matches!(app.view, View::Sync(offset) if offset > 0));
+        screen(&mut app, 100, 30);
+        assert!(matches!(app.view, View::Sync(0)));
+        app.handle(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+        assert_eq!(app.sync_status(), Some("Retrying sync"));
+        wait_git(&mut app);
+        assert!(app.sync_status().is_none());
+        assert!(
+            rows(&screen(&mut app, 100, 30))
+                .join("\n")
+                .contains("Sync recovered")
+        );
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(app.view == View::Chat);
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(!app.mods[0].user_paused);
+        assert!(
+            app.workers
+                .values()
+                .all(|w| w.enabled && w.status == Status::Running)
+        );
+    }
+
+    #[test]
+    fn sync_recovery_clears_only_its_own_error() {
+        let (_data, mut app, root) = execution_app();
+        let id = app.mods[0].id;
+        app.mods[0].git_root = Some(root);
+        let second = app
+            .store
+            .create_mod(app.project_id, "Second codemod")
+            .unwrap();
+        let second_id = second.id;
+        app.mods.push(second);
+        app.target_errors.insert(id, "target unavailable".into());
+        app.target_errors
+            .insert(second_id, "second target unavailable".into());
+        app.project_error = Some("project unavailable".into());
+        app.notice = Some("Worker failed".into());
+        app.git_jobs.insert(
+            id,
+            Job::start("checking target branch", |_| {
+                Ok(git_mod::Result::TargetChecked {
+                    target: None,
+                    publish: false,
+                    explicit: false,
+                })
+            }),
+        );
+        wait_git(&mut app);
+        assert_eq!(
+            app.sync_errors(),
+            [("Project branch", "project unavailable")]
+        );
+        assert_eq!(app.worker_error(), Some("Worker failed"));
+        app.project_job = Some(Job::start("syncing project branch", |_| {
+            Err(io::Error::from(io::ErrorKind::WouldBlock))
+        }));
+        wait_git(&mut app);
+        assert!(app.project_error.is_some());
+        app.project_job = Some(Job::start("syncing project branch", |_| {
+            Ok(git_mod::Result::ProjectSynced)
+        }));
+        wait_git(&mut app);
+        assert!(app.sync_status().is_none());
+        assert_eq!(app.worker_error(), Some("Worker failed"));
+        app.active = Some(1);
+        assert_eq!(
+            app.sync_errors(),
+            [("Codemod target", "second target unavailable")]
+        );
+        app.view = View::NewMod;
+        assert!(app.sync_errors().is_empty());
+        app.view = View::Chat;
+        app.active = Some(0);
+        app.git_jobs.insert(
+            id,
+            Job::start("updating from target branch", |_| {
+                Err(io::Error::other("Merge failed"))
+            }),
+        );
+        wait_git(&mut app);
+        assert!(app.update_errors.contains(&id));
+        assert!(app.worker_error().unwrap().contains("Merge failed"));
+        assert!(app.worker_error().unwrap().contains("Ctrl+R retries"));
+        assert_eq!(app.action_dock().primary, Some(Action::RetryGit));
+        assert!(app.sync_status().is_none());
+    }
+
+    #[test]
     fn upstream_updates_wait_for_workers_and_keep_drafts_and_queued_edits() {
         for explicit in [false, true] {
             let (data, repo, root, target, plan) = crate::mod_sync::tests::fixture();
@@ -3394,6 +3575,11 @@ mod tests {
                 assert!(!root.join("main-update.json").exists());
             }
             if explicit {
+                app.target_errors.insert(id, "Remote unavailable".into());
+                key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
+                assert!(app.sync_status().is_none());
+                assert!(!root.join("main-update.json").exists());
+                assert_eq!(app.mods[0].agent_review.as_ref().unwrap().status, "stale");
                 app.check_target(0, false, true);
                 let started = Instant::now();
                 loop {
@@ -5431,6 +5617,18 @@ mod tests {
         app.maintain_reviews().unwrap();
         assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 0);
         app.input.insert_str("keep my draft");
+        app.mods[0].git_root = Some(m.execution.as_ref().unwrap().workspace.clone());
+        app.git_jobs.insert(
+            m.id,
+            Job::start("checking target branch", |_| {
+                Err(io::Error::other("GitHub unavailable"))
+            }),
+        );
+        wait_git(&mut app);
+        // This fixture has no Git metadata; only the failed check needed a root.
+        app.mods[0].git_root = None;
+        assert!(app.worker_error().is_none() && app.action_dock().error.is_none());
+        assert_eq!(app.sync_status(), Some("Sync needs attention"));
         assert!(app.action_dock().primary == Some(Action::FixIssues));
         assert_eq!(app.action_dock().status, "Review · 1 open issue");
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);

@@ -134,6 +134,7 @@ The timeline reflects the current saved plan and operation states. Prior passes 
 
 - The first row names the state and, when you need to act, one recommended action.
 - Supporting rows show progress, check/review currency and a concise error when relevant. A failed task remains visible while independent workers continue.
+- Background sync failures get a separate yellow warning with **Ctrl+U · Retry sync** and **Ctrl+G → s · Sync details**. They leave the work state and its recommended action intact. The full Git error stays in Sync details, which supports mouse/keyboard scrolling and retry. Successful checks clear their own warning.
 - The composer starts with four rows and grows to eight, then scrolls. Blank lines and wrapped text count; the cursor stays visible. Short terminals use fewer rows to retain controls.
 - Pause, Details and More are secondary controls. Routine work has no highlighted recommendation. Enter sends your message, never the recommendation.
 
@@ -218,7 +219,7 @@ Use the wheel or trackpad over a view to scroll it, or over the composer to scro
 
 More also supports **n** new, **c** close, **d** delete, **x** fix the failed check or review findings, and **r** retry a failed task. These letters type normally in the composer. Close, delete and publish retain their confirmations.
 
-Blocked downloads show exact domains and a reason; **a** approves for this codemod and **d** denies. GitHub setup confirms the repository destination. Project sync runs on startup and every 30 seconds even without codemods; **Ctrl+U** checks immediately. Background target checks do not replace active work progress. See [Codemods](codemods.md), [Review](review.md) and [Git workflow](git-workflow.md).
+Blocked downloads show exact domains and a reason; **a** approves for this codemod and **d** denies. GitHub setup confirms the repository destination. Project sync runs on startup and every 30 seconds even without codemods; **Ctrl+U** checks immediately. Retrying a sync warning keeps the current review and repair work intact. See [Codemods](codemods.md), [Review](review.md) and [Git workflow](git-workflow.md).
 
 ## Commands
 

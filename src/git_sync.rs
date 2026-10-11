@@ -147,9 +147,7 @@ pub fn project(project: &Path, root: &Path, cancelled: &AtomicBool) -> io::Resul
         )));
     }
     if cancelled.load(Ordering::Relaxed) {
-        return Err(io::Error::other(
-            "Project synchronization paused; Ctrl+R retries.",
-        ));
+        return Err(io::Error::other("Project synchronization paused."));
     }
     let state = Sync {
         project: project.canonicalize()?,

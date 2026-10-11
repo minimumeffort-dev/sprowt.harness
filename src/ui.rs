@@ -255,7 +255,7 @@ pub fn draw(
                 ..content
             },
         );
-    } else if let View::Failure(scroll) = app.view {
+    } else if let View::Failure(scroll) | View::Sync(scroll) = app.view {
         draw_failure(
             frame,
             app,
@@ -1259,6 +1259,19 @@ fn dock_header(
         }
         lines.extend(error.into_iter().take(2));
     }
+    if !menu_open && let Some(sync) = dock.sync {
+        let ctrl = if width < 60 { "^" } else { "ctrl+" };
+        lines.extend(dock_row(
+            Line::from(format!("! {sync}")).fg(Color::Yellow),
+            Line::from(vec![
+                format!("{ctrl}u ").fg(ACCENT),
+                "Retry sync  ".fg(KEY_HINT),
+                format!("{ctrl}g s ").fg(ACCENT),
+                "Sync details".fg(KEY_HINT),
+            ]),
+            width,
+        ));
+    }
     lines
 }
 
@@ -1381,7 +1394,12 @@ fn draw_actions(frame: &mut Frame, app: &mut App, dock: &ActionDock, selected: A
 }
 
 fn draw_failure(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
-    let hints = key_hints(&[("↑↓", "scroll"), ("esc", "back")]);
+    let sync = matches!(app.view, View::Sync(_));
+    let hints = if sync {
+        key_hints(&[("ctrl+u", "retry sync"), ("↑↓", "scroll"), ("esc", "back")])
+    } else {
+        key_hints(&[("↑↓", "scroll"), ("esc", "back")])
+    };
     let [panel, footer] = Layout::vertical([
         Constraint::Min(1),
         Constraint::Length(hints.line_count(area.width) as u16),
@@ -1391,20 +1409,46 @@ fn draw_failure(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
         .border_type(BorderType::Rounded)
         .border_style(Style::new().fg(BORDER))
         .padding(Padding::horizontal(1))
-        .title(Line::from(" error details ").fg(KEY_HINT).bold());
+        .title(
+            Line::from(if sync {
+                " sync details "
+            } else {
+                " error details "
+            })
+            .fg(KEY_HINT)
+            .bold(),
+        );
     let inner = block.inner(panel);
     frame.render_widget(block, panel);
+    let text = if sync {
+        let mut lines = vec![
+            Line::from(app.sync_status().unwrap_or("Sync recovered"))
+                .fg(ACCENT)
+                .bold(),
+        ];
+        for (scope, error) in app.sync_errors() {
+            lines.push(Line::default());
+            lines.push(Line::from(scope).fg(Color::Yellow).bold());
+            lines.extend(error.lines().map(Line::from));
+        }
+        Text::from(lines)
+    } else {
+        Text::from(app.action_error().unwrap_or("No current error."))
+    };
     let (scroll, _) = draw_text(
         frame,
-        Paragraph::new(app.action_error().unwrap_or("No current error."))
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(text).wrap(Wrap { trim: false }),
         inner,
         scroll,
         true,
     );
     app.scroll.content = inner;
     app.page_size = inner.height.max(1);
-    app.view = View::Failure(scroll);
+    app.view = if sync {
+        View::Sync(scroll)
+    } else {
+        View::Failure(scroll)
+    };
     frame.render_widget(hints, footer);
 }
 
