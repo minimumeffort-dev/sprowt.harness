@@ -4,6 +4,7 @@ mod checks;
 mod codex;
 mod conflict;
 mod diagnostics;
+mod environment;
 mod execution;
 mod git_mod;
 mod git_sync;

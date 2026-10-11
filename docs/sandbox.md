@@ -10,7 +10,7 @@ Each executing codemod gets an Apple Container VM. Workers install project runti
 
 Complete the [quickstart](quickstart.md) first. A valid plan starts VM execution automatically. First use builds a shared image; later runs reuse it.
 
-The image includes general build tools, Bubblewrap, Codex and mise. It does not preselect a project language. Workers read manifests and install compatible runtimes under their own HOME:
+The image includes general build tools, Bubblewrap, Codex and mise. It does not preselect a project language. The [project recipe](environments.md) installs and probes declared runtimes before editing. Workers can install additional requirements during their task. Runtime installations live under their own HOME:
 
 ```text
 /home/sprowt/workers/<worker-id>/

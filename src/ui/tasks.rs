@@ -183,6 +183,64 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         }
         lines.push(Line::default());
     }
+    if let Some(root) = app
+        .current_mod()
+        .and_then(|m| m.execution.as_ref())
+        .map(|e| &e.workspace)
+        && let Ok(Some(receipt)) = crate::environment::load(root, id)
+    {
+        lines.push(
+            Line::from("Saved preparation · before this attempt")
+                .fg(ACCENT)
+                .bold(),
+        );
+        for (phase, results) in [
+            ("Setup", &receipt.setup),
+            ("Capabilities", &receipt.capabilities),
+            ("Baseline", &receipt.baseline),
+        ] {
+            if results.is_empty() {
+                continue;
+            }
+            let passed = results.iter().filter(|c| c.exit_code == Some(0)).count();
+            lines.push(
+                Line::from(format!("  {phase} · {passed}/{} passed", results.len())).fg(KEY_HINT),
+            );
+            for result in results
+                .iter()
+                .filter(|c| app.show_evidence || c.exit_code != Some(0))
+            {
+                lines.extend(wrap_line(
+                    Line::from(format!(
+                        "    {} {}",
+                        if result.exit_code == Some(0) {
+                            "✓"
+                        } else {
+                            "!"
+                        },
+                        result.check
+                    ))
+                    .fg(if result.exit_code == Some(0) {
+                        ACCENT
+                    } else {
+                        Color::Yellow
+                    }),
+                    width,
+                    4,
+                ));
+                if app.show_evidence {
+                    lines.extend(command_lines(&result.command, width));
+                }
+                if result.exit_code != Some(0) || app.show_evidence {
+                    lines.extend(indented_text(&result.evidence(), width, 4));
+                }
+            }
+        }
+        if let Some(error) = receipt.error {
+            lines.extend(indented_text(&error, width, 2));
+        }
+        lines.push(Line::default());
+    }
     if let Some(conflict) = &task.run.conflict {
         lines.push(Line::from("Conflicting files").fg(ACCENT).bold());
         lines.push(

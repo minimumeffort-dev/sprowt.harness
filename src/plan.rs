@@ -26,6 +26,8 @@ impl Role {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
+    #[serde(default)]
+    pub environment: Option<crate::environment::Recipe>,
     pub summary: String,
     #[serde(default)]
     pub contracts: Vec<String>,
@@ -92,6 +94,9 @@ impl Plan {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if let Some(recipe) = &self.environment {
+            recipe.validate()?;
+        }
         for notes in [&self.contracts, &self.assumptions, &self.non_goals] {
             if notes.len() > 12
                 || notes
@@ -276,7 +281,7 @@ impl Plan {
 pub fn schema(muse: bool) -> Value {
     let strings = json!({"type":"array", "items":{"type":"string"}});
     json!({"type":"object", "additionalProperties":false,
-        "properties":{"summary":{"type":"string"}, "contracts":strings, "assumptions":strings, "non_goals":strings, "tasks":{"type":"array", "items":{
+        "properties":{"environment":crate::environment::schema(),"summary":{"type":"string"}, "contracts":strings, "assumptions":strings, "non_goals":strings, "tasks":{"type":"array", "items":{
             "type":"object", "additionalProperties":false,
             "properties":{"id":{"type":"string"}, "title":{"type":"string"},
                 "outcome":{"type":"string"}, "files":strings, "depends_on":strings,
@@ -285,7 +290,7 @@ pub fn schema(muse: bool) -> Value {
                 "worker":{"type":"string", "enum":if muse { vec!["auto", "codex", "muse"] } else { vec!["auto", "codex"] }},
                 "provider_reason":{"type":"string"}, "checks":strings},
             "required":["id","title","outcome","files","depends_on","coordination","worker","provider_reason","checks"]}}},
-        "required":["summary","contracts","assumptions","non_goals","tasks"]})
+        "required":["environment","summary","contracts","assumptions","non_goals","tasks"]})
 }
 
 pub fn instructions(role: Role, description: &str, plan: Option<&Plan>, writable: bool) -> String {
@@ -301,7 +306,7 @@ pub fn instructions(role: Role, description: &str, plan: Option<&Plan>, writable
     };
     match role {
         Role::Planner => format!(
-            "{boundary} Your role is planner. Inspect relevant source, manifests, docs, tests and project rules before planning. The user describes an outcome; infer task decomposition, useful concurrency and coordination yourself. Produce a concise task plan matching the output schema. Define shared contracts (interfaces, data shapes and error behavior) before dividing work. Record only material assumptions and explicit non-goals; use empty arrays when unnecessary. Give tasks short outcomes, exact project-relative file or directory paths (no globs), dependencies and 1–3 brief completion checks. Use worker auto and an empty provider_reason by default. Rust assigns ready tasks among available providers. Backend, interface, tests, demanding implementation and integration are eligible for either provider; task complexity alone is not a provider capability. Choose a specific provider only when a concrete required tool or capability makes the other unsuitable, and give that brief reason in provider_reason. Do not infer provider strengths from their names. Up to two independent tasks run in parallel. Separate tasks with disjoint ownership can build against a defined contract concurrently; consuming another task's interface alone does not require a dependency. Check those components independently first (using a stub if needed), then verify the real integration in a task depending on both. Add dependencies for genuine implementation prerequisites or shared files. Do not split small tasks just to use both workers. Each task's coordination lists relevant peer task IDs and the interface, shared assumption or handoff they need to discuss; links are bidirectional and do not delay scheduling. Use an empty array for unrelated work. State concrete topics, not instructions to send ceremonial messages or ask invented questions. Include only requested work. Keep the plan small. Do not implement it. Codemod: {description}"
+            "{boundary} Your role is planner. Inspect relevant source, manifests, docs, tests and project rules before planning. The user describes an outcome; infer task decomposition, useful concurrency and coordination yourself. Produce a concise task plan matching the output schema. Define shared contracts (interfaces, data shapes and error behavior) before dividing work. Record only material assumptions and explicit non-goals; use empty arrays when unnecessary. Give tasks short outcomes, exact project-relative file or directory paths (no globs), dependencies and 1–3 brief completion checks. Use worker auto and an empty provider_reason by default. Rust assigns ready tasks among available providers. Backend, interface, tests, demanding implementation and integration are eligible for either provider; task complexity alone is not a provider capability. Choose a specific provider only when a concrete required tool or capability makes the other unsuitable, and give that brief reason in provider_reason. Do not infer provider strengths from their names. Up to two independent tasks run in parallel. Separate tasks with disjoint ownership can build against a defined contract concurrently; consuming another task's interface alone does not require a dependency. Check those components independently first (using a stub if needed), then verify the real integration in a task depending on both. Add dependencies for genuine implementation prerequisites or shared files. Do not split small tasks just to use both workers. Each task's coordination lists relevant peer task IDs and the interface, shared assumption or handoff they need to discuss; links are bidirectional and do not delay scheduling. Use an empty array for unrelated work. State concrete topics, not instructions to send ceremonial messages or ask invented questions. Include only requested work. Keep the plan small. Supply an environment recipe based on inspected manifests: portable setup commands with pinned runtime versions, capability probes (including browser/service/network needs when relevant), baseline commands that exist before edits, and relevant input paths. Reuse .sprowt/environment.json when present. Commands run inside the Linux VM task folder with a fresh environment; use absolute system executables or /usr/local/bin/mise exec with pinned versions, never temporary /tasks or worker HOME paths. Declare required Debian libraries in system_packages (package names only); installation uses the existing signed-repository installer. Setup must not change source or lockfiles. Capability failures stop dispatch; baseline test failures are retained as starting evidence and do not satisfy final checks. Use null only when no project setup is needed. Do not implement it. Codemod: {description}"
         ),
         Role::Reviewer => unreachable!(),
         Role::Executor => format!(

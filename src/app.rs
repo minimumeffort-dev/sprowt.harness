@@ -5863,6 +5863,39 @@ mod tests {
     }
 
     #[test]
+    fn preparation_failure_offers_replanning_with_saved_evidence() {
+        let (data, mut store, m, _) = crate::review::tests::fixture();
+        let run = &m.execution.as_ref().unwrap().tasks[0];
+        store
+            .finish_task(
+                m.id,
+                &run.source,
+                "blocked",
+                "Environment preflight failed: Chromium library missing",
+                &[],
+            )
+            .unwrap();
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        app.input.insert_str("keep draft");
+        assert_eq!(app.action_dock().primary, Some(Action::ReviseRepair));
+        assert!(!app.can_retry_task(run.id));
+        assert!(
+            app.action_dock()
+                .error
+                .unwrap()
+                .contains("Environment setup failed")
+        );
+        app.perform_action(Action::ReviseRepair).unwrap();
+        assert_eq!(app.input.lines(), ["keep draft"]);
+        assert!(
+            app.mods[0]
+                .messages
+                .iter()
+                .any(|m| m.body.contains("Chromium library missing"))
+        );
+    }
+
+    #[test]
     fn stalled_check_offers_replanning_and_preserves_completed_repairs() {
         let (data, mut store, m, _) = crate::review::tests::fixture();
         let run = &m.execution.as_ref().unwrap().tasks[1];

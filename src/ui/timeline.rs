@@ -393,6 +393,19 @@ fn inspector_lines(app: &App, item: &Item, width: u16) -> Vec<Line<'static>> {
     {
         match item.key {
             Key::Plan => {
+                if let Some(recipe) = &plan.environment {
+                    lines.push(Line::from(format!("Environment · {} setup commands · {} capability probes · {} baseline checks", recipe.setup.len(), recipe.capabilities.len(), recipe.baseline.len())).fg(KEY_HINT));
+                    for (label, commands) in [
+                        ("Setup", &recipe.setup),
+                        ("Capabilities", &recipe.capabilities),
+                        ("Baseline", &recipe.baseline),
+                    ] {
+                        for command in commands {
+                            lines.push(Line::from(format!("  {label} · {}", command.name)));
+                        }
+                    }
+                }
+
                 for (label, notes) in [
                     ("Contracts", &plan.contracts),
                     ("Assumptions", &plan.assumptions),

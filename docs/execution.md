@@ -48,6 +48,10 @@ The original repository metadata, remotes and credentials stay on the Mac. The V
 
 A retry retains its worker, task folder and scope. Task folders stay through combined verification, review and repairs. A replacement plan removes retired task folders and their local dependencies; per-worker runtimes and download caches remain in the VM. Closing deletes the VM. See [retention](local-state.md#what-survives).
 
+## Prepare before editing
+
+The controller runs the [environment recipe](environments.md) for both providers before dispatching a task. Setup and capability failures pause; baseline failures are saved as starting evidence. Final verification remains separate.
+
 ## Write repeatable checks
 
 A completion check names a required outcome. It can contain several commands, each using the **exact declared check name**.

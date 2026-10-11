@@ -332,7 +332,7 @@ impl App {
             }
             item.action = match dock.primary {
                 Some(Action::RetryTask(id) | Action::FixCheck(id)) if id == run.id => dock.primary,
-                Some(Action::ReviseRepair) if run.repair_stalled() => dock.primary,
+                Some(Action::ReviseRepair) if run.status == "blocked" => dock.primary,
                 Some(Action::Network)
                     if self.pending_network().is_some_and(|a| a.task == run.id) =>
                 {

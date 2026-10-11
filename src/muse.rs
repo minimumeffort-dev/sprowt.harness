@@ -267,6 +267,12 @@ fn serve_connection(
                     routing,
                 } => {
                     let report_schema = crate::execution::task_schema(routing.as_ref());
+                    let environment: Option<crate::environment::Recipe> = routing
+                        .as_ref()
+                        .and_then(|s| s["plan"]["environment"].as_object())
+                        .map(|v| serde_json::from_value(json!(v)))
+                        .transpose()?;
+                    let preflight;
                     let id = crate::task_worktree::task_id(&source)?;
                     let config = {
                         let mut vm = vm.lock().unwrap();
@@ -279,6 +285,24 @@ fn serve_connection(
                         }) {
                             vm.refresh_for_repair(id, &source, cancelled)?;
                         }
+                        preflight = match vm.preflight(
+                            environment.as_ref(),
+                            id,
+                            &source,
+                            cancelled,
+                            |label| {
+                                let _ = outgoing.send(Event::Preparing(label.into()));
+                            },
+                        ) {
+                            Ok(summary) => summary,
+                            Err(error) => {
+                                let _ = outgoing.send(Event::Rejected {
+                                    source: source.clone(),
+                                    message: format!("Environment preflight failed: {error}"),
+                                });
+                                continue;
+                            }
+                        };
                         vm.muse_configuration(context.worker_id())
                     };
                     task = Some(id);
@@ -292,7 +316,7 @@ fn serve_connection(
                         },
                     });
                     let prompt = format!(
-                        "{instructions}\nAccepted user instructions: {}\n{text}",
+                        "{instructions}\nAccepted user instructions: {}\n{text}\nController preflight evidence:\n{preflight}",
                         accepted.join("\n\n")
                     );
                     (

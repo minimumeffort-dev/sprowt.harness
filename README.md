@@ -11,13 +11,13 @@ A local terminal app that takes a software change from a request to a checked, r
 ## From request to PR
 
 1. **Describe the outcome.** The planner reads your project and splits the work into tasks with file scopes, dependencies and checks.
-2. **Follow the work.** Up to two Codex or Muse executors work in parallel. The timeline shows progress; Details shows commands, results and failures.
+2. **Prepare and follow the work.** The controller checks project setup and records baseline results before editing. Up to two Codex or Muse executors work in parallel. The timeline shows progress; Details shows commands, results and failures.
 3. **Verify and review.** The harness reruns checks against the combined changes. A fresh reviewer examines that version. Findings have owners and explicit fix or investigation actions.
 4. **Publish when ready.** Passing checks and a clean current review unlock publication. You confirm the PR, then keep editing to update it.
 
 ```mermaid
 flowchart LR
-    request["Request"] --> plan["Plan"] --> build["Build"]
+    request["Request"] --> plan["Plan"] --> prepare["Prepare environment"] --> build["Build"]
     build --> checks["Combined checks"] --> review["Independent review"]
     review -->|"Clean"| ready["Confirm PR"]
     review -->|"Choose fixes"| build
@@ -59,4 +59,4 @@ Execution and review run in Linux. Native macOS and iOS builds are not supported
 
 This is a learning project, built one layer at a time. It is independent of sprowt.finance.
 
-Stalled work keeps its failed-attempt evidence and observed time by phase in [Activity](docs/terminal.md#details), including across replacement plans.
+[Project preparation](docs/environments.md) uses saved setup recipes and capability probes. Stalled work keeps its failed-attempt evidence and observed time by phase in [Activity](docs/terminal.md#details), including across replacement plans.

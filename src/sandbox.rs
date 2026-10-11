@@ -998,6 +998,59 @@ impl Sandbox {
         self.verify_with_progress(checks, cancelled, |_| {})
     }
 
+    pub(crate) fn run_check_command(
+        &mut self,
+        check: &Check,
+        cancelled: &AtomicBool,
+    ) -> CheckResult {
+        let mut result = CheckResult {
+            timeout_seconds: Some(check.timeout()),
+            duration_ms: None,
+            task: check.task,
+            check: check.check.clone(),
+            command: check.command.clone(),
+            exit_code: None,
+            output: String::new(),
+            missing_runtime: None,
+        };
+        let Some(executable) = check.command.first() else {
+            result.output = "Verification requires an executable.".into();
+            return result;
+        };
+        let probe = vec!["/usr/bin/test".into(), "-x".into(), executable.clone()];
+        match self.run(&probe, cancelled, 30, 8192) {
+            Ok((Some(0), _, _)) => {}
+            Ok((Some(1), _, _)) => {
+                result.missing_runtime = Some(executable.clone());
+                result.output = format!(
+                    "Check executable is unavailable: {executable}. Its task environment needs rebuilding."
+                );
+                return result;
+            }
+            other => {
+                result.output = match other {
+                    Err(error) => error.to_string(),
+                    Ok(_) => "Executable check was interrupted.".into(),
+                };
+                return result;
+            }
+        }
+        let started = Instant::now();
+        match self.run(&check.command, cancelled, check.timeout(), 8192) {
+            Ok((exit, stdout, stderr)) => {
+                result.exit_code = exit;
+                result.output = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&stdout),
+                    String::from_utf8_lossy(&stderr)
+                );
+            }
+            Err(error) => result.output = error.to_string(),
+        }
+        result.duration_ms = Some(started.elapsed().as_millis() as u64);
+        result
+    }
+
     pub fn verify_with_progress(
         &mut self,
         checks: &[Check],
@@ -1028,51 +1081,7 @@ impl Sandbox {
                 check.check,
                 check.timeout()
             ));
-            let executable = check
-                .command
-                .first()
-                .ok_or_else(|| io::Error::other("Verification requires an executable."))?;
-            let probe = vec!["/usr/bin/test".into(), "-x".into(), executable.clone()];
-            let mut result = CheckResult {
-                timeout_seconds: Some(check.timeout()),
-                duration_ms: None,
-                task: check.task,
-                check: check.check.clone(),
-                command: check.command.clone(),
-                exit_code: None,
-                output: String::new(),
-                missing_runtime: None,
-            };
-            match self.run(&probe, cancelled, 30, 8192) {
-                Ok((Some(0), _, _)) => {}
-                Ok((Some(1), _, _)) => {
-                    result.missing_runtime = Some(executable.clone());
-                    result.output = format!(
-                        "Check executable is unavailable: {executable}. Its task environment needs rebuilding."
-                    );
-                    return Ok(result);
-                }
-                other => {
-                    result.output = match other {
-                        Err(error) => error.to_string(),
-                        Ok(_) => "Executable check was interrupted.".into(),
-                    };
-                    return Ok(result);
-                }
-            }
-            let started = Instant::now();
-            match self.run(&check.command, cancelled, check.timeout(), 8192) {
-                Ok((exit, stdout, stderr)) => {
-                    result.exit_code = exit;
-                    result.output = format!(
-                        "{}{}",
-                        String::from_utf8_lossy(&stdout),
-                        String::from_utf8_lossy(&stderr)
-                    );
-                }
-                Err(error) => result.output = error.to_string(),
-            }
-            result.duration_ms = Some(started.elapsed().as_millis() as u64);
+            let mut result = self.run_check_command(check, cancelled);
             if self.snapshot(&self.task_folder(), &AtomicBool::new(false))? != before {
                 result.exit_code = None;
                 result.output =

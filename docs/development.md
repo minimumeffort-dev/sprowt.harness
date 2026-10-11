@@ -37,6 +37,7 @@ Use the [supported provider versions](workers.md#supported-versions), sign in an
 
 | Area | Focused command |
 | --- | --- |
+| Project preparation and setup reuse | `cargo test live_preflight_retains_evidence_and_reuses_only_proven_setup -- --ignored` |
 | Saved check scripts and restart | `cargo test shared_check_runner_recovers_and_survives_restart -- --ignored` |
 | Task worktree isolation and cleanup | `cargo test task_worktrees_isolate_combine_restore_and_clean -- --ignored` |
 | Network and source export | `cargo test persistent_vm_checks_network_exports_source_and_reconnects -- --ignored` |

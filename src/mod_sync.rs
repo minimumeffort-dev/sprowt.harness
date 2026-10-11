@@ -300,6 +300,7 @@ pub fn prepare(
             "No unresolved merge conflicts remain; both intended behaviors are preserved.".into(),
         );
         let update_plan = Plan {
+            environment: plan.environment.clone(),
             summary: format!("Update from {} and verify together", target.branch),
             tasks: vec![Task {
                 id: "upstream".into(),
@@ -686,6 +687,7 @@ pub(crate) mod tests {
             pr_state: None,
         };
         let plan = Plan {
+            environment: None,
             summary: "Improve deletion".into(),
             tasks: vec![Task {
                 id: "delete".into(),
@@ -1175,6 +1177,7 @@ pub(crate) mod tests {
         assert!(data.0.join("pr-draft").exists());
         let target = target(&root, &program, &flag).unwrap().unwrap();
         let plan = Plan {
+            environment: None,
             summary: "Improve deletion".into(),
             tasks: vec![Task {
                 id: "delete".into(),

@@ -22,6 +22,7 @@ Start with the [architecture overview](architecture.md), then follow the part yo
 | Topic | Responsibility |
 | --- | --- |
 | [Planning and routing](planning.md) | Task contracts, dependencies, provider choice and reasoning effort |
+| [Project preparation](environments.md) | Reusable setup recipes, capability probes and baseline evidence |
 | [Execution and checks](execution.md) | Task isolation, source integration, repeatable checks and recovery |
 | [Worker communication](coordination.md) | Peer questions, answers and saved delivery |
 | [Workers](workers.md) | Provider connections, supported versions and Muse recovery |

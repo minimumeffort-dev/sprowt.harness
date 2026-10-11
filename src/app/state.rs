@@ -143,9 +143,12 @@ impl App {
                 .and_then(|e| {
                     e.tasks
                         .iter()
-                        .find(|r| r.status == "blocked" && m.diagnostics.repeats(r) >= 3)
+                        .find(|r| r.status == "blocked" && (m.diagnostics.repeats(r) >= 3 || r.summary.starts_with("Environment preflight failed")))
                 })
                 .map(|r| {
+                    if r.summary.starts_with("Environment preflight failed") {
+                        return "Environment setup failed before editing. Inspect the task evidence and revise its setup recipe.".into();
+                    }
                     format!(
                         "Same failure in {} attempts. Inspect Activity for the retained evidence.",
                         m.diagnostics.repeats(r)

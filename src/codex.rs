@@ -764,6 +764,11 @@ fn serve(
                     }
                     if source.starts_with("00000004-") {
                         let report_schema = crate::execution::task_schema(routing.as_ref());
+                        let environment: Option<crate::environment::Recipe> = routing
+                            .as_ref()
+                            .and_then(|s| s["plan"]["environment"].as_object())
+                            .map(|v| serde_json::from_value(json!(v)))
+                            .transpose()?;
                         let repair = routing.as_ref().is_some_and(|state| {
                             !state["repair"].is_null()
                                 || state["review_fix"] == true
@@ -800,6 +805,27 @@ fn serve(
                         if repair {
                             vm.refresh_for_repair(id, &source, &cancelled)?;
                         }
+                        let preflight = match vm.preflight(
+                            environment.as_ref(),
+                            id,
+                            &source,
+                            &cancelled,
+                            |label| {
+                                let _ = outgoing.send(Event::Preparing(label.into()));
+                            },
+                        ) {
+                            Ok(summary) => summary,
+                            Err(error) => {
+                                let _ = outgoing.send(Event::Rejected {
+                                    source: source.clone(),
+                                    message: format!("Environment preflight failed: {error}"),
+                                });
+                                continue;
+                            }
+                        };
+                        params["input"][0]["text"] = json!(format!(
+                            "{text}\nController preflight evidence:\n{preflight}"
+                        ));
                         task = Some(id);
                         params["permissions"] = json!(format!("sprowt_task_{id}"));
                         params["environments"] =
