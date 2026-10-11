@@ -1,132 +1,121 @@
-# Worktrees and pull requests
+[Docs](README.md) / Use the harness
 
-Each codemod owns a branch, a host worktree and a local Linux VM. Workers prepare a version; you request edits or publish it.
+# Git workflow
+
+Each codemod owns a branch and worktree. Workers build in Linux; Git credentials and publication stay on your Mac. You confirm every PR publication or update.
+
+[Starting files](#start-in-any-folder) · [Sync](#keep-the-project-current) · [Target updates](#when-another-codemod-merges) · [Publish](#publish-a-pr) · [Close and reopen](#close-reopen-or-delete)
 
 ## Start in any folder
 
 | Folder | Starting point |
 | --- | --- |
 | Empty, without Git | Confirm an empty initial commit |
-| Existing files, without Git | Review the files and confirm the initial commit |
+| Existing files, without Git | Review files and confirm the initial commit |
 | Git, without commits | Review and commit the starting files |
-| Git, with commits | Check the remote, safely fast-forward, then use committed `HEAD` |
+| Git, with commits | Check remote, safely fast-forward, then use committed `HEAD` |
 
-Setup respects `.gitignore` and excludes common credentials, dependencies and caches. Enter confirms; Esc returns to the description. Changed files block setup. Source bytes and executable permissions are preserved. New repositories use `main`; an existing unborn branch keeps its name.
+Initial setup respects `.gitignore` and excludes common credentials, dependencies and caches. It preserves source bytes and executable permissions. **Enter** confirms; **Esc** returns to the description. Changed files block the reviewed setup. New repositories use `main`; an existing unborn branch keeps its name.
 
-```mermaid
-flowchart TB
-    remote["Check remote branch"] --> base["Safely update local branch"]
-    base --> tree["Codemod branch + worktree · Mac"]
-    tree --> vm["Copy source to own Linux VM"]
-    vm --> ready["Workers build · checks pass"]
-    ready --> review["Review diff or send edits"]
-    review --> confirm["Confirm publication"]
-    confirm --> pr["Commit + push · create or update PR"]
-```
-
-Original project Git metadata and credentials stay on the Mac. A separate Git repository inside the VM manages task worktrees under `/tasks/<id>` and combined source at `/workspace`. The harness owns guest Git operations; the [tool dispatcher](tools.md) handles host worktrees and GitHub publication. See [Plan execution](execution.md).
+Uncommitted edits remain in your project and are not included in a new codemod. Commit required starting changes first.
 
 ## Keep the project current
 
-The project syncs on startup and every **30 seconds** while the harness is open, including with zero codemods. Publishing, closing or deleting a codemod does not stop this check. Merge its PR later on GitHub and local `main` catches up when you are on `main`. With the harness closed, it catches up next time you open it. **Ctrl+U** checks immediately from the conversation, codemod picker or new-mod screen.
+The harness checks the checked-out branch on startup and every **30 seconds**, including with no codemods open. **Ctrl+U** checks immediately. Closing the harness stops checks until you reopen it.
 
-```mermaid
-flowchart TB
-    github["PR merges on GitHub"] --> check["Project checks its remote"]
-    check --> safe{"Safe to update?"}
-    safe -->|Yes| local["Local branch advances · edits and staging stay"]
-    safe -->|No| pause["Keep local files · show the conflict"]
-    pause --> retry["Resolve it · Ctrl+U retries"]
-    retry --> check
-```
+| Condition | Behavior |
+| --- | --- |
+| Configured upstream | Fetch and safely fast-forward from it |
+| No configured upstream, matching branch on `origin` | Use that branch |
+| Already current or locally ahead | Keep committed source |
+| Detached commit, local-only branch or no remote | Keep the local starting point |
+| Missing configured upstream | Show an error |
+| Overlapping edits, divergence or active Git operation | Preserve files and pause sync |
 
-Fetch the checked-out branch’s configured upstream, or the same branch on `origin`. Updates only fast-forward; they never switch branches, rebase, create a merge commit or push the project branch. Already current or locally ahead branches keep their committed source. Creating a codemod also checks before making its worktree.
+Updates never switch branches, rebase, create a merge commit or push the project branch. Local edits and staging stay. Previously untracked files incorporated by a merged PR become tracked against the merge; differing local bytes remain edits.
 
-Local edits and staging are preserved. Files previously left untracked after publication become tracked against the merged commit; differing local bytes remain unstaged edits. The codemod gets committed source, so local edits are not included in its PR.
+Creating a codemod also checks before making its worktree. A failed setup cannot start its planner with stale source. **Ctrl+R** retries setup; an untouched worktree can refresh before another planning attempt.
 
-Overlapping tracked edits, divergent history, unavailable remotes and active Git operations pause sync with an error. Resolve the cause and press **Ctrl+U**, or wait for the next check. Failed codemod setup uses **Ctrl+R**. No planner starts with stale source. Detached commits, local-only branches and projects without a remote keep their local starting point; a missing configured upstream is an error.
+### Sync warnings
 
-Background project or target check failures show **Sync needs attention** separately from worker progress. Local repairs and review actions remain available. **Ctrl+G → s · Sync details** shows the full cause, labelled Project branch or Codemod target; **Ctrl+U** retries from there too. Target errors belong to their codemod. Each warning clears only after its corresponding check succeeds; retrying shows **Retrying sync** until the result arrives. A sync retry does not request a source update or invalidate a review. Failed setup, publication and source updates retain their own recovery actions.
+Background failures show **Sync needs attention** separately from local work. Open **Ctrl+G → s · Sync details** to distinguish the project branch from a codemod target. **Ctrl+U** retries the failed check; its warning clears only when that check succeeds.
 
-If planning failed before execution, **Ctrl+R** refreshes an untouched worktree from the updated project and starts a fresh planner conversation. History, queued instructions and the draft stay. Executing codemods use the update flow below.
+Retrying a sync warning does not invalidate the current review or start a source update. Foreground setup, publication and integration failures keep their own recovery actions.
 
 ## When another codemod merges
 
-Build codemods in parallel; merge their PRs one at a time on GitHub. The harness checks each target branch every **30 seconds** while open. **Ctrl+U** checks immediately.
-
-Each codemod fetches into its own `refs/sprowt/upstream/<branch>` reference. Target checks leave remote-tracking references and `FETCH_HEAD` unchanged, so they can run alongside project sync and other codemod checks.
+Build codemods concurrently and merge PRs one at a time on GitHub. The harness checks each PR target every 30 seconds.
 
 ```mermaid
 flowchart TB
-    merged["PR A merges on GitHub"] --> wait["Codemod B finishes current workers"]
-    wait --> checkpoint["Save B's checkpoint"]
-    checkpoint --> combine["Combine latest target branch with B"]
-    combine --> worker["Codex or Muse resolves text conflicts and checks both goals"]
-    worker --> checks["Harness reruns checks on combined source"]
-    checks --> ready["Review B · publish to update its existing PR"]
-    ready --> merge["Merge B on GitHub"]
+    target["Target branch advances"] --> wait["Finish current workers and clear review"]
+    wait --> checkpoint["Save checkpoint"]
+    checkpoint --> integrate["Integrate target in the existing VM"]
+    integrate --> checks["Original checks + integration regressions"]
+    checks --> review["Fresh independent review"]
+    review -->|"Clean"| publish["Confirm update to the same PR"]
 ```
 
-An open PR becomes a draft as soon as a newer target is detected. Its workers finish before source changes. Finished versions update automatically once their review is clear. An unfinished review, open findings or repairs hold the automatic update; paused or failed work waits for retry or edits. When there is no sync warning, **Ctrl+U** from the conversation explicitly updates a finished version and invalidates its previous review. This updates B's branch and VM source separately from the project's fast-forward above.
+An open PR becomes a draft when a newer target is detected. Current workers finish before source changes. Finished versions update automatically after a clean review; open findings, repairs and unfinished review hold the update. Paused or failed work waits for retry or edits.
 
-The integration plan carries the codemod's checks and adds combined regression checks. A resolution worker receives the original goals, upstream commit messages and conflicting versions. Technical text conflicts are resolved in B's existing VM. Conflicting product intent pauses with a question; answer through the composer. Clean merges get the same verification.
+With no sync warning, **Ctrl+U** from the conversation can explicitly update a finished version. That invalidates its previous review.
 
-Passing checks save a merge commit with both parents. Drafts, queues and history stay; the diff now compares B with the updated target. Worker runtimes remain, while completed task folders are replaced. **Publish** updates the same PR and marks it ready after confirmation. Publication checks the target again, so changes arriving during verification trigger another update.
+The integration plan carries original checks and adds regressions for the combined behavior. A worker receives both goals, upstream commit messages and conflicting versions. Text conflicts resolve in the existing VM; conflicting product intent becomes a question. Clean merges receive the same verification.
 
-Interrupted updates retain a checkpoint and resume safely. If saving fails after checks pass, **Ctrl+R** retries the save without repeating workers, provided the checked source is unchanged. Changed source needs verification again. Binary conflicts, rewritten target history, protected file changes or outside worktree edits pause for manual reconciliation. Both Git commits and saved work remain.
+Passing checks save a merge commit with both parents. Drafts, queue and history stay. Worker runtimes remain; old task folders are replaced. Publication requires a clean current review and fetches the target again, so another target change can require another update.
 
-This is branch synchronization, not a GitHub merge queue. The harness does not merge PRs or enforce their merge order; use GitHub branch protection or its merge queue to require current checks at merge time.
+### Interrupted or unsafe updates
 
-## Publish and edit
+Checkpoints preserve both commits and saved source. If saving fails after verification, retry can finish the save without repeating workers while source remains unchanged. Changed source needs new checks.
 
-Sign in with [GitHub CLI](https://cli.github.com/):
+Binary conflicts, rewritten target history, protected-file changes and outside worktree edits pause for reconciliation. Each codemod fetches into its own `refs/sprowt/upstream/<branch>`; these checks do not update remote-tracking references or `FETCH_HEAD`.
 
-```sh
-brew install gh
-gh auth login
-gh auth setup-git
-```
+The harness does not merge PRs or enforce merge order. Use GitHub branch protection or a merge queue when current checks must be required at merge time.
 
-After tasks and combined checks pass, **Ctrl+S** starts publication. You can also open **Ctrl+D** and press **p**. Source must match the verified version. Confirm the PR with Enter; Esc cancels.
+## Publish a PR
 
-Without an origin, choose **connect existing** or **create private** using Tab, enter `owner/repository`, then confirm. An empty repository gets the starting commit first. A populated repository must share history and contain the target branch.
+First complete the [GitHub login setup](quickstart.md#6-publish-the-pr).
 
-The PR targets your starting branch, or the GitHub default branch when starting detached. Codemod branches use `sprowt/mod-<id>-<stamp>`.
+1. Wait for passing combined checks and a clean review of the **current source**.
+2. Inspect the diff with **Ctrl+D**.
+3. Press **Ctrl+S**, or **p** from the diff.
+4. Review the destination and confirm with **Enter**. **Esc** cancels.
 
-Publishing retains the VM, worktree and conversation. Send edits through the composer. A new plan covers the requested change and regression checks; execution reuses the VM. Publish again to update the same PR. The diff covers the codemod's changes against its latest checked target.
+Without an origin, choose **connect existing** or **create private** with Tab, enter `owner/repository`, then confirm. An empty repository receives the starting commit. A populated repository must share history and contain the target branch; unrelated history is never overwritten.
 
-Merged or closed PRs require a new codemod. Project sync brings merged changes into the local starting branch independently. Outside changes to the PR branch or worktree block publication and preserve local work.
+| Publication detail | Value |
+| --- | --- |
+| Target | Starting branch; GitHub default branch if starting detached |
+| Codemod branch | `sprowt/mod-<id>-<stamp>` |
+| After publication | VM, worktree and conversation remain available |
+| Further edits | New plan, fresh checks/review, then update the same open PR |
+| PR merged or closed | Start a new codemod |
+
+Outside changes to the PR branch or worktree block publication and preserve local work. The PR URL and commit save before success is shown.
 
 ## Close, reopen or delete
 
-Open **Ctrl+P**:
+Open **Ctrl+P**. Use **Tab** to switch active and closed lists.
 
 | Action | What stays | What is removed |
 | --- | --- | --- |
-| `c` · Close | Checkpoint commit, worktree, history, draft and queue | VM and its runtime |
-| `r` · Reopen a closed mod | Saved source and history | Nothing; a fresh VM starts on execution |
-| `d` · Delete | Existing PR on GitHub | Local codemod data, worktree and VM |
+| `c` · Close, then confirm | Source checkpoint, branch, worktree, history, draft and queue | VM and runtime |
+| `r` · Reopen closed work | Saved source and history; execution waits for resume | Nothing |
+| Enter on closed work | Read-only history view | Nothing |
+| `d` · Delete, then confirm | Existing PR on GitHub | Local codemod records, worktree and VM |
 
-Closing stops workers, exports their latest source, commits a local checkpoint and removes the VM. It works without GitHub, including unfinished work. The **Closed** flag lives in harness state; no Git tag is needed. **Tab** switches active and closed lists; Enter reads closed history.
+Closing stops workers, exports source and task branches, then commits a local checkpoint before VM deletion. It works without GitHub and preserves unfinished work. Reopening creates a fresh VM only when execution resumes.
 
-```mermaid
-flowchart LR
-    active["Active · build, edit, publish"] -->|"Close · save checkpoint"| closed["Closed · VM removed"]
-    closed -->|"Reopen"| active
-    closed -->|"Retention expires"| saved["Saved branch + history · worktree pruned"]
-    saved -->|"Reopen · restore worktree"| active
-```
-
-Closed worktrees are pruned after **30 days**, checked when the harness opens that project. Use `--closed-worktree-days N`; **0** disables pruning. Only unchanged checkpoint worktrees are removed. The branch, history and source exports remain, so reopening can restore them. Outside edits skip pruning.
-
-Failed publication, checkpoint saves or VM deletion retain work and recovery metadata. **Ctrl+R** retries. Closing and deleting leave existing PRs unchanged; publication creates or updates them.
+Closed worktrees are pruned after **30 days**, checked at project startup. `--closed-worktree-days N` changes retention; **0** disables pruning. Only unchanged checkpoint worktrees are removed. Branches, history and exports remain, allowing restoration on reopen. Outside edits skip pruning.
 
 ## Saved snapshots and recovery
 
-Older snapshot codemods offer Git adoption before publication or closing. Confirm the saved starting files as the baseline; the harness preserves their source, checks and conversation. Previously completed local work can be published without another implementation run. An existing repository must match that baseline.
+Older snapshot codemods offer Git adoption before publication or closing. Confirm the saved starting files as the baseline. Adoption preserves source, checks and conversation; an existing repository must match that baseline. Publication still requires current checks and review.
 
-Interrupted repository setup retains its request. **Ctrl+R** retries; **Ctrl+D**, then **p** lets you change the destination. Existing remotes and unrelated history are never replaced.
+Interrupted repository setup retains its request. **Ctrl+R** retries; **Ctrl+D → p** can change the destination. Failed publication, checkpoint saves and VM deletion retain recovery metadata. Existing remotes and unrelated history remain intact.
 
 ## Current limits
 
-Up to two Codex or Muse executors per codemod, plus an [independent reviewer](review.md) once a version is ready. Symlinks, submodules, GitHub Enterprise and other Git hosts are unsupported.
+GitHub is supported; GitHub Enterprise and other hosts are not. Symlinks and submodules are unsupported. Run one harness instance per project.
+
+**Next:** [Local retention and recovery files](local-state.md) · [GitHub troubleshooting](troubleshooting.md#github-and-sync-errors)

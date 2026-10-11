@@ -1,53 +1,66 @@
+[Docs](README.md) / Understand the system
+
 # Worker communication
 
-Workers in one codemod share saved task mailboxes. They can ask questions, reply and send updates while keeping separate file ownership. Rust routes messages to the worker currently assigned to the recipient task.
+Workers in one codemod share saved task mailboxes. They ask questions, reply and send updates while keeping separate file ownership. Rust routes messages to the current owner of the recipient task.
 
-You do not need to request messages or prescribe a task split. The planner links tasks around shared interfaces, assumptions and handoffs. Each worker gets relevant peers, their scope and coordination topics. A link added by either task appears to both; it is separate from a scheduling dependency.
+## When workers coordinate
 
-Workers follow the agreed contract and send material changes, blockers or completed handoffs to relevant peers. They ask only when information is genuinely missing. Independent work needs no conversation for its own sake.
+The planner links tasks around shared interfaces, assumptions and handoffs. Each worker sees relevant peers, their scopes and topics. A link from either task appears to both; it is separate from a scheduling dependency.
+
+Workers send material changes, blockers and completed handoffs. They ask when necessary information is missing and continue independent work while waiting. You do not need to prescribe a task split or request routine messaging.
 
 ```mermaid
 sequenceDiagram
-    participant A as Worker A · task A
-    participant H as Rust harness · saved mailboxes
-    participant B as Worker B · task B
-    participant U as You · composer
-    A->>H: Ask task B
-    H->>B: Deliver into its active turn or next task start
-    B->>H: Acknowledge receipt and reply
-    H->>A: Deliver reply · resume waiting work
-    opt A product decision needs your input
-        A->>H: Ask you
-        H->>U: Highlight question beside the answer composer
-        U->>H: Enter · save answer
-        H->>A: Deliver answer · resume waiting work
-    end
+    participant A as Task A
+    participant H as Saved mailbox
+    participant B as Task B
+    A->>H: Ask about shared interface
+    H->>B: Deliver now or at next task start
+    B->>H: Acknowledge and reply
+    H->>A: Deliver reply and resume waiting work
 ```
 
-## What you see
+## Questions for you
 
-**Ctrl+O** shows peer topics in the plan. **Ctrl+T** opens [task inspection](terminal.md#inspect-a-task), including saved narration and routine messages. Questions for you stay visible, with the sender and message ID. The composer changes to **answer #ID**; Enter answers that question instead of queueing an edit. If several workers ask, answer them in order. Your draft stays intact when a question arrives.
+Questions appear beside the composer with the sender and message ID. When the hint says **Answer #ID**, Enter answers that question instead of queueing an edit. Answer multiple questions in their displayed order. An arriving question preserves your draft.
 
-An executor can finish independent work before pausing for a reply. Unanswered asks prevent task completion. After its questions are answered, Rust resumes a waiting task in its existing folder. Other independent tasks keep running. Reopened projects wait for **Ctrl+R** to reconnect workers.
+Unanswered asks prevent task completion. Once answered, a waiting task resumes in its existing folder. Independent tasks can keep running. Reopened projects wait for explicit resume.
+
+**Ctrl+O** shows peer topics. **Ctrl+T → Tasks** shows task context; Activity retains routine messages and narration.
+
+## Delivery states
+
+| State | What it proves |
+| --- | --- |
+| Saved | The message exists in the host database |
+| Delivered | The provider accepted the injection |
+| Acknowledged | The recipient called the receipt tool |
+| Answered | A reply was saved |
+
+None of these means source passed verification. Confirmed deliveries are not repeated on reconnect. Unknown delivery pauses for explicit retry. A Muse dispatch log can prove an update was never sent; that update remains queued or in the inbox. Rejected injections remain available for a later read.
+
+A late acknowledgement cannot replace a valid task report with an empty result. Workers retain declared check commands or report a blocker; Rust independently verifies the selected result.
 
 ## Worker tools
 
 | Tool | Purpose |
 | --- | --- |
-| `send_worker_message` | Send an `ask`, `reply` or `update` to a plan task ID; asks can target `user` |
-| `read_worker_messages` | Read inbox, sent messages, live assignments and relevant peers with scopes and topics |
-| `ack_worker_messages` | Confirm receipt of specific inbox message IDs |
+| `send_worker_message` | Send an `ask`, `reply` or `update` to a task ID; asks can target `user` |
+| `read_worker_messages` | Read inbox, sent messages, assignments and relevant peer scopes/topics |
+| `ack_worker_messages` | Acknowledge specific inbox IDs |
 
-Replies reference the original ask. Stable keys make repeated sends idempotent. Rust binds codemod and worker identity; model arguments cannot impersonate another worker. Messages carry context and cannot change file scope, permissions or the user's goal.
+Replies reference the original ask. Stable keys make repeated sends idempotent. Rust binds codemod and worker identity; model arguments cannot impersonate a peer. Messages carry context and cannot change scope, permissions or the user's goal.
 
-Messages are saved before delivery. **Delivered** means the target provider accepted the injection; **acknowledged** means the recipient called the receipt tool; **answered** means a reply was saved. None means the source passed verification. Both providers check native conversation receipts on reconnect. Confirmed injections are not repeated; uncertain delivery pauses for explicit retry. A Muse dispatch log can prove an update was never sent: recovery keeps it in the inbox and allows work to continue. Rejected injections also stay in the inbox for a later read.
+## Limits and retention
 
-Acknowledging a late handoff does not replace a valid task report with an empty result. Workers retain all declared check commands in their final report, or report a blocker. Rust selects the task result and independently verifies it. See [Tasks and checks](execution.md#tasks-and-checks).
+- Messages stay within one codemod and follow current task ownership, including unassigned tasks.
+- Asks to unavailable tasks or those creating a wait cycle are rejected.
+- Bodies allow 4,000 bytes, with up to 32 unacknowledged messages per task.
+- SQLite stores message bodies as local plain text.
+- New edit and integration rounds retain history but retire old task addresses.
+- Closing keeps mailboxes; deletion removes them.
 
-## Boundaries
+A mailbox message alone cannot restart completed work. Defects discovered after an owner finishes use a validated [repair handoff](execution.md#automatic-repairs).
 
-Messages stay within one codemod. Task IDs follow current ownership, including tasks not yet assigned. Asks to unavailable tasks or asks that create a wait cycle are rejected. Workers read at useful checkpoints and continue independent work; they do not poll for replies.
-
-Bodies are limited to 4,000 bytes, with up to 32 unacknowledged messages per task. SQLite retains messages as local plain text. New edit and integration rounds keep the history but use new task identities, so old asks cannot reopen. Closing retains mailboxes; deleting the codemod removes them.
-
-Code regressions found after an owner finishes use [automatic repair handoffs](execution.md#automatic-repairs). Rust reopens that task; a mailbox message alone does not restart completed work.
+**Next:** [Steer workers yourself](codemods.md#steer-an-active-turn) · [Tool boundaries](tools.md)

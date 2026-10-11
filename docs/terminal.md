@@ -1,251 +1,168 @@
-# Terminal and companion
+[Docs](README.md) / Use the harness
 
-The timeline shows the codemod from its request through publication. One dock tells you what is happening, whether anything needs you, and the next useful action. **Ctrl+T · Details** opens the evidence without interrupting work or losing your draft.
+# Terminal guide
 
-## State model
+Use the timeline to follow work, Details to read the evidence, and the dock to act. Your draft stays intact while you explore.
 
-The interface derives one summary from saved work and active operations. The dock and Details use that same summary. Worker and Git controllers still own the transitions.
+[Navigation](#navigate-the-timeline) · [Details](#details) · [Next action](#understand-the-dock) · [Keyboard reference](#keyboard-reference) · [CLI](#commands)
 
-Keep these facts separate:
+## Read the screen
 
-| Fact | What it answers |
+![Illustrated timeline, details panel and unified message dock.](assets/terminal-overview.svg)
+
+*Layout illustration, with example tasks and results.*
+
+| Area | Purpose |
 | --- | --- |
-| Lifecycle | Is the codemod open or closed? |
-| Activity | Planning, building, checking, recovering, reviewing or a Git operation? |
-| Attention | Does a task need an answer, permission or a retry? Was work paused by you? |
-| Evidence | Which checks and review belong to this version? |
-| Publication | Is there a PR, and does it include the current changes? |
+| **Timeline** | Request, plan, tasks, combined checks, review and publication |
+| **Details** | Evidence for the selected step, including failures and review findings |
+| **Dock** | Current state, the next useful action and your message |
 
-A task finishing does not make the version ready. Combined checks and review have their own results. A PR can be open while new changes are still being prepared.
+Wide terminals show timeline and details side by side. Smaller terminals use the full width for the timeline; Enter opens the selected step's details.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Planning: Describe a codemod
-    Planning --> Building: Plan ready
-    Building --> Checking: Tasks integrated
-    Checking --> Reviewing: Combined checks pass
-    Checking --> NeedsYou: Combined checks fail
-    NeedsYou --> Checking: Retry final checks
-    NeedsYou --> Building: Choose Fix failed check
-    Reviewing --> Ready: No findings
-    Reviewing --> NeedsYou: Findings or review failure
-    NeedsYou --> Building: Choose Fix issues
-    Ready --> Published: Confirm publication
-    Published --> Planning: Request edits
-    Ready --> Planning: Request edits
-```
+## Navigate the timeline
 
-Recovery and lifecycle actions apply across that flow:
+1. Press **Tab** to focus the timeline. A **▸** beside a heading marks the focused pane.
+2. Use **↑/↓** to select a row and **Space** to expand it.
+3. Press **Enter** to inspect. In a wide terminal, **→** focuses the side inspector and **←** returns.
+4. Press **Esc** to return to your draft.
 
-```mermaid
-stateDiagram-v2
-    Working --> Recovering: Recoverable failure
-    Recovering --> Working: Recovery succeeds
-    Recovering --> NeedsYou: Limit or permission boundary
-    NeedsYou --> Working: Answer, approve or retry
-    Working --> Paused: Pause work
-    Paused --> Working: Explicit resume
-    Paused --> Closed: Confirm close
-    Closed --> Paused: Reopen
-```
+Clicking a row selects it. Enter on a timeline row opens evidence; it never starts a repair or publishes.
 
-Close can also stop active work before saving its checkpoint. Delete requires confirmation and removes local work; the PR stays on GitHub. Reopening restores saved work, without starting workers. A review interrupted by exit or pause waits for an explicit retry.
+### Scroll and return to current work
 
-## Timeline
+Use the wheel or trackpad over the pane you want to scroll. The timeline and inspector scroll independently. Lists move selection; the composer scrolls its own draft. Keyboard scrolling uses **Page Up/Down** or **Fn+↑/↓** on Mac.
 
-```text
-> Make tasks searchable
+Exploring holds your position as new activity arrives, even when the selected task moves off screen. **Ctrl+L**, or clicking **Jump to current**, focuses the current step, resets its details to the top and resumes following. Scrolling again holds your position. **End** also jumps when the timeline is focused.
 
-✓ Plan ready · 3 tasks
-│
-⠋ Implementation · 1/3 tasks finished
-├─ ✓ 1. Add search storage · Done
-├─ ⠋ 2. Build search controls · Working
-│    muse · w12 · muse-spark-1.3 · high
-│    Elapsed 2m 10s · last activity 8s ago
-│    Latest update · Checking keyboard focus
-├─ ○ 3. Verify integration · Waiting
-│    Waiting for task 2.
-│
-○ Combined checks · after implementation / repair
-│
-○ Review · after combined checks
-│
-○ Publish PR · after checks and review
-```
+### Read task progress
 
-- Planning, implementation, combined checks, review and publication have separate rows. Task branches show independent work and dependencies; the parallel count comes from connected, active executors.
-- Finished stages collapse. Active tasks show their owner, model, effort, elapsed time and latest update. Waiting tasks explain dependencies; active repairs follow a muted **previous failure** row. Expanding that row shows its saved evidence.
-- Relevant actions sit beside their stage and remain available from the dock and More. Enter on a timeline row opens evidence; it never starts a repair or publishes.
-- **Tab** focuses the timeline. **↑/↓** selects, **Space** expands, and **Enter** opens details. Clicking a row also selects it. **Esc** returns to the draft. **Ctrl+O** opens the full plan.
-- New activity follows the current step until you scroll or navigate back. Your position then stays anchored to the same row, including the blank space between steps. Scrolling can move the selected task off screen; it does not pull you back to that task. Click **Ctrl+L · Jump to current** or press **Ctrl+L** from the composer, timeline or side inspector to focus the current step, reset its details to the top and resume following. This also works when that step is already selected. Your draft stays intact; scrolling again holds your position. **End** also jumps when the timeline is focused; in the composer it still moves the text cursor.
+Finished stages collapse. Active tasks show their worker, model, effort and latest update. Waiting tasks show what they depend on. A repair can have a separate **Previous failure** row containing its saved evidence.
 
-### Timeline and side inspector
-
-With at least 124 terminal columns and 12 rows available above the dock, the timeline and selected step appear side by side. The timeline uses 45% of the content width; the inspector gets the rest. The message dock stays full width.
-
-```text
-Timeline                          │ Details
-✓ Plan ready                      │ Build search controls
-⠋ Implementation                  │ Muse · Working
-├─ ✓ Search storage               │ Elapsed 2m 10s · last activity 8s ago
-├─ ⠋ Search controls              │
-└─ ○ Verify integration           │ Latest update
-○ Combined checks                 │ Checking keyboard focus
-○ Review                          │
-○ Publish PR                      │ Checks
-                                  │ ✓ Keyboard navigation
-                                  │ · Retry after failure
-──────────────────────────────────┴─────────────────────────────────────
-Working · 1/3 tasks finished
-Add an instruction…
-```
-
-Selection updates the inspector immediately. It uses the same task evidence, check results and review findings as the full Details view. Task rows start collapsed in the split timeline; Space reveals the worker identity, while the inspector holds updates and evidence. Narrow terminals expand that evidence inline. Previous failures and outdated reviews stay labelled as saved evidence.
-
-**Latest update** belongs to the current task attempt. Retrying or repairing a task clears earlier narration from this view; earlier results remain in task Activity. Older saved messages without an identifiable attempt appear only in history. A previous completion cannot appear as progress on a new repair. **Previous failure** rows appear only with saved check or review evidence, and selection shows that evidence separately from the current repair.
-
-Task details use a compact state badge, distinct section headings and indented text. Checks have green passed markers, red failed markers and muted pending markers; wrapped text stays aligned beneath its label. Reports remain scrollable in full. Saved review findings show stable IDs, triage, severity, location, evidence, acceptance criteria and proposed fix in separate blocks. Open issues come first; resolved and dismissed issues retain their decision history. The dock reports resolved, remaining and new findings. The split timeline keeps a short findings summary; narrow terminals show the formatted evidence when expanded. This presentation uses the saved finding for that repair, so newer review results cannot replace its history.
-
-- **Tab / Shift+Tab** cycle between message, timeline and inspector. A **▸** heading marks the focused pane; the dock border highlights when the composer is focused.
-- **Enter** or **→** from the timeline focuses the inspector. **←** returns to the timeline. **Esc** returns directly to the draft. Enter in the inspector opens the full view when available; it never executes a workflow action.
-- The inspector supports **↑/↓**, **Page Up/Down**, **Home/End**, and mouse scrolling. **e** toggles evidence for task and check rows. Each pane scrolls independently; exploring holds the selected step as new activity arrives.
-- Thin scrollbars appear when timeline or evidence content overflows. The thumb shows your position; use the wheel or keyboard to move. Selecting another step resets the inspector to the top.
-- Smaller or shorter terminals show the timeline across the available width, with Enter opening the existing full Details view. Resizing preserves the draft and selected step, clamps scroll positions, and returns inspector focus to the timeline when the side pane disappears.
-
-The timeline reflects the current saved plan and operation states. Prior passes and full worker messages stay in **Details → Activity**. It does not invent historical timestamps or completion estimates. Elapsed time measures the connected worker's current turn; last activity measures observed worker events, not a guarantee of progress. Both restart with a new connection or turn. A completed task, passed combined checks and a clean current review remain distinct.
-
-## Unified dock
-
-```text
-╭──────────────────────────────────────────────────────────────────────────╮
-│ ⠋ Working · combined checks                                              │
-│ 3/3 tasks finished · browser flows · 2m 10s                               │
-│ Combined checks · 7/9 passed · running · Review not started               │
-├──────────────────────────────────────────────────────────────────────────┤
-│ Add an instruction…                                                      │
-│                                                                          │
-│                                                                          │
-│                                                                          │
-│ ↵ Queue for next pass   ctrl+j Newline   ctrl+r Pause   ctrl+t Details     │
-│                                                              ctrl+g More │
-╰──────────────────────────────────────────────────────────────────────────╯
-```
-
-- The first row names the state and, when you need to act, one recommended action.
-- Supporting rows show progress, check/review currency and a concise error when relevant. A failed task remains visible while independent workers continue.
-- Background sync failures get a separate yellow warning with **Ctrl+U · Retry sync** and **Ctrl+G → s · Sync details**. They leave the work state and its recommended action intact. The full Git error stays in Sync details, which supports mouse/keyboard scrolling and retry. Successful checks clear their own warning.
-- The composer starts with four rows and grows to eight, then scrolls. Blank lines and wrapped text count; the cursor stays visible. Short terminals use fewer rows to retain controls.
-- Pause, Details and More are secondary controls. Routine work has no highlighted recommendation. Enter sends your message, never the recommendation.
-
-| State | Recommended action |
-| --- | --- |
-| New codemod | Describe the outcome |
-| Working or recovering | None; progress continues automatically |
-| Needs your answer | Answer in the composer |
-| Needs network access | Review the requested domains |
-| Task needs attention | Retry that task, or inspect its evidence in Details |
-| Combined checks need attention | Fix failed check; rerun without edits remains in More |
-| Confirmed review defects, budget available | Fix review issues; Details opens Review |
-| Uncertain review evidence | Investigate findings |
-| Repair made no progress or reached its limit | Revise repair plan; completed work stays saved |
-| Repair checks passed, including an existing PR | Review again; previous findings await fresh review |
-| Repairs reviewed, PR has an older version | Update PR |
-| Review interrupted | Review changes |
-| Paused by you | Resume the relevant work |
-| Ready to publish | Publish PR |
-| Target changed | Update and recheck |
-| PR published | Request edits if needed |
-| Closed | Reopen saved work |
-
-**Ready to publish** means current checks and a clean current review. Publication remains an explicit choice and is unavailable until both checks and review pass on the current source. Changed work on an existing PR says **PR open · update pending**.
-
-**Ctrl+G · More** groups applicable actions under **Work**, **Inspect**, **Codemod** and a separate **Remove** section. Inspection uses one Details entry plus View diff. Existing Ctrl+O and Ctrl+G → i/f shortcuts still work. Every visible item shows its shortcut. Selection keeps its meaning while workers finish; Enter cannot activate a different action when the selected one disappears.
+**Latest update** belongs to the current attempt. Earlier narration remains in Activity. Worker elapsed time measures the current connected turn; last activity measures observed events. Neither is a completion estimate or proof of progress.
 
 ## Details
 
-The inspector has four sections. Use **1–4**, **Tab** or **Shift+Tab** to switch. Mouse scrolling applies to the current section. **Ctrl+T** returns to the conversation; **Esc** goes back one level.
+Press **Ctrl+T**. Use **1–4**, **Tab** or **Shift+Tab** to switch sections.
 
-| Section | Contents |
+| Section | What to look for |
 | --- | --- |
-| 1 · Tasks | Status, owner, model and effort; Enter opens one task |
-| 2 · Checks | Combined results and task checks, including failures and commands not run |
-| 3 · Review | Current or outdated findings, severity, file/line, evidence, owner and proposed fix |
-| 4 · Activity | Saved worker updates, handoffs and previous results |
+| **1 · Tasks** | Status, owner, model and dependencies; Enter opens one task |
+| **2 · Checks** | Failed checks first, then passing groups and commands not run |
+| **3 · Review** | Finding IDs, severity, owner, evidence, proposed fix and decision history |
+| **4 · Activity** | Saved worker updates, handoffs and previous results |
 
-Details opens Review when findings exist, Checks after a combined failure, and otherwise Tasks. Before a task list exists it opens Activity. Opening any section is read-only. Checks puts failures first, groups passing checks by task, and separates commands not run. Status glyphs use color, long descriptions wrap beneath their label, and evidence is indented. Repeated check names group their commands without losing the command counts. New results show elapsed time and the command limit. Passing output stays collapsed; **e** expands the evidence. In Checks, **x · Fix failed check** returns a combined failure to its original worker while preserving completed peers. The action appears only when the failure matches a saved task and command. Worker reports are labelled separately from controller check results. In a task with combined results, its older summary says **Earlier task report · before combined checks**; a previous pass cannot hide a later failure.
+Details opens Review when findings need attention, Checks after a combined failure, and otherwise Tasks. Before tasks exist, it opens Activity. Opening evidence does not start work.
+
+Check colors have matching glyphs: **✓ passed**, **! failed**, **· not run**. Repeated check names group their commands; a check passes only when all its commands pass. **e** expands command/output evidence, including elapsed time and time limits. Worker reports remain distinct from controller results.
+
+Saved results are labelled when the source has changed. **Earlier task report · before combined checks** means a task's earlier success predates the final combined result.
 
 ### Inspect a task
 
-Select a task and press Enter. Its details show the latest update, checks, failure evidence and recovery context. Dependencies, unanswered questions and network permissions have distinct states. Conflict details include paths, owners and automatic attempts used.
-
-Fix failed check shows Connecting worker, Starting repair, Fixing failed check, then Checking as it progresses. Waiting for a worker means no worker has started connecting for that task. Previous failed checks remain visible as saved evidence until the new results arrive.
-
-**r** retries the selected failed task from Tasks; **Ctrl+R** does so in its details. Independent peers continue; retries wait if both slots are occupied. **h** opens that task's activity and **a** opens all activity. Older messages without a saved task identity remain in all activity. Draft, queue and plan toggle are preserved.
-
-## Messages and plans
-
-Conversations remain left aligned with two columns of outer margin and one blank row between messages. User messages have a visible `>` and subtle background. Agent identities include provider, role, worker, model and effort. Active identities appear beside the companion and within expanded task rows. `--no-motion` uses a static glyph.
-
-Plans show numbered tasks, outcomes and dependencies. **Ctrl+O** opens scopes, contracts, check commands and routing; pressing it again returns to the timeline. Multiline commands retain indentation. Switching codemods starts with collapsed completed stages. Routine worker narration stays in Activity; questions for you remain beside the composer.
-
-The Enter hint says **Create codemod**, **Answer #ID**, **Request edits** or **Queue for next pass**. Queued messages remain separate from history. **Ctrl+Q** manages them; **s · Send to workers** uses saved steering and waits for an acknowledged delivery. With no running worker, the hint says **Send when workers connect**. Reordering does not send anything. Deliberately paused work keeps queued edits until you resume.
-
-## Navigation and layout
-
-Messages, plans, full Details, errors and diffs use the terminal width. Wide timelines reserve a side inspector for the selected step. Task numbers have their own column and wrapped outcomes align beneath the title. Menus and confirmations use up to 68 columns; queue menus widen for their controls. Empty lists say **No active codemods** or **No closed codemods**.
-
-Use the wheel or trackpad over a view to scroll it, or over the composer to scroll the draft. Lists move their selection; Enter activates. Views clamp scrolling after resize. Opening More retains the visible draft. Narrow terminals stack controls without separating shortcuts from labels.
+Select it in Tasks and press Enter. You can read its latest update, checks, dependencies, unanswered questions, network requests and recovery context.
 
 | Key | Action |
 | --- | --- |
-| Enter | Send from the composer; inspect a selected timeline row |
-| Tab / Shift+Tab | Move between composer, timeline and side inspector |
-| Space / ↑↓ | Expand / select while exploring the timeline |
-| Ctrl+L | Jump to current from the composer, timeline or side inspector |
-| End | Jump to current in the timeline; scroll to the bottom in the inspector |
-| Ctrl+J | Newline |
-| Ctrl+T | Details / return to conversation |
-| Ctrl+G | More actions; Esc returns |
+| `r` in Tasks | Retry the selected failed task |
+| Ctrl+R in task details | Retry that task |
+| `h` | Open this task's activity |
+| `a` | Open all activity |
+| `e` | Expand evidence |
+
+A targeted retry preserves completed peers and waits if both worker slots are occupied. Older messages without a saved task identity remain in all activity.
+
+### Inspect the plan
+
+**Ctrl+O** opens contracts, assumptions, task outcomes, dependencies, scopes, coordination topics, checks and routing. Press it again to return to the timeline. Plans use numbered tasks; the numbering follows display order.
+
+## Understand the dock
+
+The first row names the current state. Supporting rows distinguish implementation, checks, review and publication. When you need to act, one recommended action appears beside the state.
+
+| You see | Next step |
+| --- | --- |
+| Working or recovering | Follow progress; no action is needed |
+| Answer needed | Reply when the composer shows **Answer #ID** |
+| Network access needed | **Ctrl+N**, inspect the domains, then allow or deny |
+| Task needs attention | Inspect its evidence, then retry that task |
+| Combined checks need attention | **Fix failed check**, or rerun saved checks from More |
+| Confirmed review findings | **Fix review issues** |
+| Uncertain review evidence | **Investigate findings** |
+| Repairs stalled or budget exhausted | **Revise repair plan** |
+| Review interrupted or outdated | Start or retry review when checks are current |
+| Ready to publish | Inspect the diff, then **Publish PR** |
+| PR open · update pending | Finish checks and review, then **Update PR** |
+| Paused by you | Resume when ready |
+| Closed | Reopen saved work |
+
+Successful combined checks normally start review automatically in an active session. Reopening or pausing leaves unfinished work idle. The exact [review policy](review.md) determines whether another repair pass can continue.
+
+Background GitHub sync failures have a separate warning. **Ctrl+U** retries sync; **Ctrl+G → s** shows its full error. This warning does not replace the local task or review state.
+
+### Write a message
+
+The composer starts with four rows and grows to eight, then scrolls. Wrapped text and blank lines count. On short terminals it shrinks to keep controls visible.
+
+**Enter** performs the action named beside the composer: create, answer, request edits or queue for the next pass. It never activates the dock's recommendation. **Ctrl+J** inserts a newline. See [messages and steering](codemods.md#send-an-instruction).
+
+## Keyboard reference
+
+Shortcuts are contextual. **Ctrl+G · More** lists actions available in the current state, grouped into Work, Inspect, Codemod and Remove.
+
+| Key | Action |
+| --- | --- |
+| Tab / Shift+Tab | Cycle composer, timeline and side inspector |
+| ↑↓ / Space / Enter | Select / expand / inspect in the timeline |
+| Ctrl+L | Jump to current from any of those three panes |
+| Home / End | Top / bottom of inspector; End jumps to current in timeline |
+| Ctrl+J | Newline in composer |
+| Ctrl+T | Open Details / return to conversation |
+| Ctrl+O | Toggle plan details |
+| Ctrl+G | More actions |
 | Ctrl+R | Pause, resume or retry relevant work |
-| Ctrl+S | Review and confirm PR publication |
+| Ctrl+S | Review and confirm PR publication or update |
 | Ctrl+E | Start or retry independent review |
-| Ctrl+O | Expand/collapse plan details |
-| Ctrl+D | View diff |
+| Ctrl+D | View diff when available |
 | Ctrl+Q | Manage pending instructions |
-| Ctrl+N | Decide a pending domain request |
-| Ctrl+P | Switch/create/close/reopen/delete codemods |
-| Fn + ↑ / ↓, or Page Up / Down | Scroll |
-| Esc | Return from timeline exploration or a view; quit from the composer |
+| Ctrl+N | Decide a pending network request |
+| Ctrl+P | Switch or manage codemods |
+| Ctrl+U | Sync project and check target updates |
+| Page Up / Down | Scroll the focused view |
+| Esc | Back; from the composer, quit |
 | Ctrl+C | Quit |
 
-More also supports **n** new, **c** close, **d** delete, **x** fix the failed check or review findings, **r** retry a failed task, and **v** revise a stalled repair plan. These letters type normally in the composer. Close, delete and publish retain their confirmations.
+**Ctrl+G → x** means press Ctrl+G, release it, then press `x` in More.
 
-Blocked downloads show exact domains and a reason; **a** approves for this codemod and **d** denies. GitHub setup confirms the repository destination. Project sync runs on startup and every 30 seconds even without codemods; **Ctrl+U** checks immediately. Retrying a sync warning keeps the current review and repair work intact. See [Codemods](codemods.md), [Review](review.md) and [Git workflow](git-workflow.md).
+| Letter in More | Action, when available |
+| --- | --- |
+| `x` | Fix a failed check or review issues |
+| `v` | Revise a stalled repair plan |
+| `r` | Retry the failed task |
+| `i` / `f` / `s` | Review findings / failure / sync details |
+| `n` / `c` / `d` | New / close / delete codemod |
+
+Letters type normally in the composer. Close, delete and publication keep their confirmations. The [queue](codemods.md#manage-the-queue) has its own shortcuts.
 
 ## Commands
 
-| Command | Action |
+| Command | Result |
 | --- | --- |
 | `sprowt-harness` | Open the current project |
-| `sprowt-harness setup` | Configure Jev |
+| `sprowt-harness setup` | Configure optional host-only Jev routing |
 | `sprowt-harness --no-motion` | Disable animation |
-| `sprowt-harness --closed-worktree-days 0` | Keep closed worktrees indefinitely |
+| `sprowt-harness --closed-worktree-days 0` | Keep closed worktrees indefinitely; default is 30 days |
+| `sprowt-harness --help` | Show CLI help |
+| `sprowt-harness --version` | Show the harness version |
 
-## Sprowt companion
+## Layout and companion
 
-The companion uses terminal cells and glyphs, so it needs no image support. It sits beside the project heading in an 8-column, 4-row area.
+The side inspector appears at 124 columns or more, with at least 12 rows available above the dock. The timeline receives 45% of that width. Resizing preserves selection and draft, clamps scroll positions and returns focus to the timeline if the inspector disappears.
 
-Sprowt follows the selected codemod:
+Messages stay left aligned, with one blank row between them. User messages use `>` and a subtle background; agent messages identify provider and role. Menus and confirmations use a consistent compact layout. Empty lists are labelled explicitly.
 
-| State | Expression and movement |
-| --- | --- |
-| Idle | Double blink, sideways glances and a curious face |
-| Planning | Thoughtful eyes and an occasional leaf twitch |
-| Working or checking | Focused eyes and rhythmic leaf movement |
-| Changes ready | One short bounce and wink, then a happy face |
-| Blocked or failed | A concerned face, held still |
+The Sprowt companion uses an 8-column, 4-row area of terminal cells. It is curious while idle, thoughtful while planning, focused during work, happy when ready and still when blocked. Its silhouette stays fixed. `--no-motion` also disables entrance animation.
 
-The body keeps its shape and footprint. Switching codemods resets the animation to that mod’s state. Queueing or editing an instruction can trigger a brief idle celebration; it never overrides active work or an error. Closing or stopping returns Sprowt to idle. Worker identity stays beside it; the dock shows workflow progress.
+On exit, normal input, mouse, paste handling and the previous terminal screen are restored.
 
-Run `sprowt-harness --no-motion` for a still companion and no entrance animation. On exit, the harness restores normal terminal input, mouse and paste handling, and the previous screen.
+**Next:** [Manage codemods](codemods.md) · [Read review findings](review.md) · [Troubleshoot a failure](troubleshooting.md)

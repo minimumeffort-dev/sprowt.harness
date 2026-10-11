@@ -1,159 +1,165 @@
-# Workers and isolation
+[Docs](README.md) / Understand the system
 
-Codex plans. Executors follow the saved plan in the codemod's Linux VM, with separate task worktrees and runtime homes. Up to two tasks can run at once.
+# Workers
+
+Codex handles planning and independent review. Codex and Muse can execute tasks in the codemod's Linux VM, with separate conversations, worktrees and runtime homes.
+
+[Versions](#supported-versions) · [Login](#login) · [Execution paths](#two-execution-paths-one-scheduler) · [Muse recovery](#muse-recovery)
+
+## Supported versions
+
+| Component | Supported value | Source of the pin |
+| --- | --- | --- |
+| Codex CLI | **0.159.2** | [`src/sandbox.rs`](../src/sandbox.rs) |
+| Muse CLI, optional | **1.4.4-R5419.1** | [`src/muse.rs`](../src/muse.rs) |
+| Host platform | Apple silicon, macOS 26+ | Apple Container backend |
+| Muse host adapter | Python 3 | Host stdio transport |
+
+CLI protocols affect isolation and recovery, so releases are pinned. Muse's matching Linux binary is also SHA-256 verified and privately cached. A Muse update needs a matching supported adapter and a harness reinstall.
 
 ## Automatic discovery
 
-Start normally:
+Run `sprowt-harness` normally. Startup checks CLI versions and local account status.
 
-```sh
-sprowt-harness
-```
+| Installed providers | Result |
+| --- | --- |
+| Supported, signed-in Codex | Required baseline |
+| Muse absent | Codex-only execution |
+| Supported, signed-in Muse present | Joins the pool automatically |
+| Installed provider incompatible or signed out | Startup stops with the installed/supported version or login action |
 
-Startup checks CLI versions and local account status. Codex is required for planning. Installed, signed-in Muse joins automatically; if Muse is absent, work uses Codex alone. An installed CLI with an unsupported version or missing account login stops startup with a clear next action. Version errors show the installed and supported releases. Muse updates need a matching, verified Linux binary before the harness accepts them.
-
-```mermaid
-flowchart TB
-    start["Run sprowt-harness"] --> check["Check installed CLIs and local account logins"]
-    check --> pool["Available workers · Codex, plus Muse when installed"]
-    pool --> planner["Astra xhigh · define tasks and capability needs"]
-    planner --> schedule["Rust · balance providers, run up to two ready tasks"]
-```
-
-Describe the outcome normally. Astra xhigh defines useful tasks and contracts. Both providers can implement, test and integrate. Rust picks the least loaded suitable provider when a task is ready, alternating ties. A specific capability can restrict the choice. Small changes can stay with one worker; retries keep their assigned provider and identity. See [Provider assignment](planning.md#provider-assignment).
-
-| Role | Engine | Model and effort |
-| --- | --- | --- |
-| Planner | Host Codex app-server | Astra xhigh |
-| Codex executor | Host app-server + guest exec-server | Sol 6.1 medium, high or xhigh, selected with Jev |
-| Muse executor | Full Muse CLI inside the VM | Muse Spark 1.3 high |
-
-Discovery does not run inference, start a VM or copy credentials. It checks availability, not remote account access or usage limits. Saved Muse tasks require Muse on restart; their provider is retained. Jev currently routes Codex effort only.
+Discovery does not start inference or a VM, copy credentials, or check remote access and usage limits. Saved tasks retain their provider; a saved Muse task needs Muse when resumed.
 
 ## Login
 
-Use a file-backed ChatGPT login for Codex:
+Codex requires a file-backed ChatGPT login; Keychain-only login is unsupported:
 
 ```sh
 codex -c 'cli_auth_credentials_store="file"' login
 ```
 
-For Muse, install **1.4.4-R5419.1** and sign in on your Mac with `muse login`. A host CLI resolves that existing account login; the real provider header stays in host memory. No separate Meta API key is used. The Mac also needs Python 3 for the small stdio adapter.
+For supported Muse, sign in on the Mac:
 
-CLI releases are pinned because protocol changes can affect isolation and recovery. If Muse updates itself, update and reinstall the harness for the matching supported release. The Linux binary is pinned and checksum-verified too.
+```sh
+muse login
+```
 
-On first use, the harness downloads the matching Linux Muse binary, checks its pinned SHA-256 and caches it privately. Python for the guest transport is installed through the existing VM package controller. No host folder is mounted into the VM.
+The host resolves that account login. No separate Meta API key is used, and the provider header stays in host memory. First use downloads the verified Linux binary; guest Python is installed through the VM package controller.
+
+Automatic login refresh is not implemented. After changing login or installed providers, restart the harness. See [startup troubleshooting](troubleshooting.md#worker-startup).
+
+## Roles
+
+| Role | Connection | Model and effort |
+| --- | --- | --- |
+| Planner | Host Codex app server, read-only | Astra xhigh |
+| Codex executor | Host app server + guest execution server | Sol 6.1 medium, high or xhigh |
+| Muse executor | Full Muse CLI inside the VM | Muse Spark 1.3 high |
+| Independent reviewer | Fresh Codex conversation, reads VM source | Sol 6.1 xhigh |
+
+[Jev](planning.md#jev-task-routing) selects Codex executor effort only. The reviewer cannot edit source, publish, approve access or call harness tools; its network access is disabled.
 
 ## Two execution paths, one scheduler
 
 ```mermaid
 flowchart TB
-    plan["Codex planner · saved tasks"] --> schedule["Rust scheduler · assign ready work"]
-    schedule --> codex["Mac · Codex app-server"]
-    schedule --> muse["VM · Muse CLI"]
-    codex --> tools["VM · Codex tool runner"]
-    tools --> a["Codex task worktree"]
-    muse --> b["Muse task worktree"]
-    a --> checks["Rust controller · combine and verify"]
+    schedule["Rust scheduler"] --> codex["Host Codex app server"]
+    schedule --> muse["Guest Muse CLI"]
+    codex --> runner["Guest execution server"]
+    runner --> a["Task A worktree"]
+    muse --> b["Task B worktree"]
+    a --> checks["Controller checks and integrates"]
     b --> checks
-    checks --> ready["Version ready · edit or publish"]
+    checks --> review["Combined checks + fresh review"]
 ```
 
-Each worker has its own conversation, runtime HOME and cancellation signal. The shared controller serializes checkpoints, Git integration, independent checks and system package installation. Model turns and task commands overlap.
+Both providers can implement, test and integrate. Two slots can hold either provider combination. Rust balances ready tasks by active provider load across codemods; ties alternate. Saved assignments and retries retain their owner. Dependencies still control readiness.
 
-The two active slots follow ready work. They can run two Codex workers, two Muse workers or one of each. Rust balances automatic tasks using active load across codemods in this harness; saved assignments stay fixed. Dependencies gate readiness. Idle workers are parked and reused. Connecting, running and checking all occupy a slot. Saved task ownership, delivery recovery and repair handoffs keep the original worker.
+Each worker has its own cancellation signal and runtime HOME. Connecting, running and checking occupy slots; idle identities do not. The controller serializes checkpoints, checks, integration and system package setup, while model turns and ordinary commands can overlap.
 
-Codex's trusted host process handles inference and uses its guest environment for executor tools. Its apps, inherited MCP servers, plugins, hooks and delegation are disabled. The planner's host sandbox is read-only and denies credential directories and local environment files.
+### Isolation
 
-Muse and all its child commands run inside the guest exec-server's enforced Linux process sandbox. Its own internal sandbox is disabled inside that boundary. Muse can read required system files and write its assigned task folder, runtime home and temporary files. Other task folders are unavailable. Runtime downloads use the same harness allowlist as independent verification.
+Codex's trusted host process handles inference and sends executor tools into the VM. Inherited apps, MCP servers, plugins, hooks and delegation are disabled. The planner uses a read-only host sandbox that denies credential directories and local environment files.
+
+Muse and its children run inside the guest execution server's enforced process sandbox. Muse's internal sandbox is disabled inside that outer boundary. It can write its task folder, HOME and temporary files; peer task folders are unavailable. Downloads use the harness allowlist.
+
+### Shared tools and steering
+
+Both providers use [mailboxes](coordination.md) and the same [tool dispatcher](tools.md). Muse receives checks, package setup, network requests and mailbox tools through a guest MCP bridge. Worker identities are bound by the host; a model cannot select another VM or invoke host publication.
+
+Delivery saves as pending before send; acceptance saves a receipt atomically. Native conversation receipts are checked on reconnect. Unknown delivery pauses automatic retry.
+
+An old Codex conversation lacking current tools starts fresh from saved goals, source and accepted instructions. Completed tasks, VM and transcript remain. Network approval reconnects the affected worker after its turn stops; peers continue.
 
 ## Muse model broker
 
 ```mermaid
 sequenceDiagram
-    participant Muse as Muse CLI · VM
-    participant Broker as Credential broker · Mac
-    participant Meta as Meta model service
-    Muse->>Broker: Model request + temporary capability · stdio
-    Broker->>Meta: Fixed endpoint + existing account authentication
+    participant Muse as Muse CLI in VM
+    participant Broker as Credential broker on Mac
+    participant Meta as Meta service
+    Muse->>Broker: Request + temporary capability over stdio
+    Broker->>Meta: Fixed endpoint + account authentication
     Meta-->>Broker: Model response
-    Broker-->>Muse: Response body · no provider credentials
+    Broker-->>Muse: Response without provider credentials
 ```
 
-The guest gets a random capability, valid for one task turn: at most 128 model requests, one hour of access and 32,768 output tokens per request. That output allowance includes reasoning, leaving room for Muse to produce its verification report. The broker accepts only the model catalog and streamed Spark 1.3 responses at fixed Meta endpoints. Redirects and other model or account routes are denied. It revokes access when the turn ends or the worker stops.
+| Broker limit | Value |
+| --- | --- |
+| Capability lifetime | One task turn, at most one hour |
+| Requests per capability | 128 |
+| Output allowance per request | 32,768 tokens, including reasoning |
+| Allowed routes | Model catalog and streamed Spark 1.3 responses at fixed endpoints |
+| Revocation | Turn completion or worker stop |
 
-Account authentication is verified. Subscription metering is not independently exposed by this CLI; confirm included usage in your account before treating it as measured subscription consumption.
-
-## Messages and steering
-
-Both providers use the same [task mailboxes](coordination.md) and [tool dispatcher](tools.md). Muse receives the advertised inbox, package and network-request tools through a guest MCP server. Calls carry the current worker's identity; workers cannot publish PRs, approve network access or run host commands through this bridge.
-
-Blocked downloads can request exact domains for your approval. Approval reconnects only the affected worker and retries its saved task; peers continue. Native conversation context is reused when compatible. An older Codex conversation without the current tool set starts fresh from the saved plan, source and accepted instructions. See [Downloads](sandbox.md#downloads).
-
-The codemod row shows each active provider, worker ID and task number; narrow terminals show a count. Worker labels and saved replies show model and effort. **Ctrl+O** shows each task’s provider and assignment reason. **Ctrl+R** stops or retries work. Steering is acknowledged separately for each targeted worker; reordering the queue does not deliver instructions.
-
-The harness saves a delivery as pending before sending it. Acceptance records its receipt atomically. Both providers check their saved conversation for receipts on reconnect. Unknown delivery remains saved and pauses automatic retry.
+Redirects and other account/model routes are denied. Account authentication is verified; subscription metering is not independently exposed by the CLI. Included usage is not a measured harness guarantee.
 
 ## Muse recovery
 
-Muse keeps one native conversation per assigned task in its VM home. Stop and retry reuse it. Quitting retains the VM disk; reopening restores the same conversation, including tool results and accepted steering.
+Muse keeps one native conversation per assigned task in its VM home. Stopping and retrying can reuse it while that disk remains. Quitting retains the stopped VM; closing deletes it and its native tool history.
 
-```mermaid
-flowchart TB
-    reopen["Reconnect to retained VM"] --> resume["Resume Muse task session"]
-    resume --> receipts["Check dispatch log, receipts and turn results"]
-    receipts --> unsent["Unsent update · keep queued and continue"]
-    receipts --> done["Completed turn · verify saved work"]
-    receipts --> stopped["Interrupted turn · Ctrl+R continues with context"]
-    receipts --> unknown["Unknown delivery · retain instruction and pause"]
-```
+A dropped connection gets **one automatic reconnect** to the same session. Recovery checks dispatch logs, receipts and turn status before deciding what to do.
 
-Session and command IDs save on the Mac before submission. Accepted turn IDs save before acknowledgment. Recovery reads native items and paged events, including when inline history is unavailable. A saved command ID alone is not proof of delivery. Repeated receipt processing keeps one transcript entry and does not resend steering or mailbox messages.
+| Evidence | Recovery |
+| --- | --- |
+| Same session proves an update was never dispatched | Leave it queued/in the inbox and allow work to continue |
+| Active turn | Keep it running |
+| Confirmed interrupted turn | Resume from saved work and context |
+| Completed turn with a valid report | Proceed to independent verification |
+| Unknown delivery, missing turn status or oversized history | Preserve pending data and pause |
+| Second disconnect | Require explicit retry |
 
-An update saved as pending may never have reached the bridge. When the same Muse session resumes, its dispatch log can prove that a steering or mailbox update was never sent. Recovery releases that pending marker and leaves the update queued or in the inbox. An attempted delivery without a receipt still pauses; a missing log or replacement session cannot clear it.
+Session/command IDs save before submission; accepted turn IDs save before acknowledgement. An ID alone is not proof of delivery. Repeated receipt processing keeps one transcript entry and does not resend accepted steering or mail.
 
-A dropped Muse connection gets one automatic reconnect to the same native session. Receipt checks run first: an active turn keeps running, a confirmed interrupted turn resumes from saved work, and a completed turn goes straight to independent checks. Unknown delivery or a missing turn status stays paused. Recovery is bounded to 64 pages and 8 MiB; oversized histories pause too. A second disconnect needs an explicit retry.
+Recovery reads native items and paged events, up to **64 pages / 8 MiB**. A missing dispatch log or replacement session cannot clear an uncertain delivery marker.
 
-### Bridge failures
+### Bridge and provider failures
 
-Error details distinguish provider rejections, guest exit codes and VM transport failures. Provider details are bounded and redact credentials and URLs. Raw response bodies, headers and process stderr are not saved. The original cause survives cleanup failures and is saved beside the worker's delivery state.
+Errors distinguish provider rejection, guest exit and VM transport. Saved details are bounded and redact credentials and URLs; raw bodies, headers and process stderr are not retained. The original cause survives cleanup failures.
 
-The VM sends messages in small, acknowledged chunks. It waits for the Mac before sending the next chunk, so large requests and session histories cannot overrun the process output buffer. Messages are assembled and validated before use; final output is drained even after the process exits.
+Messages cross the VM transport in acknowledged chunks. The receiver assembles and validates them, and drains final output after process exit, preventing large requests/history from overrunning the output buffer.
 
-- Permanent HTTP 4xx rejections stop automatic retries. **401** points to `muse login` on your Mac.
-- **408**, **429** and server failures keep the native CLI's bounded retry behavior.
-- A confirmed context-limit code permits a fresh conversation on the next safe reconnect. The task brief, saved source and accepted instructions rebuild context; the previous session ID and receipts remain saved. Unknown request failures do not reset conversations.
-- Any uncertain delivery prevents a context reset. The harness keeps its receipt checks before resending instructions.
-- If Muse exhausts its response allowance, the task pauses with **Muse reached its response limit**. Native turn completion alone cannot mark it successful. The same cause survives reconnect; retry continues from saved work. Missing reports also pause, and every accepted report still goes through independent checks.
+| Failure | Policy |
+| --- | --- |
+| Permanent HTTP 4xx | Stop automatic retries; 401 points to host `muse login` |
+| 408, 429 or server failure | Native CLI bounded retries |
+| Confirmed context-limit code | Fresh conversation on the next safe reconnect, rebuilt from saved work/instructions |
+| Uncertain delivery | No context reset or blind resend |
+| Response allowance exhausted | Pause with a specific cause, retained across reconnect |
+| Missing task report | Pause; turn completion or narration is not task completion |
 
-**Ctrl+T** opens tasks. Select a failed task and press **r**, or inspect it and press **Ctrl+R**, to retry only that task. Running peers continue; completed peers stay complete. If both worker slots are occupied, the retry waits for a slot. A bridge failure never counts as task completion.
-
-Another task or edit round starts a new session with its own folder and permissions. Closing or deleting removes the VM and its native logs. After reopening a closed mod, explicit retry rebuilds context from the saved plan, source and accepted instructions; the old native tool history is unavailable.
-
-## Independent reviewer
-
-**Ctrl+E** starts a fresh Codex conversation using Sol 6.1 xhigh. It reads the combined source inside the existing VM with no source writes or harness tools. You inspect findings and choose **Fix issues** to return them to existing owners; verified fixes receive another fresh review. See [Independent review](review.md).
-
-## Lifecycle
-
-Publishing keeps the VM and worktree for edits. Closing checkpoints source and removes the VM. Reopening creates a fresh VM when needed. Quitting stops workers and VMs but retains their disks. Deletion discards local codemod data. See [Local Linux sandbox](sandbox.md) for disk locations and cleanup.
+**Details → Tasks → r** retries one failed task. Peers continue and the retry waits for a slot if needed. Another task or edit round starts its own session. Reopening a closed codemod rebuilds context from saved source and instructions; deleted native history cannot be restored.
 
 ## Standalone diagnostics
 
-The compatibility probes are separate from scheduling. They use disposable fixtures and remove their VMs on completion or a returned error.
+Compatibility probes are separate from production scheduling:
 
-- [Muse host probe](../examples/muse_probe.rs): tests MCP and policy activation. Native hook failures do not provide an isolation boundary; a `BLOCKED` result is expected for those checks.
-- [Muse VM probe](../examples/muse_vm_probe.py): native editing, execution, steering and sibling-read denial through a bounded broker.
-- [Full Codex VM probe](../examples/codex_vm_probe.py): Linux CLI plus its matching tool helper, host-only ChatGPT credentials, native tools and cancellation. Production Codex still uses the host app-server.
+| Probe | What it exercises |
+| --- | --- |
+| [Muse host](../examples/muse_probe.rs) | MCP/policy activation; a `BLOCKED` native-hook result is expected and not an isolation boundary |
+| [Muse VM](../examples/muse_vm_probe.py) | Editing, execution, steering and sibling-read denial through the broker |
+| [Full Codex VM](../examples/codex_vm_probe.py) | Linux CLI/helper, host-only login, native tools and cancellation; production still uses the host app server |
 
-Offline broker and transport checks:
+See [Development](development.md) for offline tests and selected live checks. Live probes use disposable fixtures and remove their VMs on completion or a returned error.
 
-```sh
-python3 -m unittest discover -s examples -p 'test_*.py'
-```
-
-Disconnect and recovery check (uses both subscriptions and a disposable VM):
-
-```sh
-cargo test muse_adapter_reconnects_once -- --ignored
-```
+**Next:** [Sandbox boundaries](sandbox.md) · [Local state and retention](local-state.md)

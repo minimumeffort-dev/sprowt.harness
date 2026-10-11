@@ -1,67 +1,104 @@
-# Independent review
+[Docs](README.md) / Use the harness
 
-After combined checks pass, a fresh **Sol 6.1 xhigh** reviewer inspects the exact version. It reads the original request, contracts, diff, source, check results and saved finding history. **Ctrl+E** starts or retries review manually. Publication requires both passing combined checks and a clean review of the current source, including updates to an existing PR.
+# Review and repairs
+
+A fresh reviewer inspects the combined change after checks pass. Publication requires a clean review of the current source, including updates to an existing PR.
+
+## Find the issues and start fixes
+
+1. Press **Ctrl+T → 3 · Review**.
+2. Read each finding's evidence, acceptance criterion and proposed fix.
+3. Choose the action shown in the dock or **Ctrl+G · More**.
+
+| Finding state | Action | What happens |
+| --- | --- | --- |
+| Confirmed defect | **Fix review issues** · Ctrl+G → x | Sends it to its owner with evidence and required regression coverage |
+| Uncertain evidence | **Investigate findings** | Requests fresh investigation before source repairs |
+| No progress or repair budget exhausted | **Revise repair plan** · Ctrl+G → v | Sends the history to the planner for a different approach |
+| Clean current review | **Publish PR** or **Update PR** · Ctrl+S | Opens publication confirmation |
+| Interrupted review | **Review changes** · Ctrl+E | Starts or retries review when eligible |
+
+The same fix action remains available after a PR has been published. New local work shows **PR open · update pending** until it passes checks and review and you confirm the update.
+
+## Understand a finding
+
+Each finding keeps a stable **R1, R2, …** identity across wording and line changes. Open findings appear first; resolved and dismissed findings remain in history.
+
+| Field | Meaning |
+| --- | --- |
+| Severity and location | Impact, file and line |
+| Owner | Task responsible for the affected code |
+| Triage | Confirmed, investigate or information |
+| Evidence and reproduction | What failed and how the reviewer observed it |
+| Acceptance criterion | Behavior required to resolve it |
+| Origin | Introduced by a repair, missed earlier or unknown, with supporting evidence |
+| Decision history | Prior assessments and the source each decision examined |
+
+**Information** does not require a product change and does not block publication. **Confirmed** requires concrete reproduction evidence and an acceptance criterion. The reviewer supplies those assessments; the harness validates their structure. It does not independently execute the reviewer's initial reproduction text.
+
+## What happens after you choose fixes
 
 ```mermaid
 flowchart TB
-    checks["Combined checks pass"] --> review["Fresh read-only review + triage"]
-    review -->|"Confirmed defects"| choice["You choose Fix review issues"]
-    review -->|"Uncertain evidence"| investigate["Investigate findings"]
-    investigate --> review
-    choice --> fix["Owners repair one at a time"]
-    fix --> verify["Named regressions + combined checks"]
-    verify --> review
-    review -->|"Progress, one pass left"| fix
-    review -->|"No progress or budget reached"| revise["You choose Revise repair plan"]
-    revise --> plan["Planner diagnoses a different approach"]
-    plan --> fix
-    review -->|"No unresolved findings"| publish["You confirm publication"]
+    choose["Choose Fix review issues"] --> fix["Owners repair one at a time"]
+    fix --> checks["Regressions + combined checks"]
+    checks -->|"Pass"| review["Fresh independent review"]
+    checks -->|"Fail"| attention["Inspect failure and choose next action"]
+    review -->|"No unresolved findings"| ready["Ready to publish"]
+    review -->|"Progress + confirmed issues + pass remaining"| fix
+    review -->|"No progress, uncertainty or limit"| stop["Investigate or revise plan"]
 ```
 
-## Triage and evidence
+Choosing **Fix review issues** authorizes up to **two repair passes for the current plan**. Original owners, providers and scopes remain. Repairs and dependent tasks run one at a time; unrelated completed work stays saved.
 
-The reviewer records triage in its review response, so there is no extra agent round just to label findings.
+Owners are instructed to:
 
-- **Confirmed:** a concrete contract defect with reproduction command/result and an acceptance criterion. It can go to an owner for repair.
-- **Investigate:** evidence is uncertain or reproduction was unavailable. The next action is **Investigate findings**; source repairs wait.
-- **Information:** an observation that does not require a product change. It does not block publication.
+1. Reproduce the failure before editing.
+2. State the root cause and expected behavior.
+3. Make a focused fix while preserving existing contracts.
+4. Test the defect and adjacent boundary/error cases.
 
-Each finding gets a stable **R1, R2, …** identity. Wording and line changes can reuse that ID. The reviewer distinguishes defects introduced by a repair, defects missed earlier, and unknown origin; classification needs evidence. This is a reviewer assessment, not a guarantee about causality.
+A contradictory reproduction returns to triage. After a successful pass, combined checks run and a fresh reviewer examines the entire change, including repairs and adjacent behavior. If findings close and confirmed issues remain, the remaining authorized pass can start automatically.
 
-Owners are instructed to reproduce the failure before editing, state its root cause and expected behavior, make a focused fix, and cover adjacent boundary/error cases. A contradictory reproduction returns to triage instead of prompting a speculative edit. Existing contracts and regression coverage remain required.
+## What counts as resolved
 
-Every confirmed finding adds a stable **Review regression** check. Rust runs the submitted commands independently. Resolution requires a fresh reviewer decision and all commands for that named check passing on the current combined version. A disappearing finding is still open. Dismissal requires a recorded reason and counterevidence; relabelling an open defect as information cannot close it. The ledger retains closed findings and each decision's source fingerprint.
+Every confirmed finding adds a stable **Review regression** check. Rust independently runs the owner's submitted commands.
 
-Reproduction text and causal classification are supplied by the reviewer. The harness validates their presence and structure; it independently executes the regression commands submitted by the owner. Passing tests alone do not establish correctness.
+Closure requires both:
 
-## Bounded repairs
+- All commands for that named regression passing on the current combined source.
+- An explicit resolution decision from a fresh reviewer.
 
-**Fix review issues** authorizes up to two repair passes for the current plan. The original owners, providers and scopes remain. Review repairs and their dependent tasks run one at a time; ordinary independent implementation can still use two workers. Completed unrelated tasks retain their work and checks.
+Omitting a finding leaves it open. Dismissal needs a recorded reason and counterevidence. Relabelling an open defect as information cannot close it. Passing tests alone do not prove correctness.
 
-After each pass, combined checks run and a fresh reviewer examines the entire change, including the repairs and adjacent behavior. If the review closes findings and confirms remaining defects, one remaining authorized pass can start automatically. If no finding closes, evidence needs investigation, or two passes leave issues open, automatic repair stops. Neither the limit nor a worker's completion message counts as a pass.
+## When repairs stop
 
-**Revise repair plan** (**Ctrl+G → v**, or **v** in Review) sends saved failures and the finding ledger to the planner. It asks for a different root-cause approach while preserving completed source, contracts and coverage. Your composer draft stays intact. The new plan gets a new repair budget; finding IDs and prior decisions remain. The separate two-handoff integration repair limit uses this same action instead of offering another blind task retry.
+Automatic repairs stop if a pass resolves no findings, evidence needs investigation, or two passes leave issues open. Exhausting the budget never counts as success.
 
-Repair reuses task environments and download caches. Commands with identical arguments and budgets run once within a verification pass; changed source and later passes need fresh checks.
+**Revise repair plan** passes the saved failures and finding ledger to the planner. It requests a different root-cause approach while preserving completed source, contracts and regression coverage. Your draft remains intact. A new plan gets a new budget; finding IDs and decisions remain.
 
-## What you see
+The separate integration-repair handoff limit uses the same action. See [recovery budgets](execution.md#recovery-budgets) for the distinction.
 
-**Ctrl+T → 3 · Review** shows each issue's ID, severity, owner, location, triage, origin, acceptance criterion, reproduction and decision history. Open findings come first; resolved and dismissed findings remain readable below. The dock summarizes resolved, remaining and new issues, with one useful action: fix, investigate or revise the plan. Task checks passing and independent resolution stay distinct.
+## Pause, restart and stale evidence
 
-A published PR can still have newer local repairs. It shows **PR open · update pending** until those changes pass checks and review and you confirm **Update PR**. Background GitHub errors remain separate from local review and repair progress.
+- **Ctrl+R** pauses active work. Reopening leaves unfinished execution and review paused, even when an authorized pass remains.
+- Queued instructions, steering, changed source/plans, foreground Git work and confirmation dialogs defer automatic advancement.
+- Source changes invalidate the old review. Its findings remain available as saved history; obsolete responses cannot replace current results.
+- Background GitHub errors stay separate from local review progress. Automatic target updates wait for a clean review; an explicit update invalidates previous evidence.
 
-**Ctrl+R** pauses active work. Reopening never automatically resumes a repair chain, even if an authorized pass remains. **Fix review issues** resumes eligible confirmed work. Queued instructions, steering, a changed plan/source, foreground Git work and confirmation dialogs defer automatic work. Previous evidence remains labelled as saved/outdated. Obsolete responses cannot replace current results.
+SQLite saves finding IDs, reports, decisions, fingerprints and repair budgets. Legacy findings are imported once and need fresh triage before another repair. Closing retains history; deleting the codemod removes it.
 
-SQLite saves the ledger, review reports, decisions and budgets. Legacy findings are imported once with their evidence and regression names; they need fresh triage before another repair. Closing retains history; deletion removes it with the codemod. Read-only review cannot edit, publish or grant network access. Automatic target updates wait for a clean review; an explicit target update invalidates the old result.
+## Reviewer boundaries
 
-## Design references
+The reviewer uses a fresh Sol 6.1 xhigh conversation with the request, contracts, diff, source, checks and saved findings. It reads source in the VM, can use its own temporary files, and cannot edit project source, publish or approve network access.
 
-The workflow adapts [Devin Review's finding triage](https://docs.devin.ai/work-with-devin/devin-review), [Cognition's guidance on coordinated agents and fresh reviewers](https://cognition.com/blog/multi-agents-working), and [evidence-led testing](https://cognition.com/blog/testing-development). Stable IDs, closure rules and repair budgets are harness policies.
+For a live verification command, see [development checks](development.md#live-checks).
 
-## Verification
+<details>
+<summary>Design references</summary>
 
-Local tests cover migration/restart, stable IDs, missing closure proof, triage, stale responses, serialized repairs, bounded continuation, publication gates and draft-preserving actions. The separate live VM check uses your Codex subscription:
+The workflow draws on [Devin Review's triage](https://docs.devin.ai/work-with-devin/devin-review), [Cognition's coordinated agents and fresh reviewers](https://cognition.com/blog/multi-agents-working), and [evidence-led testing](https://cognition.com/blog/testing-development). Stable IDs, closure rules and repair budgets are harness policies.
 
-```sh
-cargo test independent_review_repairs_a_seeded_bug_and_rechecks_in_vm -- --ignored
-```
+</details>
+
+**Next:** [Fix a failed check](troubleshooting.md#checks-fail-or-take-too-long) · [Publish the reviewed version](git-workflow.md#publish-a-pr)

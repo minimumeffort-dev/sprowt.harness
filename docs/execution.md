@@ -1,220 +1,179 @@
-# Plan execution
+[Docs](README.md) / Understand the system
 
-Creating a codemod starts planning and execution automatically. Up to two Codex or Muse executors follow dependencies in the mod’s Linux VM.
+# Execution and checks
 
-```mermaid
-flowchart TB
-    plan["Valid saved plan"] --> vm["Create or reconnect the codemod VM"]
-    vm --> task["Scheduler · choose independent ready tasks"]
-    task --> route["Jev + Rust · choose model and effort for each task"]
-    route --> first["Worker 1 · own task worktree + runtime"]
-    route --> second["Worker 2 · own task worktree + runtime"]
-    first --> checks["Controller · rerun task checks"]
-    second --> checks
-    checks --> merge["Combine verified changes · one at a time"]
-    merge -->|"Tasks remain"| task
-    merge -->|"All tasks done"| final["Rerun every check against the combined source"]
-    final --> ready["Version ready · send edits or publish"]
-```
+The scheduler runs ready tasks in isolated worktrees, combines verified changes, then checks and reviews the complete version.
 
-A failed task check returns its evidence to the same worker for one recovery attempt. A repeated failure pauses that task and its dependents. The other worker can finish independent work. **Ctrl+T**, select the failed task, then **r** retries only that task while peers continue. If both slots are busy, the retry waits. **Ctrl+R** from the conversation stops active workers or retries unfinished work when idle; completed tasks stay done.
-
-Executors receive the planner's peer links and coordinate through [saved task mailboxes](coordination.md). Links describe what to coordinate; dependencies describe what must finish first. A task with unanswered asks waits; Rust resumes it after answers arrive. Queued edit rounds wait too, so they cannot replace tasks with outstanding questions. Messages do not change file ownership or dependencies.
-
-Astra plans. Rust balances ready tasks across the available Codex and Muse executors; either can handle integration. Both providers use the same checks, task mailboxes and source checkpoints. See [Workers](workers.md).
-
-## Working folder
-
-New codemods start from committed `HEAD` in their own host worktree. The first execution copies source into `/workspace` in Linux. A separate, local Git repository in the VM owns the integration branch and task worktrees. The project’s original Git metadata, remote configuration and credentials stay on the Mac.
-
-The host’s `work/` folder holds source exports for planning, review and checkpoint saves. It is not mounted into the VM. Credentials, dependencies and caches are excluded from snapshots; `.env.example` and `.env.sample` are included. Source files remain visible even if a generated `.gitignore` would hide them.
-
-Each worker’s runtimes and download caches stay in the VM across edit rounds and publication. Task-local dependencies stay until a replacement plan removes the old task folders. Closing removes that VM; reopening creates a fresh one when execution starts. See [Local Linux sandbox](sandbox.md) and [Workers](workers.md).
-
-### Source and generated files
-
-New `dist/` build output, test caches (`.pytest_cache`, `.mypy_cache`, `.ruff_cache`), `.egg-info` metadata and local database files stay out of checkpoints and PR diffs. This includes nested `dist/` folders, DuckDB, SQLite and `.db` files with their WAL, shared-memory and journal sidecars. Distribution files and database fixtures tracked in the starting project remain source: their edits and deletions are checked normally. Already committed `.egg-info` files keep their baseline contents: dependency installation can regenerate them in the VM without changing source, failing checks or creating worker merge conflicts.
-
-Private save copies preserve the checked files instead of filtering them against an older baseline. Saving checks their contents and permissions; changed source or outside worktree edits pause the save.
-
-Guest Git checkpoints contain the filtered source snapshot. Runtime files remain on the VM's disk. Reconnecting repairs older checkpoint indexes and saved drafts before retrying, including conflicts confined to generated `dist/` output or regenerated package metadata. Runtime files are retained; committed source conflicts still need resolution. Newly created database files are treated as runtime data.
-
-```mermaid
-flowchart TB
-    files["Worker files"] --> source["Code + committed fixtures"]
-    files --> runtime["Build output + caches + runtime databases"]
-    source --> checkpoint["Source checkpoint · checks · PR diff"]
-    runtime --> disk["Stay on VM disk"]
-```
+[Task lifecycle](#tasks-and-checks) · [Check contract](#write-repeatable-checks) · [Recovery budgets](#recovery-budgets) · [Source filtering](#source-and-generated-files)
 
 ## Tasks and checks
 
-Rust dispatches at most two ready tasks into `/tasks/<task-run-id>`. Each worktree has its own branch and index, sharing Git objects. New tasks start from the latest combined source. A retry keeps the same worker and task folder. The worker can write that folder, its own runtime home and temporary files; other task folders, combined source and Git metadata remain read-only.
+```mermaid
+flowchart TB
+    plan["Valid saved plan"] --> ready["Select ready tasks"]
+    ready --> first["Slot 1 · own worktree + runtime"]
+    ready --> second["Slot 2 · own worktree + runtime"]
+    first --> checks["Controller reruns task checks"]
+    second --> checks
+    checks --> integrate["Combine passing changes one at a time"]
+    integrate -->|"Tasks remain"| ready
+    integrate -->|"All tasks finished"| combined["Rerun all checks on combined source"]
+    combined -->|"Pass"| review["Independent review"]
+    review -->|"Clean current review"| publish["Publication available"]
+```
 
-Slots use balanced provider choices or saved assignments: two Codex, two Muse or one of each. Rust reserves task ownership before connecting, parks idle workers and reuses them when their work is ready. Connecting and verification count toward the same two-slot limit. Stops stay paused; reopening waits for **Ctrl+R**. Network approval queues the original worker's retry until capacity is available.
+1. **Reserve a ready task.** Dependencies must be complete. The provider and owner save before delivery.
+2. **Prepare its worktree.** The task starts from the latest combined source at `/tasks/<task-run-id>`.
+3. **Implement and check.** The worker installs compatible dependencies and calls `run_task_checks` before returning its report.
+4. **Verify independently.** Rust reruns the report's commands and rejects missing checks, changed source or failures.
+5. **Integrate.** Passing task changes merge one at a time into `/workspace`.
+6. **Verify together.** Task worktrees refresh to the combined source and rerun every check with their retained dependencies.
+7. **Review.** Combined success starts a fresh [independent review](review.md).
 
-One controller owns VM startup and shutdown, task checkpoints, Git integration and system package setup. Controller operations run one at a time; model turns and task commands overlap. Worker conversations and cancellation signals are separate.
+Each codemod has two active slots: two Codex workers, two Muse workers or one of each. Connecting and verification occupy slots. Idle workers are parked and reused. Review repairs run one owner at a time.
 
-Workers prepare project runtimes and dependencies; missing OS packages go through the [VM setup tool](sandbox.md#system-packages).
+A single controller serializes VM setup, checkpoints, integration, checks and system package installation. Independent model turns and ordinary commands can overlap. Workers with unanswered [peer questions](coordination.md) wait; unrelated work can continue.
 
-Before reporting completion, Codex and Muse call `run_task_checks`. It runs their declared commands through the controller, so setup failures return while the worker can still fix them. The worker then returns a short summary and the same commands. Rust reruns them before combining source and again against the finished version.
+## Working folder
 
-One check can need several commands; each uses that check's exact name. Within a single task verification pass, identical argument arrays with the same time budget run once and their observed result covers each matching check. Reuse never crosses task folders, worker homes, retries or verification passes. Source changes during a check stop the pass. Rust groups them in plan order. Commands default to 30 seconds; workers can set `timeout_seconds` from 1 to 180 seconds, or `null` for the default. Browser/model checks should allow measured headroom for startup, setup, inference and cleanup. Inner test and wrapper deadlines must fit that budget; raising the outer limit alone does not repair an older script with a shorter deadline. Diagnose hangs and preserve assertions when adjusting budgets. The budget follows the saved command through retries and combined verification; new results record elapsed time and the limit. Missing or undeclared checks, nonzero exits, timeouts or commands that change source files block completion. Commands skipped after failure or interruption stay saved as unrun.
+| Location | Purpose | Writable by |
+| --- | --- | --- |
+| Host codemod worktree | Committed starting point and Git publication | Harness Git adapter |
+| VM `/workspace` | Combined source and local integration branch | Controller |
+| VM `/tasks/<task-run-id>` | A task branch and its project dependencies | Assigned worker and controller |
+| VM `/home/sprowt/workers/<worker-id>` | Runtime installations and download caches | Assigned worker |
+| Host workspace `work/` | Source exported for planning and checkpoints | Harness |
 
-Checks start in their task folder with a fresh process environment. Temporary fixtures and import stubs belong under a unique `/tmp` directory or the worker's HOME. Browser URLs such as `/static` are not writable filesystem paths; tests use an HTTP server or module loader. Earlier shell exports, background processes and privileged setup are not part of a repeatable check.
+The original repository metadata, remotes and credentials stay on the Mac. The VM has a separate local Git repository; host folders are not mounted there.
+
+A retry retains its worker, task folder and scope. Task folders stay through combined verification, review and repairs. A replacement plan removes retired task folders and their local dependencies; per-worker runtimes and download caches remain in the VM. Closing deletes the VM. See [retention](local-state.md#what-survives).
+
+## Write repeatable checks
+
+A completion check names a required outcome. It can contain several commands, each using the **exact declared check name**.
+
+| Rule | Reason |
+| --- | --- |
+| Use an absolute executable path | The check starts with a fresh process environment |
+| Resolve project files from the task working directory | The source can be refreshed or restored |
+| Start and stop required services inside the command | Earlier background processes are not check setup |
+| Put temporary fixtures under `/tmp` or HOME | Browser URL paths such as `/static` are not writable fixture directories |
+| Keep source unchanged during checks | Results must describe one source version |
+| Return every declared check | Missing or undeclared checks block completion |
+| Preserve requirements when fixing a test | Removing assertions is not a repair |
+
+The [tool reference](tools.md#run-task-checks-example) includes a complete `run_task_checks` payload. The controller reruns submitted commands before accepting source; the tool itself does not finish or merge a task.
+
+### Time budgets
+
+Commands default to **30 seconds**. Set `timeout_seconds` to **1–180**, or `null` for the default. Include measured startup, execution and cleanup time. Inner test and wrapper deadlines must fit within the outer budget.
+
+Diagnose a hanging operation before raising its limit. For browser checks, register the response wait before triggering the action, wait for the matching successful response and resulting UI state, and control request completion when testing races.
+
+Results save elapsed time, the limit, exit code and output. Missing executables are recorded separately. A failed or interrupted combined pass stops; skipped commands remain **not run**. Polling or reopening cannot restart that pass.
+
+### Repeated commands
+
+Identical argument arrays with the same budget run once within a single task verification pass. Their observed result can cover multiple named checks. Reuse never crosses task folders, worker homes, retries or verification passes.
 
 ### Saved check scripts
 
-Standalone scripts go through `run_task_checks` into `/opt/sprowt-checks/<task-run-id>/`. The harness keeps a private host copy, restores it before checks, and makes guest scripts read-only. Commands use an absolute interpreter and script path; scripts resolve project files from the task working folder and put generated fixtures in `/tmp` or HOME.
+Standalone scripts can be included in `run_task_checks`. They live outside project source at `/opt/sprowt-checks/<task-run-id>/` and are restored from a private host copy before checks.
+
+| Field or limit | Behavior |
+| --- | --- |
+| `scripts: null` | Retain the saved bundle |
+| `scripts: [...]` | Replace the bundle |
+| Up to 16 scripts / 256 KiB total | Plain filenames and text contents |
+| Up to 32 check entries per call | Must cover all declared checks |
+| Source and script fingerprints | Tie results to the tested contents |
+
+Guest scripts are read-only. Use an absolute interpreter and script path, read project files from the task working directory, and write fixtures elsewhere.
+
+Scripts survive retries, review and restart, including VM recreation. Runtimes still need installation in a fresh VM. A replacement plan removes retired bundles. Older checks referencing `/tmp` scripts need those scripts resubmitted as saved bundles.
+
+### Reports and later messages
+
+A late peer acknowledgement with no commands retains the last valid report. A newer full report, blocker or repair request replaces it. User steering clears the previous report and requires a fresh one. Recovered history follows the same rules; retained commands still run against current source.
+
+## Fix a failed combined check
+
+**Ctrl+T → 2 · Checks → x** or **Ctrl+G → x** chooses **Fix failed check**, when the failure has a recorded owner and command.
+
+The original worker receives the latest combined source, scripts, command and failure output. It can repair source within its scope or correct a faulty check while preserving coverage. Completed peers keep their work and owners.
 
 ```mermaid
-flowchart TB
-    worker["Worker · commands + optional scripts"] --> runner["Shared check runner · current task and VM"]
-    runner --> evidence["Save output + tested source fingerprint"]
-    evidence --> fix["Worker · correct failures or return commands"]
-    fix --> gate["Controller · rerun before accepting source"]
+flowchart LR
+    fail["Combined failure"] -->|"Choose fix"| owner["Original owner repairs"]
+    owner --> task["Task checks"] --> combined["All combined checks"]
+    combined -->|"Pass"| review["Fresh review"]
+    combined -->|"Fail"| pause["Pause with evidence"]
 ```
 
-The tool accepts all declared checks, up to 32 check entries per call. A script array replaces the saved bundle; `null` retains it. Bundles hold up to 16 plain filenames and 256 KiB of text. Results record the task attempt, commands, output, source fingerprint and script fingerprint. They are evidence for that version; later edits require a fresh run, and saved success never skips the independent checks.
+The requested attempt pauses if it fails; it does not reset the automatic recovery budget. **Retry final checks** in More reruns saved commands without asking a worker to change them. It is also the fallback when no owner matches the failure.
 
-Scripts survive retries, review and harness restart, including restoration after VM recreation. Runtimes still need installation in a fresh VM. A replacement plan removes retired task scripts and their receipts; deleting the codemod removes all of them. Existing checks that reference `/tmp` must be resubmitted as saved scripts on retry.
+## Recovery budgets
 
-Passing tasks are merged into the integration branch one at a time, as they finish. Git errors retain their actual failure message. Merge conflicts save the exact paths and both versions; the task draft includes non-conflicting changes and text markers with the common base when available.
+These are separate limits, saved across restart and explicit retry. A new plan starts new budgets; previous evidence remains history.
 
-A late peer acknowledgement with no check commands keeps the last valid task report. A newer full report, blocker or repair request takes precedence. User steering clears the previous report and requires a fresh one. Live turns and recovered history follow the same rule; retained commands still run against the current source before completion.
-
-After all tasks finish, the harness updates each task folder to the combined source and reruns its checks there. Commands keep their original paths and installed dependencies. Task folders stay through final verification, review and repairs. Both providers and the controller use the worker’s retained `XDG_CACHE_HOME` under HOME for reusable downloads; temporary fixtures stay separate. A replacement plan removes the previous task folders; closing or deleting the codemod removes the VM.
-
-Each active task has a spinner and worker ID through implementation and checks. **Ctrl+O** expands scopes, commands and failures. File scopes guide workers; the sandbox enforces the folder boundary. Passing checks are evidence; review the code too.
-
-Details count passed, failed and unrun commands, grouped beneath their declared check. A check passes only when all its commands pass. Final verification stops at the first failure and leaves active scheduling. Checks shows failures first, groups passing checks by task, and summarizes skipped commands; **e** expands all evidence. Polling and reopening cannot restart a failed pass. The worker's summary is labelled **worker report**; independently rerun commands decide completion.
-
-**Fix failed check** returns a recorded combined failure to its original worker. The task receives the latest combined source, saved check scripts, command and failure output. It can correct source within its original scope or a faulty check while preserving the declared requirements and coverage. Completed peers keep their work, checks and owners. The requested attempt pauses if it fails; it does not reset the automatic recovery budget. Success must pass task verification and a fresh run of every combined check before review or publication. An outdated review stays available as history.
-
-```mermaid
-flowchart TB
-    failed["Combined check fails"] --> choose["You choose Fix failed check"]
-    choose --> owner["Original worker · correct source or check"]
-    owner --> task["Rerun task checks"]
-    task -->|"Pass"| combined["Rerun all combined checks"]
-    task -->|"Fail"| pause["Pause · retain work and evidence"]
-    combined -->|"Pass"| review["Independent review"]
-    combined -->|"Fail"| failed
-```
-
-**Retry final checks** reruns the saved commands without asking a worker to change them. It remains available in More, and is the fallback when a failure has no matching recorded owner. A missing executable can first use the single runtime-recovery attempt below.
-
-Combined checks passing automatically starts independent review. Current clean reviews recommend publication. **Ctrl+T** opens [Details](terminal.md#details): tasks, check evidence, review findings and activity. Select a task to inspect its failure and retry only that task. Questions for you stay visible in the conversation.
-
-### Task conflict recovery
-
-```mermaid
-flowchart TB
-    conflict["Task merge conflict · save both versions"] --> scope{"Text inside the owner's scope?"}
-    scope -->|"Yes · attempt available"| owner["Original worker resolves once"]
-    owner --> checks["Rerun task checks · combine · final checks"]
-    scope -->|"No"| pause["Pause · inspect files or request edits"]
-    checks -->|"Pass"| ready["Continue"]
-    checks -->|"Conflict or failure"| pause
-```
-
-The same Codex or Muse worker receives the conflicting paths and owners, with instructions to preserve both tasks' behavior and shared contracts. It keeps its original task and file scope. Binary, rename, deletion and out-of-scope conflicts pause; product decisions return as questions. Independent peers can finish while an affected task waits.
-
-Each task gets one automatic conflict-resolution attempt per plan, separate from check-failure recovery. The counter survives restart and explicit retry. An unresolved marker blocks integration even if a reported command passes. Failed checks during resolution pause instead of launching another automatic recovery. Successful resolution still requires final verification against combined source.
-
-The dock shows **Resolving task N conflicts**. **Ctrl+T** opens the task's conflicting files, owners and attempt count; its history records the outcome. **r** explicitly retries a paused task, or send edits to revise the plan. Stops remain paused. Older paused runs resume only when you retry.
+| Recovery | Automatic allowance | When it stops |
+| --- | --- | --- |
+| Failed task verification | One feedback attempt for that task | A repeat failure; stops, timeouts and mismatched reports do not trigger feedback |
+| Missing check executable | Shares that task's one feedback attempt | Dependencies still unavailable or recovery fails |
+| Task merge conflict | One resolution attempt per task and plan | Repeated, non-text or out-of-scope conflict |
+| Integration repair handoff | Two handoffs per plan | Persistent failure offers **Revise repair plan** |
+| Review repair | Two authorized passes per plan | No progress, uncertain evidence or remaining issues after the limit |
 
 ### Verification feedback
 
-```mermaid
-flowchart TB
-    report["Worker returns commands"] --> check["Controller reruns declared checks"]
-    check -->|"Pass"| combine["Combine verified source"]
-    check -->|"Fail"| evidence["Save command, exit code and failure output"]
-    evidence --> owner["Original worker · one recovery attempt"]
-    owner --> recheck["Controller reruns checks"]
-    recheck -->|"Pass"| combine
-    recheck -->|"Fail again"| pause["Pause · Ctrl+R or request edits"]
-```
-
-Recovery keeps the task, worker, folder and file scope. The worker receives the failed command and output, must preserve declared coverage and rerun all checks, including those not reached. A defect in a completed peer can use the repair handoff below.
-
-Browser checks must wait for the matching successful response and resulting UI state before reading saved data. Register the response wait before triggering the action. Exercise races with controlled request completion, rather than sleeps.
-
-The one-attempt budget saves with each task. Restart and explicit retry retain it; a new plan resets it. Stops, timeouts and mismatched reports do not trigger recovery. Access requests still need approval. Ordinary failed final checks wait for **Fix failed check** or an explicit rerun. Existing blocked tasks receive their saved failure evidence on retry.
+A failed controller task check returns the command and output to its original owner. The worker keeps its folder and scope, preserves coverage and reruns all checks, including previously skipped ones. Repeated failure pauses that task and its dependents; independent peers can finish.
 
 ### Missing task environments
 
-Before running a check, the harness verifies that its executable is available. If final verification finds a missing executable, it returns the task to its original Codex or Muse worker using the same one-attempt recovery budget. Other completed tasks stay done.
+Before a check runs, the controller verifies its executable exists. A missing executable during final verification can return to the owner for bounded dependency recovery. The owner receives current source and commands; no project language is hard-coded. Success still requires task and combined checks. Reinstalling the harness alone does not resume paused work.
 
-```mermaid
-flowchart TB
-    missing["Check executable missing"] --> owner["Original worker restores dependencies"]
-    owner --> task["Rerun all task checks"]
-    task --> combined["Rerun all final checks"]
-    combined --> ready["Changes ready"]
-```
+### Task conflict recovery
 
-The worker receives the latest combined source, saved commands and failure evidence. It chooses compatible runtimes from project manifests and preserves source and check coverage. No language is hard-coded. Repeated failures pause with **Retry final checks**. An existing paused run can enter recovery with **Ctrl+R**; reinstalling alone does not resume work.
+Integration saves both versions, paths, non-conflicting changes and text markers with their common base when available. The owner can resolve a text conflict once within its original scope, preserving both tasks' behavior.
 
-## Automatic repairs
+Binary, rename, deletion and out-of-scope conflicts pause. Product decisions become questions. Unresolved markers block integration even if a command passes; failed checks during resolution pause rather than start another automatic recovery.
 
-When integration finds a reproducible regression in a completed task, the worker returns a repair request: owner task, exact files, declared failing check, runnable command and observed failure. The failing check belongs to the reporting task; the owner names whose code needs fixing. Both providers' report schemas constrain check names to the reporting task. Rust validates ownership and waits for active turns and checks to finish. Invalid requests identify the field that needs correcting; **Ctrl+R** retries with saved work intact.
+Task Details shows paths, owners and attempts. Explicit retry retains the counter. Older paused runs stay paused until retried.
 
-```mermaid
-flowchart TB
-    failure["Integration finds a regression"] --> request["Save failure evidence + responsible task"]
-    request --> owner["Owner repairs the latest combined code"]
-    owner --> affected["Rerun the verifier and affected dependent tasks"]
-    affected --> final["Rerun every final check"]
-    final --> ready["Checks pass · changes ready"]
-```
+### Automatic repairs
 
-The original worker, task identity and file scope stay. Independent completed tasks remain done. The owner's worktree refreshes from combined source; unfinished verifier edits merge with the repaired source. Text conflicts remain visible for resolution. Runtime files stay in the VM. Delivery markers prevent a restart from resetting an in-progress repair.
+An integration worker can return a repair request for a completed peer's defect. It must provide:
 
-Requests, failure evidence and the two-attempt budget save in SQLite. Reopened tasks lose their old passing checks, and publication waits for fresh final verification. **Ctrl+R** stops work; explicit retry preserves the repair budget. Each new plan starts a fresh budget. If a failure persists after two handoffs, **Revise repair plan** sends its saved evidence to the planner while retaining completed source and your draft. Blind task and global retries cannot restart an exhausted repair. **Ctrl+O** shows the repair check and failure evidence; the conversation keeps a short notice.
+- The owner task and exact affected files.
+- A declared failing check belonging to the reporting task.
+- An absolute runnable command and short observed failure evidence.
 
-Missing access, environment blockers, uncertainty and product decisions still pause. Repairs do not expand file ownership or approve network access. A worker must identify a completed owner and provide evidence. Ordinary blocked reports wait for retry; failed controller task checks use the bounded verification feedback above.
+Rust validates the request and waits for active turns and checks to finish. The owner repairs current combined source; the verifier's unfinished changes are preserved and merged back. Affected dependent tasks and all combined checks run again. Unrelated completed tasks stay done.
 
-## Updates from merged work
+Repair requests cannot expand ownership or approve access. Invalid fields, missing access, uncertainty and product decisions pause. Two unsuccessful handoffs offer **Revise repair plan** with saved evidence; blind retries cannot restart an exhausted repair.
 
-When the PR target changes, a finished codemod saves a checkpoint and runs an integration plan in the same VM. The assigned Codex or Muse worker resolves text conflicts; Rust independently reruns the original and combined checks. Current workers finish first. Automatic updates also wait for open review findings and repairs; a clean review releases them. Explicit updates remain available for a finished version. Publication waits for verification. See [Worktrees and PRs](git-workflow.md#when-another-codemod-merges).
+For finding IDs, closure and automatic continuation after review, see [Review and repairs](review.md).
 
-## Request edits
+## Source and generated files
 
-Send a message through the composer. During implementation, ordinary messages wait in the queue until the current version passes verification. The next message starts a new plan against the latest source, including checks for the change and regressions. The execution workspace and conversation stay; the current plan and task results are replaced.
+| Files | Checkpoint behavior |
+| --- | --- |
+| Code, regular file modes and deletions | Preserved |
+| Tracked distribution files and database fixtures from the starting source | Edits and deletions remain source changes |
+| New `dist/`, test caches, `.egg-info`, runtime databases and sidecars | Stay on the VM disk, outside PR diffs |
+| Already committed `.egg-info` | Retains baseline contents despite regeneration |
+| Credentials, dependency folders and caches | Excluded; `.env.example` and `.env.sample` are included |
 
-After a failed run, sending a message starts a revised plan against the saved source, including unfinished work.
+Filtering includes nested build output, common Python caches, DuckDB, SQLite and `.db` files with WAL, shared-memory and journal sidecars. Source remains visible even if a generated `.gitignore` would hide it.
 
-Use the queue’s **s** action to steer an active turn immediately. Steering and ordinary edit rounds are separate. See [Codemods and messages](codemods.md).
+Private save copies preserve the checked files and permissions. Changed source or outside worktree edits pause saves. Reconnection repairs older checkpoint indexes and drafts containing generated-only conflicts without deleting runtime data; committed source conflicts still need resolution.
 
-## Pause, review and publish
+## Edits, target updates and pauses
 
-**Ctrl+R** pauses both workers and any verification or setup command. The deliberate pause is saved; reopening does not resume it. Files and runtime remain. Reconnecting verifies confirmed turns without repeating their edits; uncertain delivery waits for explicit retry. Failed final checks can rerun without regenerating completed tasks.
+Queued edits start a new plan against saved source after the current version is verified. Sending edits after failure can replan unfinished work. Steering reaches active workers separately. See [messages](codemods.md).
 
-[Independent review](review.md) starts automatically after successful combined checks during active work. **Ctrl+E** starts or retries it explicitly. Open findings with **Ctrl+T → Review**. **x · Fix issues** returns confirmed defects to existing owners for a bounded, serialized repair cycle; affected tasks and final checks rerun before a fresh review. **Ctrl+D** opens source changes while workers are idle. **Ctrl+S**, or **p** inside the diff, starts publication after verification and a clean current review. Confirm Git adoption or a GitHub destination if needed, then the PR. Publication commits and pushes to the codemod branch and retains the VM for more edits.
+Target updates reuse the VM, preserve worker runtimes and replace task folders with an integration plan carrying the original checks. Publication still requires fresh checks and review. See [Git updates](git-workflow.md#when-another-codemod-merges).
 
-Closing stops both workers, saves each unfinished draft, then saves a local checkpoint and a Git bundle of the VM’s task branches before removing the VM. Reopening restores unfinished task source and branch relationships. Draft exports include edits from both tasks; overlapping text edits get conflict markers. Binary conflicts retain the VM until resolved. Installed runtimes and dependencies must be prepared again in the fresh VM. Missing executables in final checks use the bounded recovery above; other environment failures stay visible for retry or an edit request. Deleting discards local work. See [Worktrees and PRs](git-workflow.md) for retention and recovery.
+**Ctrl+R** pauses or resumes eligible work. **Details → Tasks → r** targets a failed task while peers continue. Reopening never automatically resumes unfinished execution. See [local state](local-state.md) for what survives exit, close and deletion.
 
-## Current limits
-
-Maximum two executors per codemod, with task-addressed messaging. [Muse recovery](workers.md#muse-recovery) requires its retained VM disk; closing removes native history. Login refresh is not implemented. Agent availability is checked at startup; sign in or install a CLI, then restart. Linux only; no host mounts or published app ports. Symlinks, submodules and special files are unsupported. Uses Codex CLI **0.159.2** through the [app-server API](https://developers.openai.com/codex/app-server).
-
-## Verify scheduling and repairs
-
-These checks use disposable VMs and remove them afterward. The provider test uses your Codex and Muse subscriptions.
-
-```sh
-cargo test repair_handoff_preserves_drafts_and_rechecks_in_vm -- --ignored
-cargo test codex_verifier_hands_a_regression_back_to_muse -- --ignored
-cargo test verification_feedback_recovers_both_vm_workers -- --ignored
-cargo test shared_check_runner_recovers_and_survives_restart -- --ignored
-```
-
-Scheduling tests cover load balancing, provider combinations, dependencies and saved owners. The VM checks verify automatic mixed assignment and fixed provider waves, including real overlap and dependent integration.
-
-```sh
-cargo test scheduler
-cargo test automatic_provider_assignment_runs_in_vm -- --ignored
-cargo test worker_slots_follow_provider_waves_in_vm -- --ignored
-```
+**Next:** [Worker connections](workers.md) · [Tool payloads](tools.md) · [Live verification](development.md#live-checks)

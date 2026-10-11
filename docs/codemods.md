@@ -1,69 +1,76 @@
+[Docs](README.md) / Use the harness
+
 # Codemods and messages
 
-A codemod is one goal in one project. It owns its description, conversation, plan, queue, draft and execution workspace. New codemods also own a branch and worktree, with Git setup offered when needed.
+A codemod is one goal in one project. It keeps its own plan, conversation, queue, draft, branch and working environment. Switching codemods does not stop the others' workers.
 
-```mermaid
-flowchart TB
-    project["Project folder"] --> first["Codemod A"]
-    project --> second["Codemod B"]
-    first --> context["Own description, plan and messages"]
-    first --> worktree["Own Git branch and worktree"]
-    worktree --> planner["Codex planner · read-only"]
-    planner --> executor["Up to two Codex or Muse executors · independent tasks"]
-    executor --> vm["Own Linux VM · source copy and runtime"]
-```
+## Create and manage work
 
-The current harness supports one planner and up to two executors per mod. Workers in different mods can run at the same time. Planners read the worktree initially and exported source for edit rounds; executors work on its source copy in Linux. See [Plan execution](execution.md).
+Open **Ctrl+P** to select a codemod.
 
-Publishing creates or updates a PR and keeps the VM for further edits. Closing saves a checkpoint and removes the VM; deletion discards local work. [Independent review](review.md) starts automatically after successful combined checks. You decide when to send findings back to their owners for fixes.
+| Action | How | Result |
+| --- | --- | --- |
+| Create | Choose **New codemod**, describe it, press Enter | Planning and execution start after any required Git confirmation |
+| Switch | Select an active codemod, press Enter | Its timeline and draft return |
+| Read closed history | Tab to closed codemods, press Enter | Opens saved work without reopening |
+| Close | Select an active codemod, press `c`, confirm | Checkpoints source and removes its VM; history stays |
+| Reopen | Tab to closed codemods, select one, press `r` | Restores source; unfinished work waits for resume |
+| Delete | Select a codemod, press `d`, confirm | Removes local records and unpublished work; an existing PR stays |
 
-## Create, switch, close
+The first line of the description becomes the title. **Ctrl+J** adds a newline. **Esc** cancels creation, or quits when there is no codemod.
 
-- **Create:** open **Ctrl+P**, select **New codemod**, describe the change and press Enter. Confirm Git setup when offered. The project branch is checked and safely updated before creating a worktree; planning and execution start automatically. The first line becomes the title; the full description is saved.
-- **Switch:** open **Ctrl+P**, select a mod and press Enter. Its conversation and draft return. Other mods’ workers keep running.
-- **Edit:** send a message through the composer. After the current version is verified, a fresh plan and execution round start against its source. Published mods use the same composer and PR.
-- **Review:** inspect automatic review findings with **Ctrl+T → Review**. Choose **Fix issues** for confirmed defects; bounded repairs and checks lead to a fresh review. Uncertain evidence offers investigation; stalled repairs offer a revised plan. **Ctrl+E** starts or retries review manually.
-- **Publish:** **Ctrl+S** starts publication after verification and a clean current review; Enter confirms the PR. **Ctrl+D** lets you review the diff first.
-- **Update:** **Ctrl+U** syncs the project branch and checks for merged work. Finished versions update and recheck automatically; running workers finish first. An existing PR becomes draft until you publish the verified update.
-- **Close:** select an active mod, press `c`, then Enter. Save a local checkpoint, keep the worktree and history, and remove the VM. GitHub is not required. Older snapshot mods first offer Git adoption.
-- **Reopen:** press **Tab** for closed mods, then `r` on the selected mod. Its saved source returns; the next execution creates a fresh VM. Enter opens history without reopening.
-- **Delete:** press `d`, then Enter to permanently remove local history and discard unpublished work. Existing PRs remain on GitHub.
+See [Git workflow](git-workflow.md) for starting files, publication and checkpoint recovery. After a PR is merged or closed, create a new codemod from the updated project.
 
-See [Worktrees and PRs](git-workflow.md) for login, branch targets and recovery. Publishing saves work to GitHub; closing ends the local session. After a PR is merged or closed, start a new mod from the updated project.
+## Send an instruction
 
-The first launch in an empty project opens creation directly. Ctrl+J adds a newline. Esc cancels creation, or quits when no mod exists.
+The composer hint tells you what **Enter** will do.
 
-## Draft, queue, conversation
+| Hint | What happens |
+| --- | --- |
+| **Create codemod** | Starts a new requested outcome |
+| **Queue for next pass** | Saves an instruction until the current version passes verification |
+| **Request edits** | Starts a new plan against the saved source when eligible |
+| **Answer #ID** | Answers that worker's question and allows it to resume |
 
-A draft is what you are typing. Enter saves it to the queue, or answers the highlighted worker question when the composer says **answer #ID**. During work, ordinary instructions show as **Queued for next pass**. Deliberately paused work retains them until you resume. Once a version is verified, the next instruction starts a new edit plan. Sending edits after a failed run replans against the work saved so far. That request and worker replies appear in the conversation. Drafts remain separate. See [Worker communication](coordination.md) for asks, replies and automatic resumption.
+A draft is unsent text. A queued instruction is saved but not yet part of a new edit round. Conversation history records consumed requests and worker replies. These remain separate so editing a queue item does not overwrite your draft.
 
-Open **Ctrl+Q** to manage pending instructions:
+After a failed run, sending edits replans against the saved work, including unfinished changes. Deliberately paused work keeps its queue until you resume. Further edits to a published codemod update the same open PR after fresh checks and review.
+
+## Manage the queue
+
+Press **Ctrl+Q**.
 
 | Key | Action |
 | --- | --- |
-| ↑ / ↓ | Select |
-| Enter | Edit; Enter saves, Esc cancels |
-| `k` / `j` | Move up / down |
-| `d` | Remove |
-| Space | Mark or unmark |
-| `t` | Choose a running worker or all workers for steering |
-| `s` | Send selected instructions to workers; wait for connection when none are running |
+| ↑ / ↓ | Select an instruction |
+| Enter | Edit it; Enter saves and Esc cancels |
+| `k` / `j` | Move it up / down |
+| `d` | Remove it |
+| Space | Mark or unmark instructions |
+| `t` | Choose a running worker or all workers as the steering target |
+| `s` | Send selected instructions to workers, or wait for a connection |
 | Esc | Return to the composer |
 
-Editing preserves your composer draft. Removing the last item closes the queue dialog. An instruction awaiting delivery confirmation cannot be edited, removed or steered.
+Removing the last actionable item closes the dialog. Your draft stays intact. Instructions awaiting delivery confirmation cannot be edited, removed or sent again.
 
 ## Steer an active turn
 
+Use steering when an instruction should reach a worker during its current task.
+
+1. Submit the instruction, then open **Ctrl+Q**.
+2. Select it, or mark several with **Space**.
+3. Choose the worker with **t**, then press **s**.
+
 ```mermaid
-flowchart TB
-    draft["Your draft"] -->|"Enter"| queue["Saved queue"]
-    queue -->|"After current version passes checks"| next["Next edit plan + execution round"]
-    queue -->|"s · selected or marked"| waiting["Saved steering request"]
-    waiting -->|"when a turn is running"| active["Selected worker or all running workers"]
-    next --> history["Conversation history"]
-    active -->|"Codex accepts"| history
+flowchart LR
+    queue["Saved instruction"] -->|"Normal queue"| next["Next edit plan"]
+    queue -->|"Choose steering"| waiting["Waiting for delivery"]
+    waiting -->|"Worker acknowledges"| history["Recorded in conversation"]
+    waiting -->|"Rejected"| queue
 ```
 
-Steering moves instructions out of the normal queue, preserving queue order. In the queue, **t** cycles the target between all running workers and individual worker IDs; **s** sends. Broadcasts stay saved until every selected worker accepts. Each confirmed delivery appears in the conversation. If Codex rejects steering—for example, its turn has already finished—the instructions return to the normal queue once, for the next edit round. Unconfirmed delivery remains saved until it can be reconciled. Without an active turn, they wait until a plan task starts one.
+Instructions keep their queue order. A broadcast stays pending until every selected worker acknowledges it. If a turn has ended and delivery is rejected, the instruction returns to the normal queue once. Unknown delivery stays saved for reconciliation; it is not silently sent twice.
 
-You can send messages while planning or execution runs. Steering reaches the selected active turns; normal edits wait for the next version. For connection and recovery behavior, see [Workers](workers.md).
+Without a connected worker, steering waits for a task to start. Reordering the queue never delivers an instruction.
+
+**Next:** [Answer worker questions](coordination.md#questions-for-you) · [Inspect progress](terminal.md) · [Fix review findings](review.md)

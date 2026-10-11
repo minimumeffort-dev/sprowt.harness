@@ -1,200 +1,60 @@
 # sprowt harness
 
-A local CLI for building software with coding agents.
+A local terminal app that takes a software change from a request to a checked, reviewed pull request. Codex and Muse work in isolated Linux environments; you follow the timeline and step in when a decision needs you.
 
-## Why I’m building this
+**[Get started →](docs/quickstart.md)** · [Documentation](docs/README.md) · [Troubleshooting](docs/troubleshooting.md)
 
-I want to understand how coding harnesses work, so I’m building one layer at a time. The goal is to have Codex and Muse work in parallel, share context and bring their work together in a local sandbox. Better code, less waiting.
+![Illustrated harness layout: a workflow timeline on the left, selected evidence on the right, and a message dock with the next action below.](docs/assets/terminal-overview.svg)
 
-The harness works independently of sprowt.finance. It is open source and still taking shape.
+*Layout illustration. Worker names, tasks and results are examples.*
 
-## What works today
+## From request to PR
 
-- [Codemods and messages](docs/codemods.md): separate goals, conversations and drafts. Edit, reorder or remove queued instructions; steer active turns.
-- [Planning and routing](docs/planning.md): describe the outcome. Astra xhigh defines tasks and contracts. Rust balances Codex and Muse; Jev chooses Sol 6.1 effort.
-- [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
-- [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders, independent checks, bounded recovery and an explicit action to fix failed combined checks.
-- [Independent review](docs/review.md): a fresh reviewer triages findings, tracks stable issue IDs and verifies repairs. Confirmed fixes run one owner at a time with progress checks and a two-pass limit. Publication requires a clean current review.
-- [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
-- [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Workers choose runtimes and dependencies, request OS packages and ask you to approve blocked download domains.
-- [Workers and isolation](docs/workers.md): Codex planning and review, with separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
-- [Harness tools](docs/tools.md): one dispatcher for Git, GitHub, cleanup, VM setup and task checks, with caller checks and recorded activity.
-- [Local state](docs/local-state.md): reopen a project and pick up where you left off.
-- [Terminal and companion](docs/terminal.md): an adaptive workflow timeline with a side inspector, one shared state summary, a growing message dock and a Details inspector for tasks, checks, review and activity. Contextual actions, mouse scrolling and a Sprowt pet that reacts to work.
-
-### Current limits
-
-The planner uses a read-only host sandbox. Execution and independent review use a Linux VM; PR publication needs your confirmation. Downloads use a host-controlled domain allowlist; extra access needs your approval for that codemod. iOS and macOS builds need a later macOS VM backend. Existing snapshot mods can be adopted into Git.
-
-Verified on macOS with Codex CLI **0.159.2**. Run one harness instance per project.
-
-Startup detects Codex and Muse from your installed CLIs and account logins. Muse **1.4.4-R5419.1** joins the worker pool automatically; it runs inside the VM behind a host credential broker. Account authentication is verified; subscription metering remains unconfirmed. The [full Codex VM probe](docs/workers.md#standalone-diagnostics) is still separate from production.
-
-## Architecture today
-
-Rust owns the interface, scheduling, workers, task mailboxes and saved state. Startup checks the available agents. Astra defines the work; Rust assigns ready tasks to the least loaded suitable provider. A shared tool dispatcher validates operations and routes them to host or VM adapters. Codex plans and reviews; Codex and Muse execute. Jev evaluates task difficulty and risk through a host-only API adapter.
+1. **Describe the outcome.** The planner reads your project and splits the work into tasks with file scopes, dependencies and checks.
+2. **Follow the work.** Up to two Codex or Muse executors work in parallel. The timeline shows progress; Details shows commands, results and failures.
+3. **Verify and review.** The harness reruns checks against the combined changes. A fresh reviewer examines that version. Findings have owners and explicit fix or investigation actions.
+4. **Publish when ready.** Passing checks and a clean current review unlock publication. You confirm the PR, then keep editing to update it.
 
 ```mermaid
-flowchart TB
-    goal["Describe a codemod"] --> sync["Check remote · safely update project branch"]
-    sync --> setup["Git branch + worktree"]
-    setup --> planner["Astra xhigh · inspect source and plan"]
-    planner --> schedule["Rust · balance ready tasks across providers"]
-    schedule --> first["Slot 1 · Codex or Muse · own task worktree"]
-    schedule --> second["Slot 2 · Codex or Muse · own task worktree"]
-    first <-->|"Saved task mailboxes"| second
-    first --> combine["Combine one result at a time · verify together"]
-    second --> combine
-    combine -->|"Checks pass"| reviewer["Automatic review · Sol 6.1 xhigh"]
-    combine -->|"Checks fail · you choose Fix failed check"| repair["Reopen responsible task · rerun checks"]
-    repair --> schedule
-    ready --> edits["Send edits · plan the next round"]
-    edits --> planner
-    reviewer --> findings["View findings"]
-    findings -->|"You choose Fix issues · bounded passes"| repair
-    findings -->|"Uncertain evidence"| investigate["Investigate before edits"]
-    findings -->|"No progress"| revised["Revise repair plan"]
-    revised --> planner
-    reviewer -->|"No findings"| ready["Ready to publish"]
-    ready --> publish["Confirm publish · create or update PR"]
-    publish --> published["PR published"]
-    published --> edits
-    upstream["Another PR merges"] --> update["Save checkpoint · combine latest target branch"]
-    upstream --> local["Project check · safely update local branch"]
-    update --> verify["Codex or Muse resolves conflicts · Rust rechecks"]
-    verify --> reviewer
+flowchart LR
+    request["Request"] --> plan["Plan"] --> build["Build"]
+    build --> checks["Combined checks"] --> review["Independent review"]
+    review -->|"Clean"| ready["Confirm PR"]
+    review -->|"Choose fixes"| build
 ```
 
-Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Codex and Muse share a check runner, with saved scripts and results tied to the tested source. Rust reruns checks independently before accepting changes; identical commands with the same budget within one task’s verification pass run once. Checks default to 30 seconds; workers can choose up to three minutes for longer browser/model checks. Results show elapsed time and the limit, with failures first and passing checks grouped by task. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse uses Spark 1.3 high. Jev routes Codex effort.
+Repairs have limits. A pass that makes no progress stops with its evidence and a next action. Reopening restores saved work without restarting unfinished workers.
 
-Review repairs run one owner at a time, retain finding identities and stop when a pass resolves nothing. The dock offers **Revise repair plan** with saved evidence; it never treats an exhausted budget as success. See [Review](docs/review.md) for triage, closure evidence and restart behavior.
+## Run it
 
-Each codemod has two active slots: two Codex, two Muse or one of each. Both providers can implement, test and integrate. Rust picks the least loaded suitable provider across active codemods and alternates ties. Existing plans keep their assignments; retries and repairs keep their owner. The codemod row shows active workers. **Ctrl+O** shows each task's assignment reason.
+Requires Apple silicon, macOS 26+, Rust, Apple Container and the supported Codex CLI. Muse is optional. Follow the [quickstart](docs/quickstart.md) for versions, login and first-time setup.
 
-Muse resumes its native task conversation while the VM disk remains. A dropped connection gets one automatic reconnect, with native receipt checks before resuming. Completed work goes straight to verification; unknown delivery stays paused. **Ctrl+T**, select a failed task, then **r** retries it while peers continue. Starting another task creates a separate conversation.
-
-Muse sends large messages in acknowledged chunks so the VM's output buffer cannot drop them. Failures show the provider's redacted rejection or the guest/transport cause. Permanent request rejections stop automatic retries. A confirmed context limit can rebuild the conversation from saved work on a safe retry; uncertain delivery stays paused.
-
-Muse has a bounded response allowance for reasoning and its verification report. Exhaustion shows a specific retryable failure, including after reconnect. Task updates belong to the current attempt; earlier completions stay in history. In the split timeline, the inspector holds readable review findings, indented reports and colored check results. Scrolling holds your position even when the selected task leaves the screen. Click **Jump to current** or press **Ctrl+L** from any pane to focus the current step and return its details to the top without losing your draft.
-
-Late handoff acknowledgements keep the worker's valid task report. New blockers take precedence, and user steering requires a fresh report. Each planned check can have several commands. Rust requires every declared check and reruns every command against current files before accepting completion.
-
-Publishing keeps the VM and worktree for further edits. Task environments stay through checks, review and repairs; a new plan removes the old task folders. Missing check executables return to their original worker for one bounded recovery attempt. Closing saves source and task branches before removing the VM. Reopening restores the worktree; its next execution creates a fresh VM. Closed worktrees are pruned after 30 days, keeping the branch and history.
-
-You describe what you want built. The planner identifies useful parallel work and links peers around shared interfaces or handoffs. Workers receive the relevant ownership and topics, then exchange needed asks, replies and updates through saved mailboxes. Rust delivers into active turns or the next task start. Questions for you appear beside the answer composer; answered tasks resume. **Ctrl+O** shows plan details; **Ctrl+T** opens Details: Tasks, Checks, Review and Activity. The dock distinguishes active recovery, a deliberate pause and a problem needing you. Task completion, combined checks and current review are separate evidence. The shared summary drives the dock and Details; one primary action appears when useful. **Ctrl+G · More** groups Work, Inspect and Codemod actions, with deletion separate. An existing PR with newer local work shows **PR open · update pending**. Small changes can stay with one worker.
-
-Blocked downloads show **Network access needed** beside the task. **Ctrl+N** shows the exact domains and reason: **a** allows them for this codemod; **d** denies. Approval reconnects the affected worker and retries its saved task. Other workers continue; the global allowlist stays unchanged.
-
-Merge PRs one at a time on GitHub. The harness syncs your project branch on startup and every 30 seconds while open, even with no codemods. Codemod checks fetch into separate references, so they can run alongside project sync. Local edits and staging stay; unsafe updates pause. A background sync failure has its own warning and leaves local work controls available. **Ctrl+U** retries sync; **Ctrl+G → s** opens its details. The warning clears when that check succeeds.
-
-Other codemods finish their current work, save a checkpoint and update in their existing VM. A worker resolves text conflicts and rechecks the combined code. Open PRs become drafts during the update; Publish updates the same PR and marks it ready again. Product decisions pause for your input; binary conflicts need manual resolution.
-
-When integration finds a regression in a completed task, it sends failure evidence back to that owner. The harness preserves work, reopens affected tasks and reruns final checks. Each plan allows two automatic repair attempts; unresolved failures stop with the next action. File ownership and network approvals stay in place.
-
-Task merge conflicts get one automatic resolution attempt by the original worker, limited to text conflicts inside its file scope. Both versions stay saved. The dock shows progress; task inspection lists conflicting files and owners. Repeated failures, binary conflicts and changes outside scope pause. Task and final checks must pass again.
-
-New `dist/` build output, test caches, package metadata and runtime databases stay out of source checkpoints. Distribution files and database fixtures tracked in the starting project remain source; committed `.egg-info` metadata keeps its baseline contents. Parallel builds and dependency installs can keep their generated output in the VM without creating source merge conflicts.
-
-## Get started
-
-You need [Rust](https://rustup.rs), [Codex CLI](https://github.com/openai/codex) **0.159.2**, Apple silicon and macOS 26+. This connection needs a file-backed ChatGPT login on the Mac:
-
-```sh
-codex -c 'cli_auth_credentials_store="file"' login
-```
-
-Installed Muse joins automatically after `muse login`. Without Muse, the harness uses Codex alone. An installed CLI with an unsupported version or missing account login gives a startup error with the next action. See [Workers](docs/workers.md#login).
-
-Install and start [Apple Container](https://github.com/apple/container):
-
-```sh
-brew install container
-container system start --enable-kernel-install
-```
-
-Install from this repository:
+From this repository:
 
 ```sh
 cargo install --path . --locked --force
 ```
 
-Then open a terminal in the project you want to work on and run:
+Then, from the project you want to change:
 
 ```sh
 sprowt-harness
 ```
 
-Start in an empty folder, an existing project or a Git repository. If Git has no commits, review and confirm the starting files. Before a new worktree, the harness fetches the current branch’s upstream and safely fast-forwards your project. Local edits and staging stay; conflicts stop creation. The codemod uses the updated committed source.
+## Find what you need
 
-Publishing needs [GitHub CLI](https://cli.github.com/). Sign in with `gh auth login` and `gh auth setup-git`.
-
-1. Describe a codemod and press **Enter**. Confirm Git setup if offered. Planning and execution start automatically.
-2. Workers prepare a first version. The timeline branches into parallel tasks, then follows checks, repairs, review and publication. Wide terminals show selected evidence beside the timeline. Tab cycles through the timeline, inspector and message; Enter inspects a stage. Scrollbars show where more evidence is available. The unified dock keeps the next useful action and your message together. **Ctrl+T · Details** shows evidence; **Ctrl+G · More** opens grouped actions; existing shortcuts still work.
-3. Send a message to request edits. Messages sent during work wait for the next round; the queue also supports steering.
-4. Combined checks lead to an automatic review. Inspect findings in **Details → Review**, then explicitly choose **Fix issues**. Verified fixes get a fresh review. Choose **Publish PR** and confirm its destination and publication; keep editing afterward to update the same PR.
-5. In **Ctrl+P**, **c** closes with a checkpoint, **Tab** shows closed mods, **r** reopens and **d** deletes local data.
-
-Reopening restores state; unfinished work waits for **Ctrl+R**. Finished versions can automatically update from the target branch. **Ctrl+U** checks immediately. Use `--no-motion` to disable animations, or `--closed-worktree-days 0` to keep closed worktrees indefinitely. Every fresh review with findings offers **Fix review issues**; each repair round waits for your choice. Each finding gets a regression check. Checked repairs offer **Review again**, including after PR publication; reviewed changes offer **Update PR**. Automatic target updates wait for review and repairs; the dock shows their current step and elapsed time.
-
-### Jev routing
-
-Copy `.env.example` to `.env.local` and paste your TypeSafe API key. From the harness repository, run:
-
-```sh
-sprowt-harness setup
-```
-
-Setup saves the key in private local configuration, so the installed harness can route tasks from any project. `.env.local` stays out of Git. Jev uses its own API billing and receives relevant project context; its key stays on the host. Without setup, workers use Sol 6.1 xhigh. See [Planning and routing](docs/planning.md).
-
-## Controls
-
-| Key | Action |
+| I want to… | Read |
 | --- | --- |
-| Enter | Answer a highlighted question, send edits or queue an instruction |
-| Tab / Shift+Tab | Cycle through timeline, side inspector and composer |
-| ↑↓ / Space / Enter | Select / expand / inspect a timeline row |
-| Ctrl+L | Jump to current from the composer, timeline or side inspector |
-| End | Jump to current in the timeline / bottom of inspector |
-| Ctrl+J | Newline |
-| Ctrl+G | More: grouped applicable actions; Esc returns |
-| Ctrl+P | Switch, create, close, reopen or delete a codemod |
-| Ctrl+Q | Open the queue |
-| Ctrl+R | Pause, resume, retry or reopen a closed codemod |
-| Ctrl+S | Publish verified changes as a PR |
-| Ctrl+E | Start or retry review of the checked version |
-| Ctrl+G, then i | View review findings; x starts fixes |
-| Ctrl+U | Sync the project branch and check the codemod's target |
-| Ctrl+O | Show or hide plan details |
-| Ctrl+T | Details: Tasks, Checks, Review, Activity; 1–4 or Tab switches sections |
-| Ctrl+N | Review a pending network request |
-| Ctrl+D | View diff |
-| Fn + ↑ / ↓ on Mac | Scroll the timeline or open view |
-| Esc | Back, or quit from the conversation |
-| Ctrl+C | Quit |
+| Make my first PR | [Quickstart](docs/quickstart.md) |
+| Navigate the timeline and inspect results | [Terminal guide](docs/terminal.md) |
+| Send edits, steer workers or reopen work | [Codemods and messages](docs/codemods.md) |
+| Understand or fix review findings | [Review and repairs](docs/review.md) |
+| Recover from a failure | [Troubleshooting](docs/troubleshooting.md) |
+| Understand where code and agents run | [Architecture](docs/architecture.md) |
+| Contribute to the harness | [Development](docs/development.md) |
 
-Dialog actions and steering are covered in [Codemods and messages](docs/codemods.md).
+## Scope
 
-## Local data
+Execution and review run in Linux. Native macOS and iOS builds are not supported. Downloads use a domain allowlist; additional access needs your approval. GitHub publication is supported, with one harness instance per project. See [sandbox boundaries](docs/sandbox.md) and [local data](docs/local-state.md).
 
-Mods, plans, task progress, check results, reviews, conversations, queues and drafts save automatically in SQLite. Worktrees and source exports live beside the database. On macOS:
-
-```text
-~/Library/Application Support/sprowt-harness/state.db
-```
-
-Reopen from the same project root to restore them. Credentials stay with Codex. See [Local state](docs/local-state.md) for storage and [Workers](docs/workers.md) for credential isolation.
-
-Git ignores local environment files, credentials, logs and databases. Use placeholders in `.env.example` or `.env.sample`.
-
-## What’s next
-
-Login refresh, shared context, memory, external MCPs and skills follow in small batches.
-
-## Development
-
-```sh
-cargo run
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-```
+This is a learning project, built one layer at a time. It is independent of sprowt.finance.

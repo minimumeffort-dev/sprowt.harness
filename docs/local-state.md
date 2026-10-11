@@ -1,25 +1,47 @@
+[Docs](README.md) / Reference
+
 # Local state
 
-One SQLite database stores harness state for all projects. Git projects use their canonical repository root; other folders use their canonical path. Each mod’s data stays scoped to that project.
+The harness saves work automatically in SQLite and private source checkpoints. Run from the same project root to restore its codemods, drafts, queue and history.
 
-Worker updates record their task and attempt. Retries retain the full history, but current progress only uses matching updates. Existing completion records identify their attempt through their saved result ID; older unlinked narration remains in Activity.
+## What survives
 
-```mermaid
-flowchart TB
-    database[("SQLite · state.db")] --> project["Project · folder path and selected mod"]
-    project --> mod["Codemod · description and draft"]
-    mod --> plan["Plan · tasks, status and model selection"]
-    mod --> messages["Conversation history"]
-    mod --> pending["Queue and waiting steering"]
-    mod --> mail["Task mailboxes · asks, replies and receipt state"]
-    mod --> network["Network requests · decisions and exact domain grants"]
-    mod --> review["Review · stable finding ledger, source fingerprints and repair budget"]
-    mod --> execution["Execution · working folder, task status and check results"]
-    mod --> workers["Workers · provider, role, conversation and pending delivery"]
-    mod --> git["Worktree path · publication, close and retention checkpoints"]
+| Event | Source and history | Runtime and native conversations | Does work resume? |
+| --- | --- | --- | --- |
+| Pause | Retained | Retained | Only on explicit resume |
+| Quit | Retained | Stopped VM disk retained | Unfinished work stays paused on reopen |
+| Publish | Retained, with PR URL/commit | Retained | Ready for further edits |
+| Replacement plan | Source/history retained; current tasks replaced | Worker runtimes/caches retained; retired task folders removed | New valid plan executes |
+| Close | Checkpoint, task branches, draft and queue retained | VM and runtime/native logs removed | No |
+| Reopen closed work | Restored from checkpoint | Fresh VM created when execution resumes | Only on explicit resume |
+| Retention expires | Branch/history/exports retained | Already removed at close | Worktree restored if reopened |
+| Delete | Local codemod data removed; GitHub PR unchanged | Removed | No |
+
+Closed worktree retention defaults to 30 days, checked at project startup. `--closed-worktree-days 0` disables it. Only worktrees unchanged from their checkpoint are pruned; outside edits are preserved.
+
+## Project identity
+
+Git projects use the canonical repository root; other folders use their canonical path. Starting in a Git subfolder resolves to the root. Moving a repository changes its identity; relocating saved worktrees is unsupported.
+
+Run one harness instance per project. Startup discovers provider availability again, but saved task owners/providers stay fixed. A missing assigned provider pauses its work.
+
+## Storage layout
+
+On macOS, the main database is:
+
+```text
+~/Library/Application Support/sprowt-harness/state.db
 ```
 
-## On macOS
+| Location beside the database | Contents |
+| --- | --- |
+| `projects/<project>/` | Project sync checkpoints and metadata-only tool activity |
+| `workspaces/<mod>-<stamp>/` | Source, Git recovery, task drafts and check bundles |
+| `network.json` | Global download allowlist |
+| `router.env` | Optional host-only Jev key |
+
+<details>
+<summary>Complete workspace directory reference</summary>
 
 ```text
 ~/Library/Application Support/sprowt-harness/
@@ -51,6 +73,7 @@ flowchart TB
         ├── work/     source exported from the VM
         ├── base.git/ private diff metadata
         ├── tasks.json task round, worker ownership and integration state
+        ├── checks/   saved scripts and receipts, one <task-run-id>.json per task
         ├── tasks.bundle sanitized guest Git branches for VM recovery
         ├── task-drafts/ sanitized task baselines and unfinished source
         ├── checkpoint-error present if a worker checkpoint needs recovery
@@ -64,56 +87,58 @@ flowchart TB
         └── review.patch
 ```
 
-Before Git setup is confirmed, its file preview uses a temporary workspace. Cancelling or exiting removes that preview. Confirmed setup records a codemod workspace so interruption can recover. Adopting a snapshot keeps its existing workspace and project identity.
+</details>
 
-State is saved automatically as you create mods, type drafts, manage queues and receive worker messages. Replies save model and effort; plans save routing. Execution saves task ownership, provider assignment reasons and order, attempts, checks, the current routing decision and evidence, and the verified source fingerprint. Routing inputs are stored as plain text; they exclude env files and the API key. SQLite stores each Git mod’s folder; `git-mod.json` records its branch, base, exported fingerprint, commit, PR URL and publication, close, edit or removal intent. Closing also saves a timestamp for retention.
+Apple Container manages VM disks separately. Temporary transfer archives are created inside the private workspace. Muse's verified binary/adapter cache is at `~/Library/Caches/sprowt-harness/muse/` and remains after codemod deletion.
 
-Worker replies and answers to worker questions also save their task-run ID. Replaying history keeps the original association, even when the worker handles another task. Older messages without that ID remain in All history. See [Task inspection](terminal.md#inspect-a-task).
+## What SQLite records
 
-The [tool dispatcher](tools.md) records call IDs, callers, duration and outcomes in `tools.jsonl`. Inputs and outputs are omitted. Tool logs stay on the Mac and are removed with the mod; recovery uses saved execution state and Git checkpoints.
+| Record | Saved context |
+| --- | --- |
+| Codemod | Description, draft, lifecycle and deliberate user pause |
+| Plan | Contracts, tasks, scopes, provider choices and routing evidence |
+| Task attempt | Owner, source identity, delivery, report, checks and recovery counters |
+| Messages | Conversation, queued instructions, steering and mailbox receipts |
+| Review | Stable findings, triage, acceptance criteria, source fingerprints, decisions and budgets |
+| Network | Requests, decisions and per-codemod domain grants |
+| Git workflow | Workspace association, publication/close intent and checkpoint metadata |
 
-Apple Container manages each VM’s disk separately. Per-worker runtimes and download caches persist across publication and edit rounds. Task folders and their local dependencies stay through final checks, review and repairs; a replacement plan removes the old task folders. Closing or deletion removes the VM. The host workspace holds starting files and source exports. Quitting stops active VMs and keeps unfinished disks. Setup briefly creates transfer archives inside the private workspace.
+Worker updates carry task and attempt identities. Replaying history preserves that association; older unlinked narration stays in Activity. Current progress cannot use a prior attempt's completion message.
 
-Generated test caches and new runtime databases stay on the VM disk, outside source exports and Git checkpoints. Already committed database fixtures stay in source. Reconnection repairs older checkpoint indexes without deleting their runtime data. Closing or deleting the VM removes that data too. See [Source and generated files](execution.md#source-and-generated-files).
+Routing inputs and conversation bodies are plain text. Model/effort and routing decisions remain inspectable; env files and the Jev key are excluded from routing inputs.
 
-The database file uses owner-only permissions; its directory is private to your macOS user. Conversation text, descriptions and queued instructions are stored as plain text.
+## Credentials and privacy
 
-Agent availability is checked on each startup, not saved as a setting. Task providers and worker identities remain saved. Idle workers keep their native conversation IDs; the scheduler reuses them for ready work. The two-slot limit counts active workers, not saved identities. Startup restores state without activating unfinished work.
+The database is owner-readable only and its directory is private to the macOS user. This is local access control, not encrypted storage of conversations.
 
-Muse's verified Linux binary and adapter files live in `~/Library/Caches/sprowt-harness/muse/`. The binary is shared across codemods; closing or deleting a codemod does not remove that cache. Temporary login-check files are removed after discovery, including failures and timeouts. Temporary account-resolution files are removed when the host broker exits. Guest capabilities live only in the worker's VM home and expire when its turn ends.
+Host credentials are not copied into source exports or guest files. Temporary Muse login/account-resolution files are removed after use; turn capabilities expire at turn end. Private Muse recovery files contain IDs rather than credentials or message bodies. Native tool history remains on the VM disk while it exists.
 
-Muse recovery files are private, written atomically before delivery and contain IDs, not credentials or message bodies. Native conversations and tool history remain in that worker's VM home. Quitting retains them; VM deletion removes them. SQLite stores the native session identity and pending receipt. See [Muse recovery](workers.md#muse-recovery).
+Tool activity records metadata without arguments, outputs or credentials. Check scripts/results are separate private files. Generated runtime databases and caches remain on the VM disk; committed fixtures remain source. See [source filtering](execution.md#source-and-generated-files).
 
-Task rows save verification feedback and a one-attempt recovery budget, shared with missing-runtime recovery. Check results record missing executables separately from test failures. Requeueing saves the evidence, original owner, new attempt identity and budget atomically. Restart and explicit retry retain the budget; passing verification clears the feedback. See [Verification feedback](execution.md#verification-feedback).
+## Recovery records
 
-An explicit **Fix failed check** request also saves a repair marker on the owning task. The transaction retains its combined-check evidence, clears obsolete passing results from the task row and invalidates the verified version. Other task rows and saved check bundles stay intact. Restart retains the request; a failed requested attempt pauses, and a successful one clears the marker before fresh combined verification.
+### Task and check recovery
 
-Task rows also save repair evidence and affected-task context. The execution stores a separate repair-attempt count; restart and explicit retry retain it. A new plan resets both budgets. See [Automatic repairs](execution.md#automatic-repairs).
+Verification feedback, original owner, new attempt identity and the one-attempt recovery budget save atomically. Restart and explicit retry retain the budget. Passing verification clears feedback.
 
-The `worker_messages` table saves [coordination](coordination.md): task identities, bodies, reply links, retry keys and delivery/receipt state. New edit and integration rounds retain that history but retire its task addresses. Closing keeps messages; deleting a codemod removes them. Mailbox access goes through the host dispatcher; the database is never copied into the VM.
+**Fix failed check** saves a marker and combined-failure evidence, clears obsolete passing task results and invalidates the verified version. Peers and check bundles stay. A failed requested attempt pauses; success requires new combined checks.
 
-`network_requests` saves exact domains, reasons, decisions and retry state for each task. `network_grants` stores approved domains for that codemod. New edit or integration rounds remove old task requests and retain grants. Closing makes grants inactive; reopening restores them. Deletion removes both. These tables stay on the Mac; worker tools can request access, while only the host UI can approve it. The shared `network.json` is unchanged by approvals.
+Integration handoffs save their own two-attempt budget and affected-task context. Review saves a separate two-pass budget and finding ledger. New plans reset applicable budgets while keeping history. See [recovery budgets](execution.md#recovery-budgets).
 
-Project synchronization uses a temporary Git index and locks the real index while fast-forwarding. Its checkpoint completes an interrupted index update on retry. A repository lock serializes project sync with codemod setup. Git hooks and project filters are disabled. Planning starts only after synchronization and worktree setup finish.
+### Review and message recovery
 
-Background sync checks on startup and every 30 seconds, even without mods or animations. Its recovery folder stays when a mod is deleted. **Ctrl+U** retries immediately; quitting stops checks until the project opens again. See [Keep the project current](git-workflow.md#keep-the-project-current).
+Review findings close only with current regression evidence and an explicit reviewer decision. Omitted findings stay open. Legacy findings import once, preserving evidence and regression names, and require fresh triage.
 
-## Reopen, close and delete
+Mailbox history survives new rounds, but old task addresses retire. Pending steering and native receipts reconcile before delivery retries. Domain grants survive new rounds and closing; old task requests retire. Deletion removes mailbox and network records with the codemod.
 
-Run from the same project to restore mods, drafts and conversations. Git subfolders resolve to the repository root. Unfinished work waits for retry; finished versions can update from merged work. A moved repository has a different identity; relocating saved worktrees is unsupported.
+### Git recovery
 
-Publication retains the VM and worktree. The PR URL and commit are saved before success is shown. Failed Git operations keep their checkpoints and can retry with **Ctrl+R**.
+`git-mod.json` records branch, base, fingerprints, commit, PR URL and operation intent. Closing saves a timestamp. Confirmed initial setup uses a persistent workspace; cancelling an unconfirmed file preview removes that temporary preview.
 
-Closing stops all workers, checkpoints their drafts, saves guest task branches in a Git bundle and commits a checkpoint before VM deletion, then marks the mod Closed in SQLite. History, draft, queue, branch and worktree stay. Deleting removes local records, source exports, worktree and VM; existing PRs remain.
+Project sync uses a temporary index and locks the real index during fast-forward. Checkpoints can finish an interrupted index update. A repository lock serializes sync with codemod setup; hooks and project filters are disabled.
 
-At project startup, closed worktrees older than `--closed-worktree-days` are pruned if their checkpoint is unchanged. The default is 30 days; 0 disables pruning. Branches, history and exports stay. Reopening restores a pruned worktree from its checkpoint; a fresh VM starts on execution.
+Target updates install integration plans atomically. Immutable snapshots preserve the baseline; a saved merge commit and temporary index allow finalization without losing ancestry. Success removes recovery snapshots. Project sync folders remain when a codemod is deleted.
 
-Each edit round consumes its queued request and replaces the current plan and task results in one transaction, retaining the workspace, transcript and composer draft. Target updates install their integration plan atomically too; drafts, queues and history stay. Immutable snapshots make interrupted baseline replacement repeatable. A temporary index and saved merge commit let finalization resume without losing ancestry. Successful updates remove their recovery snapshots.
+Closing exports source and a sanitized guest task-branch bundle before removing the VM. Runtime installations are not in the bundle. Publication saves its URL/commit before success is displayed. Failed operations preserve checkpoints for retry.
 
-Reopening leaves unfinished work paused. Finished versions can automatically update when the target branch changes. Codex may retain earlier conversations; credentials stay on the host.
-
-Run one harness instance per project. Shared memory across projects, repository indexing and memory updates after merges are future layers.
-
-A deliberate user pause is saved on the codemod, separate from task failures. Reopening leaves unfinished execution and interrupted review idle. Active sessions advance from successful combined checks to review once per verified version; inspecting saved evidence never starts work.
-
-Review rows retain stable finding IDs, triage, acceptance criteria, attempts and decisions across review and revised-plan passes. A separate review history preserves reports by source. Only current regression evidence plus an explicit reviewer disposition resolves a finding; omission leaves it open. Two repair passes or a pass without resolved findings requires a revised plan. Reopening retains the budget without resuming automatic work. Legacy findings migrate once, preserving evidence and regression names.
+**Next:** [Git workflow](git-workflow.md) · [Muse receipts](workers.md#muse-recovery) · [Troubleshooting](troubleshooting.md)
