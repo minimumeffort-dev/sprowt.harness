@@ -235,7 +235,7 @@ pub(super) fn check_summary(app: &App, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
-fn check_lines(
+pub(super) fn check_lines(
     checks: &[&crate::execution::CheckResult],
     width: u16,
     evidence: bool,

@@ -41,7 +41,7 @@ Source is copied into the VM. Host project folders and Git credentials are not m
 
 | Component | Owns | Read more |
 | --- | --- | --- |
-| Terminal | Timeline, selection, drafts and contextual actions | [Terminal](terminal.md) |
+| Terminal | Evidence Workbench, stage selection, drafts and contextual actions | [Terminal](terminal.md) |
 | Planner | Contracts, tasks, scopes, dependencies and checks | [Planning](planning.md) |
 | Scheduler | Ready tasks, two active slots and saved provider assignments | [Execution](execution.md) |
 | Executors | Implementation within a task folder; repeatable check commands | [Workers](workers.md) |

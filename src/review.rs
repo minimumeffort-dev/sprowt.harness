@@ -141,19 +141,29 @@ impl State {
             })
     }
 
+    pub fn ordered_issues(&self) -> impl Iterator<Item = &Issue> {
+        self.issues
+            .iter()
+            .filter(|issue| issue.open())
+            .chain(self.issues.iter().filter(|issue| !issue.open()))
+    }
+
     pub fn label(&self) -> String {
         match self.status.as_str() {
             "pending" | "running" => "reviewing changes".into(),
             "clean" => "✓ review passed".into(),
             "fixing" => format!("review fixes · round {}", self.rounds),
-            "findings" => format!(
-                "! review · {} issues found",
-                if self.issues.is_empty() {
+            "findings" => {
+                let count = if self.issues.is_empty() {
                     self.report.as_ref().map_or(0, |r| r.findings.len())
                 } else {
                     self.issues.iter().filter(|i| i.open()).count()
-                }
-            ),
+                };
+                format!(
+                    "! review · {count} {} found",
+                    if count == 1 { "issue" } else { "issues" }
+                )
+            }
             "stale" => "review outdated · changes need a fresh review".into(),
             _ => "review paused · ctrl+e retry review".into(),
         }

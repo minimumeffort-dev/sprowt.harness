@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 pub enum Key {
     Request,
     Plan,
+    Environment,
     Build,
     Planned(usize),
     Task(i64),
@@ -71,9 +72,27 @@ pub struct Inspector {
     pub area: ratatui::layout::Rect,
     pub offset: u16,
     pub maximum: u16,
+    pub tab: super::controls::EvidenceTab,
+    pub offsets: [u16; 4],
+    pub finding: Option<u32>,
 }
 
 impl Inspector {
+    pub fn set_tab(&mut self, tab: super::controls::EvidenceTab) {
+        self.offsets[self.tab as usize] = self.offset;
+        self.tab = tab;
+        self.offset = self.offsets[tab as usize];
+    }
+
+    pub fn select(&mut self, key: Option<Key>) {
+        if self.key != key {
+            self.key = key;
+            self.offset = 0;
+            self.offsets = [0; 4];
+            self.finding = None;
+            self.tab = super::controls::EvidenceTab::Summary;
+        }
+    }
     pub fn scroll(&mut self, delta: i32) {
         self.offset = (i32::from(self.offset) + delta).clamp(0, i32::from(self.maximum)) as u16;
     }
@@ -81,6 +100,7 @@ impl Inspector {
 
 #[derive(Default)]
 pub struct Timeline {
+    pub overview: bool,
     pub context: Option<(i64, String)>,
     pub focus: Focus,
     pub inspector: Inspector,
@@ -119,6 +139,7 @@ impl Timeline {
     pub fn jump(&mut self) {
         self.focus = Focus::Timeline;
         self.inspector.offset = 0;
+        self.inspector.offsets = [0; 4];
         self.held = false;
         self.anchor = None;
         self.selected = None;
@@ -127,6 +148,20 @@ impl Timeline {
 }
 
 impl App {
+    pub fn navigation_items(&self) -> Vec<Item> {
+        let expanded = self.timeline.overview
+            || self
+                .timeline
+                .expanded
+                .get(&Key::Build)
+                .copied()
+                .unwrap_or(false);
+        self.timeline_items()
+            .into_iter()
+            .filter(|item| expanded || !item.branch)
+            .collect()
+    }
+
     pub fn has_timeline(&self) -> bool {
         self.view == View::Chat
             && !self.plan_details
@@ -182,7 +217,15 @@ impl App {
         };
         let mut planned = Item::new(
             Key::Plan,
-            format!("Plan ready · {} tasks", plan.tasks.len()),
+            format!(
+                "Plan ready · {} {}",
+                plan.tasks.len(),
+                if plan.tasks.len() == 1 {
+                    "task"
+                } else {
+                    "tasks"
+                }
+            ),
             Done,
         );
         planned.detail.push(plan.summary.clone());
@@ -218,7 +261,24 @@ impl App {
             .get(&Key::Build)
             .copied()
             .unwrap_or(build.state != Done);
-        let mut items = vec![asked, planned, build];
+        let mut items = vec![asked, planned];
+        if let Some(recipe) = &plan.environment {
+            let mut environment = Item::new(
+                Key::Environment,
+                "Environment · per-worker preparation",
+                Previous,
+            );
+            environment.detail.push(format!(
+                "{} setup commands · {} capability probes · {} baseline checks",
+                recipe.setup.len(),
+                recipe.capabilities.len(),
+                recipe.baseline.len()
+            ));
+            environment.detail.push("Preparation runs for each worker. Inspect a task for its saved preparation receipt.".into());
+            environment.inspect = Some(View::Tasks(0));
+            items.push(environment);
+        }
+        items.push(build);
         let mut repairs = Vec::new();
         for (index, planned) in plan.tasks.iter().enumerate() {
             let dependencies = planned
@@ -340,6 +400,16 @@ impl App {
                 }
                 _ => None,
             };
+            if !self.timeline.overview
+                && run.status != "done"
+                && matches!(state, Active | Attention)
+                && let Some(build) = items.iter_mut().find(|item| item.key == Key::Build)
+            {
+                if build.state != Attention || state == Attention {
+                    build.state = state;
+                }
+                build.action = item.action.or(build.action);
+            }
             if repairing {
                 if let Some(evidence) = run
                     .verification_feedback
@@ -528,10 +598,10 @@ impl App {
             return Ok(false);
         }
         if key.code == KeyCode::Char('l') && key.modifiers == KeyModifiers::CONTROL {
-            self.timeline.jump();
+            self.activate_control(super::controls::Control::Current)?;
             return Ok(true);
         }
-        let split = !self.timeline.inspector.area.is_empty();
+        let split = !self.timeline.overview || !self.timeline.inspector.area.is_empty();
         if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
             self.timeline.focus = match (self.timeline.focus, key.code == KeyCode::BackTab, split) {
                 (Focus::Composer, true, true) | (Focus::Timeline, false, true) => Focus::Inspector,
@@ -550,6 +620,49 @@ impl App {
             }
             return Ok(false);
         }
+        if self.timeline.focus != Focus::Composer && !self.timeline.overview {
+            use super::controls::{Control, EvidenceTab};
+            let control = match key.code {
+                KeyCode::Char('1'..='4') => {
+                    if let KeyCode::Char(c) = key.code {
+                        Some(Control::Tab(EvidenceTab::ALL[c as usize - '1' as usize]))
+                    } else {
+                        None
+                    }
+                }
+                KeyCode::Char('v') => Some(Control::Overview),
+                KeyCode::Char('e') => Some(Control::Evidence),
+                KeyCode::Char('[' | ']')
+                    if self.timeline.selected == Some(Key::Review)
+                        && self.timeline.inspector.tab == EvidenceTab::Summary =>
+                {
+                    let ids = self.review_finding_ids();
+                    let index = ids
+                        .iter()
+                        .position(|id| Some(*id) == self.timeline.inspector.finding)
+                        .unwrap_or(0);
+                    let next = if key.code == KeyCode::Char('[') {
+                        index.saturating_sub(1)
+                    } else {
+                        index.saturating_add(1)
+                    };
+                    if ids.is_empty() {
+                        return Ok(true);
+                    }
+                    ids.get(next.min(ids.len() - 1))
+                        .copied()
+                        .map(Control::Finding)
+                }
+                _ => None,
+            };
+            if let Some(control) = control {
+                self.activate_control(control)?;
+                return Ok(true);
+            }
+        } else if self.timeline.focus != Focus::Composer && key.code == KeyCode::Char('v') {
+            self.activate_control(super::controls::Control::Overview)?;
+            return Ok(true);
+        }
         if self.timeline.focus == Focus::Inspector {
             let inspector = &mut self.timeline.inspector;
             match key.code {
@@ -560,7 +673,14 @@ impl App {
                 KeyCode::Home => inspector.offset = 0,
                 KeyCode::End => inspector.offset = inspector.maximum,
                 KeyCode::Left => self.timeline.focus = Focus::Timeline,
-                KeyCode::Esc => self.timeline.focus = Focus::Composer,
+                KeyCode::Esc => {
+                    self.timeline.focus =
+                        if !self.timeline.overview && self.scroll.content.is_empty() {
+                            Focus::Timeline
+                        } else {
+                            Focus::Composer
+                        }
+                }
                 KeyCode::Char('e')
                     if matches!(
                         self.timeline.selected,
@@ -578,7 +698,7 @@ impl App {
             return Ok(true);
         }
         if key.code == KeyCode::End && self.timeline.focus == Focus::Timeline {
-            self.timeline.jump();
+            self.activate_control(super::controls::Control::Current)?;
             return Ok(true);
         }
         if matches!(key.code, KeyCode::PageUp | KeyCode::PageDown) {
@@ -592,7 +712,7 @@ impl App {
         if self.timeline.focus != Focus::Timeline {
             return Ok(false);
         }
-        let items = self.timeline_items();
+        let items = self.navigation_items();
         let selected = self.timeline.selected;
         let index = items
             .iter()
@@ -606,8 +726,9 @@ impl App {
                     KeyCode::Home => 0,
                     _ => (index + 1).min(items.len().saturating_sub(1)),
                 };
-                self.timeline.selected = items.get(next).map(|i| i.key);
-                self.timeline.held = true;
+                if let Some(item) = items.get(next) {
+                    self.activate_control(super::controls::Control::Stage(item.key))?;
+                }
                 self.timeline.reveal = true;
             }
             KeyCode::Right if split => {
@@ -628,7 +749,7 @@ impl App {
                 if let Some(item) = items.iter().find(|i| Some(i.key) == selected) {
                     let expanded = self.timeline.expanded.entry(item.key).or_insert(
                         if item.key == Key::Build {
-                            item.state != State::Done
+                            self.timeline.overview && item.state != State::Done
                         } else {
                             !split && item.expanded_by_default()
                         },
@@ -646,7 +767,7 @@ impl App {
         Ok(true)
     }
 
-    fn open_timeline_details(&mut self) -> rusqlite::Result<()> {
+    pub(super) fn open_timeline_details(&mut self) -> rusqlite::Result<()> {
         if let Some(item) = self
             .timeline_items()
             .iter()

@@ -4,14 +4,14 @@ A local terminal app that takes a software change from a request to a checked, r
 
 **[Get started →](docs/quickstart.md)** · [Documentation](docs/README.md) · [Troubleshooting](docs/troubleshooting.md)
 
-![Illustrated harness layout: a workflow timeline on the left, selected evidence on the right, and a message dock with the next action below.](docs/assets/terminal-overview.svg)
+![Evidence Workbench: stages on the left, selected evidence on the right, and a message dock with the next action below.](docs/assets/terminal-overview.svg)
 
-*Layout illustration. Worker names, tasks and results are examples.*
+*Rendered terminal layout with sample tasks and results.*
 
 ## From request to PR
 
 1. **Describe the outcome.** The planner reads your project and splits the work into tasks with file scopes, dependencies and checks.
-2. **Follow the work.** The controller prepares the environment and records baseline tests. Up to two executors work in parallel. Select a timeline step to inspect its evidence.
+2. **Follow the work.** The controller prepares the environment and records baseline tests. Up to two executors work in parallel. Select a stage in the Evidence Workbench to read its summary, checks or activity.
 3. **Verify and review.** The harness reruns checks against the combined changes. A fresh reviewer examines that version. Findings have owners and explicit fix or investigation actions.
 4. **Publish when ready.** Passing checks and a clean current review unlock publication. A model writes a concise commit title and PR summary from the diff. Preview the text, confirm publication, then keep editing to update the PR.
 

@@ -34,6 +34,11 @@ impl App {
             return Ok(());
         }
         let position = Position::new(mouse.column, mouse.row);
+        if mouse.kind == MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left)
+            && let Some(control) = self.controls.at(self.view, position)
+        {
+            return self.activate_control(control);
+        }
         if self.view == View::Chat && self.has_timeline() {
             if mouse.kind == MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left) {
                 if self.timeline.jump_area.contains(position) {

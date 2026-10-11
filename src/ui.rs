@@ -1,7 +1,9 @@
+mod dock;
 mod findings;
 mod inspector;
 mod tasks;
 mod timeline;
+mod workbench;
 
 use std::time::Duration;
 
@@ -85,6 +87,7 @@ pub fn draw(
     elapsed: Option<Duration>,
 ) -> Rect {
     app.scroll.begin(app.view);
+    app.controls.begin(app.view);
     app.timeline.inspector.area = Rect::default();
     let area = frame.area().inner(Margin::new(2, 1));
     let composer_view = app.composer_view();
@@ -92,8 +95,8 @@ pub fn draw(
     let dock = app.action_dock();
     let menu_open = matches!(app.view, View::Actions(_));
     let dock_width = area.width.saturating_sub(4);
-    let dock_header = dock_header(&dock, dock_width, elapsed, menu_open);
-    let dock_hints = dock_hints(app, dock_width, menu_open);
+    let dock_header = dock::header(&dock, dock_width, elapsed, menu_open);
+    let dock_hints = dock::hints(app, dock_width, menu_open);
     let read_only = matches!(composer_view, View::Chat) && app.read_only();
     let mut identities: Vec<_> = app.active_workers().collect();
     if identities.is_empty() {
@@ -109,7 +112,7 @@ pub fn draw(
             .collect::<Vec<_>>(),
     )
     .wrap(Wrap { trim: false });
-    let header_height = (2 + identities.line_count(area.width.saturating_sub(10)) as u16).max(4);
+    let header_height = if area.width >= 100 { 4 } else { 2 };
     let mod_height = u16::from(!matches!(
         composer_view,
         View::NewMod | View::ProjectSetup(false, _)
@@ -154,9 +157,14 @@ pub fn draw(
     ])
     .areas(area);
 
-    let [companion, heading] =
-        Layout::horizontal([Constraint::Length(10), Constraint::Min(1)]).areas(header);
-    sprout::draw(frame, companion, pose);
+    let [companion, heading] = Layout::horizontal([
+        Constraint::Length(if header.height >= 4 { 10 } else { 0 }),
+        Constraint::Min(1),
+    ])
+    .areas(header);
+    if !companion.is_empty() {
+        sprout::draw(frame, companion, pose);
+    }
     let project = directories::BaseDirs::new()
         .and_then(|dirs| {
             app.project
@@ -172,6 +180,19 @@ pub fn draw(
         ]),
         heading,
     );
+    let status = app.local_status();
+    let width = Line::from(status.clone()).width() as u16;
+    if heading.width > width + 18 {
+        frame.render_widget(
+            Line::from(status).fg(KEY_HINT).right_aligned(),
+            Rect {
+                x: area.right().saturating_sub(width + 2),
+                width,
+                height: 1,
+                ..header
+            },
+        );
+    }
     frame.render_widget(
         identities,
         Rect {
@@ -181,7 +202,7 @@ pub fn draw(
         },
     );
 
-    draw_mod_selector(
+    let selector = draw_mod_selector(
         frame,
         app.current_mod()
             .map_or("", |code_mod| code_mod.name.as_str()),
@@ -192,6 +213,12 @@ pub fn draw(
             View::Mods(_) | View::DeleteMod(_) | View::CloseMod(_)
         ),
     );
+    if !menu_open && matches!(app.view, View::Chat | View::NewMod) {
+        app.controls.add(
+            selector,
+            crate::app::controls::Control::Action(Action::Mods),
+        );
+    }
     if !menu_open && matches!(composer_view, View::Chat | View::EditQueue(_)) {
         let count = if read_only {
             0
@@ -422,7 +449,7 @@ pub fn draw(
             Constraint::Length(dock_hints.len() as u16),
         ])
         .areas(inner);
-        frame.render_widget(Paragraph::new(dock_header), status);
+        dock_header.draw(frame, app, status);
         frame.render_widget(
             Line::from(format!(
                 "├{}┤",
@@ -456,7 +483,7 @@ pub fn draw(
                 app.scroll.input = input;
             }
         }
-        frame.render_widget(Paragraph::new(dock_hints), hints);
+        dock_hints.draw(frame, app, hints);
     }
     app.scroll.finish(app.view);
     heading
@@ -607,7 +634,13 @@ fn draw_queue_editor(frame: &mut Frame, app: &mut App, index: usize, area: Rect)
     );
 }
 
-fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, workers: &[String], open: bool) {
+fn draw_mod_selector(
+    frame: &mut Frame,
+    name: &str,
+    area: Rect,
+    workers: &[String],
+    open: bool,
+) -> Rect {
     let [label, selector, status] = Layout::horizontal([
         Constraint::Length(11),
         Constraint::Length(area.width.saturating_sub(11).min(54)),
@@ -650,6 +683,7 @@ fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, workers: &[Strin
         ]),
         shortcut,
     );
+    selector
 }
 
 fn draw_mod_picker(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
@@ -711,12 +745,28 @@ fn draw_mod_picker(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             list_area,
         );
     } else {
+        let mut state = ListState::default().with_selected(Some(index.min(count - 1)));
         frame.render_stateful_widget(
             List::new(items).highlight_style(highlight),
             list_area,
-            &mut ListState::default().with_selected(Some(index.min(count - 1))),
+            &mut state,
         );
+        for (row, entry) in (state.offset()..count)
+            .take(list_area.height as usize)
+            .enumerate()
+        {
+            app.controls.add(
+                Rect {
+                    y: list_area.y + row as u16,
+                    height: 1,
+                    ..list_area
+                },
+                crate::app::controls::Control::PickMod(entry),
+            );
+        }
     }
+    app.controls
+        .add(new_mod, crate::app::controls::Control::PickMod(count));
     let action = Line::from(vec!["+ ".fg(ACCENT), "new codemod".into()]);
     frame.render_widget(
         if index == count {
@@ -1241,149 +1291,6 @@ fn action_control(item: &ActionItem, width: u16, menu: bool) -> Line<'static> {
     Line::from(spans)
 }
 
-fn dock_header(
-    dock: &ActionDock,
-    width: u16,
-    elapsed: Option<Duration>,
-    menu_open: bool,
-) -> Vec<Line<'static>> {
-    let (glyph, color) = match dock.tone {
-        Tone::Quiet => ("◇", KEY_HINT),
-        Tone::Busy => (activity_glyph(elapsed), KEY_HINT),
-        Tone::Attention => ("!", Color::Red),
-        Tone::Ready => ("✓", ACCENT),
-    };
-    let status = Line::from(format!("{glyph} {}", dock.status)).fg(color);
-    let primary = (!menu_open)
-        .then(|| {
-            dock.primary
-                .and_then(|id| dock.actions.iter().find(|a| a.action == id))
-        })
-        .flatten()
-        .map(|item| {
-            let mut control = action_control(item, width, false);
-            for span in &mut control.spans {
-                span.style = span.style.bold().bg(CONTROL);
-            }
-            control
-        })
-        .unwrap_or_default();
-    let mut lines = dock_row(status, primary, width);
-    if !menu_open && !dock.detail.is_empty() {
-        lines.extend(
-            wrap_line(Line::from(dock.detail.clone()).fg(KEY_HINT), width, 0)
-                .into_iter()
-                .take(2),
-        );
-    }
-    if !menu_open && !dock.evidence.is_empty() {
-        lines.extend(wrap_line(
-            Line::from(dock.evidence.clone()).fg(KEY_HINT),
-            width,
-            0,
-        ));
-    }
-    if !menu_open && let Some(error) = &dock.error {
-        let mut error = wrap_line(Line::from(error.clone()).fg(Color::Red), width, 0);
-        if error.len() > 2 {
-            error[1] = Line::from(format!(
-                "{}…",
-                fit_name(&error[1].to_string(), width.saturating_sub(1))
-            ))
-            .fg(Color::Red);
-        }
-        lines.extend(error.into_iter().take(2));
-    }
-    if !menu_open && let Some(sync) = dock.sync {
-        let ctrl = if width < 60 { "^" } else { "ctrl+" };
-        lines.extend(dock_row(
-            Line::from(format!("! {sync}")).fg(Color::Yellow),
-            Line::from(vec![
-                format!("{ctrl}u ").fg(ACCENT),
-                "Retry sync  ".fg(KEY_HINT),
-                format!("{ctrl}g s ").fg(ACCENT),
-                "Sync details".fg(KEY_HINT),
-            ]),
-            width,
-        ));
-    }
-    lines
-}
-
-fn dock_hints(app: &App, width: u16, menu_open: bool) -> Vec<Line<'static>> {
-    let hint = |key: &str, label: String| {
-        Line::from(vec![format!("{key} ").fg(ACCENT), label.fg(KEY_HINT)])
-    };
-    if menu_open {
-        return vec![hint("esc", "Back".into())];
-    }
-    let new_mod = matches!(app.composer_view(), View::NewMod);
-    let ctrl = if width < 60 { "^" } else { "ctrl+" };
-    let mut actions = Line::default();
-    if !new_mod {
-        if app
-            .action_dock()
-            .actions
-            .iter()
-            .any(|a| a.action == Action::Stop)
-        {
-            actions = hint(&format!("{ctrl}r"), "Pause".into());
-            actions.spans.push(Span::raw("   "));
-        }
-        actions
-            .spans
-            .extend(hint(&format!("{ctrl}t"), "Details".into()).spans);
-        actions.spans.push(Span::raw("   "));
-    }
-    actions
-        .spans
-        .extend(hint(&format!("{ctrl}g"), "More".into()).spans);
-    if !new_mod && app.read_only() {
-        return dock_row(Line::default(), actions, width);
-    }
-    let send = if new_mod {
-        "Create codemod".into()
-    } else if let Some(question) = app.current_mod().and_then(|m| m.question()) {
-        format!("Answer #{}", question.id)
-    } else if app.published() || app.version_ready() {
-        "Request edits".into()
-    } else {
-        "Queue for next pass".into()
-    };
-    let mut input = hint("↵", send);
-    let newline = hint(&format!("{ctrl}j"), "Newline".into());
-    let mut lines = Vec::new();
-    if input.width() + newline.width() + 3 <= width as usize {
-        input.spans.push(Span::raw("   "));
-        input.spans.extend(newline.spans);
-    } else {
-        lines.extend(wrap_line(input, width, 0));
-        input = newline;
-    }
-    lines.extend(dock_row(input, actions, width));
-    lines
-}
-
-fn dock_row(left: Line<'static>, right: Line<'static>, width: u16) -> Vec<Line<'static>> {
-    if right.width() == 0 {
-        return wrap_line(left, width, 0);
-    }
-    if left.width() + right.width() + 3 <= width as usize {
-        let gap = width as usize - left.width() - right.width();
-        let mut row = left;
-        row.spans.push(Span::raw(" ".repeat(gap)));
-        row.spans.extend(right.spans);
-        return vec![row];
-    }
-    let mut lines = wrap_line(left, width, 0);
-    lines.extend(
-        wrap_line(right, width, 0)
-            .into_iter()
-            .map(Line::right_aligned),
-    );
-    lines
-}
-
 fn draw_actions(frame: &mut Frame, app: &mut App, dock: &ActionDock, selected: Action, area: Rect) {
     frame.render_widget(ratatui::widgets::Clear, area);
     let actions = dock.menu_actions();
@@ -1397,35 +1304,56 @@ fn draw_actions(frame: &mut Frame, app: &mut App, dock: &ActionDock, selected: A
     );
     app.scroll.content = body;
     let mut previous = None;
-    let items = actions.iter().map(|item| {
-        let group = item.action.group();
-        let mut lines = Vec::new();
-        if previous != Some(group) {
-            if previous.is_some() {
-                lines.push(Line::default());
+    let mut heights = Vec::new();
+    let items: Vec<_> = actions
+        .iter()
+        .map(|item| {
+            let group = item.action.group();
+            let mut lines = Vec::new();
+            if previous != Some(group) {
+                if previous.is_some() {
+                    lines.push(Line::default());
+                }
+                lines.push(
+                    Line::from(["Work", "Inspect", "Codemod", "Remove"][group as usize])
+                        .fg(KEY_HINT)
+                        .bold(),
+                );
+                previous = Some(group);
             }
-            lines.push(
-                Line::from(["Work", "Inspect", "Codemod", "Remove"][group as usize])
-                    .fg(KEY_HINT)
-                    .bold(),
-            );
-            previous = Some(group);
-        }
-        let mut line = action_control(item, body.width, true);
-        if dock.primary == Some(item.action) {
-            line.spans.insert(0, "› ".fg(ACCENT));
-        } else {
-            line.spans.insert(0, Span::raw("  "));
-        }
-        lines.push(line);
-        ratatui::widgets::ListItem::new(lines)
-    });
+            let mut line = action_control(item, body.width, true);
+            if dock.primary == Some(item.action) {
+                line.spans.insert(0, "› ".fg(ACCENT));
+            } else {
+                line.spans.insert(0, Span::raw("  "));
+            }
+            lines.push(line);
+            heights.push(lines.len());
+            ratatui::widgets::ListItem::new(lines)
+        })
+        .collect();
     let index = actions.iter().position(|a| a.action == selected);
+    let mut state = ListState::default().with_selected(index);
     frame.render_stateful_widget(
         List::new(items).highlight_style(dialog_selection()),
         body,
-        &mut ListState::default().with_selected(index),
+        &mut state,
     );
+    let mut row = 0;
+    for (index, height) in heights.iter().enumerate().skip(state.offset()) {
+        row += height;
+        if row > body.height as usize {
+            break;
+        }
+        app.controls.add(
+            Rect {
+                y: body.y + row as u16 - 1,
+                height: 1,
+                ..body
+            },
+            crate::app::controls::Control::MenuAction(actions[index].action),
+        );
+    }
 }
 
 fn draw_failure(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
@@ -2167,7 +2095,7 @@ fn conversation_blocks<'a>(
 
 fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option<Duration>) {
     if app.has_timeline() {
-        timeline::draw(frame, app, area, elapsed);
+        workbench::draw(frame, app, area, elapsed);
         return;
     }
     app.page_size = area.height.max(1);

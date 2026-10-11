@@ -66,12 +66,7 @@ pub(super) fn finding_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             report.summary.clone()
         }));
         if !review.issues.is_empty() {
-            for issue in review
-                .issues
-                .iter()
-                .filter(|i| i.open())
-                .chain(review.issues.iter().filter(|i| !i.open()))
-            {
+            for issue in review.ordered_issues() {
                 let state = if outdated {
                     "Saved / outdated"
                 } else if issue.status == "fixing" {

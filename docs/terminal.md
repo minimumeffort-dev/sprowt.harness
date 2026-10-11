@@ -2,32 +2,51 @@
 
 # Terminal guide
 
-Use the timeline to follow work, Details to read the evidence, and the dock to act. Your draft stays intact while you explore.
+The Evidence Workbench puts stages on the left and their evidence on the right. The dock keeps your draft and next action together.
 
 [Navigation](#navigate-the-timeline) · [Details](#details) · [Next action](#understand-the-dock) · [Keyboard reference](#keyboard-reference) · [CLI](#commands)
 
 ## Read the screen
 
-![Illustrated timeline, details panel and unified message dock.](assets/terminal-overview.svg)
+![Evidence Workbench with a compact stage rail, evidence pane and message dock.](assets/terminal-overview.svg)
 
-*Layout illustration, with example tasks and results.*
+*Rendered terminal layout with sample tasks and results.*
 
 | Area | Purpose |
 | --- | --- |
-| **Timeline** | Request, plan, tasks, combined checks, review and publication |
-| **Details** | Evidence for the selected step, including failures and review findings |
+| **Stage rail** | Request, plan, environment, implementation, checks, review and publication |
+| **Evidence pane** | Summary, checks, changes and activity for the selected step |
 | **Dock** | Current state, the next useful action and your message |
 
-Wide terminals show timeline and details side by side. Smaller terminals use the full width for the timeline; Enter opens the selected step's details.
+Wide terminals show stages and evidence side by side. Smaller terminals show one pane at a time: select a stage, then press **Enter** to read it. **← Stages** returns to the list.
+
+Environment appears when the plan includes a preparation recipe. Its summary lists setup and checks; task details contain the observed preparation receipts.
+
+The header's local-save status is separate from checks, review and GitHub publication. **Work saved locally** does not mean the code has passed checks or reached GitHub.
+
+## Read the evidence
+
+Select a stage, then click a tab or press **1–4** while exploring.
+
+| Tab | Shows |
+| --- | --- |
+| **1 · Summary** | The selected stage's outcome and next action; review findings with evidence and proposed fixes |
+| **2 · Checks** | Observed results, with failed checks first |
+| **3 · Changes** | Access to the current diff when available |
+| **4 · Activity** | Saved updates for a selected task, or codemod history for a stage |
+
+Use **[ / ]** to move between review findings. **e** expands command evidence. To read the complete workflow history, choose **Timeline overview** or press **v** while exploring.
+
+Letters and numbers type normally when the composer is focused.
 
 ## Navigate the timeline
 
-1. Press **Tab** to focus the timeline. A **▸** beside a heading marks the focused pane.
+1. Press **Tab** to focus the stage rail. A **▸** beside a heading marks the focused pane.
 2. Use **↑/↓** to select a row and **Space** to expand it.
 3. Press **Enter** to inspect. In a wide terminal, **→** focuses the side inspector and **←** returns.
 4. Press **Esc** to return to your draft.
 
-Clicking a row selects it. Enter on a timeline row opens evidence; it never starts a repair or publishes.
+Clicking a row selects it. Enter on a stage opens evidence; it never starts a repair or publishes.
 
 ### Scroll and return to current work
 
@@ -40,17 +59,17 @@ Following current work ── scroll or select ──> Exploring saved steps
 Following current work <───── Ctrl+L ──────── Exploring saved steps
 ```
 
-**Ctrl+L**, or clicking **Jump to current**, selects the current step, resets its details to the top and resumes following. **End** also jumps when the timeline is focused. Your draft stays intact.
+**Ctrl+L**, or clicking **Current**, selects the current step, resets its details to the top and resumes following. **End** also jumps when the timeline is focused. Your draft stays intact.
 
 ### Read task progress
 
-Finished stages collapse. Active tasks show their worker, model, effort and latest update. Waiting tasks show what they depend on. A repair can have a separate **Previous failure** row containing its saved evidence.
+The stage rail stays compact. Expand Implementation with **Space** to inspect individual tasks, or use **Timeline overview**. Task evidence shows the worker, model, latest update and dependencies. A repair can have a separate **Previous failure** row containing its saved evidence.
 
 **Latest update** belongs to the current attempt. Earlier narration remains in Activity. Worker elapsed time measures the current connected turn; last activity measures observed events. Neither is a completion estimate or proof of progress.
 
 ## Details
 
-Press **Ctrl+T**. Use **1–4**, **Tab** or **Shift+Tab** to switch sections.
+Choose **Inspect** or press **Ctrl+T** to open full Details. These sections include all tasks and results, beyond the selected workbench stage. Use **1–4**, **Tab** or **Shift+Tab** to switch sections.
 
 | Section | What to look for |
 | --- | --- |
@@ -92,7 +111,7 @@ A targeted retry preserves completed peers and waits if both worker slots are oc
 
 ## Understand the dock
 
-The first row names the current state. Supporting rows distinguish implementation, checks, review and publication. When you need to act, one recommended action appears beside the state.
+The first row names the current state. Supporting rows distinguish implementation, checks, review and publication. When you need to act, one recommended button appears beside the state. Click it or use its displayed shortcut.
 
 | You see | Next step |
 | --- | --- |
@@ -120,6 +139,8 @@ The composer starts with four rows and grows to eight, then scrolls. Wrapped tex
 
 **Enter** performs the action named beside the composer: create, answer, request edits or queue for the next pass. It never activates the dock's recommendation. **Ctrl+J** inserts a newline. See [messages and steering](codemods.md#send-an-instruction).
 
+The submit and newline controls also work by click. **Inspect** opens full Details; **More** opens all available actions. Your draft stays intact while navigating.
+
 ## Keyboard reference
 
 Shortcuts are contextual. **Ctrl+G · More** lists actions available in the current state, grouped into Work, Inspect, Codemod and Remove.
@@ -128,6 +149,10 @@ Shortcuts are contextual. **Ctrl+G · More** lists actions available in the curr
 | --- | --- |
 | Tab / Shift+Tab | Cycle composer, timeline and side inspector |
 | ↑↓ / Space / Enter | Select / expand / inspect in the timeline |
+| 1–4 while exploring | Summary / Checks / Changes / Activity |
+| v while exploring | Toggle Timeline overview |
+| [ / ] in review evidence | Previous / next finding |
+| e while exploring | Expand command evidence |
 | Ctrl+L | Jump to current from any of those three panes |
 | Home / End | Top / bottom of inspector; End jumps to current in timeline |
 | Ctrl+J | Newline in composer |
@@ -171,7 +196,9 @@ Letters type normally in the composer. Close, delete and publication keep their 
 
 ## Layout and companion
 
-The side inspector appears at 124 columns or more, with at least 12 rows available above the dock. The timeline receives 45% of that width. Resizing preserves selection and draft, clamps scroll positions and returns focus to the timeline if the inspector disappears.
+The workbench splits when the content area has at least 100 columns and 12 rows. The stage rail uses 28% of the width, bounded to 25–43 cells; evidence gets the remaining space. Smaller terminals show the focused pane at full width. Resizing preserves selection and draft and clamps scroll positions.
+
+Headings, spacing, contrast and padded buttons improve readability within the terminal grid. To enlarge the font itself, use your terminal app's font or zoom settings.
 
 Messages stay left aligned, with one blank row between them. User messages use `>` and a subtle background; agent messages identify provider and role. Menus and confirmations use a consistent compact layout. Empty lists are labelled explicitly.
 

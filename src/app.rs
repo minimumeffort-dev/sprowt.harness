@@ -25,6 +25,7 @@ use crate::{
 };
 
 mod actions;
+pub mod controls;
 mod inspector;
 mod scroll;
 mod state;
@@ -75,6 +76,7 @@ pub struct App {
     pub show_evidence: bool,
     pub focus_plan: bool,
     pub timeline: timeline::Timeline,
+    pub controls: controls::Controls,
     pub review: Option<Review>,
     pub publication: Option<crate::publication::Draft>,
     publish_after_review: bool,
@@ -198,6 +200,7 @@ impl App {
             show_evidence: false,
             focus_plan: false,
             timeline: timeline::Timeline::default(),
+            controls: controls::Controls::default(),
             review: None,
             publication: None,
             publish_after_review: false,
@@ -3074,6 +3077,7 @@ impl Drop for App {
 
 #[cfg(test)]
 mod tests {
+    mod workbench;
     use super::*;
     use crate::store::test_support::TestData;
 
@@ -4062,6 +4066,24 @@ mod tests {
         screen_at(app, width, height, None)
     }
 
+    fn overview_screen(app: &mut App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        overview_screen_at(app, width, height, None)
+    }
+
+    fn overview_screen_at(
+        app: &mut App,
+        width: u16,
+        height: u16,
+        elapsed: Option<Duration>,
+    ) -> ratatui::buffer::Buffer {
+        if let Some(m) = app.current_mod() {
+            app.timeline
+                .reset_for((m.id, m.planning.as_ref().unwrap().source.clone()));
+        }
+        app.timeline.overview = true;
+        screen_at(app, width, height, elapsed)
+    }
+
     fn screen_at(
         app: &mut App,
         width: u16,
@@ -4564,7 +4586,7 @@ mod tests {
                 assert_eq!(status, action);
                 assert_eq!(hints, menu);
                 assert_eq!(bottom - top + 1, 11);
-                assert!(rendered[menu].ends_with("ctrl+g More │  "));
+                assert!(rendered[menu].ends_with("ctrl+g More  │  "));
             }
             let text = rendered.join("\n");
             assert!(text.contains("Timeline"));
@@ -4659,7 +4681,7 @@ mod tests {
         app.workers.insert(worker.id, worker);
         let working = rows(&screen(&mut app, 100, 30)).join("\n");
         assert!(working.contains("1/1 tasks finished"));
-        assert!(working.contains("ctrl+r Pause") && working.contains("↵ Queue for next pass"));
+        assert!(working.contains("ctrl+r Pause") && working.contains("↵ Queue instruction"));
         app.git_jobs.insert(
             id,
             Job::start("checking target branch", |_| {
@@ -6107,7 +6129,7 @@ mod tests {
         store.finish_review(&m,&source,r#"{"status":"clean","summary":"Inspected greeting and usage; no findings.","findings":[]}"#).unwrap();
         let mut app = App::load(data.0.join("project"), false, store).unwrap();
         app.input.insert_str("keep draft");
-        let compact = rows(&screen(&mut app, 120, 36)).join("\n");
+        let compact = rows(&overview_screen(&mut app, 120, 36)).join("\n");
         assert!(compact.contains("Publish PR") && compact.contains("review passed"));
         assert!(app.action_dock().primary == Some(Action::Publish));
         assert!(
@@ -6118,7 +6140,7 @@ mod tests {
         );
         assert!(!compact.contains("Inspected greeting"));
         app.plan_details = true;
-        let expanded = rows(&screen(&mut app, 120, 36)).join("\n");
+        let expanded = rows(&overview_screen(&mut app, 120, 36)).join("\n");
         assert!(expanded.contains("Inspected greeting"));
         assert_eq!(app.input.lines().join("\n"), "keep draft");
         let id = app.mods[0].id;
@@ -6128,7 +6150,7 @@ mod tests {
         app.maintain_reviews().unwrap();
         assert_eq!(app.mods[0].agent_review.as_ref().unwrap().status, "stale");
         assert!(
-            rows(&screen(&mut app, 120, 36))
+            rows(&overview_screen(&mut app, 120, 36))
                 .join("\n")
                 .contains("review outdated")
         );
@@ -6733,10 +6755,10 @@ mod tests {
         );
         for width in [80, 124, 160] {
             app.view = View::Chat;
-            screen(&mut app, width, 42);
+            overview_screen(&mut app, width, 42);
             app.timeline.selected = Some(Key::Repair(id));
             app.timeline.expanded.insert(Key::Repair(id), true);
-            let preview = screen(&mut app, width, 42);
+            let preview = overview_screen(&mut app, width, 42);
             let text = rows(&preview).join("\n");
             assert!(!text.contains("Earlier repair passed") && !text.contains("task complete"));
             assert!(text.contains("Retry task 1"));
@@ -6747,10 +6769,10 @@ mod tests {
             body: "Checking this repair".into(),
             ..old
         });
-        let text = rows(&screen(&mut app, 160, 42)).join("\n");
+        let text = rows(&overview_screen(&mut app, 160, 42)).join("\n");
         assert_eq!(text.matches("Checking this repair").count(), 1);
         app.view = View::TaskHistory(id, 0);
-        let text = rows(&screen(&mut app, 100, 42)).join("\n");
+        let text = rows(&overview_screen(&mut app, 100, 42)).join("\n");
         assert!(text.contains("Earlier repair passed") && text.contains("Checking this repair"));
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
@@ -6760,7 +6782,7 @@ mod tests {
         use timeline::Key;
         let (_data, mut app, _) = execution_app();
         let id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
-        screen(&mut app, 100, 40);
+        overview_screen(&mut app, 100, 40);
         assert!(!app.timeline_items().iter().any(|i| i.key == Key::Task(id)));
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         app.timeline.selected = Some(Key::Build);
@@ -7050,14 +7072,14 @@ mod tests {
             effort: Some("xhigh".into()),
         });
         e.tasks.push(done);
-        screen(&mut app, 160, 46);
+        overview_screen(&mut app, 160, 46);
         app.timeline.focus = Focus::Timeline;
         app.timeline.held = true;
         app.timeline.selected = Some(Key::Failure(id));
         app.timeline.expanded.insert(Key::Failure(id), true);
         for width in [160, 124, 80] {
             app.timeline.reveal = true;
-            let buffer = screen(&mut app, width, 46);
+            let buffer = overview_screen(&mut app, width, 46);
             let text = rows(&buffer).join("\n");
             assert!(text.contains("Saved review") && text.contains("Evidence"));
             assert!(!text.contains("\"owner\"") && !text.contains("Address only"));
@@ -7070,7 +7092,7 @@ mod tests {
         }
         app.timeline.selected = Some(Key::Task(done_id));
         app.timeline.reveal = true;
-        let buffer = screen(&mut app, 160, 46);
+        let buffer = overview_screen(&mut app, 160, 46);
         let text = rows(&buffer).join("\n");
         assert!(text.contains("Worker report") && text.contains("3 passed"));
         assert!(!text.contains("task complete") && !text.contains("0 failed"));
@@ -7080,7 +7102,7 @@ mod tests {
                 && buffer[(pane.x + 2, y)].fg == Color::Green)
         );
         app.view = View::Task(done_id, 0);
-        let text = rows(&screen(&mut app, 80, 46)).join("\n");
+        let text = rows(&overview_screen(&mut app, 80, 46)).join("\n");
         assert!(text.contains("Worker report") && text.contains("3 passed"));
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
@@ -7103,13 +7125,13 @@ mod tests {
             plan.tasks.push(task);
         }
         app.mods[0].execution = None;
-        screen(&mut app, 160, 36);
+        overview_screen(&mut app, 160, 36);
         app.timeline.focus = Focus::Timeline;
         app.timeline.selected = Some(Key::Planned(0));
         app.timeline.held = true;
         app.timeline.top = 0;
         app.timeline.anchor = None;
-        screen(&mut app, 160, 36);
+        overview_screen(&mut app, 160, 36);
         let maximum = app.timeline.rows.last().unwrap().2 - app.scroll.content.height as usize;
         for up in [false, true] {
             for _ in 0..maximum {
@@ -7121,9 +7143,9 @@ mod tests {
                 };
                 let area = app.scroll.content;
                 wheel(&mut app, up, area);
-                screen(&mut app, 160, 36);
+                overview_screen(&mut app, 160, 36);
                 assert_eq!(app.timeline.top, expected, "wheel movement at row {old}");
-                screen(&mut app, 160, 36);
+                overview_screen(&mut app, 160, 36);
                 assert_eq!(
                     app.timeline.top, expected,
                     "redraw must not move the viewport"
@@ -7152,15 +7174,15 @@ mod tests {
             plan.tasks.push(task);
         }
         app.mods[0].execution = None;
-        screen(&mut app, 100, 36);
+        overview_screen(&mut app, 100, 36);
         app.timeline.focus = timeline::Focus::Timeline;
         app.timeline.selected = Some(Key::Planned(10));
         app.timeline.reveal = true;
         app.timeline.held = true;
-        screen(&mut app, 100, 36);
+        overview_screen(&mut app, 100, 36);
         let content = app.scroll.content;
         wheel(&mut app, true, content);
-        screen(&mut app, 100, 36);
+        overview_screen(&mut app, 100, 36);
         let anchor = app.timeline.anchor;
         let top = app.timeline.top;
         app.mods[0]
@@ -7172,20 +7194,20 @@ mod tests {
             .unwrap()
             .tasks[0]
             .outcome = "Extra detail before the viewport. ".repeat(15);
-        screen(&mut app, 100, 36);
+        overview_screen(&mut app, 100, 36);
         assert_eq!(app.timeline.anchor, anchor);
         assert!(app.timeline.top > top);
         assert!(app.timeline.held);
         let draft = app.input.lines().to_vec();
         key(&mut app, KeyCode::End, KeyModifiers::NONE);
-        screen(&mut app, 100, 36);
+        overview_screen(&mut app, 100, 36);
         assert!(!app.timeline.held);
         assert_eq!(app.input.lines(), draft);
         app.mods[0].planning.as_mut().unwrap().status = "failed".into();
-        screen(&mut app, 100, 36);
+        overview_screen(&mut app, 100, 36);
         assert_eq!(app.timeline.selected, Some(Key::Plan));
         app.mods[0].planning.as_mut().unwrap().source = "next-plan".into();
-        screen(&mut app, 100, 36);
+        overview_screen(&mut app, 100, 36);
         assert!(app.timeline.focus == timeline::Focus::Composer && !app.timeline.held);
     }
 
@@ -7225,7 +7247,7 @@ mod tests {
                     if width < 120 && focus == Focus::Inspector {
                         continue;
                     }
-                    screen(&mut app, width, 42);
+                    overview_screen(&mut app, width, 42);
                     assert_eq!(app.timeline.selected, Some(Key::Review));
                     let area = if width >= 120 {
                         app.timeline.inspector.area
@@ -7234,7 +7256,7 @@ mod tests {
                     };
                     wheel(&mut app, false, area);
                     app.timeline.focus = focus;
-                    let display = rows(&screen(&mut app, width, 42)).join("\n");
+                    let display = rows(&overview_screen(&mut app, width, 42)).join("\n");
                     assert!(
                         display.contains(if width == 36 {
                             "ctrl+l Current"
@@ -7259,7 +7281,7 @@ mod tests {
                     } else {
                         app.handle(Event::Mouse(event)).unwrap();
                     }
-                    let display = rows(&screen(&mut app, width, 42)).join("\n");
+                    let display = rows(&overview_screen(&mut app, width, 42)).join("\n");
                     assert_eq!(app.timeline.inspector.offset, 0);
                     assert_eq!(app.timeline.focus, Focus::Timeline);
                     assert_eq!(app.timeline.selected, Some(Key::Review));
@@ -7283,7 +7305,7 @@ mod tests {
                         .unwrap();
                     }
                     let top = app.timeline.top;
-                    screen(&mut app, width, 42);
+                    overview_screen(&mut app, width, 42);
                     assert_eq!(app.timeline.top, top);
                     assert!(!app.timeline.held);
                     assert_eq!(app.input.lines(), ["keep this draft"]);
@@ -7302,7 +7324,7 @@ mod tests {
             "First request line\nSecond request line\nThird request line".into();
         app.mods[0].messages.clear();
         for width in [36, 80, 160] {
-            let buffer = screen(&mut app, width, 40);
+            let buffer = overview_screen(&mut app, width, 40);
             let input = app.scroll.input;
             assert!(input.height >= 4);
             let (_, start, _) = *app
@@ -7314,7 +7336,7 @@ mod tests {
             app.timeline.top = start;
             app.timeline.held = true;
             app.timeline.anchor = Some((Key::Build, 0));
-            screen(&mut app, width, 40);
+            overview_screen(&mut app, width, 40);
             let content = app.scroll.content;
             app.handle(Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),
@@ -7340,10 +7362,10 @@ mod tests {
         app.timeline.focus = timeline::Focus::Timeline;
         app.timeline.reveal = true;
         key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
-        let text = rows(&screen(&mut app, 100, 40)).join("\n");
+        let text = rows(&overview_screen(&mut app, 100, 40)).join("\n");
         assert_eq!(text.matches("First request line").count(), 1);
         assert!(text.contains("Second request line") && text.contains("Third request line"));
-        screen(&mut app, 20, 8);
+        overview_screen(&mut app, 20, 8);
         assert!(app.scroll.content.is_empty() && app.scroll.input.is_empty());
     }
 
@@ -7352,7 +7374,7 @@ mod tests {
         use timeline::{Focus, Key};
         let (_data, mut app, _) = execution_app();
         let id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
-        screen(&mut app, 160, 45);
+        overview_screen(&mut app, 160, 45);
         assert!(!app.timeline.inspector.area.is_empty());
         assert!(
             app.scroll.input.width + 4
@@ -7363,13 +7385,13 @@ mod tests {
         app.timeline.selected = Some(Key::Build);
         key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        let buffer = screen(&mut app, 160, 45);
+        let buffer = overview_screen(&mut app, 160, 45);
         assert_eq!(app.timeline.inspector.key, Some(Key::Task(id)));
         assert!(rows(&buffer).join("\n").contains("▸ Timeline"));
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.timeline.focus, Focus::Inspector);
         assert!(
-            rows(&screen(&mut app, 160, 45))
+            rows(&overview_screen(&mut app, 160, 45))
                 .join("\n")
                 .contains("▸ Details")
         );
@@ -7379,7 +7401,7 @@ mod tests {
         assert!(app.view == View::Task(id, 0));
         assert!(queued(&app).is_empty());
         app.view = View::Chat;
-        screen(&mut app, 160, 45);
+        overview_screen(&mut app, 160, 45);
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.timeline.focus, Focus::Composer);
         key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
@@ -7406,36 +7428,36 @@ mod tests {
             .contracts = (0..60)
             .map(|i| format!("Contract {i} with concrete evidence."))
             .collect();
-        screen(&mut app, 160, 42);
+        overview_screen(&mut app, 160, 42);
         app.timeline.focus = Focus::Timeline;
         app.timeline.selected = Some(Key::Plan);
         app.timeline.held = true;
-        let buffer = screen(&mut app, 160, 42);
+        let buffer = overview_screen(&mut app, 160, 42);
         let right = app.timeline.inspector.area;
         assert!(right.height > 0 && app.timeline.inspector.maximum > 0);
         assert!((right.y..right.bottom()).any(|y| buffer[(right.right() - 1, y)].symbol() == "┃"));
         let timeline_top = app.timeline.top;
         wheel(&mut app, false, right);
-        screen(&mut app, 160, 42);
+        overview_screen(&mut app, 160, 42);
         assert_eq!(app.timeline.top, timeline_top);
         assert_eq!(app.timeline.inspector.offset, 3);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.timeline.focus, Focus::Inspector);
         key(&mut app, KeyCode::End, KeyModifiers::NONE);
-        screen(&mut app, 160, 42);
+        overview_screen(&mut app, 160, 42);
         assert_eq!(
             app.timeline.inspector.offset,
             app.timeline.inspector.maximum
         );
-        screen(&mut app, 160, 100);
+        overview_screen(&mut app, 160, 100);
         assert!(app.timeline.inspector.offset < 60);
-        screen(&mut app, 80, 42);
+        overview_screen(&mut app, 80, 42);
         assert!(app.timeline.inspector.area.is_empty());
         assert_eq!(app.timeline.focus, Focus::Timeline);
         assert_eq!(app.timeline.selected, Some(Key::Plan));
-        screen(&mut app, 160, 42);
+        overview_screen(&mut app, 160, 42);
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        screen(&mut app, 160, 42);
+        overview_screen(&mut app, 160, 42);
         assert_eq!(app.timeline.inspector.offset, 0);
         assert_eq!(app.timeline.inspector.key, Some(Key::Build));
         assert_eq!(app.input.lines(), ["keep this draft"]);
@@ -7446,7 +7468,7 @@ mod tests {
         use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         use timeline::{Focus, Key};
         let (_data, mut app, _) = execution_app();
-        screen(&mut app, 160, 45);
+        overview_screen(&mut app, 160, 45);
         let right = app.timeline.inspector.area;
         app.handle(Event::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -7460,7 +7482,7 @@ mod tests {
         // A vanished row must not open a different stage or send the draft.
         app.timeline.selected = Some(Key::Repair(-1));
         assert!(
-            rows(&screen(&mut app, 160, 45))
+            rows(&overview_screen(&mut app, 160, 45))
                 .join("\n")
                 .contains("no longer in the current plan")
         );
@@ -7468,7 +7490,7 @@ mod tests {
         assert!(app.view == View::Chat);
         assert!(queued(&app).is_empty());
         app.mods[0].planning.as_mut().unwrap().source = "a new plan".into();
-        screen(&mut app, 160, 45);
+        overview_screen(&mut app, 160, 45);
         assert_eq!(app.timeline.focus, Focus::Composer);
         assert!(!app.timeline.held);
         assert_ne!(app.timeline.selected, Some(Key::Repair(-1)));
@@ -8073,7 +8095,7 @@ mod tests {
             effort: Some("low".into()),
         });
         for (elapsed, glyph) in [(0, "⠋"), (80, "⠙"), (160, "⠹")] {
-            let screen = rows(&screen_at(
+            let screen = rows(&overview_screen_at(
                 &mut app,
                 116,
                 40,
@@ -8086,14 +8108,14 @@ mod tests {
             assert!(!screen.contains("Previous reply."));
             assert!(screen.contains(&format!("{glyph} 1. Greeting")));
         }
-        let still = rows(&screen(&mut app, 116, 40)).join("\n");
+        let still = rows(&overview_screen(&mut app, 116, 40)).join("\n");
         assert!(still.contains(&format!(
             "⠿ codex · executor · w{id} · current-model · high"
         )));
         assert!(still.contains("⠿ 1. Greeting"));
         app.workers.values_mut().next().unwrap().status = Status::Checking;
         app.mods[0].execution.as_mut().unwrap().tasks[0].status = "checking".into();
-        let checking = rows(&screen_at(
+        let checking = rows(&overview_screen_at(
             &mut app,
             116,
             40,
@@ -8110,7 +8132,7 @@ mod tests {
                 .starts_with("Working · combined checks")
         );
         app.workers.values_mut().next().unwrap().status = Status::Ready;
-        let idle = rows(&screen_at(
+        let idle = rows(&overview_screen_at(
             &mut app,
             116,
             40,
@@ -8123,13 +8145,13 @@ mod tests {
         assert!(!idle.contains('⠙'));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
-        let history = rows(&screen(&mut app, 116, 40)).join("\n");
+        let history = rows(&overview_screen(&mut app, 116, 40)).join("\n");
         assert!(history.contains("◆ codex · executor · previous-model · low"));
         assert!(history.contains("Previous reply."));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         app.workers.values_mut().next().unwrap().role = Role::Planner;
-        let planner = rows(&screen(&mut app, 116, 40)).join("\n");
+        let planner = rows(&overview_screen(&mut app, 116, 40)).join("\n");
         assert!(planner.contains("▤ codex · planner · current-model · high"));
     }
 
@@ -8300,16 +8322,16 @@ mod tests {
                 .unwrap()
                 .bind_test_task(run.source.clone());
         }
-        let view = rows(&screen_at(
+        let view = rows(&overview_screen_at(
             &mut app,
             120,
-            36,
+            44,
             Some(Duration::from_millis(80)),
         ))
         .join("\n");
         assert!(view.contains(&format!("codex w{} · task 1", workers[0])));
         assert!(view.contains(&format!("muse w{} · task 2", workers[1])));
-        let narrow = rows(&screen(&mut app, 90, 36)).join("\n");
+        let narrow = rows(&overview_screen(&mut app, 90, 36)).join("\n");
         assert!(narrow.contains("2 workers running"));
         assert!(view.contains("⠙ 1. Greeting · Working"), "{view}");
         assert!(view.contains("⠙ 2. Second task · Working"), "{view}");
@@ -8319,7 +8341,7 @@ mod tests {
         key(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
         assert_eq!(app.steer_target, Some(workers[1]));
-        let view = rows(&screen(&mut app, 120, 36))
+        let view = rows(&overview_screen(&mut app, 120, 36))
             .join("\n")
             .replace('\u{a0}', " ");
         assert!(view.contains(&format!("target: w{}", workers[1])));
@@ -8425,7 +8447,7 @@ mod tests {
         selection.evidence = Some(serde_json::json!({"answers":{"risk":{"confidence":0.47}}}));
         execution.tasks[0].selection = Some(selection);
         for width in [48, 116] {
-            let compact = rows(&screen(&mut app, width, 40));
+            let compact = rows(&overview_screen(&mut app, width, 40));
             let text = compact.join("\n");
             assert!(text.contains("Checks passed · review pending"));
             assert!(text.contains("Combined checks passed") && text.contains("More"));
@@ -8441,7 +8463,7 @@ mod tests {
             assert!(!text.contains("Print hello") && !text.contains("I will inspect"));
             assert!(!text.contains("Keep task order") && !text.contains("/usr/bin/true"));
             key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
-            let actions = rows(&screen(&mut app, width, 40)).join("\n");
+            let actions = rows(&overview_screen(&mut app, width, 40)).join("\n");
             assert!(actions.contains("Details") && !actions.contains("Publish PR"));
             key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         }
@@ -8449,7 +8471,7 @@ mod tests {
         app.mods[0].queue.push(instruction);
         app.store.save_draft(id, "keep this draft").unwrap();
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
-        let details = rows(&screen(&mut app, 116, 50)).join("\n");
+        let details = rows(&overview_screen(&mut app, 116, 50)).join("\n");
         assert!(
             details.contains("Keep task order unchanged.") && details.contains("/usr/bin/true")
         );
@@ -8458,7 +8480,7 @@ mod tests {
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
         assert!(matches!(app.view, View::Tasks(0)));
         key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
-        let history = rows(&screen(&mut app, 116, 40)).join("\n");
+        let history = rows(&overview_screen(&mut app, 116, 40)).join("\n");
         assert!(
             history.contains("all history") && history.contains("I will inspect the saved edits.")
         );
@@ -8744,7 +8766,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         paste(&mut app, "keep this draft\nsecond line");
 
-        let compact = rows(&screen(&mut app, 100, 42)).join("\n");
+        let compact = rows(&overview_screen(&mut app, 100, 42)).join("\n");
         assert!(compact.contains("1. Build the API") && compact.contains("after task 1"));
         assert!(compact.contains("1. Build the API"));
         assert!(!compact.contains("app/main.py") && !compact.contains("gpt-6-astra"));
@@ -8752,7 +8774,7 @@ mod tests {
         assert!(compact.contains("ctrl+q manage"));
 
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
-        let expanded = rows(&screen(&mut app, 100, 48)).join("\n");
+        let expanded = rows(&overview_screen(&mut app, 100, 48)).join("\n");
         assert!(
             expanded.contains("app/main.py") && expanded.contains("Adding and deleting works.")
         );
@@ -8763,15 +8785,15 @@ mod tests {
 
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
-        let narrow = rows(&screen(&mut app, 48, 24)).join("\n");
+        let narrow = rows(&overview_screen(&mut app, 48, 24)).join("\n");
         assert!(
             narrow.contains("▤ Plan") && narrow.contains("1. Build the API"),
             "{narrow}"
         );
         key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
-        screen(&mut app, 48, 24);
+        overview_screen(&mut app, 48, 24);
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
-        let collapsed = rows(&screen(&mut app, 48, 24)).join("\n");
+        let collapsed = rows(&overview_screen(&mut app, 48, 24)).join("\n");
         assert!(collapsed.contains("Timeline") && !collapsed.contains("app/main.py"));
         assert!(
             app.timeline_items()
