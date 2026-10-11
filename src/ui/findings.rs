@@ -7,6 +7,9 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
     if available(Action::FixIssues) {
         keys.push(("x", "fix issues"));
     }
+    if available(Action::ReviseRepair) {
+        keys.push(("v", "revise plan"));
+    }
     if available(Action::Review) {
         keys.push(("ctrl+e", "review again"));
     }
@@ -39,35 +42,97 @@ pub(super) fn finding_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             "Fixes checked · review again to confirm the result.".into()
         } else if outdated {
             "Outdated · review again after current work passes checks.".into()
-        } else if review.status == "findings" {
+        } else if review.repairable() {
             "Issues found · choose Fix issues to start repairs.".into()
+        } else if review.status == "findings" && review.halt.is_none() {
+            "Investigation needed · confirm the evidence before changing code.".into()
         } else {
             review.label()
         };
         lines.push(Line::from(status).fg(ACCENT).bold());
+        if !review.issues.is_empty() {
+            lines.push(Line::from(review.progress()).fg(KEY_HINT));
+        }
+        if let Some(reason) = &review.halt {
+            lines.extend(
+                indented_text(reason, width, 0)
+                    .into_iter()
+                    .map(|l| l.fg(Color::Yellow)),
+            );
+        }
         lines.push(Line::from(if review.status == "fixing" {
             format!("Previous review: {}", report.summary)
         } else {
             report.summary.clone()
         }));
-        for (index, finding) in report.findings.iter().enumerate() {
-            let run = m
-                .execution
-                .as_ref()
-                .and_then(|e| e.tasks.iter().find(|run| run.task_id == finding.owner));
-            let state = if outdated {
-                "Outdated"
-            } else if review.status == "fixing" {
-                match run.map(|run| run.status.as_str()) {
-                    Some("done") => "Awaiting fresh review",
-                    Some("sending" | "running" | "checking") => "Fixing / checking",
-                    Some("blocked" | "paused" | "repair_paused") => "Fix paused",
-                    _ => "Fix queued",
+        if !review.issues.is_empty() {
+            for issue in review
+                .issues
+                .iter()
+                .filter(|i| i.open())
+                .chain(review.issues.iter().filter(|i| !i.open()))
+            {
+                let state = if outdated {
+                    "Saved / outdated"
+                } else if issue.status == "fixing" {
+                    match m
+                        .execution
+                        .as_ref()
+                        .and_then(|e| e.tasks.iter().find(|r| r.task_id == issue.finding.owner))
+                        .map(|r| r.status.as_str())
+                    {
+                        Some("done") => "Awaiting fresh review",
+                        Some("blocked" | "paused" | "repair_paused") => "Fix paused",
+                        Some("sending" | "running" | "checking") => "Fixing / checking",
+                        _ => "Fix queued",
+                    }
+                } else if issue.status == "confirmed" {
+                    "Open · confirmed"
+                } else {
+                    &issue.status
+                };
+                let origin = issue
+                    .finding
+                    .triage
+                    .as_ref()
+                    .map_or("unknown", |t| t.origin.as_str());
+                lines.extend(finding_block(
+                    issue.id as usize - 1,
+                    &issue.finding,
+                    &format!(
+                        "R{} · {state} · {origin} · {} repair attempts",
+                        issue.id, issue.attempts
+                    ),
+                    width,
+                ));
+                for event in &issue.history {
+                    lines.extend(wrap_line(
+                        Line::from(format!("   {} · {}", event.status, event.reason)).fg(KEY_HINT),
+                        width,
+                        3,
+                    ));
                 }
-            } else {
-                "Open"
-            };
-            lines.extend(finding_block(index, finding, state, width));
+            }
+        } else {
+            for (index, finding) in report.findings.iter().enumerate() {
+                let run = m
+                    .execution
+                    .as_ref()
+                    .and_then(|e| e.tasks.iter().find(|run| run.task_id == finding.owner));
+                let state = if outdated {
+                    "Outdated"
+                } else if review.status == "fixing" {
+                    match run.map(|run| run.status.as_str()) {
+                        Some("done") => "Awaiting fresh review",
+                        Some("sending" | "running" | "checking") => "Fixing / checking",
+                        Some("blocked" | "paused" | "repair_paused") => "Fix paused",
+                        _ => "Fix queued",
+                    }
+                } else {
+                    "Open"
+                };
+                lines.extend(finding_block(index, finding, state, width));
+            }
         }
         if report.status == "clean" {
             lines.push(Line::default());
@@ -147,7 +212,20 @@ fn finding_block(
         3,
     ));
     if !state.is_empty() {
-        lines.push(Line::from(format!("   {state}")).fg(KEY_HINT));
+        let color = if state.contains("resolved") {
+            Color::Green
+        } else if state.contains("confirmed") {
+            Color::Red
+        } else if state.contains("investigate") {
+            Color::Yellow
+        } else {
+            KEY_HINT
+        };
+        lines.extend(wrap_line(
+            Line::from(format!("   {state}")).fg(color),
+            width,
+            3,
+        ));
     }
     for (label, body) in [
         ("Evidence", &finding.evidence),
@@ -156,6 +234,18 @@ fn finding_block(
         lines.push(Line::default());
         lines.push(Line::from(format!("   {label}")).fg(ACCENT).bold());
         lines.extend(indented_text(body, width, 3));
+    }
+    if let Some(triage) = &finding.triage {
+        for (label, body) in [
+            ("Acceptance", &triage.acceptance),
+            ("Reproduction", &triage.reproduction),
+        ] {
+            if !body.trim().is_empty() {
+                lines.push(Line::default());
+                lines.push(Line::from(format!("   {label}")).fg(ACCENT).bold());
+                lines.extend(indented_text(body, width, 3));
+            }
+        }
     }
     lines
 }

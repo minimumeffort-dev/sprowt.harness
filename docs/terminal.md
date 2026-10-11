@@ -105,7 +105,7 @@ Selection updates the inspector immediately. It uses the same task evidence, che
 
 **Latest update** belongs to the current task attempt. Retrying or repairing a task clears earlier narration from this view; earlier results remain in task Activity. Older saved messages without an identifiable attempt appear only in history. A previous completion cannot appear as progress on a new repair. **Previous failure** rows appear only with saved check or review evidence, and selection shows that evidence separately from the current repair.
 
-Task details use a compact state badge, distinct section headings and indented text. Checks have green passed markers, red failed markers and muted pending markers; wrapped text stays aligned beneath its label. Reports remain scrollable in full. Saved review findings show severity, location, evidence and proposed fix in separate blocks. The split timeline keeps a short findings summary; narrow terminals show the formatted evidence when expanded. This presentation uses the saved finding for that repair, so newer review results cannot replace its history.
+Task details use a compact state badge, distinct section headings and indented text. Checks have green passed markers, red failed markers and muted pending markers; wrapped text stays aligned beneath its label. Reports remain scrollable in full. Saved review findings show stable IDs, triage, severity, location, evidence, acceptance criteria and proposed fix in separate blocks. Open issues come first; resolved and dismissed issues retain their decision history. The dock reports resolved, remaining and new findings. The split timeline keeps a short findings summary; narrow terminals show the formatted evidence when expanded. This presentation uses the saved finding for that repair, so newer review results cannot replace its history.
 
 - **Tab / Shift+Tab** cycle between message, timeline and inspector. A **▸** heading marks the focused pane; the dock border highlights when the composer is focused.
 - **Enter** or **→** from the timeline focuses the inspector. **←** returns to the timeline. **Esc** returns directly to the draft. Enter in the inspector opens the full view when available; it never executes a workflow action.
@@ -146,7 +146,9 @@ The timeline reflects the current saved plan and operation states. Prior passes 
 | Needs network access | Review the requested domains |
 | Task needs attention | Retry that task, or inspect its evidence in Details |
 | Combined checks need attention | Fix failed check; rerun without edits remains in More |
-| Review issues found, after any repair round | Fix review issues; Details opens Review |
+| Confirmed review defects, budget available | Fix review issues; Details opens Review |
+| Uncertain review evidence | Investigate findings |
+| Repair made no progress or reached its limit | Revise repair plan; completed work stays saved |
 | Repair checks passed, including an existing PR | Review again; previous findings await fresh review |
 | Repairs reviewed, PR has an older version | Update PR |
 | Review interrupted | Review changes |
@@ -156,7 +158,7 @@ The timeline reflects the current saved plan and operation states. Prior passes 
 | PR published | Request edits if needed |
 | Closed | Reopen saved work |
 
-**Ready to publish** means current checks and a clean current review. Publication remains an explicit choice; the existing ability to publish a checked version without a clean review remains available in More. Its confirmation includes the review state. Changed work on an existing PR says **PR open · update pending**.
+**Ready to publish** means current checks and a clean current review. Publication remains an explicit choice and is unavailable until both checks and review pass on the current source. Changed work on an existing PR says **PR open · update pending**.
 
 **Ctrl+G · More** groups applicable actions under **Work**, **Inspect**, **Codemod** and a separate **Remove** section. Inspection uses one Details entry plus View diff. Existing Ctrl+O and Ctrl+G → i/f shortcuts still work. Every visible item shows its shortcut. Selection keeps its meaning while workers finish; Enter cannot activate a different action when the selected one disappears.
 
@@ -217,7 +219,7 @@ Use the wheel or trackpad over a view to scroll it, or over the composer to scro
 | Esc | Return from timeline exploration or a view; quit from the composer |
 | Ctrl+C | Quit |
 
-More also supports **n** new, **c** close, **d** delete, **x** fix the failed check or review findings, and **r** retry a failed task. These letters type normally in the composer. Close, delete and publish retain their confirmations.
+More also supports **n** new, **c** close, **d** delete, **x** fix the failed check or review findings, **r** retry a failed task, and **v** revise a stalled repair plan. These letters type normally in the composer. Close, delete and publish retain their confirmations.
 
 Blocked downloads show exact domains and a reason; **a** approves for this codemod and **d** denies. GitHub setup confirms the repository destination. Project sync runs on startup and every 30 seconds even without codemods; **Ctrl+U** checks immediately. Retrying a sync warning keeps the current review and repair work intact. See [Codemods](codemods.md), [Review](review.md) and [Git workflow](git-workflow.md).
 

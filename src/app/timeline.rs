@@ -332,6 +332,7 @@ impl App {
             }
             item.action = match dock.primary {
                 Some(Action::RetryTask(id) | Action::FixCheck(id)) if id == run.id => dock.primary,
+                Some(Action::ReviseRepair) if run.repair_stalled() => dock.primary,
                 Some(Action::Network)
                     if self.pending_network().is_some_and(|a| a.task == run.id) =>
                 {
@@ -470,9 +471,10 @@ impl App {
             reviewed.detail.push(worker.label(None));
             reviewed.detail.push(worker.timeline_timing());
         }
-        reviewed.action = dock
-            .primary
-            .filter(|a| matches!(a, Action::FixIssues | Action::Findings | Action::Review));
+        reviewed.action = dock.primary.filter(|a| {
+            matches!(a, Action::FixIssues | Action::Findings | Action::Review)
+                || *a == Action::ReviseRepair && review.is_some_and(|r| r.halt.is_some())
+        });
         items.push(reviewed);
         let mut published = Item::new(
             Key::Publish,

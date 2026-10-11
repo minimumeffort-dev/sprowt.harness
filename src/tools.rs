@@ -132,6 +132,7 @@ pub struct Context {
     project: Option<PathBuf>,
     description: String,
     verified: Option<String>,
+    reviewed: Option<String>,
 }
 
 impl Context {
@@ -147,6 +148,7 @@ impl Context {
             project: Some(project.to_owned()),
             description: String::new(),
             verified: None,
+            reviewed: None,
         }
     }
 
@@ -167,6 +169,11 @@ impl Context {
                 .or_else(|| code_mod.execution.as_ref().map(|e| e.workspace.clone())),
             project: Some(project.to_owned()),
             description: code_mod.description.clone(),
+            reviewed: code_mod
+                .agent_review
+                .as_ref()
+                .filter(|r| r.clear(code_mod))
+                .map(|r| r.fingerprint.clone()),
             verified: code_mod
                 .execution
                 .as_ref()
@@ -198,6 +205,7 @@ impl Context {
             project: None,
             description: String::new(),
             verified: None,
+            reviewed: None,
         }
     }
 
@@ -554,6 +562,13 @@ impl<'a> Dispatcher<'a> {
                             "PR publication needs the verified source. Recheck before publishing.",
                         ));
                     }
+                    if self.context.mod_id.is_some()
+                        && self.context.reviewed.as_deref() != Some(&fingerprint)
+                    {
+                        return Err(io::Error::other(
+                            "PR publication needs a clean review of this verified source. Unresolved or unreviewed changes cannot publish.",
+                        ));
+                    }
                     if !draft {
                         mod_sync::require_current(root, self.github_cli, self.cancelled)?;
                     }
@@ -717,6 +732,7 @@ mod tests {
             project: None,
             description: String::new(),
             verified: None,
+            reviewed: None,
         }
     }
 
@@ -917,6 +933,7 @@ mod tests {
         );
         assert_eq!(git_mod::load(&root).unwrap().phase, "ready");
         context.verified = Some(workspace::review(&root).unwrap().fingerprint);
+        context.reviewed = context.verified.clone();
         let mut tools = Dispatcher::new(&context, None, &flag);
         tools.github_cli = &gh;
         fs::write(data.0.join("fail-once"), "").unwrap();
@@ -945,6 +962,7 @@ mod tests {
             Some(&first)
         );
         context.verified = Some(workspace::review(&root).unwrap().fingerprint);
+        context.reviewed = context.verified.clone();
         let mut tools = Dispatcher::new(&context, None, &flag);
         tools.github_cli = &gh;
         let updated = tools

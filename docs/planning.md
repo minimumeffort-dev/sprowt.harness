@@ -14,7 +14,7 @@ flowchart TB
     execute --> checks["Rust · combine changes and rerun checks"]
 ```
 
-The optional [independent reviewer](review.md) uses Sol 6.1 xhigh. It keeps a fresh conversation separate from the Astra planner and executor routing.
+The [independent reviewer](review.md) uses Sol 6.1 xhigh. It keeps a fresh conversation separate from the Astra planner and executor routing.
 
 ## Planning
 

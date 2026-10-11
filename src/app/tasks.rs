@@ -67,6 +67,7 @@ impl App {
                 && m.execution.as_ref().is_some_and(|e| {
                     e.tasks.iter().any(|r| {
                         r.id == id
+                            && !r.repair_stalled()
                             && matches!(r.status.as_str(), "paused" | "blocked")
                             && !self
                                 .workers

@@ -117,6 +117,10 @@ impl CheckResult {
 }
 
 impl TaskRun {
+    pub fn repair_stalled(&self) -> bool {
+        self.summary.starts_with("Automatic repair limit reached")
+    }
+
     pub fn restoring_runtime(&self) -> bool {
         self.verification_feedback
             .iter()
@@ -180,8 +184,21 @@ impl Execution {
 
     pub fn ready_tasks<'a>(&'a self, plan: &'a Plan) -> impl Iterator<Item = &'a TaskRun> {
         let repairing = self.tasks.iter().any(|run| run.status == "repair_wait");
+        let review_repair = self
+            .tasks
+            .iter()
+            .any(|r| r.review_feedback.is_some() && r.status != "done");
+        let occupied = review_repair
+            && self.tasks.iter().any(|r| {
+                matches!(
+                    r.status.as_str(),
+                    "sending" | "running" | "checking" | "blocked" | "paused" | "repair_paused"
+                )
+            });
+        let mut selected = false;
         self.tasks.iter().filter(move |run| {
-            run.status == "pending"
+            let eligible = !occupied
+                && run.status == "pending"
                 && (!repairing || run.repair.is_some())
                 && run.repair.as_ref().is_none_or(|repair| {
                     run.task_id == repair.task
@@ -200,7 +217,13 @@ impl Execution {
                                 .iter()
                                 .any(|run| &run.task_id == id && run.status == "done")
                         })
-                    })
+                    });
+            if eligible && (!review_repair || !selected) {
+                selected = true;
+                true
+            } else {
+                false
+            }
         })
     }
 

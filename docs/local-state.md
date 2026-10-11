@@ -13,7 +13,7 @@ flowchart TB
     mod --> pending["Queue and waiting steering"]
     mod --> mail["Task mailboxes · asks, replies and receipt state"]
     mod --> network["Network requests · decisions and exact domain grants"]
-    mod --> review["Review · source fingerprint, findings and bounded fix rounds"]
+    mod --> review["Review · stable finding ledger, source fingerprints and repair budget"]
     mod --> execution["Execution · working folder, task status and check results"]
     mod --> workers["Workers · provider, role, conversation and pending delivery"]
     mod --> git["Worktree path · publication, close and retention checkpoints"]
@@ -115,3 +115,5 @@ Reopening leaves unfinished work paused. Finished versions can automatically upd
 Run one harness instance per project. Shared memory across projects, repository indexing and memory updates after merges are future layers.
 
 A deliberate user pause is saved on the codemod, separate from task failures. Reopening leaves unfinished execution and interrupted review idle. Active sessions advance from successful combined checks to review once per verified version; inspecting saved evidence never starts work.
+
+Review rows retain stable finding IDs, triage, acceptance criteria, attempts and decisions across review and revised-plan passes. A separate review history preserves reports by source. Only current regression evidence plus an explicit reviewer disposition resolves a finding; omission leaves it open. Two repair passes or a pass without resolved findings requires a revised plan. Reopening retains the budget without resuming automatic work. Legacy findings migrate once, preserving evidence and regression names.

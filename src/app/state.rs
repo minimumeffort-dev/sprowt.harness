@@ -131,6 +131,22 @@ impl App {
                     },
                 ),
             )
+        } else if self.repair_stalled() && !self.execution_busy() {
+            let mut s = Summary::new(
+                NeedsYou,
+                "Repair stalled · a revised plan is needed",
+                Some(ReviseRepair),
+            );
+            s.error = m
+                .agent_review
+                .as_ref()
+                .and_then(|r| r.halt.clone())
+                .or_else(|| {
+                    execution
+                        .and_then(|e| e.tasks.iter().find(|r| r.repair_stalled()))
+                        .map(|r| r.summary.chars().take(240).collect())
+                });
+            s
         } else if let Some(id) = failed.filter(|_| !final_failed) {
             let task = self.inspect_task(id);
             let number = task.as_ref().map_or(0, |t| t.number);
@@ -242,14 +258,18 @@ impl App {
                 execution.and_then(|e| e.checks.iter().find(|c| c.failed()).map(|c| c.brief()));
             s
         } else if let Some(r) = review.filter(|r| r.status == "findings") {
-            let count = r.report.as_ref().map_or(0, |r| r.findings.len());
+            let count = if r.issues.is_empty() {
+                r.report.as_ref().map_or(0, |r| r.findings.len())
+            } else {
+                r.issues.iter().filter(|i| i.open()).count()
+            };
             Summary::new(
                 NeedsYou,
                 format!(
                     "Review · {count} open issue{}",
                     if count == 1 { "" } else { "s" }
                 ),
-                Some(FixIssues),
+                Some(if r.repairable() { FixIssues } else { Review }),
             )
         } else if review.is_some_and(|r| matches!(r.status.as_str(), "paused" | "blocked")) {
             Summary::new(NeedsYou, "Review needs attention", Some(Review))
@@ -317,31 +337,32 @@ impl App {
             };
         }
         if let Some(r) = m.agent_review.as_ref().filter(|r| r.status == "fixing") {
-            let findings = r
-                .report
-                .as_ref()
-                .map_or(&[][..], |report| report.findings.as_slice());
-            let checked = findings
+            let issues: Vec<_> = r.issues.iter().filter(|i| i.status == "fixing").collect();
+            let checked = issues
                 .iter()
-                .enumerate()
-                .filter(|(i, finding)| {
+                .filter(|issue| {
                     execution.is_some_and(|e| {
                         e.tasks.iter().any(|run| {
-                            run.task_id == finding.owner
+                            run.task_id == issue.finding.owner
                                 && run.status == "done"
-                                && run.checks.iter().any(|c| {
-                                    c.check == crate::review::regression_check(*i, finding)
-                                        && c.exit_code == Some(0)
-                                })
+                                && run.checks.iter().any(|c| c.check == issue.regression)
+                                && run
+                                    .checks
+                                    .iter()
+                                    .filter(|c| c.check == issue.regression)
+                                    .all(|c| c.exit_code == Some(0))
                         })
                     })
                 })
                 .count();
             state.detail = format!(
                 "{checked}/{} issues checked · {}",
-                findings.len(),
+                issues.len(),
                 state.detail
             );
+        }
+        if let Some(r) = m.agent_review.as_ref().filter(|r| !r.issues.is_empty()) {
+            state.detail = format!("{} · {}", r.progress(), state.detail);
         }
         if let Some(e) = execution {
             let checks = if e.checks.is_empty() {

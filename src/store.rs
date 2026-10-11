@@ -558,6 +558,7 @@ impl Store {
         for table in [
             "network_requests",
             "network_grants",
+            "review_history",
             "reviews",
             "task_runs",
             "executions",
@@ -1671,6 +1672,12 @@ impl Store {
     }
 
     pub fn retry_task(&mut self, mod_id: i64, id: i64) -> Result<bool> {
+        if self
+            .execution(mod_id)?
+            .is_some_and(|e| e.tasks.iter().any(|r| r.id == id && r.repair_stalled()))
+        {
+            return Ok(false);
+        }
         let tx = self.0.transaction()?;
         let task = tx.query_row(
             "SELECT attempt,source FROM task_runs WHERE id=?1 AND mod_id=?2 AND status IN ('paused','blocked')",
@@ -1696,6 +1703,9 @@ impl Store {
         let execution = self
             .execution(mod_id)?
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
+        if execution.tasks.iter().any(|r| r.repair_stalled()) {
+            return Ok(());
+        }
         let transaction = self.0.transaction()?;
         if execution.complete() {
             transaction.execute(

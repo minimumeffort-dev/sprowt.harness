@@ -1,53 +1,66 @@
 # Independent review
 
-After an active run passes combined checks, the harness automatically starts one fresh **Sol 6.1 xhigh** review of that version. Findings wait for your choice. **Ctrl+E · Review changes** starts or retries a review explicitly; **r** does the same inside the diff. Publication remains explicit, and checked versions can still be published directly from More.
-
-The reviewer inspects the combined diff, source, original request, shared contracts and recorded check results. It looks for concrete defects, with a file, line, evidence and proposed fix.
+After combined checks pass, a fresh **Sol 6.1 xhigh** reviewer inspects the exact version. It reads the original request, contracts, diff, source, check results and saved finding history. **Ctrl+E** starts or retries review manually. Publication requires both passing combined checks and a clean review of the current source, including updates to an existing PR.
 
 ```mermaid
 flowchart TB
-    ready["Version ready · checks passed"] -->|"Automatically"| review["Fresh reviewer · read-only source in VM"]
-    review -->|"No findings"| publish["You confirm publication · PR"]
-    review -->|"Issues found"| findings["You inspect the findings"]
-    findings -->|"Fix issues"| fix["Original owners · fix each finding"]
-    fix --> focused["Finding regressions + affected task checks"]
-    focused --> checks["Combined checks · duplicate commands run once"]
-    checks -->|"Pass"| review
+    checks["Combined checks pass"] --> review["Fresh read-only review + triage"]
+    review -->|"Confirmed defects"| choice["You choose Fix review issues"]
+    review -->|"Uncertain evidence"| investigate["Investigate findings"]
+    investigate --> review
+    choice --> fix["Owners repair one at a time"]
+    fix --> verify["Named regressions + combined checks"]
+    verify --> review
+    review -->|"Progress, one pass left"| fix
+    review -->|"No progress or budget reached"| revise["You choose Revise repair plan"]
+    revise --> plan["Planner diagnoses a different approach"]
+    plan --> fix
+    review -->|"No unresolved findings"| publish["You confirm publication"]
 ```
 
-## Fixing findings
+## Triage and evidence
 
-- **Fix issues** returns all current findings to the existing task owners. Their providers, file scopes and checks stay intact.
-- Each finding adds a named **Review regression** check to its owner’s task. Owners reproduce and fix that case first; broad suite results alone cannot omit the finding’s check. Original checks remain required.
-- Dependent tasks rerun after the fixes. Rust independently checks the combined result, then starts a fresh review. A passing regression is shown as checked; the fresh reviewer decides whether defects remain.
-- A published PR does not end review repairs. When their combined checks pass, the dock shows **Fixes checked · fresh review needed** and **Ctrl+E · Review again**. Active repair runs start that review automatically; reopening saved work waits for your choice. Previous findings stay labelled as awaiting fresh review.
-- Repair keeps the task folders, installed dependencies and worker download caches. Identical commands in one task verification pass run once, with results mapped to every covered check. New passes and changed source require fresh verification.
-- Every fresh review with open findings offers **Fix review issues**, including after earlier repair rounds and restarts. Each choice starts one round; further findings wait for your choice again. The round count records progress and does not limit manual repairs.
-- Invalid reports, unknown owners and paths outside the owner's scope pause review. They cannot start fixes.
+The reviewer records triage in its review response, so there is no extra agent round just to label findings.
 
-The reviewer cannot write source, call harness tools, publish or grant network access. Its commands run in the existing codemod VM with only its own home and temporary directory writable. Planning remains **Astra xhigh**; Jev still routes executor effort.
+- **Confirmed:** a concrete contract defect with reproduction command/result and an acceptance criterion. It can go to an owner for repair.
+- **Investigate:** evidence is uncertain or reproduction was unavailable. The next action is **Investigate findings**; source repairs wait.
+- **Information:** an observation that does not require a product change. It does not block publication.
 
-Automatic target updates wait while the current plan has an unfinished review, open findings or repairs. A clean review releases the update. Local project sync continues. **Ctrl+U** can explicitly update a finished version; that changes the source and makes its previous review outdated.
+Each finding gets a stable **R1, R2, …** identity. Wording and line changes can reuse that ID. The reviewer distinguishes defects introduced by a repair, defects missed earlier, and unknown origin; classification needs evidence. This is a reviewer assessment, not a guarantee about causality.
+
+Owners are instructed to reproduce the failure before editing, state its root cause and expected behavior, make a focused fix, and cover adjacent boundary/error cases. A contradictory reproduction returns to triage instead of prompting a speculative edit. Existing contracts and regression coverage remain required.
+
+Every confirmed finding adds a stable **Review regression** check. Rust runs the submitted commands independently. Resolution requires a fresh reviewer decision and all commands for that named check passing on the current combined version. A disappearing finding is still open. Dismissal requires a recorded reason and counterevidence; relabelling an open defect as information cannot close it. The ledger retains closed findings and each decision's source fingerprint.
+
+Reproduction text and causal classification are supplied by the reviewer. The harness validates their presence and structure; it independently executes the regression commands submitted by the owner. Passing tests alone do not establish correctness.
+
+## Bounded repairs
+
+**Fix review issues** authorizes up to two repair passes for the current plan. The original owners, providers and scopes remain. Review repairs and their dependent tasks run one at a time; ordinary independent implementation can still use two workers. Completed unrelated tasks retain their work and checks.
+
+After each pass, combined checks run and a fresh reviewer examines the entire change, including the repairs and adjacent behavior. If the review closes findings and confirms remaining defects, one remaining authorized pass can start automatically. If no finding closes, evidence needs investigation, or two passes leave issues open, automatic repair stops. Neither the limit nor a worker's completion message counts as a pass.
+
+**Revise repair plan** (**Ctrl+G → v**, or **v** in Review) sends saved failures and the finding ledger to the planner. It asks for a different root-cause approach while preserving completed source, contracts and coverage. Your composer draft stays intact. The new plan gets a new repair budget; finding IDs and prior decisions remain. The separate two-handoff integration repair limit uses this same action instead of offering another blind task retry.
+
+Repair reuses task environments and download caches. Commands with identical arguments and budgets run once within a verification pass; changed source and later passes need fresh checks.
 
 ## What you see
 
-The dock shows the issue count and recommends **Fix review issues** when a review finds defects. **Ctrl+T · Details** opens Review so you can inspect them first. During repair it shows checked issues, the current check and elapsed worker time. Target integration and combined checks have their own progress labels.
+**Ctrl+T → 3 · Review** shows each issue's ID, severity, owner, location, triage, origin, acceptance criterion, reproduction and decision history. Open findings come first; resolved and dismissed findings remain readable below. The dock summarizes resolved, remaining and new issues, with one useful action: fix, investigate or revise the plan. Task checks passing and independent resolution stay distinct.
 
-1. Press **Ctrl+T**, then **3 · Review**, to open the findings. The older **Ctrl+G → i** shortcut also works. Each issue shows its priority, file and line, owner, evidence and proposed fix.
-2. Press **x · Fix issues** to start repairs. This action is also in More. Findings wait for your choice, including after restarting.
-3. Watch issues move from queued to fixing, paused or awaiting a fresh review. Passing checks starts that review automatically. Further findings wait for your choice again.
+A published PR can still have newer local repairs. It shows **PR open · update pending** until those changes pass checks and review and you confirm **Update PR**. Background GitHub errors remain separate from local review and repair progress.
 
-After a clean review, changed source offers **Update PR** for the existing pull request. **PR published** describes the verified version matching the published source. Later repairs show **PR open · update pending** until you confirm publication. Unchanged published source can still be reviewed explicitly without publishing again.
+**Ctrl+R** pauses active work. Reopening never automatically resumes a repair chain, even if an authorized pass remains. **Fix review issues** resumes eligible confirmed work. Queued instructions, steering, a changed plan/source, foreground Git work and confirmation dialogs defer automatic work. Previous evidence remains labelled as saved/outdated. Obsolete responses cannot replace current results.
 
-Details has Tasks, Checks, Review and Activity sections, switched with 1–4 or Tab. The view supports mouse and keyboard scrolling. **Esc** returns to your draft; **h · All history** opens previous reports and reviewer messages. A clean review recommends publication. **Ctrl+O** still expands review details in the conversation.
+SQLite saves the ledger, review reports, decisions and budgets. Legacy findings are imported once with their evidence and regression names; they need fresh triage before another repair. Closing retains history; deletion removes it with the codemod. Read-only review cannot edit, publish or grant network access. Automatic target updates wait for a clean review; an explicit target update invalidates the old result.
 
-Reviews are tied to a source fingerprint and plan. New instructions or changed source invalidate the result. Outdated findings remain readable but cannot start repairs. An old turn cannot replace a newer review or trigger repairs. Publishing still checks the current source against the verified fingerprint.
+## Design references
 
-**Ctrl+R** pauses an active reviewer. The pause is saved. Interrupted reviews and saved versions without a review stay idle on reopening; **Ctrl+E** starts fresh. Current clean, finding, blocked and paused reports never cause an automatic review loop. A new verified version or completed fix round can start its own review during active work. Queued edits, steering, foreground Git work and open publication/close/delete confirmations defer it. Closing removes the VM and keeps saved review history; deleting removes local review state with the codemod.
+The workflow adapts [Devin Review's finding triage](https://docs.devin.ai/work-with-devin/devin-review), [Cognition's guidance on coordinated agents and fresh reviewers](https://cognition.com/blog/multi-agents-working), and [evidence-led testing](https://cognition.com/blog/testing-development). Stable IDs, closure rules and repair budgets are harness policies.
 
-## Verify it
+## Verification
 
-The live check seeds a defect missed by a smoke test, reviews it, chooses Fix issues, repairs the original task and reviews again in a disposable VM. It uses your Codex subscription and removes the VM afterward.
+Local tests cover migration/restart, stable IDs, missing closure proof, triage, stale responses, serialized repairs, bounded continuation, publication gates and draft-preserving actions. The separate live VM check uses your Codex subscription:
 
 ```sh
 cargo test independent_review_repairs_a_seeded_bug_and_rechecks_in_vm -- --ignored

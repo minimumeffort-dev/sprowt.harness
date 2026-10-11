@@ -2232,6 +2232,9 @@ impl App {
         self.version_ready()
             && self
                 .current_mod()
+                .is_some_and(|m| m.agent_review.as_ref().is_some_and(|r| r.clear(m)))
+            && self
+                .current_mod()
                 .is_some_and(|m| !m.closed && m.queue.is_empty() && m.steering.is_empty())
             && self.current_mod().is_none_or(|m| {
                 m.git_root
@@ -2357,8 +2360,14 @@ impl App {
         self.store.begin_review(code_mod.id, &fingerprint)?;
         self.set_paused(index, false)?;
         let id = self.mods[index].id;
-        self.auto_reviews.remove(&id);
         self.mods[index].agent_review = self.store.review_state(id)?;
+        if self.mods[index]
+            .agent_review
+            .as_ref()
+            .is_none_or(|r| r.auto_remaining == 0)
+        {
+            self.auto_reviews.remove(&id);
+        }
         let record = self.store.worker_provider(id, Role::Reviewer, 0, "codex")?;
         self.start_worker_record(index, Role::Reviewer, record)
     }
@@ -2395,7 +2404,31 @@ impl App {
                     continue;
                 }
             }
-            if self.review_due(index) {
+            if self.auto_reviews.contains(&id)
+                && self.review_ready(index)
+                && !m.user_paused
+                && self.mods[index].agent_review.as_ref().is_some_and(|r| {
+                    r.current(&self.mods[index]) && r.repairable() && r.auto_remaining > 0
+                })
+                && !(self.active == Some(index)
+                    && matches!(
+                        self.view,
+                        View::Publish
+                            | View::DeleteMod(_)
+                            | View::CloseMod(_)
+                            | View::Review(_)
+                            | View::ProjectSetup(_, _)
+                            | View::Repository(_)
+                            | View::ConfirmRepository(_)
+                    ))
+            {
+                if self.store.review_fixes(&self.mods[index])? {
+                    self.mods[index].planning = self.store.planning(id)?;
+                    self.mods[index].execution = self.store.execution(id)?;
+                    self.mods[index].agent_review = self.store.review_state(id)?;
+                    self.executing_mods.insert(id);
+                }
+            } else if self.review_due(index) {
                 self.begin_agent_review(index)?;
             }
         }
@@ -3347,6 +3380,7 @@ mod tests {
     #[test]
     fn project_sync_keeps_codemod_controls_available() {
         let (_data, mut app, _root) = execution_app();
+        mark_review_clean(&mut app);
         app.project_job = Some(Job::start("syncing project branch", |cancelled| {
             while !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(1));
@@ -3569,6 +3603,7 @@ mod tests {
                     status: status.into(),
                     rounds: 1,
                     report: None,
+                    ..Default::default()
                 });
                 app.maintain_updates().unwrap();
                 assert!(app.git_jobs.is_empty(), "Update started during {status}");
@@ -3843,6 +3878,7 @@ mod tests {
     #[test]
     fn an_applied_snapshot_can_be_adopted_without_rerunning_or_overwriting_local_files() {
         let (_data, mut app, root) = execution_app();
+        mark_review_clean(&mut app);
         let id = app.mods[0].id;
         app.open_review().unwrap();
         workspace::review(&root)
@@ -4243,6 +4279,7 @@ mod tests {
             status: "clean".into(),
             rounds: 0,
             report: None,
+            ..Default::default()
         });
         assert!(app.action_dock().primary == Some(Action::Publish));
         commit_project(&app.project);
@@ -5746,88 +5783,165 @@ mod tests {
     }
 
     #[test]
-    fn review_fixes_remain_available_after_repeated_rounds_and_restart() {
-        for rounds in [2, 255] {
-            for from_menu in [false, true] {
-                let (data, mut store, mut m, _) = crate::review::tests::fixture();
-                store
-                    .begin_review(
-                        m.id,
-                        m.execution.as_ref().unwrap().fingerprint.as_ref().unwrap(),
-                    )
-                    .unwrap();
-                m.agent_review = store.review_state(m.id).unwrap();
-                let source = m.agent_review.as_ref().unwrap().source.clone();
-                store
-                    .finish_review(&m, &source, &crate::review::tests::finding())
-                    .unwrap();
-                store
-                    .0
-                    .execute(
-                        "UPDATE reviews SET rounds=?2 WHERE mod_id=?1",
-                        (m.id, rounds),
-                    )
-                    .unwrap();
-                drop(store);
-                let mut app = App::load(data.0.join("project"), false, data.store()).unwrap();
-                app.input.insert_str("keep my draft");
-                app.auto_reviews.insert(m.id);
-                app.maintain_reviews().unwrap();
-                assert!(!app.review_due(0));
-                assert!(app.executing_mods.is_empty());
-                assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, rounds);
-                assert!(app.action_dock().primary == Some(Action::FixIssues));
-                assert_eq!(
-                    app.timeline_items()
-                        .iter()
-                        .find(|item| item.key == timeline::Key::Review)
-                        .unwrap()
-                        .action,
-                    Some(Action::FixIssues)
-                );
-                let contents = rows(&screen(&mut app, 160, 42)).join("\n");
-                assert!(contents.contains("Fix review issues"), "{contents}");
-                if from_menu {
-                    key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
-                    assert!(matches!(app.view, View::Actions(Action::FixIssues)));
-                    let contents = rows(&screen(&mut app, 90, 30)).join("\n");
-                    assert!(contents.contains("Fix review issues"));
-                } else {
-                    app.perform_action(Action::Findings).unwrap();
-                    let contents = rows(&screen(&mut app, 90, 30)).join("\n");
-                    assert!(contents.contains("x\u{a0}fix\u{a0}issues"), "{contents}");
-                    assert!(!contents.contains("Fix limit reached"));
-                }
-                key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
-                let review = app.mods[0].agent_review.as_ref().unwrap();
-                assert_eq!(review.status, "fixing");
-                assert_eq!(review.rounds, rounds + 1);
-                assert_eq!(
-                    review.label(),
-                    format!("review fixes · round {}", rounds + 1)
-                );
-                assert!(app.executing_mods.contains(&m.id));
-                assert_eq!(app.input.lines(), ["keep my draft"]);
-                // Repeated input cannot dispatch the same findings twice.
-                key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
-                assert_eq!(
-                    app.mods[0].agent_review.as_ref().unwrap().rounds,
-                    rounds + 1
-                );
-                let runs = app.mods[0].execution.as_ref().unwrap().tasks.clone();
-                assert!(runs.iter().all(|run| run.status == "pending"));
-                drop(app);
-                let store = data.store();
-                assert_eq!(
-                    store.review_state(m.id).unwrap().unwrap().rounds,
-                    rounds + 1
-                );
-                assert_eq!(
-                    store.execution(m.id).unwrap().unwrap().tasks[0].source,
-                    runs[0].source
-                );
+    fn repeated_review_repairs_require_a_revised_plan_after_restart() {
+        let (data, mut store, mut m, _) = crate::review::tests::fixture();
+        store
+            .begin_review(
+                m.id,
+                m.execution.as_ref().unwrap().fingerprint.as_ref().unwrap(),
+            )
+            .unwrap();
+        m.agent_review = store.review_state(m.id).unwrap();
+        let source = m.agent_review.as_ref().unwrap().source.clone();
+        store
+            .0
+            .execute("UPDATE reviews SET rounds=2 WHERE mod_id=?1", [m.id])
+            .unwrap();
+        store
+            .finish_review(&m, &source, &crate::review::tests::finding())
+            .unwrap();
+        drop(store);
+        let mut app = App::load(data.0.join("project"), false, data.store()).unwrap();
+        app.input.insert_str("keep my draft");
+        app.auto_reviews.insert(m.id);
+        app.maintain_reviews().unwrap();
+        assert!(app.workers.is_empty() && app.executing_mods.is_empty());
+        assert_eq!(app.action_dock().primary, Some(Action::ReviseRepair));
+        assert!(
+            !app.action_dock()
+                .actions
+                .iter()
+                .any(|a| a.action == Action::FixIssues)
+        );
+        app.perform_action(Action::FixIssues).unwrap();
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 2);
+        app.perform_action(Action::ReviseRepair).unwrap();
+        assert!(app.auto_plans.contains(&m.id));
+        assert_eq!(app.input.lines(), ["keep my draft"]);
+        assert!(
+            app.mods[0]
+                .messages
+                .iter()
+                .any(|m| m.body.contains("Revise the repair plan"))
+        );
+    }
+
+    #[test]
+    fn stalled_check_offers_replanning_and_preserves_completed_repairs() {
+        let (data, mut store, m, _) = crate::review::tests::fixture();
+        let run = &m.execution.as_ref().unwrap().tasks[1];
+        store.finish_task(m.id, &run.source, "blocked", "Automatic repair limit reached (2 attempts). app.test.mjs:388 never settles; Promise resolution is still pending.", &[]).unwrap();
+        assert!(!store.retry_task(m.id, run.id).unwrap());
+        store.retry_tasks(m.id).unwrap();
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        app.input.insert_str("keep this draft");
+        assert_eq!(app.action_dock().primary, Some(Action::ReviseRepair));
+        assert!(
+            !app.action_dock()
+                .actions
+                .iter()
+                .any(|a| matches!(a.action, Action::Retry | Action::RetryTask(_)))
+        );
+        for width in [48, 120, 160] {
+            let buffer = screen(&mut app, width, 42);
+            let text = rows(&buffer).join("\n").replace('\u{a0}', " ");
+            assert!(text.contains("Revise repair plan"), "{text}");
+            assert!(text.contains("keep this draft"));
+            if width == 160
+                && let Ok(path) = std::env::var("SPROWT_REVIEW_PREVIEW")
+            {
+                let cells: Vec<_> = buffer.content.iter().map(|c| serde_json::json!({"text":c.symbol(),"fg":format!("{:?}",c.fg),"bg":format!("{:?}",c.bg),"bold":c.modifier.contains(ratatui::style::Modifier::BOLD)})).collect();
+                std::fs::write(
+                    path,
+                    serde_json::json!({"width":width,"height":42,"cells":cells}).to_string(),
+                )
+                .unwrap();
             }
         }
+        assert_eq!(
+            app.mods[0].execution.as_ref().unwrap().tasks[0].status,
+            "done"
+        );
+        app.perform_action(Action::ReviseRepair).unwrap();
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+        assert!(app.auto_plans.contains(&m.id));
+    }
+
+    #[test]
+    fn review_can_continue_one_progressing_repair_pass_but_never_on_reopen() {
+        let (data, mut store, mut m, _) = crate::review::tests::fixture();
+        let fp = m.execution.as_ref().unwrap().fingerprint.clone().unwrap();
+        store.begin_review(m.id, &fp).unwrap();
+        m.agent_review = store.review_state(m.id).unwrap();
+        let mut report: serde_json::Value =
+            serde_json::from_str(&crate::review::tests::finding()).unwrap();
+        let mut second = report["findings"][0].clone();
+        second["owner"] = "docs".into();
+        second["file"] = "README.md".into();
+        second["title"] = "Document empty input".into();
+        report["findings"].as_array_mut().unwrap().push(second);
+        store
+            .finish_review(
+                &m,
+                &m.agent_review.as_ref().unwrap().source,
+                &report.to_string(),
+            )
+            .unwrap();
+        store.review_fixes(&m).unwrap();
+        let state = store.review_state(m.id).unwrap().unwrap();
+        let execution = store.execution(m.id).unwrap().unwrap();
+        let mut checks = Vec::new();
+        for run in &execution.tasks {
+            let mut result = m.execution.as_ref().unwrap().checks[0].clone();
+            result.task = Some(run.id);
+            result.check = state
+                .issues
+                .iter()
+                .find(|i| i.finding.owner == run.task_id)
+                .unwrap()
+                .regression
+                .clone();
+            store
+                .finish_task(m.id, &run.source, "done", "Checked", &[result.clone()])
+                .unwrap();
+            checks.push(result);
+        }
+        store
+            .execution_checks(m.id, "review", &checks, Some(&fp))
+            .unwrap();
+        m.execution = store.execution(m.id).unwrap();
+        m.planning = store.planning(m.id).unwrap();
+        store.begin_review(m.id, &fp).unwrap();
+        m.agent_review = store.review_state(m.id).unwrap();
+        report["findings"].as_array_mut().unwrap().remove(0);
+        report["findings"][0]["id"] = 2.into();
+        report["assessments"] = serde_json::json!([{"id":1,"outcome":"resolved","reason":"Guard implemented.","evidence":"Regression passes and source confirms validation."}]);
+        store
+            .finish_review(
+                &m,
+                &m.agent_review.as_ref().unwrap().source,
+                &report.to_string(),
+            )
+            .unwrap();
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        app.maintain_reviews().unwrap();
+        assert!(app.workers.is_empty() && app.executing_mods.is_empty());
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 1);
+        app.auto_reviews.insert(m.id);
+        app.maintain_reviews().unwrap();
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 2);
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().auto_remaining, 0);
+        assert!(!app.repair_stalled());
+        assert_eq!(
+            app.mods[0].execution.as_ref().unwrap().tasks[0].status,
+            "done"
+        );
+        assert_eq!(
+            app.mods[0].execution.as_ref().unwrap().tasks[1].status,
+            "pending"
+        );
+        app.maintain_reviews().unwrap();
+        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 2);
     }
 
     #[test]
@@ -6190,7 +6304,7 @@ mod tests {
                 assert_eq!(app.input.lines(), ["keep my draft"]);
                 app.workers.clear();
                 let report = if automatic {
-                    r#"{"status":"clean","summary":"Repairs confirmed.","findings":[]}"#.into()
+                    r#"{"status":"clean","summary":"Repairs confirmed.","findings":[],"assessments":[{"id":1,"outcome":"resolved","reason":"Guard rejects empty names.","evidence":"The named regression passed and the source was inspected."}]}"#.into()
                 } else {
                     crate::review::tests::finding()
                 };
@@ -6217,7 +6331,7 @@ mod tests {
                         );
                     }
                 } else {
-                    assert_eq!(app.action_dock().primary, Some(Action::FixIssues));
+                    assert_eq!(app.action_dock().primary, Some(Action::ReviseRepair));
                 }
             }
         }
@@ -6291,6 +6405,7 @@ mod tests {
             status: "clean".into(),
             rounds: 0,
             report: None,
+            ..Default::default()
         });
         app.auto_reviews.insert(id);
         for status in [
@@ -6340,6 +6455,7 @@ mod tests {
             status: "clean".into(),
             rounds: 0,
             report: None,
+            ..Default::default()
         });
         assert_eq!(app.state_summary().phase, state::Phase::Ready);
         assert!(app.action_dock().primary == Some(Action::Publish));
@@ -6572,6 +6688,7 @@ mod tests {
             status: "clean".into(),
             rounds: 0,
             report: None,
+            ..Default::default()
         });
         assert!(
             app.timeline_items()
@@ -7483,9 +7600,21 @@ mod tests {
         assert!(app.ready_plans().is_empty());
     }
 
+    fn mark_review_clean(app: &mut App) {
+        let m = &mut app.mods[0];
+        m.agent_review = Some(crate::review::State {
+            source: "test-clean".into(),
+            plan_source: m.planning.as_ref().unwrap().source.clone(),
+            fingerprint: m.execution.as_ref().unwrap().fingerprint.clone().unwrap(),
+            status: "clean".into(),
+            ..Default::default()
+        });
+    }
+
     #[test]
     fn direct_publish_does_not_use_a_stale_diff_after_source_changes() {
         let (_data, mut app, root) = execution_app();
+        mark_review_clean(&mut app);
         commit_project(&app.project);
         let flag = std::sync::atomic::AtomicBool::new(false);
         git_mod::prepare(&app.project, &root, &flag).unwrap();
@@ -7644,6 +7773,7 @@ mod tests {
     #[test]
     fn direct_publish_reviews_source_and_requires_confirmation_without_apply() {
         let (_data, mut app, _root) = execution_app();
+        mark_review_clean(&mut app);
         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert!(matches!(app.view, View::ProjectSetup(true, _)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -8108,7 +8238,7 @@ mod tests {
             assert!(text.contains("Combined checks passed") && text.contains("More"));
             assert!(app.action_dock().primary == Some(Action::Review));
             assert!(
-                app.action_dock()
+                !app.action_dock()
                     .actions
                     .iter()
                     .any(|a| a.action == Action::Publish)
@@ -8119,7 +8249,7 @@ mod tests {
             assert!(!text.contains("Keep task order") && !text.contains("/usr/bin/true"));
             key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
             let actions = rows(&screen(&mut app, width, 40)).join("\n");
-            assert!(actions.contains("Details") && actions.contains("Publish PR"));
+            assert!(actions.contains("Details") && !actions.contains("Publish PR"));
             key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         }
         let instruction = app.store.enqueue(id, "Keep the current icons").unwrap();

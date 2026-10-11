@@ -14,7 +14,7 @@ The harness works independently of sprowt.finance. It is open source and still t
 - [Planning and routing](docs/planning.md): describe the outcome. Astra xhigh defines tasks and contracts. Rust balances Codex and Muse; Jev chooses Sol 6.1 effort.
 - [Worktrees and PRs](docs/git-workflow.md): build on separate branches, update from merged work and publish a PR. Keep editing, or close with a saved checkpoint.
 - [Plan execution](docs/execution.md): up to two Codex or Muse executors work in parallel, with separate task folders, independent checks, bounded recovery and an explicit action to fix failed combined checks.
-- [Independent review](docs/review.md): after combined checks pass, a fresh Sol 6.1 xhigh reviewer automatically inspects the result, shows findings for your approval, then returns defects to their owners and reviews verified fixes.
+- [Independent review](docs/review.md): a fresh reviewer triages findings, tracks stable issue IDs and verifies repairs. Confirmed fixes run one owner at a time with progress checks and a two-pass limit. Publication requires a clean current review.
 - [Worker communication](docs/coordination.md): saved task mailboxes, live replies and questions you answer in the composer.
 - [Local Linux sandbox](docs/sandbox.md): one Apple Container VM per executing mod. Workers choose runtimes and dependencies, request OS packages and ask you to approve blocked download domains.
 - [Workers and isolation](docs/workers.md): Codex planning and review, with separate Codex or Muse executors. Parallel work, saved conversations and delivery recovery.
@@ -51,7 +51,10 @@ flowchart TB
     ready --> edits["Send edits · plan the next round"]
     edits --> planner
     reviewer --> findings["View findings"]
-    findings -->|"You choose Fix issues"| repair
+    findings -->|"You choose Fix issues · bounded passes"| repair
+    findings -->|"Uncertain evidence"| investigate["Investigate before edits"]
+    findings -->|"No progress"| revised["Revise repair plan"]
+    revised --> planner
     reviewer -->|"No findings"| ready["Ready to publish"]
     ready --> publish["Confirm publish · create or update PR"]
     publish --> published["PR published"]
@@ -63,6 +66,8 @@ flowchart TB
 ```
 
 Planning uses Astra xhigh. Jev recommends a reasoning level for each Sol 6.1 task; uncertainty or missing Jev uses xhigh. Codex uses your subscription and installs project dependencies in the VM. Codex and Muse share a check runner, with saved scripts and results tied to the tested source. Rust reruns checks independently before accepting changes; identical commands with the same budget within one task’s verification pass run once. Checks default to 30 seconds; workers can choose up to three minutes for longer browser/model checks. Results show elapsed time and the limit, with failures first and passing checks grouped by task. The dispatcher keeps publication on the Mac and package setup in the worker’s VM. A separate Git repository inside the VM manages task branches without host credentials. Each mod runs up to two independent tasks at once. One VM controller serializes Git integration, checks and system package setup; each worker has its own runtime folder. Dependent tasks wait for verified prerequisites. Muse uses Spark 1.3 high. Jev routes Codex effort.
+
+Review repairs run one owner at a time, retain finding identities and stop when a pass resolves nothing. The dock offers **Revise repair plan** with saved evidence; it never treats an exhausted budget as success. See [Review](docs/review.md) for triage, closure evidence and restart behavior.
 
 Each codemod has two active slots: two Codex, two Muse or one of each. Both providers can implement, test and integrate. Rust picks the least loaded suitable provider across active codemods and alternates ties. Existing plans keep their assignments; retries and repairs keep their owner. The codemod row shows active workers. **Ctrl+O** shows each task's assignment reason.
 
