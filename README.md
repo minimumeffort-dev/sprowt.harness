@@ -58,3 +58,5 @@ sprowt-harness
 Execution and review run in Linux. Native macOS and iOS builds are not supported. Downloads use a domain allowlist; additional access needs your approval. GitHub publication is supported, with one harness instance per project. See [sandbox boundaries](docs/sandbox.md) and [local data](docs/local-state.md).
 
 This is a learning project, built one layer at a time. It is independent of sprowt.finance.
+
+Stalled work keeps its failed-attempt evidence and observed time by phase in [Activity](docs/terminal.md#details), including across replacement plans.

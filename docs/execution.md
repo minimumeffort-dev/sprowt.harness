@@ -114,7 +114,7 @@ The requested attempt pauses if it fails; it does not reset the automatic recove
 
 ## Recovery budgets
 
-These are separate limits, saved across restart and explicit retry. A new plan starts new budgets; previous evidence remains history.
+These are separate limits, saved across restart and explicit retry. A new plan starts new automatic budgets. Failed-attempt evidence and observed worker time remain attached to the codemod. Three attempts with the same task ID and identical failure evidence recommend a revised approach instead of another identical retry.
 
 | Recovery | Automatic allowance | When it stops |
 | --- | --- | --- |

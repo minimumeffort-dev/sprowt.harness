@@ -2539,6 +2539,18 @@ impl App {
                     .unwrap_or_else(|| self.project.clone()),
             )?;
         }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        for m in &mut self.mods {
+            for worker in self.workers.values().filter(|w| w.mod_id == m.id) {
+                self.store
+                    .record_phase(m.id, worker.id, worker.phase(m), now)?;
+            }
+            self.store.record_failures(m)?;
+            m.diagnostics = self.store.diagnostics(m.id)?;
+        }
         for index in self.ready_plans() {
             self.auto_runs.remove(&self.mods[index].id);
             self.start_execution(index)?;
@@ -5824,6 +5836,30 @@ mod tests {
                 .iter()
                 .any(|m| m.body.contains("Revise the repair plan"))
         );
+    }
+
+    #[test]
+    fn repeated_failure_across_plans_changes_recovery_and_preserves_draft() {
+        let (data, store, mut m, _) = crate::review::tests::fixture();
+        for source in ["attempt-a", "attempt-b", "attempt-c"] {
+            let run = &mut m.execution.as_mut().unwrap().tasks[0];
+            run.status = "blocked".into();
+            run.source = source.into();
+            run.summary = "test timed out waiting for a receipt".into();
+            run.checks.clear();
+            store.record_failures(&m).unwrap();
+        }
+        let mut app = App::load(data.0.join("project"), false, store).unwrap();
+        app.mods[0].execution = m.execution;
+        app.input.insert_str("keep draft");
+        assert_eq!(app.action_dock().primary, Some(Action::ReviseRepair));
+        assert!(!app.can_retry_task(app.mods[0].execution.as_ref().unwrap().tasks[0].id));
+        app.view = View::History(0);
+        for width in [48, 140] {
+            let text = rows(&screen(&mut app, width, 40)).join("\n");
+            assert!(text.contains("3 saved failed attempts"), "{text}");
+        }
+        assert_eq!(app.input.lines(), ["keep draft"]);
     }
 
     #[test]

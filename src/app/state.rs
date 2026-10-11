@@ -138,13 +138,28 @@ impl App {
                 Some(ReviseRepair),
             );
             s.error = m
-                .agent_review
+                .execution
                 .as_ref()
-                .and_then(|r| r.halt.clone())
+                .and_then(|e| {
+                    e.tasks
+                        .iter()
+                        .find(|r| r.status == "blocked" && m.diagnostics.repeats(r) >= 3)
+                })
+                .map(|r| {
+                    format!(
+                        "Same failure in {} attempts. Inspect Activity for the retained evidence.",
+                        m.diagnostics.repeats(r)
+                    )
+                })
                 .or_else(|| {
-                    execution
-                        .and_then(|e| e.tasks.iter().find(|r| r.repair_stalled()))
-                        .map(|r| r.summary.chars().take(240).collect())
+                    m.agent_review
+                        .as_ref()
+                        .and_then(|r| r.halt.clone())
+                        .or_else(|| {
+                            execution
+                                .and_then(|e| e.tasks.iter().find(|r| r.repair_stalled()))
+                                .map(|r| r.summary.chars().take(240).collect())
+                        })
                 });
             s
         } else if let Some(id) = failed.filter(|_| !final_failed) {

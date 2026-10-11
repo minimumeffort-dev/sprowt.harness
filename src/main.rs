@@ -3,6 +3,7 @@ mod app;
 mod checks;
 mod codex;
 mod conflict;
+mod diagnostics;
 mod execution;
 mod git_mod;
 mod git_sync;

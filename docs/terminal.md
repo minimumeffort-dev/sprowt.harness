@@ -50,13 +50,17 @@ Press **Ctrl+T**. Use **1–4**, **Tab** or **Shift+Tab** to switch sections.
 | **1 · Tasks** | Status, owner, model and dependencies; Enter opens one task |
 | **2 · Checks** | Failed checks first, then passing groups and commands not run |
 | **3 · Review** | Finding IDs, severity, owner, evidence, proposed fix and decision history |
-| **4 · Activity** | Saved worker updates, handoffs and previous results |
+| **4 · Activity** | Time by phase, failed attempts, worker updates and handoffs |
 
 Details opens Review when findings need attention, Checks after a combined failure, and otherwise Tasks. Before tasks exist, it opens Activity. Opening evidence does not start work.
 
 Check colors have matching glyphs: **✓ passed**, **! failed**, **· not run**. Repeated check names group their commands; a check passes only when all its commands pass. **e** expands command/output evidence, including elapsed time and time limits. Worker reports remain distinct from controller results.
 
 Saved results are labelled when the source has changed. **Earlier task report · before combined checks** means a task's earlier success predates the final combined result.
+
+Activity also retains **observed worker time** by phase across restarts and replacement plans. Concurrent workers count separately. Offline gaps are excluded; older runs have no retroactive timing. This is effort, not an ETA. Repeated messages do not establish verified progress.
+
+Failed tasks show the likely failure category and a corresponding recovery explanation. Unknown check failures remain unclassified until diagnosed. Three attempts with identical saved failure evidence recommend **Revise repair plan**; the attempt history is included in the new plan. Passing checks and fresh review are still required.
 
 ### Inspect a task
 

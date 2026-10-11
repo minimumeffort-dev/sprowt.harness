@@ -63,6 +63,7 @@ impl App {
     pub fn can_retry_task(&self, id: i64) -> bool {
         self.current_mod().is_some_and(|m| {
             !m.closed
+                && !self.repair_stalled()
                 && !self.git_jobs.contains_key(&m.id)
                 && m.execution.as_ref().is_some_and(|e| {
                     e.tasks.iter().any(|r| {

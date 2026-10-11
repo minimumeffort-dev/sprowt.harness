@@ -10,6 +10,7 @@ use crate::{
 };
 
 pub struct CodeMod {
+    pub diagnostics: crate::diagnostics::History,
     pub id: i64,
     pub name: String,
     pub description: String,
@@ -356,7 +357,9 @@ impl Store {
         );",
             )
             .map_err(io::Error::other)?;
-        Ok(Self(connection))
+        let store = Self(connection);
+        store.diagnostics_schema().map_err(io::Error::other)?;
+        Ok(store)
     }
 
     pub fn load_project(&self, path: &Path) -> Result<ProjectState> {
@@ -376,6 +379,7 @@ impl Store {
         let mut mods = statement
             .query_map([id], |row| {
                 Ok(CodeMod {
+                    diagnostics: Default::default(),
                     id: row.get(0)?,
                     name: row.get(1)?,
                     description: row.get(3)?,
@@ -394,6 +398,7 @@ impl Store {
             })?
             .collect::<Result<Vec<_>>>()?;
         for code_mod in &mut mods {
+            code_mod.diagnostics = self.diagnostics(code_mod.id)?;
             code_mod.planning = self.planning(code_mod.id)?;
             code_mod.execution = self.execution(code_mod.id)?;
             code_mod.agent_review = self.review_state(code_mod.id)?;
@@ -495,6 +500,7 @@ impl Store {
         }
         transaction.commit()?;
         Ok(CodeMod {
+            diagnostics: Default::default(),
             id,
             name: title,
             description: name.to_owned(),

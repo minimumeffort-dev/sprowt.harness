@@ -160,6 +160,29 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         );
         lines.push(Line::default());
     }
+    if task.run.status == "blocked" {
+        let cause = crate::diagnostics::cause(task.run);
+        lines.extend(wrap_line(
+            Line::from(cause.label()).fg(ACCENT).bold(),
+            width,
+            0,
+        ));
+        lines.extend(indented_text(cause.advice(), width, 2));
+        if let Some(m) = app.current_mod() {
+            let repeats = m.diagnostics.repeats(task.run);
+            if repeats > 1 {
+                lines.extend(wrap_line(
+                    Line::from(format!(
+                        "Same failure recorded in {repeats} attempts · revise the approach"
+                    ))
+                    .fg(Color::Yellow),
+                    width,
+                    0,
+                ));
+            }
+        }
+        lines.push(Line::default());
+    }
     if let Some(conflict) = &task.run.conflict {
         lines.push(Line::from("Conflicting files").fg(ACCENT).bold());
         lines.push(
