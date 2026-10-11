@@ -72,25 +72,45 @@ pub(super) fn cancellable_lock<'a, T>(
 
 static VMS: Registry<Sandbox> = Registry::new();
 
-pub(super) fn prepare(
+pub(crate) fn prepare(
     root: &Path,
     tasks: &[i64],
+    memory: Option<u64>,
     cancelled: &AtomicBool,
     progress: impl Fn(&str),
     timing: Timing<'_>,
 ) -> io::Result<super::SharedVm> {
     let vm = VMS.prepare(root, cancelled, timing, || {
-        Sandbox::prepare_with_timing(root, cancelled, progress, timing)
+        Sandbox::prepare_empty_with_timing(root, memory, cancelled, &progress, timing)
     })?;
     {
         let mut prepared = cancellable_lock(&vm, cancelled)?;
-        prepared.refresh_network()?;
-        let digest = prepared.identity().digest.clone();
-        timing
-            .with_environment(&digest)
-            .measure(Phase::Source, || prepared.prepare_tasks(tasks, cancelled))?;
+        prepared.bind(tasks, memory, cancelled, &progress, timing)?;
     }
     Ok(vm)
+}
+
+pub(crate) fn prewarm(
+    root: &Path,
+    cancelled: &AtomicBool,
+    timing: Timing<'_>,
+) -> io::Result<Option<super::SharedVm>> {
+    if Sandbox::has_bound_source(root)? {
+        return Ok(None);
+    }
+    match VMS.prepare(root, cancelled, timing, || {
+        if Sandbox::has_bound_source(root)? {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "Source is already bound.",
+            ));
+        }
+        Sandbox::prepare_empty_with_timing(root, None, cancelled, &|_| {}, timing)
+    }) {
+        Ok(vm) => Ok(Some(vm)),
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 #[cfg(test)]

@@ -80,12 +80,15 @@ Browser projects also need a real browser startup probe and the required Debian 
 | --- | --- | --- |
 | `inputs` | Exact project-relative files that affect setup reuse | Up to 32 paths |
 | `system_packages` | Required signed Debian package names | [Package policy](sandbox.md#system-packages) |
+| `resources` | Optional explicit VM request, `{"memory_gib": 8}` | 8 GiB only; omit for ordinary allocation |
 | `reusable_paths` | Optional locked dependency snapshot; defaults to `[]` | Only `["node_modules"]` |
 | `setup` | Install the pinned runtime and locked dependencies | Up to 12 commands |
 | `capabilities` | Prove the runtime or browser actually starts | 1–12 commands |
 | `baseline` | Record tests before editing | Up to 12 commands |
 
 Each command needs `name`, `argv` and `timeout_seconds` (1–180). Begin `argv` with an absolute executable. Use project-relative file arguments; temporary task and worker paths are rejected.
+
+Add `"resources": {"memory_gib": 8}` when your project explicitly needs that memory, for example for browser checks. The accepted plan recipe takes precedence over the source file. The harness does not infer memory needs from project type. Requests apply before source binding; an existing bound VM retains its allocation. See [resource admission and retained VMs](performance.md#vm-resource-budget).
 
 ## What the results mean
 

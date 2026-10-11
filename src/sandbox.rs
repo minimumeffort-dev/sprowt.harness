@@ -33,6 +33,7 @@ static BUILD: Mutex<()> = Mutex::new(());
 static PROCESS: AtomicU64 = AtomicU64::new(0);
 
 mod preparation;
+mod resources;
 #[cfg(test)]
 mod skills_tests;
 
@@ -52,6 +53,8 @@ pub struct Sandbox {
     started: bool,
     pub(crate) tasks: crate::task_worktree::TaskWorktrees,
     identity: Identity,
+    state: preparation::State,
+    allocation: resources::Allocation,
 }
 
 impl Sandbox {
@@ -140,182 +143,6 @@ impl Sandbox {
             ],
             cancelled,
         )
-    }
-
-    pub fn prepare(
-        root: &Path,
-        cancelled: &AtomicBool,
-        progress: impl Fn(&str),
-    ) -> io::Result<Self> {
-        Self::prepare_with_timing(root, cancelled, progress, Timing::quiet())
-    }
-
-    pub(crate) fn prepare_with_timing(
-        root: &Path,
-        cancelled: &AtomicBool,
-        progress: impl Fn(&str),
-        timing: Timing<'_>,
-    ) -> io::Result<Self> {
-        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            return Err(io::Error::other(
-                "Linux VMs require Apple silicon and macOS 26+.",
-            ));
-        }
-        let mut vm = Self {
-            root: root.to_owned(),
-            name: name(root)?,
-            home: root.join("host-codex"),
-            domains: network(root)?,
-            child: None,
-            rpc: None,
-            started: false,
-            tasks: Default::default(),
-            identity: Identity {
-                digest: String::new(),
-                architecture: String::new(),
-            },
-        };
-        progress("preparing Linux VM");
-        vm.login()?;
-        let version = Command::new("codex").arg("--version").output()?;
-        if !version.status.success()
-            || String::from_utf8_lossy(&version.stdout).trim() != format!("codex-cli {VERSION}")
-        {
-            return Err(io::Error::other(format!(
-                "This sandbox needs Codex CLI {VERSION}; host and guest versions must match."
-            )));
-        }
-        let marker = root.join("vm.json");
-        let saved = match fs::read(&marker) {
-            Ok(bytes) => Some(serde_json::from_slice::<Value>(&bytes)?),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => return Err(error),
-        };
-        let existing = vm.inspect()?;
-        if saved.as_ref().is_some_and(|value| value["ready"] == true) && existing.is_none() {
-            return Err(io::Error::other(
-                "The saved VM is missing. Working files are retained; create a new mod to rebuild its environment.",
-            ));
-        }
-        if let Some(existing) = &existing {
-            vm.validate(existing, saved.as_ref())?;
-        }
-        if saved.as_ref().is_none_or(|value| value["ready"] != true) {
-            if existing.is_some() {
-                vm.control(&["delete", "--force", &vm.name], cancelled)?;
-            }
-            vm.image(cancelled, &progress, timing)?;
-            timing.measure(Phase::Boot, || {
-                vm.control(
-                    &[
-                        "create",
-                        "--name",
-                        &vm.name,
-                        "--cpus",
-                        "2",
-                        "--memory",
-                        "2G",
-                        "--label",
-                        &format!("{OWNER}={}", vm.name),
-                        IMAGE,
-                    ],
-                    cancelled,
-                )
-            })?;
-            let inspect = vm
-                .inspect()?
-                .ok_or_else(|| io::Error::other("VM creation could not be confirmed."))?;
-            vm.validate(&inspect, None)?;
-            fs::write(
-                &marker,
-                serde_json::to_vec(
-                    &json!({"ready":false,"digest":inspect["configuration"]["image"]["descriptor"]["digest"]}),
-                )?,
-            )?;
-            timing.measure(Phase::Boot, || vm.control(&["start", &vm.name], cancelled))?;
-            vm.started = true;
-            timing.measure(Phase::Source, || vm.import(cancelled))?;
-            fs::write(
-                &marker,
-                serde_json::to_vec(
-                    &json!({"ready":true,"digest":inspect["configuration"]["image"]["descriptor"]["digest"]}),
-                )?,
-            )?;
-        } else {
-            if existing.as_ref().unwrap()["status"]["state"] == "running" {
-                vm.control(&["stop", &vm.name], cancelled)?;
-            }
-            timing.measure(Phase::Boot, || vm.control(&["start", &vm.name], cancelled))?;
-        }
-        let inspect = vm
-            .inspect()?
-            .ok_or_else(|| io::Error::other("Prepared VM is missing."))?;
-        vm.identity = Identity {
-            digest: inspect["configuration"]["image"]["descriptor"]["digest"]
-                .as_str()
-                .ok_or_else(|| io::Error::other("VM image digest is missing."))?
-                .into(),
-            architecture: inspect["configuration"]["platform"]["architecture"]
-                .as_str()
-                .ok_or_else(|| io::Error::other("VM architecture is missing."))?
-                .into(),
-        };
-        vm.started = true;
-        vm.control(
-            &["exec", &vm.name, "/bin/mkdir", "-p", "/opt/sprowt-transfer"],
-            cancelled,
-        )?;
-        let digest = vm.identity.digest.clone();
-        timing
-            .with_environment(&digest)
-            .measure(Phase::BaseSetup, || vm.prepare_base(cancelled))?;
-        let (child, mut rpc) = Rpc::start(&mut vm.executor())?;
-        vm.child = Some(child);
-        let initialized = rpc.call("initialize", json!({"clientName":"sprowt_verification"}))?;
-        let info = &initialized["environmentInfo"];
-        let version = container()
-            .args(["exec", &vm.name, "/usr/local/bin/codex", "--version"])
-            .output()?;
-        if !version.status.success()
-            || String::from_utf8_lossy(&version.stdout).trim() != format!("codex-cli {VERSION}")
-            || (info["executorVersion"] != VERSION && info["executorVersion"] != "0.0.0")
-            || info["platformOs"] != "linux"
-            || info["capabilities"]["networkProxyLaunch"] != true
-        {
-            return Err(io::Error::other(
-                "The guest executor has an incompatible version or platform.",
-            ));
-        }
-        rpc.write(json!({"method":"initialized"}))?;
-        vm.rpc = Some(rpc);
-        progress("checking Linux VM isolation");
-        timing
-            .with_environment(&digest)
-            .measure(Phase::BaseSetup, || {
-                vm.boundary(cancelled)?;
-                vm.ensure_python(cancelled)
-            })?;
-        timing
-            .with_environment(&digest)
-            .measure(Phase::Source, || {
-                vm.restore_tasks(cancelled)?;
-                vm.import_update(cancelled)
-            })?;
-        let active = vm.tasks.active;
-        if !vm.tasks.round.is_empty() {
-            vm.tasks.active = None;
-            vm.export(cancelled)?;
-        }
-        for id in vm.tasks.round.clone() {
-            vm.checkpoint_task(id)?;
-        }
-        vm.tasks.active = active;
-        vm.export(cancelled)?;
-        let error = root.join("checkpoint-error");
-        if error.exists() {
-            fs::remove_file(error)?;
-        }
-        Ok(vm)
     }
 
     pub fn prepare_reviewer(&self, worker: i64, cancelled: &AtomicBool) -> io::Result<()> {
@@ -938,6 +765,7 @@ impl Sandbox {
     }
 
     pub(crate) fn snapshot(&mut self, path: &str, cancelled: &AtomicBool) -> io::Result<Snapshot> {
+        self.require_bound()?;
         let mut argv = vec![
             "exec",
             &self.name,
@@ -975,6 +803,7 @@ impl Sandbox {
     }
 
     pub fn export(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
+        self.require_bound()?;
         let snapshot = self.snapshot(&self.task_folder(), cancelled)?;
         if !self.tasks.round.is_empty() {
             self.commit_source(self.tasks.active, &snapshot, cancelled)?;
@@ -1166,6 +995,8 @@ pub fn delete(root: &Path) -> io::Result<()> {
         child: None,
         rpc: None,
         started: false,
+        state: preparation::State::Preparing,
+        allocation: resources::Allocation::SMALL,
         tasks: Default::default(),
         identity: Identity {
             digest: String::new(),

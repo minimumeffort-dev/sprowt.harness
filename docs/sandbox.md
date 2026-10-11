@@ -109,10 +109,12 @@ Allowed services can receive data. Domain filtering does not guarantee that data
 
 | Event | Result |
 | --- | --- |
+| Host planning | Prepare an empty VM; bind accepted source and task worktrees after the plan is ready |
 | Task, review or repair | Reuse the current VM and task dependencies |
 | Publish | Retain VM and worktree for edits |
 | Replacement plan | Retain VM/runtime caches; remove retired task folders and check scripts |
-| Quit | Stop VM and retain its disk |
+| Pause or quit | Cancel and join early preparation; quit stops owned VMs and retains their disks |
+| 90 seconds without enabled or busy workers | Retire idle clients and stop the VM; preserve saved worker records and disk |
 | Close | Save source/task branches, then delete VM and runtime data |
 | Reopen closed work | Restore source; create a fresh VM when explicitly resumed |
 | Delete | Remove VM and local codemod data |
@@ -120,6 +122,8 @@ Allowed services can receive data. Domain filtering does not guarantee that data
 Reconnection clears leftover guest processes. Shared images and the container service remain for reuse. A task Git bundle preserves source branches, not runtime installations.
 
 VM preparation is shared within one codemod. Different codemods can prepare concurrently; building the shared image remains serialized. Cancelling a waiting worker leaves the preparing worker running.
+
+Early preparation leaves an existing bound VM untouched. VM allocation, admission and saved preparation states are described in [worker startup](performance.md#prepare-while-planning).
 
 Existing VMs from the previous image remain usable when their saved image digest matches. Reconnection checks the stable helper content and migrates missing Python through signed package setup. It retains source and runtime data. Unknown images or changed digests still stop reconnection.
 

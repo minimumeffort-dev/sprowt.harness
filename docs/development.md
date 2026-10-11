@@ -52,6 +52,7 @@ Use the [supported provider versions](workers.md#supported-versions), sign in an
 
 | Area | Focused command |
 | --- | --- |
+| Empty preparation, accepted source binding, explicit memory and retained allocation (no inference) | `cargo test --locked early_vm_is_empty_then_binds_accepted_source_and_preserves_bound_allocation -- --ignored --nocapture` |
 | Pinned skill delivery and read-only access (no inference) | `cargo test --locked pinned_skills_are_read_only_for_host_and_vm_agents -- --ignored --nocapture` |
 | Muse helper reuse and corruption recovery (no inference) | `cargo test --locked muse_helpers_reuse_verified_content_and_recopy_corruption -- --ignored --nocapture` |
 | Retained v1 VM setup migration (no inference; local v1 image required) | `cargo test --locked retained_v1_vm_migrates_stable_helpers_and_keeps_source_and_runtime -- --ignored --nocapture` |
@@ -107,13 +108,13 @@ Standalone compatibility probes live in [examples](../examples). They are separa
 | Plans, assignment and routing | [`plan.rs`](../src/plan.rs), [`scheduler.rs`](../src/scheduler.rs), [`router.rs`](../src/router.rs) |
 | Project preparation, bounded asset reuse and baseline receipts | [`environment.rs`](../src/environment.rs), [`environment/cache.rs`](../src/environment/cache.rs), [`environment_cache.py`](../sandbox/environment_cache.py) |
 | Worker orchestration | [`worker.rs`](../src/worker.rs), [`agents.rs`](../src/agents.rs) |
-| Startup coordination and measurements | [`codex/shared_vm.rs`](../src/codex/shared_vm.rs), [`diagnostics.rs`](../src/diagnostics.rs), [`diagnostics/timing.rs`](../src/diagnostics/timing.rs) |
+| Startup ownership and measurements | [`app/preparation.rs`](../src/app/preparation.rs), [`codex/shared_vm.rs`](../src/codex/shared_vm.rs), [`diagnostics.rs`](../src/diagnostics.rs), [`diagnostics/timing.rs`](../src/diagnostics/timing.rs) |
 | Provider connections | [`codex.rs`](../src/codex.rs), [`muse.rs`](../src/muse.rs), [`muse_bridge.py`](../src/muse_bridge.py), [`muse_transport.py`](../src/muse_transport.py) |
 | Pinned skill delivery | [`skills.rs`](../src/skills.rs), [`build.rs`](../build.rs), [`skills`](../skills/INDEX.md) |
 | Checks and recovery | [`checks.rs`](../src/checks.rs), [`execution.rs`](../src/execution.rs), [`repair.rs`](../src/repair.rs), [`conflict.rs`](../src/conflict.rs) |
 | Review and findings | [`review.rs`](../src/review.rs), [`review/ledger.rs`](../src/review/ledger.rs) |
 | Tools, messaging and permissions | [`tools.rs`](../src/tools.rs), [`mailbox.rs`](../src/mailbox.rs), [`network.rs`](../src/network.rs), [`packages.rs`](../src/packages.rs) |
-| VM setup and task worktrees | [`sandbox.rs`](../src/sandbox.rs), [`sandbox/preparation.rs`](../src/sandbox/preparation.rs), [`task_worktree.rs`](../src/task_worktree.rs) |
+| VM setup, admission and task worktrees | [`sandbox.rs`](../src/sandbox.rs), [`sandbox/preparation.rs`](../src/sandbox/preparation.rs), [`sandbox/resources.rs`](../src/sandbox/resources.rs), [`task_worktree.rs`](../src/task_worktree.rs) |
 | Git and checkpoints | [`git_mod.rs`](../src/git_mod.rs), [`git_sync.rs`](../src/git_sync.rs), [`mod_sync.rs`](../src/mod_sync.rs), [`workspace.rs`](../src/workspace.rs) |
 | Commit and PR text | [`publication.rs`](../src/publication.rs) |
 | Persistence | [`store.rs`](../src/store.rs) |

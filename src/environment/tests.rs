@@ -1,6 +1,38 @@
 use super::*;
+
+#[test]
+fn memory_requests_use_the_accepted_recipe_or_source_file() {
+    let mut explicit = recipe();
+    explicit.resources = Some(Resources { memory_gib: 8 });
+    let mut file = recipe();
+    file.resources = Some(Resources { memory_gib: 4 });
+    let snapshot = vec![(
+        PathBuf::from(".sprowt/environment.json"),
+        serde_json::to_vec(&file).unwrap(),
+        0o644,
+    )];
+    assert_eq!(
+        requested_memory(Some(&explicit), &snapshot).unwrap(),
+        Some(8)
+    );
+    assert!(
+        requested_memory(None, &snapshot)
+            .unwrap_err()
+            .to_string()
+            .contains("memory_gib: 8")
+    );
+    assert_eq!(requested_memory(None, &[].to_vec()).unwrap(), None);
+    file.resources = Some(Resources { memory_gib: 8 });
+    let snapshot = vec![(
+        PathBuf::from(".sprowt/environment.json"),
+        serde_json::to_vec(&file).unwrap(),
+        0o644,
+    )];
+    assert_eq!(requested_memory(None, &snapshot).unwrap(), Some(8));
+}
 fn recipe() -> Recipe {
     Recipe {
+        resources: None,
         inputs: vec!["config.txt".into()],
         system_packages: vec![],
         reusable_paths: vec![],
@@ -133,6 +165,7 @@ fn live_prepared_assets_are_private_and_locked_dependencies_reuse_only_exact_inp
         timeout_seconds: 30,
     };
     let r = Recipe {
+        resources: None,
         inputs: vec!["package.json".into(), "package-lock.json".into()],
         system_packages: vec![],
         reusable_paths: vec!["node_modules".into()],
@@ -285,6 +318,7 @@ fn live_preflight_retains_evidence_and_reuses_only_proven_setup() {
         timeout_seconds: 30,
     };
     let mut r = Recipe {
+        resources: None,
         inputs: vec![],
         system_packages: vec![],
         reusable_paths: vec![],

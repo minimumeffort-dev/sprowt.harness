@@ -192,6 +192,14 @@ fn evidence(run: &TaskRun) -> String {
 }
 
 impl Store {
+    pub(crate) fn record_preparation_failure(
+        &self,
+        mod_id: i64,
+        evidence: &str,
+    ) -> rusqlite::Result<()> {
+        self.0.execute("INSERT INTO run_failures(mod_id,source,task,evidence,fingerprint) VALUES(?1,'early-preparation','Early VM preparation',?2,'') ON CONFLICT DO NOTHING", params![mod_id, evidence])?;
+        Ok(())
+    }
     pub(crate) fn diagnostics_schema(&self) -> rusqlite::Result<()> {
         self.0.execute_batch("CREATE TABLE IF NOT EXISTS phase_time (
             mod_id INTEGER NOT NULL REFERENCES code_mods(id) ON DELETE CASCADE,

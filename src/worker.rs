@@ -55,6 +55,7 @@ pub struct Worker {
     last_activity: Option<Instant>,
     reconnecting: bool,
     interrupted_task: Option<i64>,
+    slot_wait: Option<(String, Instant, String)>,
 }
 
 impl Worker {
@@ -161,6 +162,7 @@ impl Worker {
             last_activity: None,
             reconnecting: false,
             interrupted_task: None,
+            slot_wait: None,
         })
     }
 
@@ -174,6 +176,10 @@ impl Worker {
             | Status::Checking => true,
             _ => false,
         }
+    }
+
+    pub(crate) fn eligible(&mut self, attempt: &str, started: Instant, source: &str) {
+        self.slot_wait = Some((attempt.into(), started, source.into()));
     }
 
     pub fn label(&self, activity: Option<&str>) -> String {
@@ -443,7 +449,28 @@ impl Worker {
                 }
             }
             self.pending = Some(input);
-            if let Err(error) = self.client.as_ref().unwrap().send(action) {
+            let sent = self.client.as_ref().unwrap().send(action);
+            if !steering
+                && let Some((attempt, started, source)) = self.slot_wait.take()
+                && self
+                    .pending
+                    .as_ref()
+                    .is_some_and(|input| input.source == attempt)
+            {
+                store.record_timing(
+                    self.mod_id,
+                    self.id,
+                    &crate::diagnostics::timing::Observation {
+                        phase: crate::diagnostics::timing::Phase::SlotWait,
+                        duration_ms: started.elapsed().as_millis().try_into().unwrap_or(u64::MAX),
+                        source,
+                        environment: None,
+                        completed: sent.is_ok(),
+                        attempt: Some(attempt),
+                    },
+                )?;
+            }
+            if let Err(error) = sent {
                 self.fail(error.to_string());
             }
         }
@@ -2603,6 +2630,42 @@ mod tests {
         }];
         worker.verify_before = Some(workspace::source_state(&root.join("work")).unwrap());
         (data, store, code_mod, worker)
+    }
+
+    #[test]
+    fn eligible_slot_wait_is_saved_for_the_dispatched_attempt_with_source_identity() {
+        let (_data, mut store, mut code_mod, mut worker) = executor();
+        let attempt = code_mod.execution.as_ref().unwrap().tasks[0].source.clone();
+        let (client, actions) = Client::recording();
+        worker.client = Some(client);
+        worker.status = Status::Ready;
+        worker.task_source = None;
+        worker.eligible(
+            &attempt,
+            Instant::now() - std::time::Duration::from_secs(2),
+            "accepted-snapshot-hash",
+        );
+        worker
+            .poll(
+                &mut store,
+                &mut code_mod,
+                true,
+                Path::new("/planner-project"),
+            )
+            .unwrap();
+        assert!(
+            matches!(actions.try_recv().unwrap(), Action::Run { source, .. } if source == attempt)
+        );
+        let history = store.diagnostics(code_mod.id).unwrap();
+        let observation = &history.timings[0].1;
+        assert_eq!(
+            observation.phase,
+            crate::diagnostics::timing::Phase::SlotWait
+        );
+        assert_eq!(observation.attempt.as_deref(), Some(attempt.as_str()));
+        assert_eq!(observation.source, "accepted-snapshot-hash");
+        assert_eq!(observation.environment, None);
+        assert!(observation.completed && observation.duration_ms >= 2000);
     }
 
     #[test]

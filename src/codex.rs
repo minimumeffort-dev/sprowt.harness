@@ -25,7 +25,7 @@ use crate::{
     workspace::Snapshot,
 };
 
-mod shared_vm;
+pub(crate) mod shared_vm;
 
 pub enum Action {
     Run {
@@ -182,6 +182,7 @@ impl Client {
         let (actions, inbox) = mpsc::channel();
         let (outgoing, events) = mpsc::channel();
         let mut instructions = plan::instructions(role, description, plan, workspace.is_some());
+        let environment = plan.and_then(|plan| plan.environment.clone());
         if role == Role::Planner {
             instructions.push_str(&format!(
                 "\nAvailable executors: {}. Project brief (verify against source): {}",
@@ -203,14 +204,17 @@ impl Client {
         let last_task = active_task.clone();
         let task = thread::spawn(move || {
             let result = (|| {
-                let source = workspace
+                let snapshot = workspace
                     .as_ref()
-                    .map(|path| {
-                        crate::workspace::source_state(path)
-                            .and_then(|source| crate::workspace::fingerprint(&source))
-                    })
+                    .map(|path| crate::workspace::source_state(path))
                     .transpose()?
                     .unwrap_or_default();
+                let source = if workspace.is_some() {
+                    crate::workspace::fingerprint(&snapshot)?
+                } else {
+                    String::new()
+                };
+                let memory = crate::environment::requested_memory(environment.as_ref(), &snapshot)?;
                 let emit = |observation| {
                     let _ = outgoing.send(Event::Timing(observation));
                 };
@@ -221,6 +225,7 @@ impl Client {
                         shared_vm::prepare(
                             path.parent().unwrap(),
                             &context.tasks,
+                            memory,
                             &stopped,
                             |label| {
                                 let _ = outgoing.send(Event::Preparing(label.into()));

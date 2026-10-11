@@ -224,7 +224,10 @@ impl Sandbox {
             return Err(io::Error::other("Execution needs valid task identities."));
         }
         if self.tasks.round == ids {
-            return Ok(());
+            for id in ids {
+                self.ensure_task(*id, cancelled)?;
+            }
+            return self.checkpoint_tasks(cancelled);
         }
         self.export(cancelled)?;
         let source = workspace::source_state(&self.root().join("work"))?;
@@ -272,6 +275,9 @@ impl Sandbox {
             ..Default::default()
         };
         self.save_tasks()?;
+        for id in ids {
+            self.ensure_task(*id, cancelled)?;
+        }
         self.checkpoint_tasks(cancelled)
     }
 
@@ -598,6 +604,7 @@ impl Sandbox {
     }
 
     pub fn checkpoint_task(&mut self, id: i64) -> io::Result<()> {
+        self.require_bound()?;
         if !self.tasks.integrated.contains(&id)
             && self.guest_exists(&format!("{}/.git", folder(id)))?
         {
@@ -608,6 +615,7 @@ impl Sandbox {
     }
 
     pub(crate) fn checkpoint_tasks(&mut self, cancelled: &AtomicBool) -> io::Result<()> {
+        self.require_bound()?;
         if self.tasks.round.is_empty() {
             return Ok(());
         }

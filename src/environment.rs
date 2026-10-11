@@ -23,9 +23,36 @@ pub struct Recipe {
     pub system_packages: Vec<String>,
     #[serde(default)]
     pub reusable_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resources: Option<Resources>,
     pub setup: Vec<Command>,
     pub capabilities: Vec<Command>,
     pub baseline: Vec<Command>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resources {
+    pub memory_gib: u64,
+}
+
+pub(crate) fn requested_memory(
+    recipe: Option<&Recipe>,
+    snapshot: &Snapshot,
+) -> io::Result<Option<u64>> {
+    let from_file = snapshot
+        .iter()
+        .find(|(path, _, _)| recipe.is_none() && path == Path::new(".sprowt/environment.json"))
+        .map(|(_, bytes, _)| serde_json::from_slice::<Recipe>(bytes))
+        .transpose()?;
+    let Some(recipe) = recipe.or(from_file.as_ref()) else {
+        return Ok(None);
+    };
+    recipe.validate().map_err(io::Error::other)?;
+    Ok(recipe
+        .resources
+        .as_ref()
+        .map(|resources| resources.memory_gib))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -38,6 +65,13 @@ pub struct Command {
 
 impl Recipe {
     pub fn validate(&self) -> Result<(), String> {
+        if self
+            .resources
+            .as_ref()
+            .is_some_and(|resources| resources.memory_gib != 8)
+        {
+            return Err("Explicit VM resources support memory_gib: 8. Omit resources for the ordinary allocation.".into());
+        }
         if self.inputs.len() > 32
             || self.capabilities.is_empty()
             || self.setup.len() > 12
@@ -148,9 +182,10 @@ pub fn schema() -> Value {
     json!({"type":["object","null"],"additionalProperties":false,"properties":{
         "inputs":{"type":"array","items":{"type":"string"}},
         "system_packages":{"type":"array","items":{"type":"string"}},
+        "resources":{"type":["object","null"],"additionalProperties":false,"properties":{"memory_gib":{"type":"integer","enum":[8]}},"required":["memory_gib"]},
         "reusable_paths":{"type":"array","items":{"type":"string","enum":["node_modules"]},"maxItems":1},
         "setup":{"type":"array","items":command},"capabilities":{"type":"array","items":command},"baseline":{"type":"array","items":command}},
-        "required":["inputs","system_packages","reusable_paths","setup","capabilities","baseline"]})
+        "required":["inputs","system_packages","reusable_paths","resources","setup","capabilities","baseline"]})
 }
 
 #[derive(Serialize, Deserialize)]

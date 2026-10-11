@@ -28,6 +28,7 @@ mod actions;
 pub mod controls;
 mod git_errors;
 mod inspector;
+mod preparation;
 mod scroll;
 mod state;
 mod tasks;
@@ -86,6 +87,8 @@ pub struct App {
     pub setup_files: Vec<String>,
     setup_root: Option<PathBuf>,
     workers: BTreeMap<i64, Worker>,
+    preparations: preparation::Preparations,
+    slot_waits: BTreeMap<(i64, String), Instant>,
     pub steer_target: Option<i64>,
     auto_plans: BTreeSet<i64>,
     auto_runs: BTreeSet<i64>,
@@ -117,12 +120,28 @@ impl App {
         let muse = crate::agents::detect()?;
         let project = project.canonicalize()?;
         let project = git_mod::project_root(&project).unwrap_or(project);
-        let mut app = Self::load(project, motion, Store::local()?).map_err(io::Error::other)?;
+        let mut app = Self::load_with_preparations(
+            project,
+            motion,
+            Store::local()?,
+            preparation::Preparations::production(),
+        )
+        .map_err(io::Error::other)?;
         app.muse = muse;
         Ok(app)
     }
 
+    #[cfg(test)]
     fn load(project: PathBuf, motion: bool, store: Store) -> Result<Self> {
+        Self::load_with_preparations(project, motion, store, preparation::Preparations::fake())
+    }
+
+    fn load_with_preparations(
+        project: PathBuf,
+        motion: bool,
+        store: Store,
+        preparations: preparation::Preparations,
+    ) -> Result<Self> {
         let mut state = store.load_project(&project)?;
         let git_states = state
             .mods
@@ -211,6 +230,8 @@ impl App {
             setup_files: Vec::new(),
             setup_root: None,
             workers: BTreeMap::new(),
+            preparations,
+            slot_waits: BTreeMap::new(),
             steer_target: None,
             auto_plans: BTreeSet::new(),
             auto_runs: BTreeSet::new(),
@@ -1055,6 +1076,7 @@ impl App {
     }
 
     fn finish_mod(&mut self, index: usize, discard: bool, delete: bool) -> Result<()> {
+        self.preparations.cancel(self.mods[index].id, &self.store)?;
         if !delete && self.mods[index].git_root.is_none() && self.mods[index].execution.is_some() {
             self.active = Some(index);
             let root = &self.mods[index].execution.as_ref().unwrap().workspace;
@@ -1131,7 +1153,7 @@ impl App {
                         {
                             tools.execute(Request::CreateWorktree, |_| {})?;
                         }
-                        if !discard && root.join("vm.json").exists() {
+                        if !discard && crate::sandbox::Sandbox::has_bound_source(&root)? {
                             let mut vm =
                                 crate::sandbox::Sandbox::prepare(&root, cancelled, |_| {})?;
                             vm.export(cancelled)?;
@@ -1268,6 +1290,10 @@ impl App {
 
     fn start_continuation(&mut self, index: usize) {
         let id = self.mods[index].id;
+        if let Err(error) = self.preparations.cancel(id, &self.store) {
+            self.notice = Some(error.to_string());
+            return;
+        }
         self.auto_reviews.remove(&id);
         self.executing_mods.remove(&id);
         self.workers.retain(|_, worker| worker.mod_id != id);
@@ -1290,6 +1316,7 @@ impl App {
 
     fn finish_edit(&mut self, index: usize) -> Result<()> {
         let id = self.mods[index].id;
+        self.preparations.cancel(id, &self.store)?;
         if self.mods[index]
             .execution
             .as_ref()
@@ -1998,13 +2025,11 @@ impl App {
         if self.mods[index].execution.is_none() {
             if let Some(root) = self.mods[index].git_root.clone() {
                 let project = self.source_project(index);
+                let plan_source = self.mods[index].planning.as_ref().unwrap().source.clone();
                 self.git_jobs.insert(
                     id,
                     Job::start("preparing source", move |_| {
-                        if !root.join("snapshot-ready").exists() {
-                            workspace::create(&project, &root)?;
-                            std::fs::write(root.join("snapshot-ready"), b"ready")?;
-                        }
+                        preparation::snapshot(&root, &project, &plan_source)?;
                         Ok(git_mod::Result::Snapshot)
                     }),
                 );
@@ -2087,6 +2112,26 @@ impl App {
                     .map(|r| r.worker),
             )
             .collect::<Vec<_>>();
+        if let (Some(execution), Some(plan)) = (
+            &self.mods[index].execution,
+            self.mods[index]
+                .planning
+                .as_ref()
+                .and_then(|p| p.plan.as_ref()),
+        ) {
+            let eligible = execution
+                .ready_tasks(plan)
+                .filter(|run| run.worker.is_none_or(|id| !unavailable.contains(&id)))
+                .map(|run| run.source.clone())
+                .collect::<BTreeSet<_>>();
+            self.slot_waits
+                .retain(|(id, source), _| *id != mod_id || eligible.contains(source));
+            for source in eligible {
+                self.slot_waits
+                    .entry((mod_id, source))
+                    .or_insert_with(Instant::now);
+            }
+        }
         let plan = self.mods[index]
             .planning
             .as_ref()
@@ -2124,6 +2169,25 @@ impl App {
                 self.start_worker_record(index, Role::Executor, record)?;
             }
         }
+        if let (Some(execution), Some(plan)) = (
+            &self.mods[index].execution,
+            self.mods[index]
+                .planning
+                .as_ref()
+                .and_then(|p| p.plan.as_ref()),
+        ) {
+            for run in execution.ready_tasks(plan) {
+                if let Some(worker) = run.worker.and_then(|id| self.workers.get_mut(&id))
+                    && let Some(started) = self.slot_waits.get(&(mod_id, run.source.clone()))
+                {
+                    worker.eligible(
+                        &run.source,
+                        *started,
+                        execution.fingerprint.as_deref().unwrap_or(""),
+                    );
+                }
+            }
+        }
         if self.mods[index]
             .execution
             .as_ref()
@@ -2150,6 +2214,20 @@ impl App {
     ) -> Result<()> {
         let project = self.source_project(index);
         let mod_id = self.mods[index].id;
+        let saved = self.mods[index]
+            .execution
+            .as_ref()
+            .map(|e| e.workspace.as_path())
+            .or(self.mods[index].git_root.as_deref());
+        match self.preparations.root(mod_id, &self.store, saved) {
+            Ok(_) if role == Role::Planner && self.mods[index].execution.is_none() => {
+                self.preparations.start(mod_id)
+            }
+            Ok(_) => {}
+            Err(error) => self
+                .store
+                .record_preparation_failure(mod_id, &error.to_string())?,
+        }
         self.workers.remove(&record.id);
         let selection = if role == Role::Planner {
             if record.pending.is_none()
@@ -2187,11 +2265,19 @@ impl App {
 
     fn prepare_execution(&mut self, index: usize) -> io::Result<()> {
         let code_mod = &self.mods[index];
-        let root = self.store.workspace_path(code_mod.id)?;
-        workspace::create(&self.project, &root)?;
+        let root =
+            self.preparations
+                .root(code_mod.id, &self.store, code_mod.git_root.as_deref())?;
+        preparation::snapshot(
+            &root,
+            &self.project,
+            &code_mod.planning.as_ref().unwrap().source,
+        )?;
         let plan = code_mod.planning.as_ref().unwrap().plan.as_ref().unwrap();
         if let Err(error) = self.store.create_execution(code_mod.id, &root, plan) {
-            let _ = std::fs::remove_dir_all(&root);
+            self.preparations
+                .cancel(code_mod.id, &self.store)
+                .map_err(io::Error::other)?;
             return Err(io::Error::other(error));
         }
         self.workers
@@ -2379,6 +2465,11 @@ impl App {
     }
 
     fn set_paused(&mut self, index: usize, paused: bool) -> Result<()> {
+        if paused {
+            let id = self.mods[index].id;
+            self.preparations.cancel(id, &self.store)?;
+            self.slot_waits.retain(|(mod_id, _), _| *mod_id != id);
+        }
         self.store.set_user_paused(self.mods[index].id, paused)?;
         self.mods[index].user_paused = paused;
         Ok(())
@@ -2504,6 +2595,7 @@ impl App {
     }
 
     fn poll_workers(&mut self) -> Result<()> {
+        self.preparations.poll(&self.store)?;
         self.refresh_network_requests()?;
         self.poll_git_jobs()?;
         self.maintain_project();
@@ -2552,6 +2644,11 @@ impl App {
             })
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
+        let admitted = scheduled
+            .iter()
+            .map(|index| self.mods[*index].id)
+            .collect::<BTreeSet<_>>();
+        self.slot_waits.retain(|(id, _), _| admitted.contains(id));
         for index in scheduled {
             self.schedule_execution(index)?;
         }
@@ -2600,6 +2697,17 @@ impl App {
         }
         self.maintain_reviews()?;
         self.maintain_updates()?;
+        let active = self
+            .workers
+            .values()
+            .filter(|worker| worker.enabled || worker.busy())
+            .map(|worker| worker.mod_id)
+            .collect();
+        for id in self.preparations.expired(&active, Instant::now()) {
+            self.workers
+                .retain(|_, worker| worker.mod_id != id || worker.enabled || worker.busy());
+            self.preparations.cancel(id, &self.store)?;
+        }
         let edits = self
             .mods
             .iter()
@@ -2900,7 +3008,10 @@ impl App {
                         .plan
                         .as_ref()
                         .unwrap();
-                    self.store.create_execution(id, &root, plan)?;
+                    if let Err(error) = self.store.create_execution(id, &root, plan) {
+                        self.preparations.cancel(id, &self.store)?;
+                        return Err(error);
+                    }
                     self.mods[index].execution = self.store.execution(id)?;
                     self.start_worker(index, Role::Executor)?;
                 }
@@ -3095,6 +3206,7 @@ impl App {
 
 impl Drop for App {
     fn drop(&mut self) {
+        self.workers.clear();
         if let Some(root) = self.setup_root.take() {
             let _ = std::fs::remove_dir_all(root);
         }

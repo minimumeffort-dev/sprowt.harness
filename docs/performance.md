@@ -22,6 +22,7 @@ These numbers illustrate the format; they are not a benchmark. Timings report ob
 
 | Phase | What is measured |
 | --- | --- |
+| Worker slot wait | VM resource admission, or an eligible task waiting until dispatch; dependency and approval waits are excluded |
 | Codemod startup wait | Waiting for that codemod's preparation or VM lock |
 | Shared image wait / Image build | Waiting for or building the shared base image |
 | VM boot | Creating and starting the guest |
@@ -53,6 +54,31 @@ flowchart LR
 
 Old retained VMs with a matching saved digest migrate missing stable setup on reconnect. Their source and runtime data remain. See [VM lifecycle](sandbox.md#vm-lifecycle).
 
+## Prepare while planning
+
+Host planning starts preparation of an empty VM for that codemod. It boots the shared image and verifies stable helpers, RPC and isolation. It does not read, import, export or checkpoint project source.
+
+```mermaid
+flowchart LR
+    planning["Host planning"] --> empty["Empty VM + isolation checks"]
+    accepted["Accepted plan + source snapshot"] --> bind["Bind source + task worktrees"]
+    empty --> bind --> ready["Bound VM: up to two workers"]
+```
+
+The saved states are `Preparing`, `EmptyReady` and `BoundReady`. Binding uses the captured codemod folder and writes `BoundReady` only after source and task worktrees are prepared. A legacy `ready: true` marker means `BoundReady`.
+
+Pause, replan, close and quit cancel and join early preparation. Failures appear in **Activity**; the planner can still finish and execution can retry ordinary startup. Healthy VMs remain owned for 90 seconds without enabled or busy workers. Idle disabled clients are then retired; worker records remain saved. Enabled workers waiting for a dependency keep their VM.
+
+## VM resource budget
+
+New VMs ordinarily receive **4 CPUs and 4 GiB**. Admission limits all running harness-labelled VMs to half the host's logical CPUs and half its physical memory, including older VMs' actual allocations. A private OS lock reserves each pending boot until its running allocation is confirmed. A full budget releases the lock and waits; cancellation stops the wait. Shared image preparation finishes before admission, and RPC, base setup and source binding can overlap across codemods.
+
+If the host's total budget cannot fit the ordinary profile, new VMs use **2 CPUs and 2 GiB**. Temporary occupancy causes waiting, rather than selecting a smaller profile. The worker limit remains two.
+
+An [explicit recipe memory request](environments.md#recipe-fields) can select 8 GiB. Apple Container cannot resize a VM: a validated empty VM can be recreated before binding, while a bound VM keeps its allocation and runtime. If its allocation is insufficient, create a new codemod with the explicit request. Early preparation never reconnects or restarts an existing bound VM.
+
+Task slot observations use the accepted source fingerprint when available, otherwise an empty source field, and retain the exact attempt identifier. Admission during early preparation has no accepted source or attempt. Unknown environment identity remains unknown.
+
 ## Measured results
 
 A disposable VM fixture exercised boot, isolation, source export and reconnect on the same host, with the image already cached:
@@ -68,12 +94,23 @@ The separate helper-corruption fixture took 171.07s including the first v2 image
 
 Prepared-asset checks use fixture contents to verify private copies, lockfile invalidation and corruption recovery without network downloads. They establish reuse behavior, not a dependency-installation speed benchmark. Actual savings depend on download size, setup commands and whether the project declares reproducible dependencies.
 
+Four concurrent SHA-256 workloads were also measured on the same host and image:
+
+| VM allocation | Three observed workload durations |
+| --- | --- |
+| 2 CPUs / 2 GiB | 10.275s, 10.274s, 10.166s |
+| 4 CPUs / 4 GiB | 5.416s, 5.398s, 5.407s |
+| 4 CPUs / 8 GiB | 5.444s, 5.439s, 5.424s |
+
+The larger CPU allocation reduced this CPU workload's duration. These trials do not measure browser startup, dependency installation, model inference or complete agent tasks, and do not establish a benefit from extra memory.
+
 ## If startup is slow
 
 Use the observed phase to choose the next step:
 
 | Delay | Next step |
 | --- | --- |
+| Worker slot wait | Let active codemods finish or pause unneeded work; admission resumes when capacity is available |
 | Image build | Let the first shared build finish; subsequent VMs reuse it |
 | Dependency setup | Check the project's [environment recipe](environments.md) and setup output |
 | Provider preparation or connection | Inspect [provider startup](troubleshooting.md#worker-startup) and the saved failure |

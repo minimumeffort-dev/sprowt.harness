@@ -1,5 +1,339 @@
 use super::*;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub(crate) enum State {
+    Preparing,
+    EmptyReady,
+    BoundReady,
+}
+
+pub(crate) fn saved_state(root: &Path) -> io::Result<State> {
+    Ok(read_marker(root)?.as_ref().map_or(State::Preparing, state))
+}
+
+fn read_marker(root: &Path) -> io::Result<Option<Value>> {
+    match fs::read(root.join("vm.json")) {
+        Ok(bytes) => {
+            let value: Value = serde_json::from_slice(&bytes)?;
+            if let Some(state) = value.get("state") {
+                serde_json::from_value::<State>(state.clone())?;
+            }
+            Ok(Some(value))
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn state(marker: &Value) -> State {
+    match marker["state"].as_str() {
+        Some("BoundReady") => State::BoundReady,
+        Some("EmptyReady") => State::EmptyReady,
+        Some("Preparing") => State::Preparing,
+        _ if marker["ready"] == true => State::BoundReady,
+        _ => State::Preparing,
+    }
+}
+
+impl Sandbox {
+    fn save_state(&self) -> io::Result<()> {
+        let pending = self.root.join("vm.json.pending");
+        fs::write(
+            &pending,
+            serde_json::to_vec(&json!({"state":self.state,"digest":self.identity.digest}))?,
+        )?;
+        private(&pending, 0o600)?;
+        fs::rename(pending, self.root.join("vm.json"))
+    }
+
+    pub fn has_bound_source(root: &Path) -> io::Result<bool> {
+        Ok(saved_state(root)? == State::BoundReady)
+    }
+
+    pub(crate) fn require_bound(&self) -> io::Result<()> {
+        if self.state != State::BoundReady {
+            return Err(io::Error::other(
+                "The empty VM has no accepted source to export or checkpoint.",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn prepare(
+        root: &Path,
+        cancelled: &AtomicBool,
+        progress: impl Fn(&str),
+    ) -> io::Result<Self> {
+        Self::prepare_with_timing(root, cancelled, progress, Timing::quiet())
+    }
+
+    pub(crate) fn prepare_with_timing(
+        root: &Path,
+        cancelled: &AtomicBool,
+        progress: impl Fn(&str),
+        timing: Timing<'_>,
+    ) -> io::Result<Self> {
+        let mut vm = Self::prepare_empty_with_timing(root, None, cancelled, &progress, timing)?;
+        vm.bind(&[], None, cancelled, &progress, timing)?;
+        Ok(vm)
+    }
+
+    pub(crate) fn prepare_empty_with_timing(
+        root: &Path,
+        memory: Option<u64>,
+        cancelled: &AtomicBool,
+        progress: &impl Fn(&str),
+        timing: Timing<'_>,
+    ) -> io::Result<Self> {
+        if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
+            return Err(io::Error::other(
+                "Linux VMs require Apple silicon and macOS 26+.",
+            ));
+        }
+        fs::create_dir_all(root)?;
+        private(root, 0o700)?;
+        let saved = read_marker(root)?;
+        let mut vm = Self {
+            root: root.to_owned(),
+            name: name(root)?,
+            home: root.join("host-codex"),
+            domains: network(root)?,
+            child: None,
+            rpc: None,
+            started: false,
+            tasks: Default::default(),
+            state: saved.as_ref().map_or(State::Preparing, state),
+            allocation: resources::Allocation::SMALL,
+            identity: Identity {
+                digest: String::new(),
+                architecture: String::new(),
+            },
+        };
+        progress("preparing Linux VM");
+        vm.login()?;
+        let version = Command::new("codex").arg("--version").output()?;
+        if !version.status.success()
+            || String::from_utf8_lossy(&version.stdout).trim() != format!("codex-cli {VERSION}")
+        {
+            return Err(io::Error::other(format!(
+                "This sandbox needs Codex CLI {VERSION}; host and guest versions must match."
+            )));
+        }
+        let mut existing = vm.inspect()?;
+        if vm.state == State::BoundReady && existing.is_none() {
+            return Err(io::Error::other(
+                "The saved VM is missing. Working files are retained; create a new mod to rebuild its environment.",
+            ));
+        }
+        if let Some(inspect) = &existing {
+            vm.validate(inspect, saved.as_ref())?;
+            vm.allocation = resources::Allocation::from_configuration(&inspect["configuration"])?;
+            if vm.state == State::BoundReady
+                && memory.is_some_and(|memory| memory > vm.allocation.memory_gib)
+            {
+                return Err(io::Error::other(
+                    "The saved VM has less memory than this recipe requires. Its source and runtime are retained; create a new codemod with the requested memory.",
+                ));
+            }
+        }
+        let recreate = vm.state == State::Preparing
+            || vm.state == State::EmptyReady
+                && memory.is_some_and(|memory| memory > vm.allocation.memory_gib);
+        if recreate && existing.is_some() {
+            vm.control(&["delete", "--force", &vm.name], cancelled)?;
+            existing = None;
+            vm.state = State::Preparing;
+        }
+        if existing.is_none() {
+            vm.state = State::Preparing;
+            vm.image(cancelled, progress, timing)?;
+        }
+        if existing
+            .as_ref()
+            .is_some_and(|inspect| inspect["status"]["state"] == "running")
+        {
+            vm.control(&["stop", &vm.name], cancelled)?;
+        }
+        progress("waiting for VM capacity");
+        let (allocation, admission) = resources::admit(
+            existing.as_ref().map(|_| vm.allocation),
+            memory,
+            cancelled,
+            timing,
+        )?;
+        vm.allocation = allocation;
+        if existing.is_none() {
+            timing.measure(Phase::Boot, || {
+                vm.control(
+                    &[
+                        "create",
+                        "--name",
+                        &vm.name,
+                        "--cpus",
+                        &allocation.cpus.to_string(),
+                        "--memory",
+                        &format!("{}G", allocation.memory_gib),
+                        "--label",
+                        &format!("{OWNER}={}", vm.name),
+                        IMAGE,
+                    ],
+                    cancelled,
+                )
+            })?;
+        }
+        vm.started = true;
+        timing.measure(Phase::Boot, || vm.control(&["start", &vm.name], cancelled))?;
+        let inspect = vm
+            .inspect()?
+            .ok_or_else(|| io::Error::other("Prepared VM is missing."))?;
+        vm.validate(
+            &inspect,
+            if existing.is_some() {
+                saved.as_ref()
+            } else {
+                None
+            },
+        )?;
+        if inspect["status"]["state"] != "running"
+            || resources::Allocation::from_configuration(&inspect["configuration"])? != allocation
+        {
+            return Err(io::Error::other(
+                "The running VM allocation could not be confirmed.",
+            ));
+        }
+        drop(admission);
+        vm.identity = Identity {
+            digest: inspect["configuration"]["image"]["descriptor"]["digest"]
+                .as_str()
+                .ok_or_else(|| io::Error::other("VM image digest is missing."))?
+                .into(),
+            architecture: inspect["configuration"]["platform"]["architecture"]
+                .as_str()
+                .ok_or_else(|| io::Error::other("VM architecture is missing."))?
+                .into(),
+        };
+        vm.save_state()?;
+        vm.control(
+            &["exec", &vm.name, "/bin/mkdir", "-p", "/opt/sprowt-transfer"],
+            cancelled,
+        )?;
+        let digest = vm.identity.digest.clone();
+        let timing = timing.with_environment(&digest);
+        timing.measure(Phase::BaseSetup, || vm.prepare_base(cancelled))?;
+        let (child, mut rpc) = Rpc::start(&mut vm.executor())?;
+        vm.child = Some(child);
+        let initialized = rpc.call("initialize", json!({"clientName":"sprowt_verification"}))?;
+        let info = &initialized["environmentInfo"];
+        let version = container()
+            .args(["exec", &vm.name, "/usr/local/bin/codex", "--version"])
+            .output()?;
+        if !version.status.success()
+            || String::from_utf8_lossy(&version.stdout).trim() != format!("codex-cli {VERSION}")
+            || (info["executorVersion"] != VERSION && info["executorVersion"] != "0.0.0")
+            || info["platformOs"] != "linux"
+            || info["capabilities"]["networkProxyLaunch"] != true
+        {
+            return Err(io::Error::other(
+                "The guest executor has an incompatible version or platform.",
+            ));
+        }
+        rpc.write(json!({"method":"initialized"}))?;
+        vm.rpc = Some(rpc);
+        progress("checking Linux VM isolation");
+        timing.measure(Phase::BaseSetup, || {
+            vm.boundary(cancelled)?;
+            vm.ensure_python(cancelled)
+        })?;
+        if vm.state == State::BoundReady {
+            vm.reconcile_bound(cancelled, timing)?;
+        } else {
+            vm.state = State::EmptyReady;
+            vm.save_state()?;
+        }
+        Ok(vm)
+    }
+
+    pub(crate) fn bind(
+        &mut self,
+        tasks: &[i64],
+        memory: Option<u64>,
+        cancelled: &AtomicBool,
+        progress: &impl Fn(&str),
+        timing: Timing<'_>,
+    ) -> io::Result<()> {
+        if self.state == State::Preparing
+            || memory.is_some_and(|memory| memory > self.allocation.memory_gib)
+        {
+            if self.state == State::BoundReady {
+                return Err(io::Error::other(
+                    "The saved VM has less memory than this recipe requires. Its source and runtime are retained; create a new codemod with the requested memory.",
+                ));
+            }
+            if let Some(mut child) = self.child.take() {
+                rpc::terminate(&mut child);
+            }
+            self.rpc.take();
+            self.control(&["stop", &self.name], cancelled)?;
+            self.started = false;
+            *self =
+                Self::prepare_empty_with_timing(&self.root, memory, cancelled, progress, timing)?;
+        }
+        self.refresh_network()?;
+        let digest = self.identity.digest.clone();
+        let binding = self.state == State::EmptyReady;
+        let result = timing.with_environment(&digest).measure(Phase::Source, || {
+            if binding {
+                self.state = State::Preparing;
+                self.save_state()?;
+                // No worker could dispatch before the first bound marker.
+                for name in ["tasks.json", "tasks.bundle"] {
+                    let path = self.root.join(name);
+                    if path.exists() {
+                        fs::remove_file(path)?;
+                    }
+                }
+                let drafts = self.root.join("task-drafts");
+                if drafts.exists() {
+                    fs::remove_dir_all(drafts)?;
+                }
+                self.import(cancelled)?;
+                self.state = State::BoundReady;
+                self.reconcile_bound(cancelled, timing)?;
+            }
+            if !tasks.is_empty() {
+                self.prepare_tasks(tasks, cancelled)?;
+            }
+            let error = self.root.join("checkpoint-error");
+            if error.exists() {
+                fs::remove_file(error)?;
+            }
+            self.save_state()?;
+            Ok(())
+        });
+        if binding && result.is_err() {
+            self.state = State::Preparing;
+        }
+        result
+    }
+    fn reconcile_bound(&mut self, cancelled: &AtomicBool, timing: Timing<'_>) -> io::Result<()> {
+        timing.measure(Phase::Source, || {
+            self.restore_tasks(cancelled)?;
+            self.import_update(cancelled)?;
+            let active = self.tasks.active;
+            if !self.tasks.round.is_empty() {
+                self.tasks.active = None;
+                self.export(cancelled)?;
+            }
+            for id in self.tasks.round.clone() {
+                self.checkpoint_task(id)?;
+            }
+            self.tasks.active = active;
+            self.export(cancelled)?;
+            Ok(())
+        })
+    }
+}
+
 const ASSETS: [(&str, &str); 3] = [
     ("apt.conf", include_str!("../../sandbox/apt.conf")),
     (
@@ -165,6 +499,163 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_ready_is_bound_and_malformed_states_are_rejected() {
+        let data = crate::store::test_support::TestData::new();
+        fs::create_dir_all(&data.0).unwrap();
+        fs::write(
+            data.0.join("vm.json"),
+            br#"{"ready":true,"digest":"sha256:old"}"#,
+        )
+        .unwrap();
+        assert!(Sandbox::has_bound_source(&data.0).unwrap());
+        assert!(
+            crate::codex::shared_vm::prewarm(&data.0, &AtomicBool::new(false), Timing::quiet())
+                .unwrap()
+                .is_none()
+        );
+        fs::write(
+            data.0.join("vm.json"),
+            br#"{"state":"EmptyReady","digest":"sha256:new"}"#,
+        )
+        .unwrap();
+        assert!(!Sandbox::has_bound_source(&data.0).unwrap());
+        fs::write(
+            data.0.join("vm.json"),
+            br#"{"state":"Preparing","ready":true}"#,
+        )
+        .unwrap();
+        assert_eq!(saved_state(&data.0).unwrap(), State::Preparing);
+        fs::write(
+            data.0.join("vm.json"),
+            br#"{"state":"unknown","ready":true}"#,
+        )
+        .unwrap();
+        assert!(Sandbox::has_bound_source(&data.0).is_err());
+    }
+
+    #[test]
+    #[ignore = "prepares and promotes a disposable empty VM; no model inference or project downloads"]
+    fn early_vm_is_empty_then_binds_accepted_source_and_preserves_bound_allocation() {
+        let data = crate::store::test_support::TestData::new();
+        let project = data.0.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("source.txt"), "unaccepted").unwrap();
+        let root = data.0.join(format!("early-vm-{}", std::process::id()));
+        let flag = AtomicBool::new(false);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+            || -> io::Result<()> {
+                let owner =
+                    crate::codex::shared_vm::prewarm(&root, &flag, Timing::quiet())?.unwrap();
+                assert_eq!(saved_state(&root)?, State::EmptyReady);
+                assert!(!root.join("before").exists() && !root.join("work").exists());
+                {
+                    let mut vm = owner.lock().unwrap();
+                    vm.guest(
+                        &[
+                            "/bin/sh",
+                            "-c",
+                            "test ! -e /workspace/source.txt && test ! -e /tasks/1",
+                        ],
+                        &flag,
+                    )?;
+                    assert!(
+                        vm.export(&flag)
+                            .unwrap_err()
+                            .to_string()
+                            .contains("empty VM")
+                    );
+                    assert!(vm.checkpoint_task(1).is_err());
+                    assert_eq!(
+                        vm.allocation,
+                        resources::Allocation {
+                            cpus: 4,
+                            memory_gib: 4
+                        }
+                    );
+                }
+                assert!(
+                    crate::codex::shared_vm::prepare(
+                        &root,
+                        &[1, 2],
+                        None,
+                        &flag,
+                        |_| {},
+                        Timing::quiet(),
+                    )
+                    .is_err()
+                );
+                assert_eq!(saved_state(&root)?, State::Preparing);
+                fs::write(project.join("source.txt"), "accepted")?;
+                workspace::create(&project, &root)?;
+                fs::create_dir(root.join("tasks.next"))?;
+                assert!(
+                    crate::codex::shared_vm::prepare(
+                        &root,
+                        &[1, 2],
+                        Some(8),
+                        &flag,
+                        |_| {},
+                        Timing::quiet(),
+                    )
+                    .is_err()
+                );
+                assert_eq!(saved_state(&root)?, State::Preparing);
+                assert!(root.join("tasks.json").exists());
+                assert!(!root.join("tasks.bundle").exists());
+                fs::remove_dir(root.join("tasks.next"))?;
+                let bound = crate::codex::shared_vm::prepare(
+                    &root,
+                    &[1, 2],
+                    Some(8),
+                    &flag,
+                    |_| {},
+                    Timing::quiet(),
+                )?;
+                assert!(std::sync::Arc::ptr_eq(&owner, &bound));
+                assert_eq!(saved_state(&root)?, State::BoundReady);
+                {
+                    let vm = bound.lock().unwrap();
+                    assert_eq!(
+                        vm.allocation,
+                        resources::Allocation {
+                            cpus: 4,
+                            memory_gib: 8
+                        }
+                    );
+                    vm.guest(&["/bin/sh", "-c", "test \"$(cat /workspace/source.txt)\" = accepted && test \"$(cat /tasks/1/source.txt)\" = accepted && test \"$(cat /tasks/2/source.txt)\" = accepted"], &flag)?;
+                }
+                assert!(crate::codex::shared_vm::prewarm(&root, &flag, Timing::quiet())?.is_none());
+                let resumed = crate::codex::shared_vm::prepare(
+                    &root,
+                    &[1, 2],
+                    None,
+                    &flag,
+                    |_| {},
+                    Timing::quiet(),
+                )?;
+                assert!(std::sync::Arc::ptr_eq(&bound, &resumed));
+                assert_eq!(resumed.lock().unwrap().allocation.memory_gib, 8);
+                drop(resumed);
+                drop(bound);
+                drop(owner);
+                let resumed = Sandbox::prepare(&root, &flag, |_| {})?;
+                assert_eq!(resumed.allocation.memory_gib, 8);
+                resumed.guest(
+                    &[
+                        "/bin/sh",
+                        "-c",
+                        "test \"$(cat /tasks/1/source.txt)\" = accepted",
+                    ],
+                    &flag,
+                )?;
+                Ok(())
+            },
+        ));
+        delete(&root).unwrap();
+        result.unwrap().unwrap();
+    }
+
+    #[test]
     #[ignore = "migrates a disposable retained v1 VM when its local legacy image is available"]
     fn retained_v1_vm_migrates_stable_helpers_and_keeps_source_and_runtime() {
         let legacy = container()
@@ -193,6 +684,8 @@ mod tests {
                     child: None,
                     rpc: None,
                     started: false,
+                    state: State::BoundReady,
+                    allocation: resources::Allocation::SMALL,
                     tasks: Default::default(),
                     identity: Identity {
                         digest: String::new(),
