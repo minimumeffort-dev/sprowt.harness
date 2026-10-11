@@ -4,6 +4,8 @@
 
 Build one small, coherent change at a time. Start with the user-facing behavior, keep the implementation and docs together, and follow [AGENTS.md](../AGENTS.md).
 
+Read the [pinned coding skills](skills.md#use-them-in-development) for your role before planning, implementation or review. Ponytail uses full mode; load relevant pstack instructions as needed.
+
 ## Local checks
 
 From the harness repository:
@@ -13,6 +15,7 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test --locked
 python3 -m unittest discover -s examples -p 'test_*.py'
+python3 examples/check_skills.py
 ```
 
 The default Rust suite omits live tests marked `ignored`. The Python suite exercises broker and transport behavior without live provider sessions. Passing these suites does not establish live provider or VM compatibility.

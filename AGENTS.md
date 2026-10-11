@@ -37,6 +37,15 @@
 - Keep one canonical page per topic. Link to it instead of duplicating instructions, version pins or limits. Keep the docs index and incoming links current.
 - Before committing, check changed commands, examples, links, keyboard hints and visuals. Report what was verified and any live behavior that was not exercised.
 
+## Use the pinned coding skills
+
+- Read [skills/POLICY.md](skills/POLICY.md) before applying upstream instructions. It adapts their tools, autonomy, reporting and review rules to Sprowt. Keep all compatibility changes separate from `skills/upstream`.
+- For implementation and debugging, read [Ponytail](skills/upstream/ponytail/skills/ponytail/SKILL.md) and use its default **full** mode. Read the [executor instructions](skills/roles/executor.md), then select the relevant pstack workflow from [skills/INDEX.md](skills/INDEX.md).
+- For planning, use the [planner instructions](skills/roles/planner.md) for decomposition, domain design, boundaries and verification. For verification, load pstack's Prove It Works and Test Behavior instructions from the index.
+- Before completing a code change, apply correctness review and [Thermo-Nuclear structural review](skills/upstream/cursor-team-kit/skills/thermo-nuclear-code-quality-review/SKILL.md) together using the [reviewer instructions](skills/roles/reviewer.md). These same standards guide implementation.
+- Keep initial context small. Read mandatory role files, then only the pstack leaves and references needed for the task. Do not load the whole plugin or enable its orchestration, hooks or setup scripts.
+- Treat `skills` as `{{SKILLS_ROOT}}` during repository development. Upstream files must match [skills/manifest.json](skills/manifest.json), including licenses and required local references. Run `python3 examples/check_skills.py` after changing the bundle; follow [the update procedure](docs/skills.md#update-a-pin).
+
 ## Finish each batch
 
 - After implementing and verifying an approved batch, commit its changes and push to `main`. Include documentation changes.

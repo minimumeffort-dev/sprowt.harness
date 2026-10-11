@@ -36,6 +36,7 @@ Start with the [architecture overview](architecture.md), then follow the part yo
 | [Execution and checks](execution.md) | Task isolation, source integration, repeatable checks and recovery |
 | [Worker communication](coordination.md) | Peer questions, answers and saved delivery |
 | [Workers](workers.md) | Provider connections, supported versions and Muse recovery |
+| [Coding skills](skills.md) | Pinned coding instructions, role guidance and compatibility rules |
 | [Sandbox](sandbox.md) | Linux environments, runtimes, packages and network access |
 
 ## Reference and contribution

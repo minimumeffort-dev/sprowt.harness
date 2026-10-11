@@ -53,6 +53,7 @@ sprowt-harness
 | Recover from a failure | [Troubleshooting](docs/troubleshooting.md) |
 | Understand where code and agents run | [Architecture](docs/architecture.md) |
 | Contribute to the harness | [Development](docs/development.md) |
+| Use the pinned coding and review standards | [Coding skills](docs/skills.md) |
 
 ## Scope
 
