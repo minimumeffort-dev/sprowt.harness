@@ -162,7 +162,7 @@ impl App {
     }
 
     pub fn has_timeline(&self) -> bool {
-        self.view == View::Chat
+        self.engine.view == View::Chat
             && !self.plan_details
             && self.current_mod().is_some_and(|m| m.planning.is_some())
     }
@@ -365,7 +365,7 @@ impl App {
             };
             let worker = run
                 .worker
-                .and_then(|id| self.workers.get(&id))
+                .and_then(|id| self.engine.workers.get(&id))
                 .filter(|w| w.task_run_id() == Some(run.id) || task.state == "Connecting worker");
             let state = if task.error.is_some()
                 || matches!(
@@ -826,7 +826,7 @@ impl App {
             if item.key == Key::Plan && item.inspect.is_none() {
                 self.perform_action(Action::Details)?;
             } else if let Some(view) = item.inspect {
-                self.view = view;
+                self.engine.view = view;
             } else if self.timeline.inspector.area.is_empty() {
                 let expanded = self
                     .timeline

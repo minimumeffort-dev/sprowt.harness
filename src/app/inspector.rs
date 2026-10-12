@@ -15,14 +15,14 @@ impl View {
 
 impl App {
     pub(super) fn inspector_key(&mut self, key: KeyEvent) -> rusqlite::Result<bool> {
-        let Some(tab) = self.view.details_tab() else {
+        let Some(tab) = self.engine.view.details_tab() else {
             return Ok(false);
         };
         if key.kind == KeyEventKind::Release {
             return Ok(false);
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('t') {
-            self.view = View::Chat;
+            self.engine.view = View::Chat;
             return Ok(true);
         }
         let next = match key.code {
@@ -38,7 +38,7 @@ impl App {
             _ => None,
         };
         if let Some(next) = next {
-            self.view = [
+            self.engine.view = [
                 View::Tasks(0),
                 View::Checks(0),
                 View::Findings(0),
@@ -49,12 +49,12 @@ impl App {
         }
         if key.code == KeyCode::Char('e')
             && key.modifiers.is_empty()
-            && matches!(self.view, View::Checks(_) | View::Task(_, _))
+            && matches!(self.engine.view, View::Checks(_) | View::Task(_, _))
         {
             self.show_evidence = !self.show_evidence;
             return Ok(true);
         }
-        if let View::Checks(scroll) = self.view {
+        if let View::Checks(scroll) = self.engine.view {
             if key.code == KeyCode::Char('x')
                 && key.modifiers.is_empty()
                 && key.kind == KeyEventKind::Press
@@ -63,7 +63,7 @@ impl App {
                 self.perform_action(Action::FixCheck(id))?;
                 return Ok(true);
             }
-            self.view = match key.code {
+            self.engine.view = match key.code {
                 KeyCode::Esc => View::Chat,
                 KeyCode::Up => View::Checks(scroll.saturating_sub(1)),
                 KeyCode::Down => View::Checks(scroll.saturating_add(1)),
@@ -71,7 +71,7 @@ impl App {
                 KeyCode::PageDown => View::Checks(scroll.saturating_add(self.page_size)),
                 KeyCode::Home => View::Checks(0),
                 KeyCode::End => View::Checks(u16::MAX),
-                _ => self.view,
+                _ => self.engine.view,
             };
             return Ok(true);
         }

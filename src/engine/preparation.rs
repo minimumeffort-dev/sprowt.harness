@@ -38,7 +38,7 @@ struct Entry {
     idle_since: Option<Instant>,
 }
 
-pub(super) fn snapshot(root: &Path, project: &Path, plan: &str) -> io::Result<()> {
+pub(crate) fn snapshot(root: &Path, project: &Path, plan: &str) -> io::Result<()> {
     let marker = root.join("snapshot-plan");
     if root.join("work").exists() {
         if !marker.exists()
@@ -62,7 +62,7 @@ pub(super) fn snapshot(root: &Path, project: &Path, plan: &str) -> io::Result<()
     std::fs::write(root.join("snapshot-ready"), b"ready")
 }
 
-pub(super) struct Preparations {
+pub(crate) struct Preparations {
     entries: BTreeMap<i64, Entry>,
     backend: Backend,
 }
@@ -272,7 +272,7 @@ mod tests {
             Ok(None)
         }));
         let mut app =
-            super::super::App::load_with_preparations(project.clone(), false, store, preparations)
+            super::super::Engine::load_with_preparations(project.clone(), store, preparations)
                 .unwrap();
         let root = app
             .preparations

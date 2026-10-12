@@ -831,7 +831,7 @@ fn draw_close_mod(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
 }
 
 fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
-    let Some(review) = &app.review else {
+    let Some(review) = &app.engine.review else {
         return;
     };
     let mut keys = vec![("↑↓", "scroll"), (page_key(), "page")];
@@ -1918,13 +1918,7 @@ fn conversation_blocks<'a>(
                     plan: true,
                 });
             }
-            if !history
-                && (message.role == "codex"
-                    || message.role.starts_with("codex:")
-                    || message.role.starts_with("muse:")
-                    || message.role == "reviewer"
-                    || saved.is_some() && message.role == "planner")
-            {
+            if !history && !code_mod.shows_message(message) {
                 return None;
             }
             let user = message.role == "user";

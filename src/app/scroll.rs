@@ -30,16 +30,16 @@ impl Scroll {
 
 impl App {
     pub(super) fn mouse_scroll(&mut self, mouse: MouseEvent) -> Result<()> {
-        if self.scroll.view != Some(self.view) {
+        if self.scroll.view != Some(self.engine.view) {
             return Ok(());
         }
         let position = Position::new(mouse.column, mouse.row);
         if mouse.kind == MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left)
-            && let Some(control) = self.controls.at(self.view, position)
+            && let Some(control) = self.controls.at(self.engine.view, position)
         {
             return self.activate_control(control);
         }
-        if self.view == View::Chat && self.has_timeline() {
+        if self.engine.view == View::Chat && self.has_timeline() {
             if mouse.kind == MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left) {
                 if self.timeline.jump_area.contains(position) {
                     self.timeline.jump();
@@ -117,7 +117,7 @@ impl App {
                 offset.saturating_add(3)
             }
         };
-        self.view = match self.view {
+        self.engine.view = match self.engine.view {
             View::Chat | View::EditQueue(_) => {
                 self.history_offset = if up {
                     self.history_offset.saturating_add(3)
@@ -125,7 +125,7 @@ impl App {
                     self.history_offset.saturating_sub(3)
                 };
                 self.focus_plan = false;
-                self.view
+                self.engine.view
             }
             View::Actions(selected) => return self.actions_key(key, selected),
             View::Mods(index) => return self.picker_key(key, index),
@@ -150,9 +150,9 @@ impl App {
             | View::ConfirmRepository(_)
             | View::Repository(_) => {
                 self.scroll.offset = shift(self.scroll.offset);
-                self.view
+                self.engine.view
             }
-            View::NewMod => self.view,
+            View::NewMod => self.engine.view,
         };
         Ok(())
     }

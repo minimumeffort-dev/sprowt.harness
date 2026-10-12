@@ -3,7 +3,9 @@ mod app;
 mod checks;
 mod codex;
 mod conflict;
+mod desktop;
 mod diagnostics;
+mod engine;
 mod environment;
 mod execution;
 mod git_mod;
@@ -57,12 +59,23 @@ struct Cli {
 enum Command {
     /// Configure host-only Jev routing from .env.local.
     Setup,
+    /// Run the native app's versioned JSONL transport over stdin/stdout.
+    Desktop {
+        #[arg(long)]
+        project: std::path::PathBuf,
+        #[arg(long)]
+        data_dir: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> io::Result<()> {
     let cli = Cli::parse();
-    if matches!(cli.command, Some(Command::Setup)) {
-        return router::setup();
+    match cli.command {
+        Some(Command::Setup) => return router::setup(),
+        Some(Command::Desktop { project, data_dir }) => {
+            return desktop::run(project, data_dir, cli.closed_worktree_days);
+        }
+        None => {}
     }
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         return Err(io::Error::other(

@@ -1,293 +1,249 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    io,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
-
+pub use crate::engine::{Action, ActionDock, ActionItem, Tone, View};
+use crate::{engine::Engine, git_mod, plan::Role, sprout, store::source_id, ui, worker::Status};
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
 };
 use ratatui_textarea::TextArea;
 use rusqlite::Result;
-use tachyonfx::Effect;
-
-use crate::{
-    git_mod::{self, GitMod, Job},
-    plan::Role,
-    sprout,
-    store::{CodeMod, Store, WorkerRecord, source_id},
-    tools::{Context, Dispatcher, Request},
-    ui,
-    worker::{Status, Worker},
-    workspace::{self, Review},
+use std::{
+    io,
+    ops::{Deref, DerefMut},
+    path::PathBuf,
+    time::{Duration, Instant},
 };
-
+use tachyonfx::Effect;
 mod actions;
 pub mod controls;
-mod git_errors;
 mod inspector;
-mod preparation;
 mod scroll;
-mod state;
 mod tasks;
 pub mod timeline;
-pub use actions::{Action, ActionDock, ActionItem, Tone};
 pub use scroll::Scroll;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum View {
-    Chat,
-    Actions(Action),
-    Failure(u16),
-    Sync(u16),
-    Mods(usize),
-    DeleteMod(usize),
-    CloseMod(usize),
-    NewMod,
-    Queue(usize),
-    EditQueue(usize),
-    Review(u16),
-    Findings(u16),
-    Checks(u16),
-    History(u16),
-    Tasks(usize),
-    Task(i64, u16),
-    TaskHistory(i64, u16),
-    Publish,
-    ProjectSetup(bool, u16),
-    Repository(bool),
-    ConfirmRepository(bool),
-    Network(i64, u16),
-}
-
 pub struct App {
-    pub network_requests: Vec<crate::network::Access>,
-    pub muse: bool,
-    pub project: PathBuf,
-    pub input: TextArea<'static>,
-    pub mods: Vec<CodeMod>,
-    pub view: View,
-    pub scroll: Scroll,
-    action_origin: Option<View>,
-    history_origin: Option<View>,
+    pub(crate) engine: Engine,
+    pub history_origin: Option<View>,
     pub history_offset: u16,
     pub page_size: u16,
     pub plan_details: bool,
     pub show_evidence: bool,
     pub focus_plan: bool,
+    pub queue_selection: std::collections::BTreeSet<i64>,
+    pub show_closed: bool,
+    pub input: TextArea<'static>,
+    pub scroll: Scroll,
     pub timeline: timeline::Timeline,
     pub controls: controls::Controls,
-    pub review: Option<Review>,
-    pub publication: Option<crate::publication::Draft>,
-    publish_after_review: bool,
-    pub queue_selection: BTreeSet<i64>,
-    pub show_closed: bool,
-    pub setup_files: Vec<String>,
-    setup_root: Option<PathBuf>,
-    workers: BTreeMap<i64, Worker>,
-    preparations: preparation::Preparations,
-    slot_waits: BTreeMap<(i64, String), Instant>,
-    pub steer_target: Option<i64>,
-    auto_plans: BTreeSet<i64>,
-    auto_runs: BTreeSet<i64>,
-    auto_reviews: BTreeSet<i64>,
-    executing_mods: BTreeSet<i64>,
-    git_jobs: BTreeMap<i64, Job>,
-    git_errors: git_errors::Errors,
-    project_job: Option<Job>,
-    project_check: Option<Instant>,
-    project_error: Option<String>,
-    project_sync_root: PathBuf,
-    git_states: BTreeMap<i64, GitMod>,
-    targets: BTreeMap<i64, crate::mod_sync::Target>,
-    target_checks: BTreeMap<i64, Instant>,
-    target_errors: BTreeMap<i64, String>,
-    update_errors: BTreeSet<i64>,
-    notice: Option<String>,
-    store: Store,
-    project_id: i64,
-    active: Option<usize>,
     welcome: Effect,
     motion: bool,
     happy_since: Option<Instant>,
     quit: bool,
 }
 
+impl Deref for App {
+    type Target = Engine;
+    fn deref(&self) -> &Engine {
+        &self.engine
+    }
+}
+impl DerefMut for App {
+    fn deref_mut(&mut self) -> &mut Engine {
+        &mut self.engine
+    }
+}
+
 impl App {
     pub fn new(project: PathBuf, motion: bool) -> io::Result<Self> {
-        let muse = crate::agents::detect()?;
-        let project = project.canonicalize()?;
-        let project = git_mod::project_root(&project).unwrap_or(project);
-        let mut app = Self::load_with_preparations(
-            project,
-            motion,
-            Store::local()?,
-            preparation::Preparations::production(),
-        )
-        .map_err(io::Error::other)?;
-        app.muse = muse;
-        Ok(app)
+        Ok(Self::from_engine(Engine::new(project, None)?, motion))
     }
-
     #[cfg(test)]
-    fn load(project: PathBuf, motion: bool, store: Store) -> Result<Self> {
-        Self::load_with_preparations(project, motion, store, preparation::Preparations::fake())
+    fn load(project: PathBuf, motion: bool, store: crate::store::Store) -> Result<Self> {
+        Ok(Self::from_engine(Engine::load(project, store)?, motion))
     }
-
-    fn load_with_preparations(
-        project: PathBuf,
-        motion: bool,
-        store: Store,
-        preparations: preparation::Preparations,
-    ) -> Result<Self> {
-        let mut state = store.load_project(&project)?;
-        let git_states = state
-            .mods
-            .iter()
-            .filter_map(|m| {
-                m.git_root
-                    .as_ref()
-                    .and_then(|root| git_mod::load(root).ok())
-                    .map(|state| (m.id, state))
-            })
-            .collect::<BTreeMap<_, _>>();
-        for code_mod in &mut state.mods {
-            if let Some(review) = &code_mod.agent_review {
-                store.review_status(code_mod.id, &review.source, "paused")?;
-                code_mod.agent_review = store.review_state(code_mod.id)?;
-            }
-            if let Some(git) = git_states.get(&code_mod.id)
-                && git.published()
-                && let Some(url) = &git.pr
-            {
-                if code_mod
-                    .execution
-                    .as_ref()
-                    .is_some_and(|e| e.status == "applied")
-                {
-                    store.execution_status(code_mod.id, "review")?;
-                    code_mod.execution = store.execution(code_mod.id)?;
-                }
-                let item_id = format!("pr:{}", code_mod.id);
-                if !code_mod
-                    .messages
-                    .iter()
-                    .any(|message| message.item_id.as_deref() == Some(&item_id))
-                {
-                    let message = crate::store::Message {
-                        source: None,
-                        task: None,
-                        item_id: Some(item_id),
-                        role: "harness".into(),
-                        body: format!("PR ready · {url}"),
-                        model: None,
-                        effort: None,
-                    };
-                    store.save_message(code_mod.id, &message)?;
-                    code_mod.messages.push(message);
-                }
-            }
-        }
-        let active = state
-            .mods
-            .iter()
-            .position(|code_mod| Some(code_mod.id) == state.active_mod_id && !code_mod.closed)
-            .or_else(|| state.mods.iter().position(|m| !m.closed));
-        if let Some(index) = active {
-            store.select_mod(state.id, state.mods[index].id)?;
-        }
+    fn from_engine(engine: Engine, motion: bool) -> Self {
         let mut app = Self {
-            network_requests: Vec::new(),
-            muse: false,
-            project_sync_root: store
-                .project_path(state.id)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?,
-            project,
-            input: ui::input(),
-            mods: state.mods,
-            view: if active.is_some() {
-                View::Chat
-            } else {
-                View::NewMod
-            },
-            action_origin: None,
             history_origin: None,
-            scroll: Scroll::default(),
             history_offset: 0,
             page_size: 1,
             plan_details: false,
             show_evidence: false,
             focus_plan: false,
+            queue_selection: std::collections::BTreeSet::new(),
+            show_closed: false,
+            engine,
+            input: ui::input(),
+            scroll: Scroll::default(),
             timeline: timeline::Timeline::default(),
             controls: controls::Controls::default(),
-            review: None,
-            publication: None,
-            publish_after_review: false,
-            queue_selection: BTreeSet::new(),
-            show_closed: false,
-            setup_files: Vec::new(),
-            setup_root: None,
-            workers: BTreeMap::new(),
-            preparations,
-            slot_waits: BTreeMap::new(),
-            steer_target: None,
-            auto_plans: BTreeSet::new(),
-            auto_runs: BTreeSet::new(),
-            auto_reviews: BTreeSet::new(),
-            executing_mods: BTreeSet::new(),
-            git_jobs: BTreeMap::new(),
-            git_errors: git_errors::Errors::default(),
-            project_job: None,
-            project_check: None,
-            project_error: None,
-            git_states,
-            targets: BTreeMap::new(),
-            target_checks: BTreeMap::new(),
-            target_errors: BTreeMap::new(),
-            update_errors: BTreeSet::new(),
-            notice: None,
-            store,
-            project_id: state.id,
-            active,
             welcome: ui::welcome_effect(motion),
             motion,
             happy_since: None,
             quit: false,
         };
         app.restore_input();
-        Ok(app)
+        app
     }
-
-    pub fn prune_closed(&mut self, days: u32) -> Result<()> {
-        let expired = self.store.expired_worktrees(self.project_id, days)?;
-        for (id, root) in expired {
-            if self.git_jobs.contains_key(&id)
-                || git_mod::load(&root).map_or(true, |s| s.phase == "pruned")
-            {
-                continue;
-            }
-            let Some(code_mod) = self.mods.iter().find(|m| m.id == id) else {
-                continue;
-            };
-            let context = Context::harness(&self.project, code_mod);
-            self.git_jobs.insert(
-                id,
-                Job::start("pruning closed worktree", move |cancelled| {
-                    Dispatcher::new(&context, None, cancelled)
-                        .execute(Request::PruneMod, |_| {})?;
-                    Ok(git_mod::Result::Pruned)
-                }),
-            );
+    fn reset_editor(&mut self) {
+        self.input = match self.engine.view {
+            View::NewMod => ui::name_input(),
+            View::Repository(_) | View::ConfirmRepository(_) => ui::repository_input(),
+            View::EditQueue(_) => ui::edit_input(),
+            _ => ui::input(),
+        };
+        self.input.insert_str(&self.engine.composer);
+    }
+    fn sync_editor(&mut self, before: u64, previous_view: View) {
+        let changed_editor = previous_view != self.engine.view
+            && (matches!(
+                self.engine.view,
+                View::NewMod | View::Repository(_) | View::EditQueue(_)
+            ) || self.engine.view == View::Chat
+                && matches!(
+                    previous_view,
+                    View::NewMod
+                        | View::Repository(_)
+                        | View::ConfirmRepository(_)
+                        | View::EditQueue(_)
+                ));
+        if changed_editor || self.input.lines().join("\n") != self.engine.composer {
+            self.reset_editor();
         }
-        Ok(())
+        if before != self.engine.celebrations {
+            self.happy_since = self.motion.then(Instant::now);
+        }
+    }
+    fn with_engine<T>(&mut self, operation: impl FnOnce(&mut Engine) -> T) -> T {
+        self.engine.composer = self.input.lines().join("\n");
+        let before = self.engine.celebrations;
+        let previous_view = self.engine.view;
+        let context = self.composer_context();
+        let result = operation(&mut self.engine);
+        if context != self.composer_context() {
+            self.history_offset = 0;
+            self.plan_details = false;
+            self.focus_plan = false;
+        }
+        let queued = self
+            .current_mod()
+            .map(|m| {
+                m.queue
+                    .iter()
+                    .map(|q| q.id)
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        self.queue_selection.retain(|id| queued.contains(id));
+        self.sync_editor(before, previous_view);
+        result
+    }
+    fn restore_input(&mut self) {
+        self.engine.restore_input();
+        self.reset_editor();
+    }
+    fn create_mod(&mut self) -> Result<()> {
+        self.with_engine(Engine::create_mod)
+    }
+    fn submit(&mut self) -> Result<()> {
+        self.with_engine(Engine::submit)
+    }
+    fn save_draft(&mut self) -> Result<()> {
+        self.with_engine(Engine::save_draft)
+    }
+    #[cfg(test)]
+    fn poll_git_jobs(&mut self) -> Result<()> {
+        self.with_engine(Engine::poll_git_jobs)
+    }
+    fn poll_workers(&mut self) -> Result<()> {
+        self.with_engine(Engine::poll_workers)
+    }
+    fn perform_action(&mut self, action: Action) -> Result<()> {
+        if !self
+            .action_dock()
+            .actions
+            .iter()
+            .any(|item| item.action == action)
+        {
+            return Ok(());
+        }
+        match action {
+            Action::Details => {
+                self.plan_details = !self.plan_details;
+                self.focus_plan = true;
+                Ok(())
+            }
+            Action::Mods => {
+                self.show_closed = self.current_mod().is_some_and(|m| m.closed);
+                self.engine.view = View::Mods(
+                    self.picker_indices()
+                        .iter()
+                        .position(|i| Some(*i) == self.engine.active)
+                        .unwrap_or(0),
+                );
+                Ok(())
+            }
+            Action::History => {
+                self.history_origin = None;
+                self.show_evidence = false;
+                self.with_engine(|engine| engine.perform_action(action))
+            }
+            _ => self.with_engine(|engine| engine.perform_action(action)),
+        }
+    }
+    fn composer_context(&self) -> Option<(i64, String)> {
+        self.current_mod().map(|m| {
+            (
+                m.id,
+                m.planning
+                    .as_ref()
+                    .map(|p| p.source.clone())
+                    .unwrap_or_default(),
+            )
+        })
+    }
+    pub fn action_dock(&self) -> ActionDock {
+        let mut dock = self.engine.action_dock();
+        if self.plan_details
+            && let Some(item) = dock
+                .actions
+                .iter_mut()
+                .find(|a| a.action == Action::Details)
+        {
+            item.label = "Hide plan details".into();
+        }
+        dock
+    }
+    pub fn picker_indices(&self) -> Vec<usize> {
+        self.mods
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.closed == self.show_closed)
+            .map(|(i, _)| i)
+            .collect()
     }
 
-    pub fn current_mod(&self) -> Option<&CodeMod> {
-        self.active.map(|index| &self.mods[index])
+    fn start_repository(&mut self, request: git_mod::RepositoryRequest) {
+        self.with_engine(|engine| engine.start_repository(request));
     }
-
+    fn adopt_mod(&mut self) -> Result<()> {
+        self.with_engine(Engine::adopt_mod)
+    }
+    fn finish_mod(&mut self, index: usize, discard: bool, delete: bool) -> Result<()> {
+        self.with_engine(|engine| engine.finish_mod(index, discard, delete))
+    }
+    fn delete_mod(&mut self, index: usize) -> Result<()> {
+        self.finish_mod(index, true, true)
+    }
+    fn reopen_mod(&mut self, index: usize) {
+        self.with_engine(|engine| engine.reopen_mod(index));
+    }
+    fn open_publication(&mut self) -> Result<()> {
+        self.with_engine(Engine::open_publication)
+    }
+    #[cfg(test)]
+    fn open_review(&mut self) -> Result<()> {
+        self.with_engine(Engine::open_review)
+    }
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         let started = Instant::now();
         let mut last_frame = started;
@@ -327,9 +283,9 @@ impl App {
 
             let timeout = if self.welcome.running() {
                 Duration::from_millis(33)
-            } else if self.workers.is_empty()
-                && self.git_jobs.is_empty()
-                && self.project_job.is_none()
+            } else if self.engine.workers.is_empty()
+                && self.engine.git_jobs.is_empty()
+                && self.engine.project_job.is_none()
             {
                 if self.motion {
                     next_pose.min(Duration::from_secs(1))
@@ -350,7 +306,7 @@ impl App {
     fn handle(&mut self, event: Event) -> Result<()> {
         match event {
             Event::Mouse(mouse) => self.mouse_scroll(mouse)?,
-            Event::Paste(text) => match self.view {
+            Event::Paste(text) => match self.engine.view {
                 View::Chat if self.read_only() => {}
                 View::Chat | View::EditQueue(_) => {
                     self.timeline.focus = timeline::Focus::Composer;
@@ -389,7 +345,7 @@ impl App {
                 if ctrl
                     && key.code == KeyCode::Char('u')
                     && matches!(
-                        self.view,
+                        self.engine.view,
                         View::Chat | View::NewMod | View::Mods(_) | View::Sync(_)
                     )
                 {
@@ -399,11 +355,14 @@ impl App {
                 if self.inspector_key(key)? {
                     return Ok(());
                 }
-                match self.view {
+                match self.engine.view {
                     View::Checks(_) => {}
                     View::Actions(selected) => self.actions_key(key, selected)?,
                     View::Failure(scroll) | View::Sync(scroll) => match key.code {
-                        KeyCode::Esc => self.view = self.action_origin.take().unwrap_or(View::Chat),
+                        KeyCode::Esc => {
+                            self.engine.view =
+                                self.engine.action_origin.take().unwrap_or(View::Chat)
+                        }
                         KeyCode::Down | KeyCode::Up | KeyCode::PageDown | KeyCode::PageUp => {
                             let step = if matches!(key.code, KeyCode::PageDown | KeyCode::PageUp) {
                                 self.page_size
@@ -415,7 +374,7 @@ impl App {
                             } else {
                                 scroll.saturating_sub(step)
                             };
-                            self.view = if matches!(self.view, View::Sync(_)) {
+                            self.engine.view = if matches!(self.engine.view, View::Sync(_)) {
                                 View::Sync(next)
                             } else {
                                 View::Failure(next)
@@ -424,24 +383,18 @@ impl App {
                         _ => {}
                     },
                     View::Network(id, scroll) => match key.code {
-                        KeyCode::Down => self.view = View::Network(id, scroll.saturating_add(1)),
-                        KeyCode::Up => self.view = View::Network(id, scroll.saturating_sub(1)),
-                        KeyCode::Esc => self.view = View::Chat,
+                        KeyCode::Down => {
+                            self.engine.view = View::Network(id, scroll.saturating_add(1))
+                        }
+                        KeyCode::Up => {
+                            self.engine.view = View::Network(id, scroll.saturating_sub(1))
+                        }
+                        KeyCode::Esc => self.engine.view = View::Chat,
                         KeyCode::Char('a' | 'd')
                             if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
                         {
-                            if let Some(mod_id) = self.current_mod().map(|m| m.id) {
-                                self.store.decide_network(
-                                    mod_id,
-                                    id,
-                                    key.code == KeyCode::Char('a'),
-                                )?;
-                                if key.code == KeyCode::Char('a') {
-                                    self.set_paused(self.active.unwrap(), false)?;
-                                    self.executing_mods.insert(mod_id);
-                                }
-                                self.refresh_network_requests()?;
-                            }
+                            self.engine
+                                .decide_network(id, key.code == KeyCode::Char('a'))?;
                         }
                         _ => {}
                     },
@@ -449,31 +402,33 @@ impl App {
                     View::Mods(index) => self.picker_key(key, index)?,
                     View::DeleteMod(index) => match key.code {
                         KeyCode::Esc => {
-                            self.view = self.action_origin.take().unwrap_or_else(|| {
-                                View::Mods(
-                                    self.picker_indices()
-                                        .iter()
-                                        .position(|i| *i == index)
-                                        .unwrap_or(0),
-                                )
-                            });
+                            self.engine.view =
+                                self.engine.action_origin.take().unwrap_or_else(|| {
+                                    View::Mods(
+                                        self.picker_indices()
+                                            .iter()
+                                            .position(|i| *i == index)
+                                            .unwrap_or(0),
+                                    )
+                                });
                         }
                         KeyCode::Enter
                             if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
                         {
-                            self.action_origin = None;
+                            self.engine.action_origin = None;
                             self.delete_mod(index)?;
                         }
                         _ => {}
                     },
                     View::CloseMod(index) => match key.code {
                         KeyCode::Esc => {
-                            self.view = self.action_origin.take().unwrap_or(View::Mods(0))
+                            self.engine.view =
+                                self.engine.action_origin.take().unwrap_or(View::Mods(0))
                         }
                         KeyCode::Enter
                             if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
                         {
-                            self.action_origin = None;
+                            self.engine.action_origin = None;
                             self.finish_mod(index, false, false)?
                         }
                         _ => {}
@@ -482,23 +437,23 @@ impl App {
                     View::EditQueue(index) => self.edit_key(key, index)?,
                     View::Review(scroll) => match key.code {
                         KeyCode::Esc => {
-                            self.view = View::Chat;
-                            self.review = None;
-                            self.publish_after_review = false;
+                            self.engine.view = View::Chat;
+                            self.engine.review = None;
+                            self.engine.publish_after_review = false;
                         }
-                        KeyCode::Down => self.view = View::Review(scroll.saturating_add(1)),
-                        KeyCode::Up => self.view = View::Review(scroll.saturating_sub(1)),
+                        KeyCode::Down => self.engine.view = View::Review(scroll.saturating_add(1)),
+                        KeyCode::Up => self.engine.view = View::Review(scroll.saturating_sub(1)),
                         KeyCode::PageDown => {
-                            self.view = View::Review(scroll.saturating_add(self.page_size))
+                            self.engine.view = View::Review(scroll.saturating_add(self.page_size))
                         }
                         KeyCode::PageUp => {
-                            self.view = View::Review(scroll.saturating_sub(self.page_size))
+                            self.engine.view = View::Review(scroll.saturating_sub(self.page_size))
                         }
                         KeyCode::Char('r') if key.modifiers.is_empty() && self.can_review() => {
-                            if let Some(index) = self.active {
+                            if let Some(index) = self.engine.active {
                                 self.begin_agent_review(index)?;
                             }
-                            self.view = View::Chat;
+                            self.engine.view = View::Chat;
                         }
                         KeyCode::Char('p') if key.modifiers.is_empty() && self.can_publish() => {
                             self.open_publication()?
@@ -511,33 +466,33 @@ impl App {
                     View::TaskHistory(id, scroll) => self.task_key(key, id, scroll, true)?,
                     View::History(scroll) => match key.code {
                         KeyCode::Esc => {
-                            self.view = self.history_origin.take().unwrap_or(View::Chat)
+                            self.engine.view = self.history_origin.take().unwrap_or(View::Chat)
                         }
-                        KeyCode::Char('t') if ctrl => self.view = View::Chat,
-                        KeyCode::Down => self.view = View::History(scroll.saturating_add(1)),
-                        KeyCode::Up => self.view = View::History(scroll.saturating_sub(1)),
+                        KeyCode::Char('t') if ctrl => self.engine.view = View::Chat,
+                        KeyCode::Down => self.engine.view = View::History(scroll.saturating_add(1)),
+                        KeyCode::Up => self.engine.view = View::History(scroll.saturating_sub(1)),
                         KeyCode::PageDown => {
-                            self.view = View::History(scroll.saturating_add(self.page_size))
+                            self.engine.view = View::History(scroll.saturating_add(self.page_size))
                         }
                         KeyCode::PageUp => {
-                            self.view = View::History(scroll.saturating_sub(self.page_size))
+                            self.engine.view = View::History(scroll.saturating_sub(self.page_size))
                         }
                         _ => {}
                     },
                     View::Publish => match key.code {
-                        KeyCode::Esc => self.view = View::Review(0),
+                        KeyCode::Esc => self.engine.view = View::Review(0),
                         KeyCode::Enter
                             if key.modifiers.is_empty()
                                 && key.kind == KeyEventKind::Press
                                 && self.can_publish() =>
                         {
-                            self.start_publication(self.active.unwrap());
+                            self.engine.start_publication(self.engine.active.unwrap());
                         }
                         _ => {}
                     },
                     View::ProjectSetup(saved, scroll) => match key.code {
                         KeyCode::Esc => {
-                            if let Some(root) = self.setup_root.take() {
+                            if let Some(root) = self.engine.setup_root.take() {
                                 let _ = std::fs::remove_dir_all(root);
                             }
                             let closing = self
@@ -550,22 +505,23 @@ impl App {
                                 {
                                     let _ = std::fs::remove_file(e.workspace.join("close-request"));
                                 }
-                                self.view = View::Chat;
+                                self.engine.view = View::Chat;
                             } else {
-                                self.view = if saved { View::Review(0) } else { View::NewMod };
+                                self.engine.view =
+                                    if saved { View::Review(0) } else { View::NewMod };
                             }
                         }
                         KeyCode::Up => {
-                            self.view = View::ProjectSetup(saved, scroll.saturating_sub(1))
+                            self.engine.view = View::ProjectSetup(saved, scroll.saturating_sub(1))
                         }
                         KeyCode::Down => {
-                            self.view = View::ProjectSetup(saved, scroll.saturating_add(1))
+                            self.engine.view = View::ProjectSetup(saved, scroll.saturating_add(1))
                         }
                         KeyCode::PageUp => {
-                            self.view = View::ProjectSetup(saved, scroll.saturating_sub(10))
+                            self.engine.view = View::ProjectSetup(saved, scroll.saturating_sub(10))
                         }
                         KeyCode::PageDown => {
-                            self.view = View::ProjectSetup(saved, scroll.saturating_add(10))
+                            self.engine.view = View::ProjectSetup(saved, scroll.saturating_add(10))
                         }
                         KeyCode::Enter
                             if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
@@ -580,16 +536,16 @@ impl App {
                     },
                     View::Repository(create) => match key.code {
                         KeyCode::Esc => {
-                            self.view = View::Review(0);
+                            self.engine.view = View::Review(0);
                             self.restore_input();
                         }
-                        KeyCode::Tab => self.view = View::Repository(!create),
+                        KeyCode::Tab => self.engine.view = View::Repository(!create),
                         KeyCode::Enter if key.modifiers.is_empty() => {
                             if git_mod::valid_slug(self.input.lines().join("\n").trim()) {
-                                self.view = View::ConfirmRepository(create);
-                                self.notice = None;
+                                self.engine.view = View::ConfirmRepository(create);
+                                self.engine.notice = None;
                             } else {
-                                self.notice = Some("Use owner/repository.".into());
+                                self.engine.notice = Some("Use owner/repository.".into());
                             }
                         }
                         _ => {
@@ -597,7 +553,7 @@ impl App {
                         }
                     },
                     View::ConfirmRepository(create) => match key.code {
-                        KeyCode::Esc => self.view = View::Repository(create),
+                        KeyCode::Esc => self.engine.view = View::Repository(create),
                         KeyCode::Enter
                             if key.modifiers.is_empty() && key.kind == KeyEventKind::Press =>
                         {
@@ -610,10 +566,10 @@ impl App {
                     },
                     View::NewMod => match key.code {
                         KeyCode::Char('g') if ctrl => self.open_actions(),
-                        KeyCode::Char('p') if ctrl => self.view = View::Mods(0),
+                        KeyCode::Char('p') if ctrl => self.engine.view = View::Mods(0),
                         KeyCode::Esc => {
-                            if self.active.is_some() {
-                                self.view = View::Chat;
+                            if self.engine.active.is_some() {
+                                self.engine.view = View::Chat;
                                 self.restore_input();
                             } else {
                                 self.quit = true;
@@ -629,7 +585,7 @@ impl App {
             }
             _ => {}
         }
-        if matches!(self.view, View::Chat) && !self.read_only() {
+        if matches!(self.engine.view, View::Chat) && !self.read_only() {
             self.save_draft()?;
         }
         Ok(())
@@ -668,14 +624,14 @@ impl App {
         let selected = indices.get(index).copied();
         let count = indices.len();
         match key.code {
-            KeyCode::Up => self.view = View::Mods(index.saturating_sub(1)),
-            KeyCode::Down => self.view = View::Mods((index + 1).min(count)),
+            KeyCode::Up => self.engine.view = View::Mods(index.saturating_sub(1)),
+            KeyCode::Down => self.engine.view = View::Mods((index + 1).min(count)),
             KeyCode::Tab => {
                 self.show_closed = !self.show_closed;
-                self.view = View::Mods(0);
+                self.engine.view = View::Mods(0);
             }
             KeyCode::Esc => {
-                self.view = if self.active.is_some() {
+                self.engine.view = if self.engine.active.is_some() {
                     View::Chat
                 } else {
                     View::NewMod
@@ -683,78 +639,61 @@ impl App {
                 self.restore_input();
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.view = View::Chat
+                self.engine.view = View::Chat
             }
             KeyCode::Char('d') if key.modifiers.is_empty() && selected.is_some() => {
-                self.view = View::DeleteMod(selected.unwrap());
+                self.engine.view = View::DeleteMod(selected.unwrap());
             }
             KeyCode::Char('c')
                 if key.modifiers.is_empty() && !self.show_closed && selected.is_some() =>
             {
-                self.view = View::CloseMod(selected.unwrap());
+                self.engine.view = View::CloseMod(selected.unwrap());
             }
             KeyCode::Char('r')
-                if key.modifiers.is_empty() && selected.is_some_and(|i| self.mods[i].closed) =>
+                if key.modifiers.is_empty()
+                    && selected.is_some_and(|i| self.engine.mods[i].closed) =>
             {
                 self.reopen_mod(selected.unwrap());
             }
             KeyCode::Enter if index == count => {
-                self.view = View::NewMod;
+                self.engine.view = View::NewMod;
                 self.input = ui::name_input();
             }
             KeyCode::Enter => {
                 let index = selected.unwrap();
-                self.store
-                    .select_mod(self.project_id, self.mods[index].id)?;
-                self.active = Some(index);
-                self.notice = None;
+                self.with_engine(|engine| engine.select_mod(index))?;
                 self.history_offset = 0;
                 self.plan_details = false;
                 self.focus_plan = false;
-                self.view = View::Chat;
-                self.restore_input();
             }
             _ => {}
         }
         Ok(())
     }
 
-    fn restore_input(&mut self) {
-        self.input = if matches!(self.view, View::NewMod) {
-            ui::name_input()
-        } else {
-            ui::input()
-        };
-        if matches!(self.view, View::Chat | View::Queue(_) | View::Review(_))
-            && let Some(code_mod) = self.current_mod()
-        {
-            let draft = code_mod.draft.clone();
-            self.input.insert_str(draft);
-        }
-    }
-
     fn queue_key(&mut self, key: KeyEvent, index: usize) -> Result<()> {
         if key.code == KeyCode::Esc
             || (key.code == KeyCode::Char('q') && key.modifiers.contains(KeyModifiers::CONTROL))
         {
-            self.view = View::Chat;
+            self.engine.view = View::Chat;
             self.queue_selection.clear();
-            self.steer_target = None;
+            self.engine.steer_target = None;
             return Ok(());
         }
-        let Some(active) = self.active else {
+        let Some(active) = self.engine.active else {
             return Ok(());
         };
-        let mod_id = self.mods[active].id;
-        let protected = if let Some(message) = self.mods[active].queue.get(index) {
-            self.store
+        let mod_id = self.engine.mods[active].id;
+        let protected = if let Some(message) = self.engine.mods[active].queue.get(index) {
+            self.engine
+                .store
                 .is_pending(mod_id, &source_id(message.id, false))?
         } else {
             false
         };
         if key.code == KeyCode::Char('t') && key.modifiers.is_empty() {
             let workers = self.running_workers();
-            self.steer_target = self
+            self.engine.steer_target = self
                 .steer_target
                 .and_then(|id| workers.iter().position(|w| *w == id))
                 .map_or_else(|| workers.first().copied(), |i| workers.get(i + 1).copied());
@@ -762,7 +701,7 @@ impl App {
         }
         if key.code == KeyCode::Char('s') && key.modifiers.is_empty() {
             let ids = if self.queue_selection.is_empty() {
-                self.mods[active]
+                self.engine.mods[active]
                     .queue
                     .get(index)
                     .map(|message| vec![message.id])
@@ -774,41 +713,34 @@ impl App {
                 return Ok(());
             }
             for id in &ids {
-                if self.store.is_pending(mod_id, &source_id(*id, false))? {
+                if self
+                    .engine
+                    .store
+                    .is_pending(mod_id, &source_id(*id, false))?
+                {
                     return Ok(());
                 }
             }
-            let running = self.running_workers();
-            let targets = if let Some(id) = self.steer_target {
-                if !running.contains(&id) {
-                    self.notice =
-                        Some("That worker has stopped. Select a running worker or all.".into());
-                    return Ok(());
-                }
-                vec![id]
-            } else {
-                running
-            };
-            let messages = self.store.steer_to(mod_id, &ids, &targets)?;
-            self.steer_target = None;
-            self.mods[active]
-                .queue
-                .retain(|message| !ids.contains(&message.id));
-            self.mods[active].steering.extend(messages);
+            let target = self.engine.steer_target;
+            if let Err(error) = self.engine.steer_queued(&ids, target) {
+                self.engine.notice = Some(error.to_string());
+                return Ok(());
+            }
+            self.engine.steer_target = None;
             self.queue_selection.clear();
             self.clamp_queue(index);
             return Ok(());
         }
-        let code_mod = &mut self.mods[active];
+        let code_mod = &mut self.engine.mods[active];
         let len = code_mod.queue.len();
         if len == 0 {
-            self.view = View::Chat;
+            self.engine.view = View::Chat;
             self.queue_selection.clear();
             return Ok(());
         }
         match key.code {
-            KeyCode::Up => self.view = View::Queue(index.saturating_sub(1)),
-            KeyCode::Down => self.view = View::Queue((index + 1).min(len - 1)),
+            KeyCode::Up => self.engine.view = View::Queue(index.saturating_sub(1)),
+            KeyCode::Down => self.engine.view = View::Queue((index + 1).min(len - 1)),
             KeyCode::Char(' ') if key.modifiers.is_empty() => {
                 let id = code_mod.queue[index].id;
                 if !self.queue_selection.remove(&id) {
@@ -818,32 +750,19 @@ impl App {
             KeyCode::Enter if key.modifiers.is_empty() && !protected => {
                 self.input = ui::edit_input();
                 self.input.insert_str(&code_mod.queue[index].body);
-                self.view = View::EditQueue(index);
+                self.engine.view = View::EditQueue(index);
             }
             KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace
                 if key.modifiers.is_empty() && !protected =>
             {
                 self.queue_selection.remove(&code_mod.queue[index].id);
-                self.store
-                    .remove_queued(code_mod.id, code_mod.queue[index].id)?;
-                code_mod.queue.remove(index);
-                self.clamp_queue(index);
+                let id = code_mod.queue[index].id;
+                self.engine.remove_queued(id)?;
             }
             KeyCode::Char('k') | KeyCode::Char('j') if key.modifiers.is_empty() => {
-                let target = if key.code == KeyCode::Char('k') {
-                    index.saturating_sub(1)
-                } else {
-                    (index + 1).min(len - 1)
-                };
-                if target != index {
-                    self.store.swap_queued(
-                        code_mod.id,
-                        code_mod.queue[index].id,
-                        code_mod.queue[target].id,
-                    )?;
-                    code_mod.queue.swap(index, target);
-                    self.view = View::Queue(target);
-                }
+                let id = code_mod.queue[index].id;
+                self.engine
+                    .move_queued(id, key.code == KeyCode::Char('k'))?;
             }
             _ => {}
         }
@@ -853,21 +772,18 @@ impl App {
     fn edit_key(&mut self, key: KeyEvent, index: usize) -> Result<()> {
         match key.code {
             KeyCode::Esc => {
-                self.view = View::Queue(index);
+                self.engine.view = View::Queue(index);
                 self.restore_input();
             }
             KeyCode::Enter if key.modifiers.is_empty() => {
                 let body = self.input.lines().join("\n");
                 if !body.trim().is_empty()
-                    && let Some(active) = self.active
+                    && let Some(active) = self.engine.active
                 {
-                    let code_mod = &mut self.mods[active];
-                    self.store
-                        .edit_queued(code_mod.id, code_mod.queue[index].id, &body)?;
-                    code_mod.queue[index].body = body;
-                    self.view = View::Queue(index);
+                    let id = self.engine.mods[active].queue[index].id;
+                    self.engine.edit_queued(id, &body)?;
+                    self.engine.view = View::Queue(index);
                     self.restore_input();
-                    self.celebrate();
                 }
             }
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -880,777 +796,6 @@ impl App {
         Ok(())
     }
 
-    fn create_mod(&mut self) -> Result<()> {
-        let name = self.input.lines().join("\n");
-        let name = name.trim();
-        if name.is_empty() {
-            return Ok(());
-        }
-        if !git_mod::has_commit(&self.project) && self.setup_root.is_none() {
-            let root = self
-                .store
-                .workspace_path(0)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-            match workspace::create(&self.project, &root) {
-                Ok(()) => {
-                    self.setup_files = workspace::source_state(&root.join("before"))
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
-                        .into_iter()
-                        .map(|(path, _, _)| path.display().to_string())
-                        .collect();
-                    self.setup_root = Some(root);
-                    self.view = View::ProjectSetup(false, 0);
-                    self.notice = None;
-                }
-                Err(error) => self.notice = Some(error.to_string()),
-            }
-            return Ok(());
-        }
-        self.project_job.take();
-        let mut code_mod = self.store.create_mod(self.project_id, name)?;
-        {
-            let root = self
-                .store
-                .workspace_path(code_mod.id)
-                .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
-            let initialize = if let Some(preview) = self.setup_root.take() {
-                std::fs::rename(preview, &root)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                std::fs::write(root.join("project-setup"), b"new")
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                true
-            } else {
-                false
-            };
-            self.store.save_git_root(code_mod.id, &root)?;
-            code_mod.git_root = Some(root.clone());
-            let context = Context::harness(&self.project, &code_mod);
-            self.git_jobs.insert(
-                code_mod.id,
-                Job::start(
-                    if initialize {
-                        "setting up Git"
-                    } else {
-                        "checking project branch"
-                    },
-                    move |cancelled| {
-                        Dispatcher::new(&context, None, cancelled).execute(
-                            if initialize {
-                                Request::InitializeProject
-                            } else {
-                                Request::CreateWorktree
-                            },
-                            |_| {},
-                        )?;
-                        Ok(git_mod::Result::Prepared)
-                    },
-                ),
-            );
-        }
-        self.mods.push(code_mod);
-        self.active = Some(self.mods.len() - 1);
-        self.notice = None;
-        self.history_offset = 0;
-        self.plan_details = false;
-        self.focus_plan = false;
-        self.view = View::Chat;
-        self.restore_input();
-        self.celebrate();
-        Ok(())
-    }
-
-    fn adopt_mod(&mut self) -> Result<()> {
-        let index = self.active.unwrap();
-        let code_mod = &mut self.mods[index];
-        let root = code_mod.execution.as_ref().unwrap().workspace.clone();
-        std::fs::write(root.join("project-setup"), b"saved")
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        self.store.save_git_root(code_mod.id, &root)?;
-        code_mod.git_root = Some(root);
-        let id = code_mod.id;
-        let context = Context::harness(&self.project, code_mod);
-        self.git_jobs.insert(
-            id,
-            Job::start("adopting saved codemod", move |cancelled| {
-                Dispatcher::new(&context, None, cancelled)
-                    .execute(Request::AdoptSnapshot, |_| {})?;
-                Ok(git_mod::Result::Adopted)
-            }),
-        );
-        self.view = View::Chat;
-        self.notice = None;
-        self.restore_input();
-        Ok(())
-    }
-
-    fn open_publication(&mut self) -> Result<()> {
-        if !self.can_publish() {
-            return Ok(());
-        }
-        if self.current_mod().is_some_and(|m| m.git_root.is_some())
-            && git_mod::has_origin(&self.project)
-        {
-            self.check_target(self.active.unwrap(), true, true);
-            return Ok(());
-        }
-        self.confirm_publication()
-    }
-
-    fn confirm_publication(&mut self) -> Result<()> {
-        let code_mod = &self.mods[self.active.unwrap()];
-        if let Some(root) = &code_mod.git_root {
-            if self
-                .git_states
-                .get(&code_mod.id)
-                .is_some_and(|state| state.closing)
-            {
-                git_mod::cancel_closing(root)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                self.git_states
-                    .insert(code_mod.id, git_mod::load(root).unwrap());
-            }
-            if let Some(request) = git_mod::repository_pending(root) {
-                self.open_repository();
-                self.input.insert_str(&request.slug);
-                self.view = View::Repository(request.create);
-            } else if !git_mod::has_origin(&self.project) {
-                self.open_repository();
-            } else {
-                let id = code_mod.id;
-                let root = root.clone();
-                let description = code_mod.description.clone();
-                let evidence = crate::publication::evidence(code_mod);
-                self.publication = None;
-                self.view = View::Chat;
-                self.git_jobs.insert(
-                    id,
-                    Job::start("writing commit and PR text", move |cancelled| {
-                        crate::publication::prepare(&root, &description, &evidence, cancelled)
-                            .map(git_mod::Result::PublicationDraft)
-                    }),
-                );
-            }
-        } else {
-            self.setup_files = workspace::source_state(
-                &code_mod
-                    .execution
-                    .as_ref()
-                    .unwrap()
-                    .workspace
-                    .join("before"),
-            )
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
-            .into_iter()
-            .map(|(path, _, _)| path.display().to_string())
-            .collect();
-            self.view = View::ProjectSetup(true, 0);
-        }
-        Ok(())
-    }
-
-    fn open_repository(&mut self) {
-        self.input = ui::repository_input();
-        self.view = View::Repository(false);
-        self.notice = None;
-    }
-
-    fn start_repository(&mut self, request: git_mod::RepositoryRequest) {
-        let code_mod = self.current_mod().unwrap();
-        let id = code_mod.id;
-        let context = Context::harness(&self.project, code_mod);
-        self.git_jobs.insert(
-            id,
-            Job::start("connecting GitHub repository", move |cancelled| {
-                Dispatcher::new(&context, None, cancelled)
-                    .execute(Request::ConnectRepository(request), |_| {})?;
-                Ok(git_mod::Result::RepositoryConnected)
-            }),
-        );
-        self.view = View::Chat;
-        self.restore_input();
-        self.notice = None;
-    }
-
-    fn delete_mod(&mut self, index: usize) -> Result<()> {
-        self.finish_mod(index, true, true)
-    }
-
-    fn finish_mod(&mut self, index: usize, discard: bool, delete: bool) -> Result<()> {
-        self.preparations.cancel(self.mods[index].id, &self.store)?;
-        if !delete && self.mods[index].git_root.is_none() && self.mods[index].execution.is_some() {
-            self.active = Some(index);
-            let root = &self.mods[index].execution.as_ref().unwrap().workspace;
-            std::fs::write(root.join("close-request"), b"close")
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-            self.setup_files = workspace::source_state(&root.join("before"))
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
-                .into_iter()
-                .map(|(path, _, _)| path.display().to_string())
-                .collect();
-            self.view = View::ProjectSetup(true, 0);
-            return Ok(());
-        }
-        if let Some(root) = self.mods[index].git_root.clone() {
-            let id = self.mods[index].id;
-            if self.git_jobs.contains_key(&id) {
-                return Ok(());
-            }
-            let context = Context::harness(&self.project, &self.mods[index]);
-            let keys = self
-                .workers
-                .iter()
-                .filter(|(_, worker)| worker.mod_id == id)
-                .map(|(id, _)| *id)
-                .collect::<Vec<_>>();
-            let workers = keys
-                .into_iter()
-                .filter_map(|key| self.workers.remove(&key))
-                .collect::<Vec<_>>();
-            self.auto_plans.remove(&id);
-            self.auto_runs.remove(&id);
-            self.auto_reviews.remove(&id);
-            self.executing_mods.remove(&id);
-            self.git_jobs.insert(
-                id,
-                Job::start(
-                    if delete {
-                        "deleting mod"
-                    } else {
-                        "closing mod"
-                    },
-                    move |cancelled| {
-                        drop(workers);
-                        let mut tools = Dispatcher::new(&context, None, cancelled);
-                        if !root.join("git-mod.json").exists() {
-                            if !delete {
-                                return Err(io::Error::other(
-                                    "Finish Git setup before closing. Saved files are retained.",
-                                ));
-                            }
-                            if root.join("checkout").exists()
-                                || (git_mod::setup_pending(&root).is_none()
-                                    && ["work", "vm.json"]
-                                        .iter()
-                                        .any(|name| root.join(name).exists()))
-                            {
-                                return Err(io::Error::other(
-                                    "Missing worktree metadata; files are retained.",
-                                ));
-                            }
-                            tools.execute(Request::CleanupMod, |_| {})?;
-                            if delete {
-                                git_mod::remove_files(&root, cancelled)?;
-                            }
-                            return Ok(if delete {
-                                git_mod::Result::Removed
-                            } else {
-                                git_mod::Result::Closed
-                            });
-                        }
-                        git_mod::mark_closing(&root, discard, delete)?;
-                        if git_mod::load(&root)?.phase == "preparing"
-                            && git_mod::checkout(&root).exists()
-                        {
-                            tools.execute(Request::CreateWorktree, |_| {})?;
-                        }
-                        if !discard && crate::sandbox::Sandbox::has_bound_source(&root)? {
-                            let mut vm =
-                                crate::sandbox::Sandbox::prepare(&root, cancelled, |_| {})?;
-                            vm.export(cancelled)?;
-                        }
-                        tools.execute(
-                            if delete {
-                                Request::CleanupMod
-                            } else {
-                                Request::CloseMod
-                            },
-                            |_| {},
-                        )?;
-                        if delete {
-                            git_mod::remove_files(&root, cancelled)?;
-                        }
-                        Ok(if delete {
-                            git_mod::Result::Removed
-                        } else {
-                            git_mod::Result::Closed
-                        })
-                    },
-                ),
-            );
-            self.view = View::Chat;
-            self.notice = None;
-            self.restore_input();
-            return Ok(());
-        }
-        let mod_id = self.mods[index].id;
-        let previous = self.current_mod().map(|code_mod| code_mod.id);
-        let workspace = self.mods[index]
-            .execution
-            .as_ref()
-            .map(|execution| execution.workspace.clone());
-        self.auto_plans.remove(&mod_id);
-        self.auto_runs.remove(&mod_id);
-        self.auto_reviews.remove(&mod_id);
-        self.executing_mods.remove(&mod_id);
-        self.workers.retain(|_, worker| worker.mod_id != mod_id);
-        if workspace.is_some()
-            && let Err(error) = Dispatcher::new(
-                &Context::harness(&self.project, &self.mods[index]),
-                None,
-                &std::sync::atomic::AtomicBool::new(false),
-            )
-            .execute(Request::CleanupMod, |_| {})
-        {
-            self.notice = Some(format!(
-                "Could not delete the VM: {error}. The mod is retained."
-            ));
-            self.view = View::Chat;
-            self.restore_input();
-            return Ok(());
-        }
-        let selected = if delete {
-            self.store.delete_mod(self.project_id, mod_id)?
-        } else {
-            self.store.close_mod(self.project_id, mod_id)?
-        };
-        if delete {
-            self.mods.remove(index);
-        } else {
-            self.mods[index].closed = true;
-        }
-        let cleanup_error = workspace.and_then(|path| std::fs::remove_dir_all(path).err());
-        self.active = self
-            .mods
-            .iter()
-            .position(|code_mod| Some(code_mod.id) == selected);
-        if previous != selected {
-            self.history_offset = 0;
-            self.plan_details = false;
-            self.focus_plan = false;
-            self.notice = None;
-        }
-        if let Some(error) = cleanup_error {
-            self.notice = Some(format!(
-                "Mod {}; working folder cleanup failed: {error}",
-                if delete { "deleted" } else { "closed" }
-            ));
-        }
-        self.queue_selection.clear();
-        self.view = if self.active.is_some() {
-            View::Chat
-        } else {
-            View::NewMod
-        };
-        self.restore_input();
-        Ok(())
-    }
-
-    pub fn has_worker(&self, mod_id: i64) -> bool {
-        self.workers.values().any(|worker| worker.mod_id == mod_id)
-    }
-
-    pub fn picker_indices(&self) -> Vec<usize> {
-        self.mods
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.closed == self.show_closed)
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    pub fn read_only(&self) -> bool {
-        self.current_mod().is_some_and(|m| m.closed)
-    }
-
-    fn reopen_mod(&mut self, index: usize) {
-        if self.git_jobs.contains_key(&self.mods[index].id) {
-            return;
-        }
-        let context = Context::harness(&self.project, &self.mods[index]);
-        if self.mods[index].git_root.is_none() {
-            self.notice =
-                Some("This older codemod has no saved branch. Start a new codemod.".into());
-            return;
-        }
-        if let Err(error) = self.store.select_mod(self.project_id, self.mods[index].id) {
-            self.notice = Some(error.to_string());
-            return;
-        }
-        self.active = Some(index);
-        self.git_jobs.insert(
-            self.mods[index].id,
-            Job::start("reopening codemod", move |cancelled| {
-                Dispatcher::new(&context, None, cancelled).execute(Request::ReopenMod, |_| {})?;
-                Ok(git_mod::Result::Reopened)
-            }),
-        );
-        self.view = View::Chat;
-        self.restore_input();
-    }
-
-    fn start_continuation(&mut self, index: usize) {
-        let id = self.mods[index].id;
-        if let Err(error) = self.preparations.cancel(id, &self.store) {
-            self.notice = Some(error.to_string());
-            return;
-        }
-        self.auto_reviews.remove(&id);
-        self.executing_mods.remove(&id);
-        self.workers.retain(|_, worker| worker.mod_id != id);
-        if self.mods[index].git_root.is_none() {
-            if let Err(error) = self.finish_edit(index) {
-                self.notice = Some(error.to_string());
-            }
-            return;
-        }
-        let context = Context::harness(&self.project, &self.mods[index]);
-        self.git_jobs.insert(
-            id,
-            Job::start("preparing edits", move |cancelled| {
-                Dispatcher::new(&context, None, cancelled)
-                    .execute(Request::PrepareEdits, |_| {})?;
-                Ok(git_mod::Result::Continued)
-            }),
-        );
-    }
-
-    fn finish_edit(&mut self, index: usize) -> Result<()> {
-        let id = self.mods[index].id;
-        self.preparations.cancel(id, &self.store)?;
-        if self.mods[index]
-            .execution
-            .as_ref()
-            .is_some_and(|e| e.status == "planning")
-        {
-            self.auto_plans.insert(id);
-            return Ok(());
-        }
-        let Some(message) = self.mods[index].queue.first().cloned() else {
-            return Ok(());
-        };
-        self.store.follow_up(id, &message.body, Some(message.id))?;
-        let state = self.store.load_project(&self.project)?;
-        self.mods[index] = state.mods.into_iter().find(|m| m.id == id).unwrap();
-        self.auto_plans.insert(id);
-        if self.current_mod().is_some_and(|m| m.id == id) {
-            self.review = None;
-            self.plan_details = false;
-        }
-        Ok(())
-    }
-
-    pub fn git_state(&self) -> Option<&GitMod> {
-        self.current_mod().and_then(|m| self.git_states.get(&m.id))
-    }
-
-    pub fn git_activity(&self) -> Option<&str> {
-        self.current_mod()
-            .and_then(|m| self.git_jobs.get(&m.id))
-            .map(|job| job.label)
-    }
-
-    pub fn project_activity(&self) -> Option<&str> {
-        self.project_job.as_ref().map(|job| job.label)
-    }
-
-    pub fn git_retry_pending(&self) -> bool {
-        self.current_mod().is_some_and(|m| {
-            self.update_errors.contains(&m.id)
-                || m.git_root.as_ref().is_some_and(|root| {
-                    git_mod::setup_pending(root).is_some()
-                        || git_mod::repository_pending(root).is_some()
-                })
-                || m.git_root.is_some()
-                    && self.git_states.get(&m.id).is_none_or(|state| {
-                        state.removing
-                            || (state.closing && !m.closed)
-                            || state.continuing
-                            || state.publishing
-                            || !["ready", "published", "cleaned", "closed", "pruned"]
-                                .contains(&state.phase.as_str())
-                    })
-        })
-    }
-
-    pub fn published(&self) -> bool {
-        self.current_mod().is_some_and(|m| self.mod_published(m))
-    }
-
-    fn mod_published(&self, m: &CodeMod) -> bool {
-        self.git_states.get(&m.id).is_some_and(|git| {
-            git.published()
-                && m.execution
-                    .as_ref()
-                    .is_none_or(|e| e.complete() && git.published_version(e.fingerprint.as_deref()))
-        })
-    }
-
-    fn check_target(&mut self, index: usize, publish: bool, explicit: bool) {
-        let code_mod = &self.mods[index];
-        if code_mod.closed
-            || code_mod.git_root.is_none()
-            || self.git_jobs.contains_key(&code_mod.id)
-        {
-            return;
-        }
-        let context = Context::harness(&self.project, code_mod);
-        self.update_errors.remove(&code_mod.id);
-        self.target_checks.insert(code_mod.id, Instant::now());
-        self.git_jobs.insert(
-            code_mod.id,
-            Job::start("checking target branch", move |cancelled| {
-                let target = match Dispatcher::new(&context, None, cancelled)
-                    .execute(Request::CheckTarget, |_| {})?
-                {
-                    crate::tools::Output::Target(target) => target,
-                    _ => unreachable!(),
-                };
-                Ok(git_mod::Result::TargetChecked {
-                    target,
-                    publish,
-                    explicit,
-                })
-            }),
-        );
-    }
-
-    fn start_update(&mut self, index: usize, target: crate::mod_sync::Target) {
-        let id = self.mods[index].id;
-        if self.git_jobs.contains_key(&id)
-            || self
-                .workers
-                .values()
-                .any(|w| w.mod_id == id && (w.enabled || w.busy()))
-        {
-            return;
-        }
-        let Some(plan) = self.mods[index]
-            .planning
-            .as_ref()
-            .and_then(|p| p.plan.clone())
-        else {
-            return;
-        };
-        let context = Context::harness(&self.project, &self.mods[index]);
-        let workers = self
-            .workers
-            .keys()
-            .filter(|key| self.workers[key].mod_id == id)
-            .copied()
-            .collect::<Vec<_>>()
-            .into_iter()
-            .filter_map(|key| self.workers.remove(&key))
-            .collect::<Vec<_>>();
-        self.executing_mods.remove(&id);
-        self.git_jobs.insert(
-            id,
-            Job::start("updating from target branch", move |cancelled| {
-                drop(workers);
-                Dispatcher::new(&context, None, cancelled).execute(
-                    Request::UpdateTarget {
-                        target,
-                        plan: Box::new(plan),
-                    },
-                    |_| {},
-                )?;
-                Ok(git_mod::Result::Updated)
-            }),
-        );
-        if self.current_mod().is_some_and(|m| m.id == id) {
-            self.review = None;
-            self.publish_after_review = false;
-            self.view = View::Chat;
-        }
-    }
-
-    fn maintain_updates(&mut self) -> Result<()> {
-        for index in 0..self.mods.len() {
-            let code_mod = &self.mods[index];
-            let id = code_mod.id;
-            let Some(root) = code_mod.git_root.as_ref() else {
-                continue;
-            };
-            if code_mod.closed || code_mod.execution.is_none() || self.git_jobs.contains_key(&id) {
-                continue;
-            }
-            if self.update_errors.contains(&id) {
-                continue;
-            }
-            if self.current_mod().is_some_and(|m| m.id == id)
-                && !matches!(self.view, View::Chat | View::Mods(_))
-            {
-                continue;
-            }
-            let busy = self
-                .workers
-                .values()
-                .any(|w| w.mod_id == id && (w.enabled || w.busy()));
-            if let Some(update) = crate::mod_sync::load(root)
-                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
-            {
-                if !busy && (!update.prepared || !update.installed) {
-                    self.start_update(
-                        index,
-                        crate::mod_sync::Target {
-                            branch: update.branch,
-                            head: update.target,
-                            pr_state: None,
-                        },
-                    );
-                } else if !busy
-                    && code_mod
-                        .execution
-                        .as_ref()
-                        .is_some_and(|e| e.complete() && e.status == "review")
-                {
-                    let context = Context::harness(&self.project, code_mod);
-                    self.git_jobs.insert(
-                        id,
-                        Job::start("saving verified merge", move |cancelled| {
-                            Dispatcher::new(&context, None, cancelled)
-                                .execute(Request::FinishUpdate, |_| {})?;
-                            Ok(git_mod::Result::UpdateFinished)
-                        }),
-                    );
-                }
-                continue;
-            }
-            if self
-                .targets
-                .get(&id)
-                .is_some_and(|t| t.pr_state.as_deref().is_some_and(|s| s != "OPEN"))
-            {
-                continue;
-            }
-            if !busy
-                && !code_mod
-                    .agent_review
-                    .as_ref()
-                    .is_some_and(|r| r.holds_updates(code_mod))
-                && code_mod.execution.as_ref().is_some_and(|e| {
-                    e.complete() && matches!(e.status.as_str(), "review" | "applied")
-                })
-                && let Some(target) = self.targets.get(&id)
-                && self
-                    .git_states
-                    .get(&id)
-                    .is_some_and(|s| s.base != target.head)
-            {
-                self.start_update(index, target.clone());
-            } else if self
-                .target_checks
-                .get(&id)
-                .is_none_or(|t| t.elapsed() >= Duration::from_secs(30))
-                && self.git_states.get(&id).is_some_and(|s| {
-                    ["ready", "published"].contains(&s.phase.as_str())
-                        && !s.publishing
-                        && !s.closing
-                })
-            {
-                self.check_target(index, false, false);
-            }
-        }
-        Ok(())
-    }
-
-    fn maintain_project(&mut self) {
-        if self.project_job.is_some()
-            || !self.git_jobs.is_empty()
-            || self
-                .project_check
-                .is_some_and(|checked| checked.elapsed() < Duration::from_secs(30))
-        {
-            return;
-        }
-        self.project_check = Some(Instant::now());
-        if !git_mod::has_commit(&self.project) {
-            return;
-        }
-        let context = Context::project(&self.project, self.project_sync_root.clone());
-        self.project_job = Some(Job::start("syncing project branch", move |cancelled| {
-            Dispatcher::new(&context, None, cancelled).execute(Request::SyncProject, |_| {})?;
-            Ok(git_mod::Result::ProjectSynced)
-        }));
-    }
-
-    fn source_project(&self, index: usize) -> PathBuf {
-        self.mods[index]
-            .git_root
-            .as_ref()
-            .map(|root| {
-                if root.join("work").exists() {
-                    root.join("work")
-                } else {
-                    git_mod::checkout(root)
-                }
-            })
-            .or_else(|| {
-                self.mods[index]
-                    .execution
-                    .as_ref()
-                    .map(|e| e.workspace.join("work"))
-            })
-            .unwrap_or_else(|| self.project.clone())
-    }
-
-    pub fn active_workers(&self) -> impl Iterator<Item = &Worker> {
-        self.workers.values().filter(|worker| {
-            self.current_mod().is_some_and(|m| m.id == worker.mod_id) && worker.busy()
-        })
-    }
-
-    pub fn current_worker(&self) -> Option<&Worker> {
-        let mod_id = self.current_mod()?.id;
-        let workers = || {
-            self.workers
-                .values()
-                .filter(|worker| worker.mod_id == mod_id)
-        };
-        workers()
-            .find(|worker| worker.role == Role::Planner && worker.enabled)
-            .or_else(|| workers().find(|worker| worker.role == Role::Reviewer && worker.busy()))
-            .or_else(|| workers().find(|worker| worker.role == Role::Executor && worker.busy()))
-            .or_else(|| {
-                workers().find(|worker| worker.role == Role::Executor && worker.error.is_some())
-            })
-            .or_else(|| workers().find(|worker| worker.role == Role::Executor))
-            .or_else(|| workers().next())
-    }
-
-    pub fn running_workers(&self) -> Vec<i64> {
-        self.current_mod().map_or_else(Vec::new, |m| {
-            self.workers
-                .values()
-                .filter(|w| {
-                    w.mod_id == m.id && w.role == Role::Executor && w.status == Status::Running
-                })
-                .map(|w| w.id)
-                .collect()
-        })
-    }
-
-    pub fn worker_activity(&self) -> Vec<String> {
-        self.current_mod().map_or_else(Vec::new, |m| {
-            self.workers
-                .values()
-                .filter(|w| w.mod_id == m.id && w.role == Role::Executor && w.busy())
-                .map(|w| w.activity(m))
-                .collect()
-        })
-    }
-
-    pub fn worker_error(&self) -> Option<&str> {
-        self.current_mod()
-            .and_then(|m| {
-                self.workers
-                    .values()
-                    .filter(|w| w.mod_id == m.id)
-                    .find_map(|w| w.error.as_deref())
-                    .or_else(|| self.git_errors.current(m.id))
-            })
-            .or(self.notice.as_deref())
-    }
-
     fn companion_mood(&self) -> sprout::Mood {
         use sprout::Mood;
 
@@ -1660,7 +805,12 @@ impl App {
         if self.git_activity().is_some() {
             return Mood::Working;
         }
-        let workers = || self.workers.values().filter(|w| w.mod_id == code_mod.id);
+        let workers = || {
+            self.engine
+                .workers
+                .values()
+                .filter(|w| w.mod_id == code_mod.id)
+        };
         if workers().any(|w| w.role == Role::Planner && (w.enabled || w.busy())) {
             return Mood::Planning;
         }
@@ -1689,1528 +839,6 @@ impl App {
         }
         Mood::Idle
     }
-
-    fn toggle_worker(&mut self) -> Result<()> {
-        let Some(active) = self.active else {
-            return Ok(());
-        };
-        let id = self.mods[active].id;
-        if self
-            .git_jobs
-            .get(&id)
-            .is_some_and(|job| job.label != "checking target branch")
-        {
-            return Ok(());
-        }
-        let stopping = self
-            .workers
-            .values()
-            .any(|w| w.mod_id == id && (w.enabled || w.busy()));
-        self.set_paused(active, stopping)?;
-        if stopping {
-            self.auto_reviews.remove(&id);
-            self.auto_plans.remove(&id);
-            self.auto_runs.remove(&id);
-        }
-        if let Some(worker) = self
-            .workers
-            .values_mut()
-            .find(|w| w.mod_id == id && w.role == Role::Reviewer && (w.enabled || w.busy()))
-        {
-            worker.toggle();
-            if let Some(review) = &self.mods[active].agent_review {
-                self.store.review_status(id, &review.source, "paused")?;
-                self.mods[active].agent_review = self.store.review_state(id)?;
-            }
-            return Ok(());
-        }
-        if self.update_errors.remove(&id)
-            && self.mods[active].git_root.as_ref().is_none_or(|root| {
-                crate::mod_sync::load(root)
-                    .ok()
-                    .flatten()
-                    .is_none_or(|u| !u.installed)
-            })
-        {
-            self.check_target(active, false, false);
-            return Ok(());
-        }
-        if self.mods[active].git_root.is_some() {
-            let root = self.mods[active].git_root.clone().unwrap();
-            if let Some(saved) = git_mod::setup_pending(&root) {
-                let context = Context::harness(&self.project, &self.mods[active]);
-                self.git_jobs.insert(
-                    id,
-                    Job::start(
-                        if saved {
-                            "adopting saved codemod"
-                        } else {
-                            "setting up Git"
-                        },
-                        move |cancelled| {
-                            Dispatcher::new(&context, None, cancelled).execute(
-                                if saved {
-                                    Request::AdoptSnapshot
-                                } else {
-                                    Request::InitializeProject
-                                },
-                                |_| {},
-                            )?;
-                            Ok(if saved {
-                                git_mod::Result::Adopted
-                            } else {
-                                git_mod::Result::Prepared
-                            })
-                        },
-                    ),
-                );
-                return Ok(());
-            }
-            if let Some(request) = git_mod::repository_pending(&root) {
-                self.start_repository(request);
-                return Ok(());
-            }
-            match self.git_states.get(&id) {
-                Some(state) if state.removing => return self.delete_mod(active),
-                Some(state) if state.continuing => {
-                    self.start_continuation(active);
-                    return Ok(());
-                }
-                Some(state) if state.closing && !self.mods[active].closed => {
-                    return self.finish_mod(active, state.discarding, false);
-                }
-                Some(_) if self.mods[active].closed => {
-                    self.reopen_mod(active);
-                    return Ok(());
-                }
-                Some(_)
-                    if self.mod_published(&self.mods[active])
-                        && self.mods[active].queue.is_empty() =>
-                {
-                    return Ok(());
-                }
-                state if state.is_none_or(|state| state.phase == "preparing") => {
-                    let context = Context::harness(&self.project, &self.mods[active]);
-                    self.git_jobs.insert(
-                        id,
-                        Job::start("creating worktree", move |cancelled| {
-                            Dispatcher::new(&context, None, cancelled)
-                                .execute(Request::CreateWorktree, |_| {})?;
-                            Ok(git_mod::Result::Prepared)
-                        }),
-                    );
-                    return Ok(());
-                }
-                Some(state)
-                    if state.publishing
-                        || !["ready", "published", "cleaned", "closed", "pruned"]
-                            .contains(&state.phase.as_str()) =>
-                {
-                    self.start_publication(active);
-                    return Ok(());
-                }
-                Some(state) if state.phase == "cleaned" => return Ok(()),
-                _ => {}
-            }
-        }
-        if self.mods[active].closed {
-            self.reopen_mod(active);
-            return Ok(());
-        }
-        if self.retry_verified_update(active)? {
-            return Ok(());
-        }
-        if self.mods[active].execution.is_none()
-            && self.mods[active].git_root.as_ref().is_some_and(|root| {
-                !root.join("work").exists() && !root.join("snapshot-ready").exists()
-            })
-            && self.mods[active]
-                .planning
-                .as_ref()
-                .is_some_and(|plan| matches!(plan.status.as_str(), "failed" | "paused"))
-            && !self.execution_busy()
-        {
-            self.workers.retain(|_, worker| worker.mod_id != id);
-            let context = Context::harness(&self.project, &self.mods[active]);
-            self.git_jobs.insert(
-                id,
-                Job::start("refreshing starting source", move |cancelled| {
-                    Dispatcher::new(&context, None, cancelled)
-                        .execute(Request::RefreshWorktree, |_| {})?;
-                    Ok(git_mod::Result::Refreshed)
-                }),
-            );
-            self.notice = None;
-            return Ok(());
-        }
-        let role = if self.mods[active]
-            .planning
-            .as_ref()
-            .is_some_and(|p| p.status != "ready")
-        {
-            Role::Planner
-        } else {
-            Role::Executor
-        };
-        let mod_id = self.mods[active].id;
-        if role == Role::Executor
-            && self.mods[active]
-                .planning
-                .as_ref()
-                .is_some_and(|p| p.plan.is_some())
-        {
-            if self.current_worker().is_some_and(|worker| {
-                worker.status == Status::Stopping
-                    || (!worker.enabled && worker.status == Status::Checking)
-            }) {
-                self.notice =
-                    Some("The current command is stopping; retry when it finishes.".into());
-                return Ok(());
-            }
-            if self.mods[active].execution.is_none()
-                || self.mods[active]
-                    .execution
-                    .as_ref()
-                    .is_some_and(|e| e.status == "planning")
-            {
-                return self.start_execution(active);
-            }
-            if self.mods[active].execution.as_ref().is_some_and(|e| {
-                matches!(e.status.as_str(), "review" | "applied" | "blocked")
-                    && !e.tasks.iter().any(|t| t.status == "waiting")
-            }) && !self.mods[active].queue.is_empty()
-                && !self.execution_busy()
-            {
-                self.start_continuation(active);
-                return Ok(());
-            }
-            if self.mods[active]
-                .execution
-                .as_ref()
-                .is_some_and(|execution| {
-                    execution.backend == "local" && execution.status != "applied"
-                })
-            {
-                self.workers
-                    .retain(|_, worker| worker.mod_id != mod_id || worker.role != Role::Executor);
-                self.store.move_to_vm(mod_id)?;
-                self.mods[active].execution = self.store.execution(mod_id)?;
-            }
-            if self.current_worker().is_none_or(|worker| !worker.enabled) {
-                self.store.retry_tasks(mod_id)?;
-                self.mods[active].execution = self.store.execution(mod_id)?;
-            }
-        }
-        if role == Role::Executor {
-            let running = self
-                .workers
-                .values()
-                .any(|w| w.mod_id == mod_id && (w.enabled || w.busy()));
-            if running {
-                self.executing_mods.remove(&mod_id);
-                self.store.pause_repairs(mod_id)?;
-                self.mods[active].execution = self.store.execution(mod_id)?;
-                for worker in self
-                    .workers
-                    .values_mut()
-                    .filter(|w| w.mod_id == mod_id && w.role == role && w.enabled)
-                {
-                    worker.toggle();
-                }
-                return Ok(());
-            }
-            self.workers
-                .retain(|_, w| w.mod_id != mod_id || w.role != role);
-            self.store.retry_tasks(mod_id)?;
-            self.mods[active].execution = self.store.execution(mod_id)?;
-            return self.start_worker(active, role);
-        }
-        if let Some(worker) = self
-            .workers
-            .values_mut()
-            .find(|w| w.mod_id == mod_id && w.role == role)
-            && worker.status != Status::Failed
-        {
-            if role == Role::Planner && worker.status == Status::Ready && !worker.enabled {
-                self.store.retry_plan(mod_id)?;
-                self.mods[active].planning = self.store.planning(mod_id)?;
-            }
-            worker.toggle();
-            if role == Role::Planner && worker.enabled {
-                self.auto_runs.insert(mod_id);
-            }
-            return Ok(());
-        }
-        self.start_worker(active, role)
-    }
-
-    fn retry_verified_update(&mut self, index: usize) -> Result<bool> {
-        let code_mod = &self.mods[index];
-        let Some(root) = code_mod.git_root.as_ref() else {
-            return Ok(false);
-        };
-        let Some(execution) = code_mod.execution.as_ref() else {
-            return Ok(false);
-        };
-        let Some(last) = execution.tasks.last() else {
-            return Ok(false);
-        };
-        if self.execution_busy()
-            || !matches!(execution.status.as_str(), "review" | "blocked")
-            || !matches!(last.status.as_str(), "done" | "blocked")
-            || execution.tasks[..execution.tasks.len() - 1]
-                .iter()
-                .any(|task| task.status != "done")
-            || execution.checks.is_empty()
-            || execution
-                .checks
-                .iter()
-                .any(|check| check.exit_code != Some(0))
-            || execution.fingerprint.is_none()
-        {
-            return Ok(false);
-        }
-        let checked = (|| -> io::Result<bool> {
-            let Some(update) = crate::mod_sync::load(root)? else {
-                return Ok(false);
-            };
-            Ok(update.prepared
-                && update.installed
-                && update.imported
-                && execution.fingerprint.as_ref()
-                    == Some(&workspace::fingerprint(&workspace::source_state(
-                        &root.join("work"),
-                    )?)?))
-        })()
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-        if !checked {
-            return Ok(false);
-        }
-        // Older saves marked the last passed task blocked; retain its verified result.
-        let id = code_mod.id;
-        self.store.task_status(id, &last.source, "done", None)?;
-        self.store.execution_status(id, "review")?;
-        self.mods[index].execution = self.store.execution(id)?;
-        self.update_errors.remove(&id);
-        self.notice = None;
-        self.maintain_reviews()?;
-        self.maintain_updates()?;
-        Ok(true)
-    }
-
-    fn start_execution(&mut self, index: usize) -> Result<()> {
-        let id = self.mods[index].id;
-        if self.mods[index]
-            .execution
-            .as_ref()
-            .is_some_and(|e| e.status == "planning")
-        {
-            let root = self.mods[index]
-                .execution
-                .as_ref()
-                .unwrap()
-                .workspace
-                .clone();
-            let plan = self.mods[index]
-                .planning
-                .as_ref()
-                .unwrap()
-                .plan
-                .as_ref()
-                .unwrap();
-            self.store.create_execution(id, &root, plan)?;
-            self.mods[index].execution = self.store.execution(id)?;
-            return self.start_worker(index, Role::Executor);
-        }
-        if self.mods[index].execution.is_none() {
-            if let Some(root) = self.mods[index].git_root.clone() {
-                let project = self.source_project(index);
-                let plan_source = self.mods[index].planning.as_ref().unwrap().source.clone();
-                self.git_jobs.insert(
-                    id,
-                    Job::start("preparing source", move |_| {
-                        preparation::snapshot(&root, &project, &plan_source)?;
-                        Ok(git_mod::Result::Snapshot)
-                    }),
-                );
-                return Ok(());
-            }
-            if let Err(error) = self.prepare_execution(index) {
-                self.notice = Some(error.to_string());
-                return Ok(());
-            }
-        }
-        self.start_worker(index, Role::Executor)
-    }
-
-    fn ready_plans(&self) -> Vec<usize> {
-        self.mods
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| {
-                !m.closed
-                    && !m.user_paused
-                    && self.auto_runs.contains(&m.id)
-                    && !self.git_jobs.contains_key(&m.id)
-                    && m.planning.as_ref().is_some_and(|p| p.status == "ready")
-                    && m.execution.as_ref().is_none_or(|e| e.status == "planning")
-            })
-            .map(|(i, _)| i)
-            .collect()
-    }
-
-    fn start_worker(&mut self, index: usize, role: Role) -> Result<()> {
-        let plan = self.mods[index]
-            .planning
-            .as_ref()
-            .and_then(|p| p.plan.as_ref());
-        let uses_muse = role == Role::Executor
-            && (plan.is_some_and(|p| p.tasks.iter().any(|t| t.worker == "muse"))
-                || self.mods[index].execution.as_ref().is_some_and(|e| {
-                    e.tasks
-                        .iter()
-                        .any(|t| t.provider.as_deref() == Some("muse"))
-                }));
-        if uses_muse && !self.muse {
-            self.notice = Some(format!(
-                "This plan needs Muse {}. Install it, run muse login and restart the harness.",
-                crate::muse::VERSION
-            ));
-            return Ok(());
-        }
-        let mod_id = self.mods[index].id;
-        if role == Role::Executor {
-            self.executing_mods.insert(mod_id);
-            return self.schedule_execution(index);
-        }
-        let record = self.store.worker_provider(mod_id, role, 0, "codex")?;
-        self.start_worker_record(index, role, record)
-    }
-
-    fn schedule_execution(&mut self, index: usize) -> Result<()> {
-        let mod_id = self.mods[index].id;
-        for record in self.store.executors(mod_id)? {
-            if !self.workers.get(&record.id).is_some_and(Worker::busy) {
-                self.store.resume_mail(mod_id, record.id)?;
-            }
-        }
-        let busy = self
-            .workers
-            .values()
-            .filter(|w| w.role == Role::Executor && w.busy())
-            .map(|w| w.id)
-            .collect::<Vec<_>>();
-        let unavailable = self
-            .workers
-            .values()
-            .filter(|w| w.mod_id == mod_id && w.status == Status::Failed)
-            .map(|w| w.id)
-            .chain(
-                self.network_requests
-                    .iter()
-                    .filter(|r| r.mod_id == mod_id && r.status == "approved")
-                    .map(|r| r.worker),
-            )
-            .collect::<Vec<_>>();
-        if let (Some(execution), Some(plan)) = (
-            &self.mods[index].execution,
-            self.mods[index]
-                .planning
-                .as_ref()
-                .and_then(|p| p.plan.as_ref()),
-        ) {
-            let eligible = execution
-                .ready_tasks(plan)
-                .filter(|run| run.worker.is_none_or(|id| !unavailable.contains(&id)))
-                .map(|run| run.source.clone())
-                .collect::<BTreeSet<_>>();
-            self.slot_waits
-                .retain(|(id, source), _| *id != mod_id || eligible.contains(source));
-            for source in eligible {
-                self.slot_waits
-                    .entry((mod_id, source))
-                    .or_insert_with(Instant::now);
-            }
-        }
-        let plan = self.mods[index]
-            .planning
-            .as_ref()
-            .unwrap()
-            .plan
-            .as_ref()
-            .unwrap();
-        let records = self.store.schedule_workers(
-            mod_id,
-            plan,
-            &busy,
-            &unavailable,
-            if self.muse {
-                &["codex", "muse"]
-            } else {
-                &["codex"]
-            },
-        )?;
-        self.mods[index].execution = self.store.execution(mod_id)?;
-        for worker in self
-            .workers
-            .values_mut()
-            .filter(|w| w.mod_id == mod_id && w.role == Role::Executor)
-        {
-            if !worker.busy() && !records.iter().any(|r| r.id == worker.id) {
-                worker.enabled = false;
-            }
-        }
-        for record in records {
-            if let Some(worker) = self.workers.get_mut(&record.id) {
-                if !worker.enabled && matches!(worker.status, Status::Ready | Status::Complete) {
-                    worker.toggle();
-                }
-            } else {
-                self.start_worker_record(index, Role::Executor, record)?;
-            }
-        }
-        if let (Some(execution), Some(plan)) = (
-            &self.mods[index].execution,
-            self.mods[index]
-                .planning
-                .as_ref()
-                .and_then(|p| p.plan.as_ref()),
-        ) {
-            for run in execution.ready_tasks(plan) {
-                if let Some(worker) = run.worker.and_then(|id| self.workers.get_mut(&id))
-                    && let Some(started) = self.slot_waits.get(&(mod_id, run.source.clone()))
-                {
-                    worker.eligible(
-                        &run.source,
-                        *started,
-                        execution.fingerprint.as_deref().unwrap_or(""),
-                    );
-                }
-            }
-        }
-        if self.mods[index]
-            .execution
-            .as_ref()
-            .is_some_and(|e| matches!(e.status.as_str(), "review" | "applied"))
-        {
-            self.executing_mods.remove(&mod_id);
-            self.auto_reviews.insert(mod_id);
-        }
-        if self.mods[index]
-            .execution
-            .as_ref()
-            .is_some_and(|e| e.complete() && e.status == "blocked")
-        {
-            self.executing_mods.remove(&mod_id);
-        }
-        Ok(())
-    }
-
-    fn start_worker_record(
-        &mut self,
-        index: usize,
-        role: Role,
-        record: WorkerRecord,
-    ) -> Result<()> {
-        let project = self.source_project(index);
-        let mod_id = self.mods[index].id;
-        let saved = self.mods[index]
-            .execution
-            .as_ref()
-            .map(|e| e.workspace.as_path())
-            .or(self.mods[index].git_root.as_deref());
-        match self.preparations.root(mod_id, &self.store, saved) {
-            Ok(_) if role == Role::Planner && self.mods[index].execution.is_none() => {
-                self.preparations.start(mod_id)
-            }
-            Ok(_) => {}
-            Err(error) => self
-                .store
-                .record_preparation_failure(mod_id, &error.to_string())?,
-        }
-        self.workers.remove(&record.id);
-        let selection = if role == Role::Planner {
-            if record.pending.is_none()
-                && self.mods[index]
-                    .planning
-                    .as_ref()
-                    .is_some_and(|p| p.status == "failed" || p.status == "paused")
-            {
-                self.store.retry_plan(mod_id)?;
-                self.mods[index].planning = self.store.planning(mod_id)?;
-            }
-            Some(crate::router::Selection::planner())
-        } else {
-            None
-        };
-        match Worker::start_with_muse(
-            &project,
-            &self.mods[index],
-            record,
-            role,
-            selection,
-            self.muse,
-        ) {
-            Ok(worker) => {
-                self.workers.insert(worker.id, worker);
-                if role == Role::Planner {
-                    self.auto_runs.insert(mod_id);
-                }
-                self.notice = None;
-            }
-            Err(error) => self.notice = Some(error.to_string()),
-        }
-        Ok(())
-    }
-
-    fn prepare_execution(&mut self, index: usize) -> io::Result<()> {
-        let code_mod = &self.mods[index];
-        let root =
-            self.preparations
-                .root(code_mod.id, &self.store, code_mod.git_root.as_deref())?;
-        preparation::snapshot(
-            &root,
-            &self.project,
-            &code_mod.planning.as_ref().unwrap().source,
-        )?;
-        let plan = code_mod.planning.as_ref().unwrap().plan.as_ref().unwrap();
-        if let Err(error) = self.store.create_execution(code_mod.id, &root, plan) {
-            self.preparations
-                .cancel(code_mod.id, &self.store)
-                .map_err(io::Error::other)?;
-            return Err(io::Error::other(error));
-        }
-        self.workers
-            .retain(|_, worker| worker.mod_id != code_mod.id || worker.role != Role::Executor);
-        self.mods[index].execution = self
-            .store
-            .execution(code_mod.id)
-            .map_err(io::Error::other)?;
-        Ok(())
-    }
-
-    pub fn execution_busy(&self) -> bool {
-        self.git_activity().is_some()
-            || self.current_mod().is_some_and(|m| {
-                self.workers
-                    .values()
-                    .any(|w| w.mod_id == m.id && (w.enabled || w.busy()))
-            })
-    }
-
-    pub fn version_ready(&self) -> bool {
-        !self.published()
-            && !self.execution_busy()
-            && self.current_mod().is_some_and(|m| {
-                !m.closed
-                    && m.git_root
-                        .as_ref()
-                        .is_none_or(|root| !root.join("main-update.json").exists())
-                    && self.targets.get(&m.id).is_none_or(|target| {
-                        target.pr_state.as_deref().is_none_or(|s| s == "OPEN")
-                            && self
-                                .git_states
-                                .get(&m.id)
-                                .is_none_or(|s| s.base == target.head)
-                    })
-                    && m.queue.is_empty()
-                    && m.steering.is_empty()
-                    && m.execution.as_ref().is_some_and(|e| {
-                        e.complete() && matches!(e.status.as_str(), "review" | "applied")
-                    })
-            })
-    }
-
-    pub fn can_review(&self) -> bool {
-        self.active.is_some_and(|index| self.review_ready(index))
-    }
-
-    fn review_ready(&self, index: usize) -> bool {
-        let m = &self.mods[index];
-        !m.closed
-            && m.queue.is_empty()
-            && m.steering.is_empty()
-            && !self.git_jobs.contains_key(&m.id)
-            && m.git_root
-                .as_ref()
-                .is_none_or(|root| !root.join("main-update.json").exists())
-            && self
-                .targets
-                .get(&m.id)
-                .is_none_or(|t| t.pr_state.as_deref().is_none_or(|s| s == "OPEN"))
-            && !self
-                .workers
-                .values()
-                .any(|w| w.mod_id == m.id && (w.enabled || w.busy()))
-            && m.execution
-                .as_ref()
-                .is_some_and(|e| e.complete() && e.status == "review" && e.fingerprint.is_some())
-    }
-
-    pub fn can_publish(&self) -> bool {
-        self.version_ready()
-            && self
-                .current_mod()
-                .is_some_and(|m| m.agent_review.as_ref().is_some_and(|r| r.clear(m)))
-            && self
-                .current_mod()
-                .is_some_and(|m| !m.closed && m.queue.is_empty() && m.steering.is_empty())
-            && self.current_mod().is_none_or(|m| {
-                m.git_root
-                    .as_ref()
-                    .is_none_or(|root| git_mod::setup_pending(root).is_none())
-            })
-            && !self.execution_busy()
-            && self.review.as_ref().is_some_and(|review| {
-                review.count() > 0 || self.git_state().is_some_and(|s| s.pr.is_some())
-            })
-            && self
-                .current_mod()
-                .and_then(|m| m.execution.as_ref())
-                .is_some_and(|execution| {
-                    execution.complete()
-                        && matches!(execution.status.as_str(), "review" | "applied")
-                        && self.review.as_ref().is_some_and(|review| {
-                            execution.fingerprint.as_deref() == Some(&review.fingerprint)
-                        })
-                })
-    }
-
-    fn open_review(&mut self) -> Result<()> {
-        let Some(execution) = self.current_mod().and_then(|m| m.execution.as_ref()) else {
-            return Ok(());
-        };
-        if self.execution_busy() {
-            self.notice = Some("Pause the executor before reviewing its changes.".into());
-            return Ok(());
-        }
-        if self.current_mod().is_some_and(|m| m.git_root.is_some()) {
-            let id = self.current_mod().unwrap().id;
-            let root = execution.workspace.clone();
-            self.git_jobs.insert(
-                id,
-                Job::start("loading changes", move |_| {
-                    workspace::review(&root).map(git_mod::Result::Reviewed)
-                }),
-            );
-            return Ok(());
-        }
-        match workspace::review(&execution.workspace) {
-            Ok(review) => {
-                if execution.status == "review"
-                    && execution.fingerprint.as_deref() != Some(&review.fingerprint)
-                {
-                    self.notice = Some(
-                        "Working files changed since verification. Esc, then Ctrl+R to recheck."
-                            .into(),
-                    );
-                    let index = self.active.unwrap();
-                    self.store
-                        .execution_status(self.mods[index].id, "blocked")?;
-                    self.mods[index].execution.as_mut().unwrap().status = "blocked".into();
-                } else {
-                    self.notice = None;
-                }
-                self.review = Some(review);
-                self.view = View::Review(0);
-            }
-            Err(error) => self.notice = Some(error.to_string()),
-        }
-        Ok(())
-    }
-
-    fn start_publication(&mut self, index: usize) {
-        let code_mod = &self.mods[index];
-        let root = code_mod.git_root.clone().unwrap();
-        let context = Context::harness(&self.project, code_mod);
-        let id = code_mod.id;
-        if let Err(error) = crate::publication::load(&root, &code_mod.description) {
-            self.git_errors.record(
-                id,
-                "writing commit and PR text",
-                format!("{error} Preview the PR again before publishing."),
-            );
-            self.view = View::Chat;
-            return;
-        }
-        if let Err(error) = git_mod::mark_publishing(&root) {
-            self.git_errors
-                .record(id, "publishing PR", error.to_string());
-            return;
-        }
-        let keys = self
-            .workers
-            .iter()
-            .filter(|(_, worker)| worker.mod_id == id)
-            .map(|(key, _)| *key)
-            .collect::<Vec<_>>();
-        let workers = keys
-            .into_iter()
-            .filter_map(|key| self.workers.remove(&key))
-            .collect::<Vec<_>>();
-        self.executing_mods.remove(&id);
-        self.auto_reviews.remove(&id);
-        self.git_jobs.insert(
-            id,
-            Job::start("publishing PR", move |cancelled| {
-                drop(workers);
-                let mut tools = Dispatcher::new(&context, None, cancelled);
-                tools.execute(Request::PublishPr { draft: false }, |_| {})?;
-                Ok(git_mod::Result::Published)
-            }),
-        );
-        self.review = None;
-        self.view = View::Chat;
-        self.notice = None;
-    }
-
-    fn set_paused(&mut self, index: usize, paused: bool) -> Result<()> {
-        if paused {
-            let id = self.mods[index].id;
-            self.preparations.cancel(id, &self.store)?;
-            self.slot_waits.retain(|(mod_id, _), _| *mod_id != id);
-        }
-        self.store.set_user_paused(self.mods[index].id, paused)?;
-        self.mods[index].user_paused = paused;
-        Ok(())
-    }
-
-    fn begin_agent_review(&mut self, index: usize) -> Result<()> {
-        if !self.review_ready(index) {
-            return Ok(());
-        }
-        let code_mod = &self.mods[index];
-        let execution = code_mod.execution.as_ref().unwrap();
-        let fingerprint = workspace::review(&execution.workspace)
-            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
-            .fingerprint;
-        if execution.fingerprint.as_deref() != Some(&fingerprint) {
-            self.store.execution_status(code_mod.id, "blocked")?;
-            self.mods[index].execution = self.store.execution(self.mods[index].id)?;
-            self.notice =
-                Some("Source changed after checks. Ctrl+R reruns checks before review.".into());
-            return Ok(());
-        }
-        self.store.begin_review(code_mod.id, &fingerprint)?;
-        self.set_paused(index, false)?;
-        let id = self.mods[index].id;
-        self.mods[index].agent_review = self.store.review_state(id)?;
-        if self.mods[index]
-            .agent_review
-            .as_ref()
-            .is_none_or(|r| r.auto_remaining == 0)
-        {
-            self.auto_reviews.remove(&id);
-        }
-        let record = self.store.worker_provider(id, Role::Reviewer, 0, "codex")?;
-        self.start_worker_record(index, Role::Reviewer, record)
-    }
-
-    fn maintain_reviews(&mut self) -> Result<()> {
-        for index in 0..self.mods.len() {
-            let m = &self.mods[index];
-            let id = m.id;
-            if m.closed || m.user_paused || !m.queue.is_empty() || !m.steering.is_empty() {
-                self.auto_reviews.remove(&id);
-            }
-            if let Some(r) = m.agent_review.as_ref() {
-                let same_plan = m
-                    .planning
-                    .as_ref()
-                    .is_some_and(|p| p.source == r.plan_source);
-                if r.status != "stale"
-                    && (!same_plan
-                        || !m.queue.is_empty()
-                        || !m.steering.is_empty()
-                        || (r.status != "fixing" && !r.current(m)))
-                {
-                    self.store
-                        .0
-                        .execute("UPDATE reviews SET status='stale' WHERE mod_id=?1", [id])?;
-                    self.mods[index].agent_review = self.store.review_state(id)?;
-                    for worker in self
-                        .workers
-                        .values_mut()
-                        .filter(|w| w.mod_id == id && w.role == Role::Reviewer && w.enabled)
-                    {
-                        worker.toggle();
-                    }
-                    continue;
-                }
-            }
-            if self.auto_reviews.contains(&id)
-                && self.review_ready(index)
-                && !m.user_paused
-                && self.mods[index].agent_review.as_ref().is_some_and(|r| {
-                    r.current(&self.mods[index]) && r.repairable() && r.auto_remaining > 0
-                })
-                && !(self.active == Some(index)
-                    && matches!(
-                        self.view,
-                        View::Publish
-                            | View::DeleteMod(_)
-                            | View::CloseMod(_)
-                            | View::Review(_)
-                            | View::ProjectSetup(_, _)
-                            | View::Repository(_)
-                            | View::ConfirmRepository(_)
-                    ))
-            {
-                if self.store.review_fixes(&self.mods[index])? {
-                    self.mods[index].planning = self.store.planning(id)?;
-                    self.mods[index].execution = self.store.execution(id)?;
-                    self.mods[index].agent_review = self.store.review_state(id)?;
-                    self.executing_mods.insert(id);
-                }
-            } else if self.review_due(index) {
-                self.begin_agent_review(index)?;
-            }
-        }
-        Ok(())
-    }
-
-    fn review_due(&self, index: usize) -> bool {
-        let m = &self.mods[index];
-        let confirming = self.current_mod().is_some_and(|current| current.id == m.id)
-            && matches!(
-                self.view,
-                View::Review(_)
-                    | View::Publish
-                    | View::DeleteMod(_)
-                    | View::CloseMod(_)
-                    | View::ProjectSetup(_, _)
-                    | View::Repository(_)
-                    | View::ConfirmRepository(_)
-            );
-        self.review_ready(index)
-            && !m.user_paused
-            && (!self.mod_published(m)
-                || m.agent_review.as_ref().is_some_and(|r| r.fixes_verified(m)))
-            && !confirming
-            && match m.agent_review.as_ref() {
-                Some(r) if r.status == "fixing" => self.auto_reviews.contains(&m.id),
-                Some(r) if r.status != "stale" && r.current(m) => false,
-                _ => self.auto_reviews.contains(&m.id),
-            }
-    }
-
-    fn poll_workers(&mut self) -> Result<()> {
-        self.preparations.poll(&self.store)?;
-        self.refresh_network_requests()?;
-        self.poll_git_jobs()?;
-        self.maintain_project();
-        for mod_id in std::mem::take(&mut self.auto_plans) {
-            if let Some(index) = self.mods.iter().position(|m| m.id == mod_id) {
-                self.start_worker(index, Role::Planner)?;
-            }
-        }
-        let focused = match self.view {
-            View::Queue(index) | View::EditQueue(index) => self
-                .current_mod()
-                .and_then(|code_mod| code_mod.queue.get(index))
-                .map(|message| message.id),
-            _ => None,
-        };
-        let editing_mod = matches!(self.view, View::EditQueue(_))
-            .then(|| self.current_mod().map(|code_mod| code_mod.id))
-            .flatten();
-        let deleting_mod = match self.view {
-            View::DeleteMod(index) | View::CloseMod(index) => Some(self.mods[index].id),
-            _ => None,
-        };
-        let reviewing_mod = matches!(
-            self.view,
-            View::Review(_)
-                | View::Publish
-                | View::ProjectSetup(true, _)
-                | View::Repository(_)
-                | View::ConfirmRepository(_)
-        )
-        .then(|| self.current_mod().map(|m| m.id))
-        .flatten();
-        self.resume_network_workers()?;
-        let scheduled = self
-            .mods
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| {
-                self.executing_mods.contains(&m.id)
-                    && !m.closed
-                    && !m.user_paused
-                    && !self.git_jobs.contains_key(&m.id)
-                    && editing_mod != Some(m.id)
-                    && deleting_mod != Some(m.id)
-                    && reviewing_mod != Some(m.id)
-            })
-            .map(|(index, _)| index)
-            .collect::<Vec<_>>();
-        let admitted = scheduled
-            .iter()
-            .map(|index| self.mods[*index].id)
-            .collect::<BTreeSet<_>>();
-        self.slot_waits.retain(|(id, _), _| admitted.contains(id));
-        for index in scheduled {
-            self.schedule_execution(index)?;
-        }
-        for worker in self.workers.values_mut() {
-            let code_mod = self
-                .mods
-                .iter_mut()
-                .find(|code_mod| code_mod.id == worker.mod_id)
-                .unwrap();
-            worker.poll(
-                &mut self.store,
-                code_mod,
-                editing_mod != Some(code_mod.id)
-                    && (worker.role != Role::Executor
-                        || self.executing_mods.contains(&code_mod.id) && worker.enabled)
-                    && deleting_mod != Some(code_mod.id)
-                    && reviewing_mod != Some(code_mod.id)
-                    && !self
-                        .network_requests
-                        .iter()
-                        .any(|r| r.worker == worker.id && r.status == "approved")
-                    && !self.git_jobs.contains_key(&code_mod.id)
-                    && !code_mod.closed,
-                &code_mod
-                    .git_root
-                    .as_ref()
-                    .map(|root| git_mod::checkout(root))
-                    .unwrap_or_else(|| self.project.clone()),
-            )?;
-        }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs() as i64;
-        for m in &mut self.mods {
-            for worker in self.workers.values().filter(|w| w.mod_id == m.id) {
-                self.store
-                    .record_phase(m.id, worker.id, worker.phase(m), now)?;
-            }
-            self.store.record_failures(m)?;
-            m.diagnostics = self.store.diagnostics(m.id)?;
-        }
-        for index in self.ready_plans() {
-            self.auto_runs.remove(&self.mods[index].id);
-            self.start_execution(index)?;
-        }
-        self.maintain_reviews()?;
-        self.maintain_updates()?;
-        let active = self
-            .workers
-            .values()
-            .filter(|worker| worker.enabled || worker.busy())
-            .map(|worker| worker.mod_id)
-            .collect();
-        for id in self.preparations.expired(&active, Instant::now()) {
-            self.workers
-                .retain(|_, worker| worker.mod_id != id || worker.enabled || worker.busy());
-            self.preparations.cancel(id, &self.store)?;
-        }
-        let edits = self
-            .mods
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| {
-                !m.closed
-                    && !m.user_paused
-                    && !m.queue.is_empty()
-                    && !self.git_jobs.contains_key(&m.id)
-                    && m.git_root.as_ref().is_none_or(|root| {
-                        crate::mod_sync::load(root)
-                            .ok()
-                            .flatten()
-                            .is_none_or(|u| u.installed)
-                    })
-                    && self
-                        .git_states
-                        .get(&m.id)
-                        .is_none_or(|state| !state.continuing)
-                    && editing_mod != Some(m.id)
-                    && deleting_mod != Some(m.id)
-                    && reviewing_mod != Some(m.id)
-                    && m.execution.as_ref().is_some_and(|e| {
-                        matches!(e.status.as_str(), "review" | "applied" | "blocked")
-                            && !e.tasks.iter().any(|t| t.status == "waiting")
-                    })
-                    && !self
-                        .workers
-                        .values()
-                        .any(|w| w.mod_id == m.id && (w.enabled || w.busy()))
-            })
-            .map(|(i, _)| i)
-            .collect::<Vec<_>>();
-        for index in edits {
-            self.start_continuation(index);
-        }
-        if let Some(code_mod) = self.current_mod() {
-            let ids = code_mod
-                .queue
-                .iter()
-                .map(|message| message.id)
-                .collect::<BTreeSet<_>>();
-            self.queue_selection.retain(|id| ids.contains(id));
-        }
-        match self.view {
-            View::Queue(index) => {
-                let next = self
-                    .current_mod()
-                    .and_then(|code_mod| {
-                        code_mod
-                            .queue
-                            .iter()
-                            .position(|message| Some(message.id) == focused)
-                    })
-                    .unwrap_or(index);
-                self.clamp_queue(next);
-            }
-            View::EditQueue(_) => {
-                if let Some(index) = self.current_mod().and_then(|code_mod| {
-                    code_mod
-                        .queue
-                        .iter()
-                        .position(|message| Some(message.id) == focused)
-                }) {
-                    self.view = View::EditQueue(index);
-                } else {
-                    self.view = View::Chat;
-                    self.restore_input();
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    pub fn pending_network(&self) -> Option<&crate::network::Access> {
-        let id = self.current_mod()?.id;
-        self.network_requests
-            .iter()
-            .find(|r| r.mod_id == id && r.status == "pending")
-    }
-
-    fn refresh_network_requests(&mut self) -> Result<()> {
-        self.network_requests.clear();
-        for code_mod in self.mods.iter().filter(|m| !m.closed) {
-            self.network_requests
-                .extend(self.store.network_requests(code_mod.id)?);
-        }
-        if let View::Network(id, _) = self.view
-            && !self
-                .network_requests
-                .iter()
-                .any(|r| r.id == id && r.status == "pending")
-        {
-            self.view = self
-                .pending_network()
-                .map_or(View::Chat, |r| View::Network(r.id, 0));
-        }
-        Ok(())
-    }
-
-    fn resume_network_workers(&mut self) -> Result<()> {
-        let requests = self
-            .network_requests
-            .iter()
-            .filter(|r| r.status == "approved")
-            .cloned()
-            .collect::<Vec<_>>();
-        for access in requests {
-            if !self.executing_mods.contains(&access.mod_id)
-                || self.git_jobs.contains_key(&access.mod_id)
-                || self.workers.get(&access.worker).is_some_and(Worker::busy)
-            {
-                continue;
-            }
-            let Some(index) = self
-                .mods
-                .iter()
-                .position(|m| m.id == access.mod_id && !m.closed && !m.user_paused)
-            else {
-                continue;
-            };
-            if let Some(record) = self.store.resume_network(&access)? {
-                self.workers.remove(&record.id);
-                self.mods[index].execution = self.store.execution(access.mod_id)?;
-                self.notice = None;
-            }
-        }
-        self.refresh_network_requests()
-    }
-
-    fn poll_git_jobs(&mut self) -> Result<()> {
-        if let Some(result) = self.project_job.as_ref().and_then(Job::poll) {
-            self.project_job.take();
-            self.project_error = match result {
-                Ok(git_mod::Result::ProjectSynced) => None,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    self.project_error.take()
-                }
-                Err(error) => Some(error.to_string()),
-                _ => unreachable!(),
-            };
-        }
-        let finished = self
-            .git_jobs
-            .iter()
-            .filter_map(|(id, job)| job.poll().map(|result| (*id, result)))
-            .collect::<Vec<_>>();
-        for (id, result) in finished {
-            let label = self.git_jobs.remove(&id).unwrap().label;
-            let Some(index) = self.mods.iter().position(|m| m.id == id) else {
-                continue;
-            };
-            let root = self.mods[index].git_root.clone().unwrap();
-            if let Ok(state) = git_mod::load(&root) {
-                if state.published()
-                    && self.mods[index]
-                        .execution
-                        .as_ref()
-                        .is_some_and(|e| e.status == "applied")
-                {
-                    self.store.execution_status(id, "review")?;
-                    self.mods[index].execution = self.store.execution(id)?;
-                }
-                if let Some(url) = &state.pr {
-                    let item_id = format!("pr:{id}");
-                    if !self.mods[index]
-                        .messages
-                        .iter()
-                        .any(|message| message.item_id.as_deref() == Some(&item_id))
-                    {
-                        let message = crate::store::Message {
-                            source: None,
-                            task: None,
-                            item_id: Some(item_id),
-                            role: "harness".into(),
-                            body: format!("PR ready · {url}"),
-                            model: None,
-                            effort: None,
-                        };
-                        self.store.save_message(id, &message)?;
-                        self.mods[index].messages.push(message);
-                    }
-                }
-                self.git_states.insert(id, state);
-            }
-            if result.is_ok() {
-                self.git_errors.clear(id, label);
-                if matches!(
-                    label,
-                    "updating from target branch" | "saving verified merge"
-                ) && !self.git_errors.contains(id, "updating from target branch")
-                    && !self.git_errors.contains(id, "saving verified merge")
-                {
-                    self.update_errors.remove(&id);
-                }
-            }
-            match result {
-                Ok(git_mod::Result::ProjectSynced) => unreachable!(),
-                Ok(git_mod::Result::PublicationDraft(draft)) => {
-                    if self.current_mod().is_some_and(|m| m.id == id) && self.can_publish() {
-                        self.publication = Some(draft);
-                        self.scroll.offset = 0;
-                        self.view = View::Publish;
-                    }
-                }
-                Ok(git_mod::Result::Adopted) => {
-                    if self.mods[index]
-                        .execution
-                        .as_ref()
-                        .is_some_and(|e| e.status == "applied")
-                    {
-                        self.store.execution_status(id, "review")?;
-                        self.mods[index].execution = self.store.execution(id)?;
-                    }
-                    if root.join("close-request").exists() {
-                        git_mod::mark_closing(&root, false, false)
-                            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                        std::fs::remove_file(root.join("close-request")).ok();
-                        self.finish_mod(index, false, false)?;
-                    } else if self.current_mod().is_some_and(|m| m.id == id) {
-                        self.open_publication()?;
-                    }
-                }
-                Ok(git_mod::Result::RepositoryConnected) => {
-                    if self.current_mod().is_some_and(|m| m.id == id) {
-                        if self.git_states.get(&id).is_some_and(|state| state.closing) {
-                            self.finish_mod(index, false, false)?;
-                        } else if self.can_publish() {
-                            self.open_publication()?;
-                        }
-                    }
-                }
-                Ok(git_mod::Result::Prepared) => {
-                    if self.mods[index]
-                        .planning
-                        .as_ref()
-                        .is_some_and(|p| p.status == "pending")
-                    {
-                        self.auto_plans.insert(id);
-                    }
-                }
-                Ok(git_mod::Result::Refreshed) => {
-                    self.store.restart_plan(id)?;
-                    self.mods[index].planning = self.store.planning(id)?;
-                    self.auto_plans.insert(id);
-                }
-                Ok(git_mod::Result::TargetChecked {
-                    target,
-                    publish,
-                    explicit,
-                }) => {
-                    self.target_errors.remove(&id);
-                    if explicit
-                        && let Some(target) = &target
-                        && self
-                            .git_states
-                            .get(&id)
-                            .is_some_and(|s| s.base != target.head)
-                        && self.mods[index]
-                            .execution
-                            .as_ref()
-                            .is_some_and(|e| e.complete() && e.status == "review")
-                        && target.pr_state.as_deref().is_none_or(|s| s == "OPEN")
-                    {
-                        self.start_update(index, target.clone());
-                    }
-                    if let Some(target) = target {
-                        self.targets.insert(id, target);
-                    } else {
-                        self.targets.remove(&id);
-                    }
-                    if publish
-                        && self.current_mod().is_some_and(|m| m.id == id)
-                        && self.can_publish()
-                    {
-                        self.confirm_publication()?;
-                    }
-                }
-                Ok(git_mod::Result::Updated) => {
-                    let mut update = crate::mod_sync::load(&root).unwrap().unwrap();
-                    self.store.install_update(id, &root, &update)?;
-                    update.installed = true;
-                    crate::mod_sync::save(&root, &update)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    let state = self.store.load_project(&self.project)?;
-                    self.mods[index] = state.mods.into_iter().find(|m| m.id == id).unwrap();
-                    self.start_worker(index, Role::Executor)?;
-                }
-                Ok(git_mod::Result::UpdateFinished) => {
-                    self.target_checks.remove(&id);
-                }
-                Ok(git_mod::Result::Snapshot) => {
-                    let plan = self.mods[index]
-                        .planning
-                        .as_ref()
-                        .unwrap()
-                        .plan
-                        .as_ref()
-                        .unwrap();
-                    if let Err(error) = self.store.create_execution(id, &root, plan) {
-                        self.preparations.cancel(id, &self.store)?;
-                        return Err(error);
-                    }
-                    self.mods[index].execution = self.store.execution(id)?;
-                    self.start_worker(index, Role::Executor)?;
-                }
-                Ok(git_mod::Result::Reviewed(review)) => {
-                    if self.current_mod().is_some_and(|m| m.id == id) {
-                        if self.mods[index].execution.as_ref().is_some_and(|e| {
-                            e.status == "review"
-                                && e.fingerprint.as_deref() != Some(&review.fingerprint)
-                        }) {
-                            self.store.execution_status(id, "blocked")?;
-                            self.mods[index].execution = self.store.execution(id)?;
-                            self.notice = Some(
-                                "Working files changed since verification. Ctrl+R rechecks.".into(),
-                            );
-                        }
-                        self.review = Some(review);
-                        self.view = View::Review(0);
-                        if std::mem::take(&mut self.publish_after_review) && self.can_publish() {
-                            self.open_publication()?;
-                        }
-                    }
-                }
-                Ok(git_mod::Result::Pruned) => {}
-                Ok(git_mod::Result::Published) => {}
-                Ok(git_mod::Result::Continued) => {
-                    self.finish_edit(index)?;
-                    git_mod::finish_continuation(&root)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    self.git_states.insert(id, git_mod::load(&root).unwrap());
-                }
-                Ok(git_mod::Result::Reopened) => {
-                    self.store.reopen_mod(id)?;
-                    self.mods[index].closed = false;
-                    if self.current_mod().is_some_and(|m| m.id == id) {
-                        self.show_closed = false;
-                        self.restore_input();
-                    }
-                }
-                Ok(git_mod::Result::Closed) => {
-                    self.target_errors.remove(&id);
-                    let selected = self.store.close_mod(self.project_id, id)?;
-                    self.mods[index].closed = true;
-                    self.mods[index].planning = self.store.planning(id)?;
-                    self.mods[index].execution = self.store.execution(id)?;
-                    if self.current_mod().is_some_and(|m| m.id == id) {
-                        self.active = self.mods.iter().position(|m| Some(m.id) == selected);
-                        self.view = if self.active.is_some() {
-                            View::Chat
-                        } else {
-                            View::NewMod
-                        };
-                        self.restore_input();
-                    }
-                }
-                Ok(git_mod::Result::Removed) => {
-                    let was_active = self.current_mod().is_some_and(|m| m.id == id);
-                    let selected = self.store.delete_mod(self.project_id, id)?;
-                    self.mods.remove(index);
-                    self.git_errors.remove(id);
-                    self.git_states.remove(&id);
-                    self.target_errors.remove(&id);
-                    self.active = self.mods.iter().position(|m| Some(m.id) == selected);
-                    if was_active {
-                        self.view = if self.active.is_some() {
-                            View::Chat
-                        } else {
-                            View::NewMod
-                        };
-                        self.queue_selection.clear();
-                        self.history_offset = 0;
-                        self.plan_details = false;
-                        self.restore_input();
-                    } else if let View::Mods(focused) | View::DeleteMod(focused) = self.view {
-                        self.view = View::Mods(
-                            focused
-                                .saturating_sub(usize::from(index < focused))
-                                .min(self.mods.len()),
-                        );
-                    }
-                    self.notice = std::fs::remove_dir_all(root)
-                        .err()
-                        .filter(|error| error.kind() != io::ErrorKind::NotFound)
-                        .map(|error| error.to_string());
-                }
-                Err(error) if label == "writing commit and PR text" => {
-                    if self.current_mod().is_some_and(|m| m.id == id) {
-                        self.publish_after_review = false;
-                    }
-                    self.git_errors.record(
-                        id,
-                        label,
-                        format!("{error} Work is retained; Ctrl+S retries."),
-                    );
-                }
-                Err(error) if label == "checking target branch" => {
-                    self.target_errors.insert(id, error.to_string());
-                    if self.current_mod().is_some_and(|m| m.id == id) {
-                        self.publish_after_review = false;
-                    }
-                }
-                Err(error) => {
-                    if matches!(
-                        label,
-                        "updating from target branch" | "saving verified merge"
-                    ) {
-                        self.update_errors.insert(id);
-                    }
-                    if self.current_mod().is_some_and(|m| m.id == id) {
-                        self.publish_after_review = false;
-                    }
-                    let detail = error.to_string();
-                    let detail = detail.trim_end_matches(" Work is retained.");
-                    self.git_errors.record(
-                        id,
-                        label,
-                        if error.kind() == io::ErrorKind::Unsupported {
-                            error.to_string()
-                        } else {
-                            format!("{detail} Work is retained; Ctrl+R retries.")
-                        },
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
-    fn clamp_queue(&mut self, index: usize) {
-        let len = self
-            .current_mod()
-            .map_or(0, |code_mod| code_mod.queue.len());
-        if len == 0 {
-            self.view = View::Chat;
-            self.queue_selection.clear();
-        } else {
-            self.view = View::Queue(index.min(len - 1));
-        }
-    }
-
-    fn celebrate(&mut self) {
-        self.happy_since = self.motion.then(Instant::now);
-    }
-
-    fn save_draft(&mut self) -> Result<()> {
-        if let Some(index) = self.active {
-            let draft = self.input.lines().join("\n");
-            let code_mod = &mut self.mods[index];
-            if draft != code_mod.draft {
-                self.store.save_draft(code_mod.id, &draft)?;
-                code_mod.draft = draft;
-            }
-        }
-        Ok(())
-    }
-
-    fn submit(&mut self) -> Result<()> {
-        if self.read_only()
-            || self.git_activity().is_some_and(|activity| {
-                matches!(
-                    activity,
-                    "closing mod" | "deleting mod" | "reopening codemod"
-                )
-            })
-        {
-            self.notice = Some("Wait for this operation to finish.".into());
-            return Ok(());
-        }
-        let message = self.input.lines().join("\n");
-        if let Some(index) = self.active
-            && !message.trim().is_empty()
-        {
-            let code_mod = &mut self.mods[index];
-            if let Some(question) = code_mod.question() {
-                if message.len() > 4000 {
-                    self.notice = Some("Keep the answer under 4,000 bytes.".into());
-                    return Ok(());
-                }
-                let reply = self.store.user_answer(code_mod.id, question.id, &message)?;
-                code_mod.messages.push(reply);
-                code_mod.coordination = self.store.mailbox(code_mod.id)?;
-            } else {
-                let queued = self.store.enqueue(code_mod.id, &message)?;
-                code_mod.queue.push(queued);
-            }
-            code_mod.draft.clear();
-            self.input.clear();
-            self.celebrate();
-        }
-        Ok(())
-    }
-}
-
-impl Drop for App {
-    fn drop(&mut self) {
-        self.workers.clear();
-        if let Some(root) = self.setup_root.take() {
-            let _ = std::fs::remove_dir_all(root);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -3219,6 +847,8 @@ mod tests {
     mod workbench;
     use super::*;
     use crate::store::test_support::TestData;
+    use crate::worker::Worker;
+    use crate::{engine::state, git_mod::Job, workspace};
 
     fn key(app: &mut App, code: KeyCode, modifiers: KeyModifiers) {
         app.handle(Event::Key(KeyEvent::new(code, modifiers)))
@@ -3234,6 +864,37 @@ mod tests {
     }
 
     #[test]
+    fn empty_editor_transitions_update_guidance_and_polling_preserves_cursor() {
+        let data = TestData::new();
+        let project = data.0.join("editor-project");
+        std::fs::create_dir_all(&project).unwrap();
+        let mut store = data.store();
+        let project_id = store.load_project(&project).unwrap().id;
+        store.create_mod(project_id, "Existing codemod").unwrap();
+        let mut app = App::load(project, false, store).unwrap();
+        assert_eq!(
+            app.input.placeholder_text(),
+            "Describe a feature, a fix, or an idea..."
+        );
+        app.perform_action(Action::NewMod).unwrap();
+        assert_eq!(
+            app.input.placeholder_text(),
+            "Describe what you want to build or change..."
+        );
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(
+            app.input.placeholder_text(),
+            "Describe a feature, a fix, or an idea..."
+        );
+        paste(&mut app, "Keep my cursor");
+        key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+        let cursor = app.input.cursor();
+        app.poll_workers().unwrap();
+        assert_eq!(app.input.cursor(), cursor);
+        assert_eq!(app.input.lines(), ["Keep my cursor"]);
+    }
+
+    #[test]
     fn new_mods_fetch_the_merged_source_before_planning() {
         let (data, repo, _root, target) = crate::git_sync::tests::remote_change();
         std::fs::write(repo.join("new.txt"), "local edit\n").unwrap();
@@ -3242,7 +903,7 @@ mod tests {
         paste(&mut app, "Edit existing items");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.worker_error().is_none());
-        let code_mod = &app.mods[0];
+        let code_mod = &app.engine.mods[0];
         let root = code_mod.git_root.as_ref().unwrap();
         assert_eq!(git_mod::load(root).unwrap().base, target);
         assert_eq!(
@@ -3253,7 +914,7 @@ mod tests {
             std::fs::read_to_string(repo.join("new.txt")).unwrap(),
             "local edit\n"
         );
-        assert!(app.auto_plans.contains(&code_mod.id));
+        assert!(app.engine.auto_plans.contains(&code_mod.id));
     }
 
     #[test]
@@ -3268,7 +929,7 @@ mod tests {
         app.input.insert_str("Keep this description");
         app.poll_workers().unwrap();
         wait_git(&mut app);
-        assert!(app.mods.is_empty() && app.worker_error().is_none());
+        assert!(app.engine.mods.is_empty() && app.worker_error().is_none());
         assert_eq!(
             git_mod::git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
             target
@@ -3282,7 +943,7 @@ mod tests {
             staged
         );
         assert_eq!(app.input.lines().join("\n"), "Keep this description");
-        let saved = app.project_sync_root.clone();
+        let saved = app.engine.project_sync_root.clone();
         drop(app);
         assert_eq!(
             App::load(repo, false, data.store())
@@ -3318,25 +979,31 @@ mod tests {
         wait_git(&mut app);
         app.delete_mod(0).unwrap();
         wait_git(&mut app);
-        assert!(app.mods.is_empty() && !root.exists());
+        assert!(app.engine.mods.is_empty() && !root.exists());
         git_mod::git(
-            &app.project_sync_root,
+            &app.engine.project_sync_root,
             &repo,
             &["push", "origin", &format!("{target}:main")],
             &flag,
         )
         .unwrap();
         app.poll_workers().unwrap();
-        assert!(app.project_job.is_none());
-        app.project_check = Some(Instant::now() - Duration::from_secs(31));
+        assert!(app.engine.project_job.is_none());
+        app.engine.project_check = Some(Instant::now() - Duration::from_secs(31));
         app.poll_workers().unwrap();
         wait_git(&mut app);
         assert!(app.worker_error().is_none());
         assert_eq!(
-            git_mod::git(&app.project_sync_root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
+            git_mod::git(
+                &app.engine.project_sync_root,
+                &repo,
+                &["rev-parse", "HEAD"],
+                &flag
+            )
+            .unwrap(),
             target
         );
-        assert!(app.mods.is_empty() && app.project_sync_root.exists());
+        assert!(app.engine.mods.is_empty() && app.engine.project_sync_root.exists());
     }
 
     #[test]
@@ -3364,12 +1031,12 @@ mod tests {
         std::fs::write(repo.join("a.txt"), "original\n").unwrap();
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Sync(0)));
+        assert!(matches!(app.engine.view, View::Sync(0)));
         key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
         assert!(app.worker_error().is_none());
         assert!(app.sync_status().is_none());
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::NewMod));
+        assert!(matches!(app.engine.view, View::NewMod));
         assert_eq!(
             git_mod::git(&root, &repo, &["rev-parse", "HEAD"], &flag).unwrap(),
             target
@@ -3380,51 +1047,64 @@ mod tests {
     #[test]
     fn failed_final_checks_leave_active_scheduling_and_show_retry() {
         let (data, mut app, _) = execution_app();
-        let id = app.mods[0].id;
-        let mut checks = app.mods[0].execution.as_ref().unwrap().checks.clone();
+        let id = app.engine.mods[0].id;
+        let mut checks = app.engine.mods[0]
+            .execution
+            .as_ref()
+            .unwrap()
+            .checks
+            .clone();
         checks[0].exit_code = Some(1);
         checks[0].output = "Assertion failed on combined source".into();
-        app.store
+        app.engine
+            .store
             .execution_checks(id, "blocked", &checks, None)
             .unwrap();
-        app.executing_mods.insert(id);
+        app.engine.executing_mods.insert(id);
         app.schedule_execution(0).unwrap();
-        assert!(!app.executing_mods.contains(&id));
-        assert!(!app.auto_reviews.contains(&id));
-        assert!(app.workers.is_empty());
+        assert!(!app.engine.executing_mods.contains(&id));
+        assert!(!app.engine.auto_reviews.contains(&id));
+        assert!(app.engine.workers.is_empty());
         assert_eq!(app.state_summary().phase, state::Phase::NeedsYou);
         assert!(app.action_dock().primary == Some(Action::Retry));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-        assert!(matches!(app.view, View::Checks(0)));
+        assert!(matches!(app.engine.view, View::Checks(0)));
         let display = rows(&screen(&mut app, 100, 40)).join("\n");
         assert!(display.contains("Assertion failed on combined source"));
-        let project = app.project.clone();
+        let project = app.engine.project.clone();
         drop(app);
         let app = App::load(project, false, data.store()).unwrap();
         assert_eq!(app.state_summary().phase, state::Phase::NeedsYou);
         assert!(app.action_dock().primary == Some(Action::Retry));
         assert_eq!(app.input.lines(), ["keep this draft"]);
-        assert!(app.workers.is_empty());
+        assert!(app.engine.workers.is_empty());
     }
 
     #[test]
     fn failed_check_action_is_visible_and_preserves_draft_and_queue() {
         for from_menu in [false, true] {
             let (data, mut app, _) = execution_app();
-            let mod_id = app.mods[0].id;
+            let mod_id = app.engine.mods[0].id;
             let worker = app
+                .engine
                 .store
                 .worker_provider(mod_id, Role::Executor, 0, "codex")
                 .unwrap();
-            let task_id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
-            app.store
+            let task_id = app.engine.mods[0].execution.as_ref().unwrap().tasks[0].id;
+            app.engine
+                .store
                 .0
                 .execute(
                     "UPDATE task_runs SET worker_id=?2 WHERE id=?1",
                     rusqlite::params![task_id, worker.id],
                 )
                 .unwrap();
-            let mut checks = app.mods[0].execution.as_ref().unwrap().checks.clone();
+            let mut checks = app.engine.mods[0]
+                .execution
+                .as_ref()
+                .unwrap()
+                .checks
+                .clone();
             checks[0].task = Some(task_id);
             checks[0].exit_code = Some(1);
             checks[0].output = "AssertionError: static/task-backup.mjs".into();
@@ -3433,17 +1113,24 @@ mod tests {
             skipped.exit_code = None;
             skipped.output = "Not run.".into();
             checks.extend(vec![skipped; 22]);
-            app.store
+            app.engine
+                .store
                 .execution_checks(mod_id, "blocked", &checks, None)
                 .unwrap();
-            app.store.enqueue(mod_id, "Keep this queued edit").unwrap();
-            app.store.save_draft(mod_id, "keep this draft").unwrap();
-            let project = app.project.clone();
+            app.engine
+                .store
+                .enqueue(mod_id, "Keep this queued edit")
+                .unwrap();
+            app.engine
+                .store
+                .save_draft(mod_id, "keep this draft")
+                .unwrap();
+            let project = app.engine.project.clone();
             drop(app);
             let mut app = App::load(project, false, data.store()).unwrap();
             assert_eq!(app.action_dock().primary, Some(Action::FixCheck(task_id)));
             key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-            assert!(app.view == View::Checks(0));
+            assert!(app.engine.view == View::Checks(0));
             let text = rows(&screen(&mut app, 100, 40))
                 .join("\n")
                 .replace('\u{a0}', " ");
@@ -3461,11 +1148,11 @@ mod tests {
             if from_menu {
                 key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
                 key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
-                assert!(app.view == View::Actions(Action::FixCheck(task_id)));
+                assert!(app.engine.view == View::Actions(Action::FixCheck(task_id)));
             }
             key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
-            assert!(app.view == View::Checks(0));
-            assert!(app.mods[0].execution.as_ref().unwrap().tasks[0].check_repair);
+            assert!(app.engine.view == View::Checks(0));
+            assert!(app.engine.mods[0].execution.as_ref().unwrap().tasks[0].check_repair);
             assert_eq!(app.state_summary().status, "Working · fixing failed check");
             assert!(
                 rows(&screen(&mut app, 100, 40))
@@ -3473,17 +1160,17 @@ mod tests {
                     .contains("Previous failed checks")
             );
             assert_eq!(app.input.lines(), ["keep this draft"]);
-            assert_eq!(app.mods[0].queue[0].body, "Keep this queued edit");
-            assert!(app.executing_mods.contains(&mod_id));
+            assert_eq!(app.engine.mods[0].queue[0].body, "Keep this queued edit");
+            assert!(app.engine.executing_mods.contains(&mod_id));
             assert!(app.failed_check_owner().is_none());
-            let source = app.mods[0].execution.as_ref().unwrap().tasks[0]
+            let source = app.engine.mods[0].execution.as_ref().unwrap().tasks[0]
                 .source
                 .clone();
             // The stale menu action cannot reopen or replace a running repair.
-            app.view = View::Actions(Action::FixCheck(task_id));
+            app.engine.view = View::Actions(Action::FixCheck(task_id));
             key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
             assert_eq!(
-                app.mods[0].execution.as_ref().unwrap().tasks[0].source,
+                app.engine.mods[0].execution.as_ref().unwrap().tasks[0].source,
                 source
             );
         }
@@ -3492,15 +1179,21 @@ mod tests {
     #[test]
     fn connecting_repair_is_associated_only_with_its_selected_task() {
         let (_data, mut app, _root) = execution_app();
-        let mod_id = app.mods[0].id;
-        let record = app.store.worker_for(mod_id, Role::Executor).unwrap();
+        let mod_id = app.engine.mods[0].id;
+        let record = app.engine.store.worker_for(mod_id, Role::Executor).unwrap();
         // Construct the display fixture without opening a provider connection.
-        let mut worker =
-            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        let mut worker = Worker::start(
+            &app.engine.project,
+            &app.engine.mods[0],
+            record,
+            Role::Planner,
+            None,
+        )
+        .unwrap();
         worker.role = Role::Executor;
         worker.status = Status::Connecting;
         let worker_id = worker.id;
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         let plan = m.planning.as_mut().unwrap().plan.as_mut().unwrap();
         let mut repair = plan.tasks[0].clone();
         repair.id = "repair".into();
@@ -3527,12 +1220,12 @@ mod tests {
         repair.task_id = "later".into();
         let later_id = repair.id;
         execution.tasks.push(repair);
-        app.executing_mods.insert(mod_id);
+        app.engine.executing_mods.insert(mod_id);
         assert_eq!(
             app.inspect_task(repair_id).unwrap().state,
             "Waiting for a worker"
         );
-        app.workers.insert(worker_id, worker);
+        app.engine.workers.insert(worker_id, worker);
         assert_eq!(app.inspect_task(done_id).unwrap().state, "Done");
         assert_eq!(
             app.inspect_task(repair_id).unwrap().state,
@@ -3543,14 +1236,14 @@ mod tests {
             "Waiting for a worker"
         );
         assert_eq!(app.failed_task(), None);
-        app.view = View::Checks(0);
+        app.engine.view = View::Checks(0);
         let visible = rows(&screen(&mut app, 120, 40)).join("\n");
         assert!(visible.contains("Repair offline check · Connecting worker"));
         assert!(visible.contains("Previous failed checks"));
         assert!(visible.contains("Database fixture timed out"));
 
         // Reconnecting a saved delivery takes precedence over pending work.
-        app.mods[0].execution.as_mut().unwrap().tasks[2].status = "sending".into();
+        app.engine.mods[0].execution.as_mut().unwrap().tasks[2].status = "sending".into();
         assert_eq!(
             app.inspect_task(repair_id).unwrap().state,
             "Waiting for a worker"
@@ -3567,7 +1260,7 @@ mod tests {
     fn project_sync_keeps_codemod_controls_available() {
         let (_data, mut app, _root) = execution_app();
         mark_review_clean(&mut app);
-        app.project_job = Some(Job::start("syncing project branch", |cancelled| {
+        app.engine.project_job = Some(Job::start("syncing project branch", |cancelled| {
             while !cancelled.load(std::sync::atomic::Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(1));
             }
@@ -3576,35 +1269,41 @@ mod tests {
         assert!(!app.execution_busy());
         assert!(app.version_ready());
         app.open_review().unwrap();
-        assert!(matches!(app.view, View::Review(_)) && app.can_publish());
+        assert!(matches!(app.engine.view, View::Review(_)) && app.can_publish());
     }
 
     #[test]
     fn background_sync_errors_keep_workers_running_and_ctrl_u_recovers() {
         let (_data, mut app, root) = execution_app();
-        commit_project(&app.project);
+        commit_project(&app.engine.project);
         git_mod::prepare(
-            &app.project,
+            &app.engine.project,
             &root,
             &std::sync::atomic::AtomicBool::new(false),
         )
         .unwrap();
-        let id = app.mods[0].id;
-        app.mods[0].git_root = Some(root);
-        let record = app.store.worker_for(id, Role::Planner).unwrap();
-        let mut worker =
-            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        let id = app.engine.mods[0].id;
+        app.engine.mods[0].git_root = Some(root);
+        let record = app.engine.store.worker_for(id, Role::Planner).unwrap();
+        let mut worker = Worker::start(
+            &app.engine.project,
+            &app.engine.mods[0],
+            record,
+            Role::Planner,
+            None,
+        )
+        .unwrap();
         worker.role = Role::Executor;
         worker.status = Status::Running;
-        app.workers.insert(worker.id, worker);
+        app.engine.workers.insert(worker.id, worker);
         let error = "fatal: unable to access 'https://github.com/fixture/project.git/': Failed to connect to github.com port 443";
-        app.git_jobs.insert(
+        app.engine.git_jobs.insert(
             id,
             Job::start("checking target branch", move |_| {
                 Err(io::Error::other(error))
             }),
         );
-        app.project_job = Some(Job::start("syncing project branch", move |_| {
+        app.engine.project_job = Some(Job::start("syncing project branch", move |_| {
             Err(io::Error::other(error))
         }));
         wait_git(&mut app);
@@ -3627,16 +1326,16 @@ mod tests {
         }
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Sync(0)));
+        assert!(matches!(app.engine.view, View::Sync(0)));
         let rendered = rows(&screen(&mut app, 100, 30)).join("\n");
         assert!(rendered.contains("Project branch") && rendered.contains("Codemod target"));
         assert!(rendered.contains("fatal:") && !rendered.contains("Ctrl+R retries"));
         screen(&mut app, 48, 20);
         let content = app.scroll.content;
         wheel(&mut app, false, content);
-        assert!(matches!(app.view, View::Sync(offset) if offset > 0));
+        assert!(matches!(app.engine.view, View::Sync(offset) if offset > 0));
         screen(&mut app, 100, 30);
-        assert!(matches!(app.view, View::Sync(0)));
+        assert!(matches!(app.engine.view, View::Sync(0)));
         app.handle(Event::Key(KeyEvent::new(
             KeyCode::Char('u'),
             KeyModifiers::CONTROL,
@@ -3651,11 +1350,12 @@ mod tests {
                 .contains("Sync recovered")
         );
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(app.view == View::Chat);
+        assert!(app.engine.view == View::Chat);
         assert_eq!(app.input.lines(), ["keep this draft"]);
-        assert!(!app.mods[0].user_paused);
+        assert!(!app.engine.mods[0].user_paused);
         assert!(
-            app.workers
+            app.engine
+                .workers
                 .values()
                 .all(|w| w.enabled && w.status == Status::Running)
         );
@@ -3664,20 +1364,24 @@ mod tests {
     #[test]
     fn sync_recovery_clears_only_its_own_error() {
         let (_data, mut app, root) = execution_app();
-        let id = app.mods[0].id;
-        app.mods[0].git_root = Some(root);
+        let id = app.engine.mods[0].id;
+        app.engine.mods[0].git_root = Some(root);
         let second = app
+            .engine
             .store
-            .create_mod(app.project_id, "Second codemod")
+            .create_mod(app.engine.project_id, "Second codemod")
             .unwrap();
         let second_id = second.id;
-        app.mods.push(second);
-        app.target_errors.insert(id, "target unavailable".into());
-        app.target_errors
+        app.engine.mods.push(second);
+        app.engine
+            .target_errors
+            .insert(id, "target unavailable".into());
+        app.engine
+            .target_errors
             .insert(second_id, "second target unavailable".into());
-        app.project_error = Some("project unavailable".into());
-        app.notice = Some("Worker failed".into());
-        app.git_jobs.insert(
+        app.engine.project_error = Some("project unavailable".into());
+        app.engine.notice = Some("Worker failed".into());
+        app.engine.git_jobs.insert(
             id,
             Job::start("checking target branch", |_| {
                 Ok(git_mod::Result::TargetChecked {
@@ -3693,34 +1397,34 @@ mod tests {
             [("Project branch", "project unavailable")]
         );
         assert_eq!(app.worker_error(), Some("Worker failed"));
-        app.project_job = Some(Job::start("syncing project branch", |_| {
+        app.engine.project_job = Some(Job::start("syncing project branch", |_| {
             Err(io::Error::from(io::ErrorKind::WouldBlock))
         }));
         wait_git(&mut app);
-        assert!(app.project_error.is_some());
-        app.project_job = Some(Job::start("syncing project branch", |_| {
+        assert!(app.engine.project_error.is_some());
+        app.engine.project_job = Some(Job::start("syncing project branch", |_| {
             Ok(git_mod::Result::ProjectSynced)
         }));
         wait_git(&mut app);
         assert!(app.sync_status().is_none());
         assert_eq!(app.worker_error(), Some("Worker failed"));
-        app.active = Some(1);
+        app.engine.active = Some(1);
         assert_eq!(
             app.sync_errors(),
             [("Codemod target", "second target unavailable")]
         );
-        app.view = View::NewMod;
+        app.engine.view = View::NewMod;
         assert!(app.sync_errors().is_empty());
-        app.view = View::Chat;
-        app.active = Some(0);
-        app.git_jobs.insert(
+        app.engine.view = View::Chat;
+        app.engine.active = Some(0);
+        app.engine.git_jobs.insert(
             id,
             Job::start("updating from target branch", |_| {
                 Err(io::Error::other("Merge failed"))
             }),
         );
         wait_git(&mut app);
-        assert!(app.update_errors.contains(&id));
+        assert!(app.engine.update_errors.contains(&id));
         assert!(app.worker_error().unwrap().contains("Merge failed"));
         assert!(app.worker_error().unwrap().contains("Ctrl+R retries"));
         assert_eq!(app.action_dock().primary, Some(Action::RetryGit));
@@ -3764,25 +1468,31 @@ mod tests {
             store.enqueue(id, "Later edit").unwrap();
             store.save_draft(id, "Keep this draft").unwrap();
             let mut app = App::load(repo, false, store).unwrap();
-            app.targets.insert(id, target);
-            app.target_checks.insert(id, Instant::now());
-            let record = app.store.worker_for(id, Role::Planner).unwrap();
-            let mut worker =
-                Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+            app.engine.targets.insert(id, target);
+            app.engine.target_checks.insert(id, Instant::now());
+            let record = app.engine.store.worker_for(id, Role::Planner).unwrap();
+            let mut worker = Worker::start(
+                &app.engine.project,
+                &app.engine.mods[0],
+                record,
+                Role::Planner,
+                None,
+            )
+            .unwrap();
             worker.status = Status::Running;
             worker.enabled = true;
-            app.workers.insert(worker.id, worker);
+            app.engine.workers.insert(worker.id, worker);
             app.maintain_updates().unwrap();
-            assert!(app.git_jobs.is_empty() && !root.join("main-update.json").exists());
+            assert!(app.engine.git_jobs.is_empty() && !root.join("main-update.json").exists());
             assert!(!app.version_ready());
-            let worker = app.workers.values_mut().next().unwrap();
+            let worker = app.engine.workers.values_mut().next().unwrap();
             worker.enabled = false;
             worker.status = Status::Ready;
-            let source = app.mods[0].planning.as_ref().unwrap().source.clone();
+            let source = app.engine.mods[0].planning.as_ref().unwrap().source.clone();
             for status in [
                 "pending", "running", "findings", "fixing", "paused", "blocked", "stale",
             ] {
-                app.mods[0].agent_review = Some(crate::review::State {
+                app.engine.mods[0].agent_review = Some(crate::review::State {
                     source: "review".into(),
                     plan_source: source.clone(),
                     fingerprint: fingerprint.clone(),
@@ -3792,20 +1502,29 @@ mod tests {
                     ..Default::default()
                 });
                 app.maintain_updates().unwrap();
-                assert!(app.git_jobs.is_empty(), "Update started during {status}");
+                assert!(
+                    app.engine.git_jobs.is_empty(),
+                    "Update started during {status}"
+                );
                 assert!(!root.join("main-update.json").exists());
             }
             if explicit {
-                app.target_errors.insert(id, "Remote unavailable".into());
+                app.engine
+                    .target_errors
+                    .insert(id, "Remote unavailable".into());
                 key(&mut app, KeyCode::Char('u'), KeyModifiers::CONTROL);
                 assert!(app.sync_status().is_none());
                 assert!(!root.join("main-update.json").exists());
-                assert_eq!(app.mods[0].agent_review.as_ref().unwrap().status, "stale");
+                assert_eq!(
+                    app.engine.mods[0].agent_review.as_ref().unwrap().status,
+                    "stale"
+                );
                 app.check_target(0, false, true);
                 let started = Instant::now();
                 loop {
                     app.poll_git_jobs().unwrap();
                     if app
+                        .engine
                         .git_jobs
                         .get(&id)
                         .is_some_and(|j| j.label == "updating from target branch")
@@ -3816,10 +1535,10 @@ mod tests {
                     std::thread::sleep(Duration::from_millis(10));
                 }
             } else {
-                app.mods[0].agent_review.as_mut().unwrap().status = "clean".into();
+                app.engine.mods[0].agent_review.as_mut().unwrap().status = "clean".into();
                 app.maintain_updates().unwrap();
             }
-            let job = app.git_jobs.remove(&id).unwrap();
+            let job = app.engine.git_jobs.remove(&id).unwrap();
             let started = Instant::now();
             loop {
                 if let Some(result) = job.poll() {
@@ -3830,9 +1549,9 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(10));
             }
             assert_eq!(app.input.lines(), ["Keep this draft"]);
-            assert_eq!(app.mods[0].queue[0].body, "Later edit");
-            assert!(app.workers.is_empty() && root.join("main-update.json").exists());
-            assert!(matches!(app.view, View::Chat));
+            assert_eq!(app.engine.mods[0].queue[0].body, "Later edit");
+            assert!(app.engine.workers.is_empty() && root.join("main-update.json").exists());
+            assert!(matches!(app.engine.view, View::Chat));
         }
     }
 
@@ -3878,7 +1597,7 @@ mod tests {
                 .unwrap();
             store.save_draft(id, "Keep this draft").unwrap();
             let mut app = App::load(repo.clone(), false, store).unwrap();
-            app.git_jobs.insert(
+            app.engine.git_jobs.insert(
                 id,
                 Job::start("saving verified merge", |_| {
                     Err(io::Error::other(
@@ -3887,8 +1606,11 @@ mod tests {
                 }),
             );
             wait_git(&mut app);
-            assert!(app.mods[0].execution.as_ref().unwrap().complete());
-            assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "review");
+            assert!(app.engine.mods[0].execution.as_ref().unwrap().complete());
+            assert_eq!(
+                app.engine.mods[0].execution.as_ref().unwrap().status,
+                "review"
+            );
             assert_eq!(
                 app.worker_error()
                     .unwrap()
@@ -3898,24 +1620,27 @@ mod tests {
             );
             assert!(app.git_retry_pending() && !app.can_publish());
             if legacy {
-                app.store.task_status(id, &source, "blocked", None).unwrap();
-                app.store.execution_status(id, "blocked").unwrap();
+                app.engine
+                    .store
+                    .task_status(id, &source, "blocked", None)
+                    .unwrap();
+                app.engine.store.execution_status(id, "blocked").unwrap();
                 drop(app);
                 app = App::load(repo, false, data.store()).unwrap();
                 std::fs::write(root.join("work/delete.txt"), "later edit\n").unwrap();
                 assert!(!app.retry_verified_update(0).unwrap());
-                assert!(app.git_jobs.is_empty() && app.workers.is_empty());
+                assert!(app.engine.git_jobs.is_empty() && app.engine.workers.is_empty());
                 std::fs::write(root.join("work/delete.txt"), "codemod version\n").unwrap();
             }
             key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
             assert!(app.worker_error().is_none());
-            assert!(app.workers.is_empty() && !root.join("main-update.json").exists());
+            assert!(app.engine.workers.is_empty() && !root.join("main-update.json").exists());
             assert_eq!(
-                app.mods[0].execution.as_ref().unwrap().tasks[0].source,
+                app.engine.mods[0].execution.as_ref().unwrap().tasks[0].source,
                 source
             );
             assert_eq!(
-                app.mods[0]
+                app.engine.mods[0]
                     .execution
                     .as_ref()
                     .unwrap()
@@ -3923,7 +1648,7 @@ mod tests {
                     .as_deref(),
                 Some(fingerprint.as_str())
             );
-            assert!(app.mods[0].execution.as_ref().unwrap().complete());
+            assert!(app.engine.mods[0].execution.as_ref().unwrap().complete());
             assert_eq!(app.input.lines(), ["Keep this draft"]);
         }
     }
@@ -3947,7 +1672,7 @@ mod tests {
             .save_thread(planner.id, "planner-that-saw-empty-source")
             .unwrap();
         let mut app = App::load(repo, false, store).unwrap();
-        let history = app.mods[0]
+        let history = app.engine.mods[0]
             .messages
             .iter()
             .map(|message| message.body.clone())
@@ -3959,17 +1684,24 @@ mod tests {
             std::fs::read_to_string(app.source_project(0).join("new.txt")).unwrap(),
             "incoming\n"
         );
-        assert_eq!(app.mods[0].planning.as_ref().unwrap().status, "pending");
-        assert_ne!(app.mods[0].planning.as_ref().unwrap().source, first_source);
+        assert_eq!(
+            app.engine.mods[0].planning.as_ref().unwrap().status,
+            "pending"
+        );
+        assert_ne!(
+            app.engine.mods[0].planning.as_ref().unwrap().source,
+            first_source
+        );
         assert!(
-            app.store
+            app.engine
+                .store
                 .worker_for(code_mod.id, Role::Planner)
                 .unwrap()
                 .thread_id
                 .is_none()
         );
         assert_eq!(
-            app.mods[0]
+            app.engine.mods[0]
                 .messages
                 .iter()
                 .map(|message| message.body.clone())
@@ -3978,8 +1710,8 @@ mod tests {
         );
         assert_eq!(app.input.lines(), ["keep the draft"]);
         assert_eq!(queued(&app), ["Also check cancel"]);
-        assert!(app.auto_plans.contains(&code_mod.id));
-        assert!(app.mods[0].execution.is_none());
+        assert!(app.engine.auto_plans.contains(&code_mod.id));
+        assert!(app.engine.mods[0].execution.is_none());
     }
 
     #[test]
@@ -3996,13 +1728,15 @@ mod tests {
         let mut app = App::load(project.clone(), false, data.store()).unwrap();
         paste(&mut app, "Improve the greeting");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::ProjectSetup(false, _)) && app.mods.is_empty());
+        assert!(
+            matches!(app.engine.view, View::ProjectSetup(false, _)) && app.engine.mods.is_empty()
+        );
         assert!(!project.join(".git").exists());
         assert_eq!(
-            app.setup_files,
+            app.engine.setup_files,
             [".gitattributes", ".gitignore", "hello.txt", "windows.txt"]
         );
-        let preview = app.setup_root.clone().unwrap();
+        let preview = app.engine.setup_root.clone().unwrap();
         for width in [48, 100] {
             let rendered = rows(&screen(&mut app, width, 30)).join("\n");
             assert!(rendered.contains("set up Git") && rendered.contains("hello.txt"));
@@ -4014,7 +1748,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.worker_error().is_none());
-        let root = app.mods[0].git_root.as_ref().unwrap();
+        let root = app.engine.mods[0].git_root.as_ref().unwrap();
         assert!(git_mod::has_commit(&project) && root.join("snapshot-ready").exists());
         assert_eq!(
             workspace::source_state(&git_mod::checkout(root))
@@ -4030,7 +1764,7 @@ mod tests {
             std::fs::read_to_string(project.join("private.db")).unwrap(),
             "local data"
         );
-        assert!(app.auto_plans.contains(&app.mods[0].id));
+        assert!(app.engine.auto_plans.contains(&app.engine.mods[0].id));
     }
 
     #[test]
@@ -4049,11 +1783,11 @@ mod tests {
                 .unwrap()
                 .contains("Starting files changed")
         );
-        assert!(!project.join(".git").exists() && app.auto_plans.is_empty());
-        let root = app.mods[0].git_root.clone().unwrap();
+        assert!(!project.join(".git").exists() && app.engine.auto_plans.is_empty());
+        let root = app.engine.mods[0].git_root.clone().unwrap();
         app.delete_mod(0).unwrap();
         wait_git(&mut app);
-        assert!(app.mods.is_empty() && !root.exists());
+        assert!(app.engine.mods.is_empty() && !root.exists());
         assert_eq!(
             std::fs::read_to_string(project.join("hello.txt")).unwrap(),
             "outside edit"
@@ -4064,40 +1798,46 @@ mod tests {
     fn an_applied_snapshot_can_be_adopted_without_rerunning_or_overwriting_local_files() {
         let (_data, mut app, root) = execution_app();
         mark_review_clean(&mut app);
-        let id = app.mods[0].id;
+        let id = app.engine.mods[0].id;
         app.open_review().unwrap();
         workspace::review(&root)
             .unwrap()
-            .apply(&app.project, &root)
+            .apply(&app.engine.project, &root)
             .unwrap();
-        app.store.execution_status(id, "applied").unwrap();
-        app.mods[0].execution = app.store.execution(id).unwrap();
-        assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "applied");
+        app.engine.store.execution_status(id, "applied").unwrap();
+        app.engine.mods[0].execution = app.engine.store.execution(id).unwrap();
+        assert_eq!(
+            app.engine.mods[0].execution.as_ref().unwrap().status,
+            "applied"
+        );
         key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
         assert!(app.can_publish());
         key(&mut app, KeyCode::Char('p'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::ProjectSetup(true, _)));
+        assert!(matches!(app.engine.view, View::ProjectSetup(true, _)));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(app.worker_error().is_none());
-        assert!(matches!(app.view, View::Repository(false)));
-        assert_eq!(app.mods[0].id, id);
-        assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "review");
+        assert!(matches!(app.engine.view, View::Repository(false)));
+        assert_eq!(app.engine.mods[0].id, id);
         assert_eq!(
-            std::fs::read_to_string(app.project.join("hello.sh")).unwrap(),
+            app.engine.mods[0].execution.as_ref().unwrap().status,
+            "review"
+        );
+        assert_eq!(
+            std::fs::read_to_string(app.engine.project.join("hello.sh")).unwrap(),
             "new\n"
         );
         assert_eq!(
             std::fs::read_to_string(git_mod::checkout(&root).join("hello.sh")).unwrap(),
             "old\n"
         );
-        assert!(app.workers.is_empty() && app.auto_plans.is_empty());
+        assert!(app.engine.workers.is_empty() && app.engine.auto_plans.is_empty());
         paste(&mut app, "fixture/project");
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::ConfirmRepository(true)));
+        assert!(matches!(app.engine.view, View::ConfirmRepository(true)));
         let rendered = rows(&screen(&mut app, 100, 30)).join("\n");
         assert!(rendered.contains("Create private repository github.com/fixture/project"));
-        assert!(!git_mod::has_origin(&app.project));
+        assert!(!git_mod::has_origin(&app.engine.project));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.input.lines(), ["keep this draft"]);
@@ -4149,7 +1889,7 @@ mod tests {
                 .contains("Message contract")
         );
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-        let task = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
+        let task = app.engine.mods[0].execution.as_ref().unwrap().tasks[0].id;
         assert_eq!(app.inspect_task(task).unwrap().state, "Needs your answer");
         key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
         let expanded = rows(&screen(&mut app, 110, 50)).join("\n");
@@ -4190,7 +1930,7 @@ mod tests {
         paste(&mut app, "Next edit");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(queued(&app), ["Next edit"]);
-        let reopened = app.store.load_project(&app.project).unwrap();
+        let reopened = app.engine.store.load_project(&app.engine.project).unwrap();
         assert!(reopened.mods[0].question().is_none());
         assert!(
             reopened.mods[0]
@@ -4266,7 +2006,7 @@ mod tests {
     fn mouse_scrolling_keeps_conversation_and_composer_separate() {
         let (_data, mut app, _root) = execution_app();
         app.plan_details = true;
-        app.mods[0]
+        app.engine.mods[0]
             .messages
             .extend((0..40).map(|i| crate::store::Message {
                 source: None,
@@ -4301,12 +2041,12 @@ mod tests {
         assert_eq!(app.history_offset, 0);
         screen(&mut app, 80, 30);
         // A view change cannot reuse the previous screen's hit areas.
-        app.view = View::Mods(0);
+        app.engine.view = View::Mods(0);
         wheel(&mut app, false, content);
-        assert!(matches!(app.view, View::Mods(0)));
+        assert!(matches!(app.engine.view, View::Mods(0)));
         screen(&mut app, 80, 30);
         wheel(&mut app, false, ratatui::layout::Rect::new(0, 0, 1, 1));
-        assert!(matches!(app.view, View::Mods(0)));
+        assert!(matches!(app.engine.view, View::Mods(0)));
         screen(&mut app, 20, 8);
         assert_eq!(app.scroll.content, ratatui::layout::Rect::default());
         assert_eq!(app.scroll.input, ratatui::layout::Rect::default());
@@ -4315,54 +2055,62 @@ mod tests {
     #[test]
     fn mouse_scrolling_reaches_list_items_without_activating_them() {
         let (_data, mut app, _root) = execution_app();
-        let id = app.mods[0].id;
+        let id = app.engine.mods[0].id;
         for i in 0..20 {
-            app.mods[0]
-                .queue
-                .push(app.store.enqueue(id, &format!("Instruction {i}")).unwrap());
+            app.engine.mods[0].queue.push(
+                app.engine
+                    .store
+                    .enqueue(id, &format!("Instruction {i}"))
+                    .unwrap(),
+            );
             let code_mod = app
+                .engine
                 .store
-                .create_mod(app.project_id, &format!("Codemod {i}"))
+                .create_mod(app.engine.project_id, &format!("Codemod {i}"))
                 .unwrap();
-            app.mods.push(code_mod);
+            app.engine.mods.push(code_mod);
         }
         let queue = queued(&app)
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        app.view = View::Queue(0);
+        app.engine.view = View::Queue(0);
         let first = screen(&mut app, 80, 24);
         for _ in 0..15 {
             let content = app.scroll.content;
             wheel(&mut app, false, content);
             screen(&mut app, 80, 24);
         }
-        assert!(matches!(app.view, View::Queue(15)));
+        assert!(matches!(app.engine.view, View::Queue(15)));
         assert_ne!(first, screen(&mut app, 80, 24));
         assert_eq!(queued(&app), queue);
-        assert!(app.queue_selection.is_empty() && app.mods[0].steering.is_empty());
-        app.view = View::Mods(0);
+        assert!(app.queue_selection.is_empty() && app.engine.mods[0].steering.is_empty());
+        app.engine.view = View::Mods(0);
         for _ in 0..25 {
             screen(&mut app, 80, 24);
             let content = app.scroll.content;
             wheel(&mut app, false, content);
         }
         let last = rows(&screen(&mut app, 80, 24)).join("\n");
-        assert!(matches!(app.view, View::Mods(21)));
+        assert!(matches!(app.engine.view, View::Mods(21)));
         assert!(
             last.contains("Codemod 19") && last.contains("new codemod"),
             "{last}"
         );
         let content = app.scroll.content;
         wheel(&mut app, true, content);
-        assert!(matches!(app.view, View::Mods(20)));
-        app.view = View::Chat;
+        assert!(matches!(app.engine.view, View::Mods(20)));
+        app.engine.view = View::Chat;
         app.open_actions();
         screen(&mut app, 80, 24);
         let content = app.scroll.content;
         wheel(&mut app, false, content);
-        assert!(matches!(app.view, View::Actions(_)));
-        assert!(app.workers.is_empty() && app.git_jobs.is_empty() && app.review.is_none());
+        assert!(matches!(app.engine.view, View::Actions(_)));
+        assert!(
+            app.engine.workers.is_empty()
+                && app.engine.git_jobs.is_empty()
+                && app.engine.review.is_none()
+        );
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
@@ -4370,11 +2118,11 @@ mod tests {
     #[test]
     fn mouse_scrolling_clamps_panels_and_preserves_confirmation_actions() {
         let (_data, mut app, root) = execution_app();
-        let task = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
-        let source = app.mods[0].execution.as_ref().unwrap().tasks[0]
+        let task = app.engine.mods[0].execution.as_ref().unwrap().tasks[0].id;
+        let source = app.engine.mods[0].execution.as_ref().unwrap().tasks[0]
             .source
             .clone();
-        app.mods[0].messages.push(crate::store::Message {
+        app.engine.mods[0].messages.push(crate::store::Message {
             source: Some(source),
             task: Some(task),
             item_id: None,
@@ -4391,14 +2139,14 @@ mod tests {
             .map(|i| format!("+ Diff line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        app.review = Some(review);
-        app.notice = Some(
+        app.engine.review = Some(review);
+        app.engine.notice = Some(
             (0..60)
                 .map(|i| format!("Failure evidence {i}"))
                 .collect::<Vec<_>>()
                 .join("\n"),
         );
-        app.setup_files = (0..60).map(|i| format!("source/file-{i}.rs")).collect();
+        app.engine.setup_files = (0..60).map(|i| format!("source/file-{i}.rs")).collect();
         for view in [
             View::Task(task, 0),
             View::TaskHistory(task, 0),
@@ -4407,7 +2155,7 @@ mod tests {
             View::Failure(0),
             View::ProjectSetup(true, 0),
         ] {
-            app.view = view;
+            app.engine.view = view;
             let first = screen(&mut app, 80, 24);
             assert_eq!(app.scroll.input, ratatui::layout::Rect::default());
             let content = app.scroll.content;
@@ -4424,7 +2172,7 @@ mod tests {
             assert_eq!(last, screen(&mut app, 80, 24));
             screen(&mut app, 100, 100);
             assert!(matches!(
-                app.view,
+                app.engine.view,
                 View::Task(_, 0)
                     | View::TaskHistory(_, 0)
                     | View::History(0)
@@ -4435,33 +2183,37 @@ mod tests {
             assert_eq!(app.input.lines(), ["keep this draft"]);
         }
         for view in [View::DeleteMod(0), View::CloseMod(0), View::Publish] {
-            app.view = view;
+            app.engine.view = view;
             screen(&mut app, 36, 18);
             let content = app.scroll.content;
             wheel(&mut app, false, content);
-            assert!(app.view == view && app.mods.len() == 1 && !app.mods[0].closed);
-            assert!(app.git_jobs.is_empty());
+            assert!(
+                app.engine.view == view && app.engine.mods.len() == 1 && !app.engine.mods[0].closed
+            );
+            assert!(app.engine.git_jobs.is_empty());
         }
         app.input.clear();
         app.input
             .insert_str(format!("owner/{}", "long-repository-name".repeat(20)));
-        app.view = View::ConfirmRepository(false);
+        app.engine.view = View::ConfirmRepository(false);
         let first = screen(&mut app, 36, 24);
         let content = app.scroll.content;
         wheel(&mut app, false, content);
         assert_ne!(first, screen(&mut app, 36, 24));
-        assert!(app.scroll.offset > 0 && app.git_jobs.is_empty());
-        app.view = View::Repository(false);
+        assert!(app.scroll.offset > 0 && app.engine.git_jobs.is_empty());
+        app.engine.view = View::Repository(false);
         screen(&mut app, 80, 24);
         assert_eq!(app.scroll.offset, 0);
         let input = app.scroll.input;
         wheel(&mut app, true, input);
-        assert!(matches!(app.view, View::Repository(false)) && app.git_jobs.is_empty());
-        app.view = View::NewMod;
+        assert!(
+            matches!(app.engine.view, View::Repository(false)) && app.engine.git_jobs.is_empty()
+        );
+        app.engine.view = View::NewMod;
         screen(&mut app, 80, 24);
         let input = app.scroll.input;
         wheel(&mut app, true, input);
-        assert!(matches!(app.view, View::NewMod) && app.mods.len() == 1);
+        assert!(matches!(app.engine.view, View::NewMod) && app.engine.mods.len() == 1);
     }
 
     #[test]
@@ -4474,7 +2226,7 @@ mod tests {
                 .iter()
                 .any(|a| a.action == Action::Diff && a.label == "View diff")
         );
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         m.agent_review = Some(crate::review::State {
             source: "review:test".into(),
             plan_source: m.planning.as_ref().unwrap().source.clone(),
@@ -4485,17 +2237,17 @@ mod tests {
             ..Default::default()
         });
         assert!(app.action_dock().primary == Some(Action::Publish));
-        commit_project(&app.project);
+        commit_project(&app.engine.project);
         git_mod::prepare(
-            &app.project,
+            &app.engine.project,
             &root,
             &std::sync::atomic::AtomicBool::new(false),
         )
         .unwrap();
         let state = git_mod::load(&root).unwrap();
-        let id = app.mods[0].id;
-        app.mods[0].git_root = Some(root);
-        app.targets.insert(
+        let id = app.engine.mods[0].id;
+        app.engine.mods[0].git_root = Some(root);
+        app.engine.targets.insert(
             id,
             crate::mod_sync::Target {
                 branch: "main".into(),
@@ -4503,7 +2255,7 @@ mod tests {
                 pr_state: Some("OPEN".into()),
             },
         );
-        app.git_states.insert(id, state);
+        app.engine.git_states.insert(id, state);
         assert!(app.action_dock().primary == Some(Action::Update));
         assert!(
             !app.action_dock()
@@ -4511,15 +2263,20 @@ mod tests {
                 .iter()
                 .any(|a| a.action == Action::Publish)
         );
-        let state = app.git_states.get_mut(&id).unwrap();
+        let state = app.engine.git_states.get_mut(&id).unwrap();
         state.base = "new-head".into();
         state.phase = "published".into();
         state.pr = Some("https://github.com/fixture/project/pull/1".into());
-        state.fingerprint = app.mods[0].execution.as_ref().unwrap().fingerprint.clone();
+        state.fingerprint = app.engine.mods[0]
+            .execution
+            .as_ref()
+            .unwrap()
+            .fingerprint
+            .clone();
         assert_eq!(app.action_dock().status, "PR published");
-        app.targets.get_mut(&id).unwrap().pr_state = Some("MERGED".into());
+        app.engine.targets.get_mut(&id).unwrap().pr_state = Some("MERGED".into());
         assert!(app.action_dock().primary == Some(Action::NewMod));
-        app.mods[0].closed = true;
+        app.engine.mods[0].closed = true;
         assert!(app.action_dock().primary == Some(Action::Reopen));
         assert!(
             !app.action_dock()
@@ -4535,7 +2292,7 @@ mod tests {
         for letter in ['n', 'c', 'd', 'f'] {
             key(&mut app, KeyCode::Char(letter), KeyModifiers::NONE);
         }
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         let draft = app.input.lines().to_vec();
         assert_eq!(draft, ["keep this draftncdf"]);
         for (letter, action) in [('c', Action::Close), ('d', Action::Delete)] {
@@ -4546,30 +2303,34 @@ mod tests {
                 KeyEventKind::Repeat,
             )))
             .unwrap();
-            assert!(matches!(app.view, View::Actions(_)));
+            assert!(matches!(app.engine.view, View::Actions(_)));
             key(&mut app, KeyCode::Char(letter), KeyModifiers::NONE);
             assert!(match action {
-                Action::Close => matches!(app.view, View::CloseMod(0)),
-                _ => matches!(app.view, View::DeleteMod(0)),
+                Action::Close => matches!(app.engine.view, View::CloseMod(0)),
+                _ => matches!(app.engine.view, View::DeleteMod(0)),
             });
-            assert!(app.mods.len() == 1 && !app.mods[0].closed && app.git_jobs.is_empty());
+            assert!(
+                app.engine.mods.len() == 1
+                    && !app.engine.mods[0].closed
+                    && app.engine.git_jobs.is_empty()
+            );
             key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
             assert_eq!(app.input.lines(), draft);
         }
         app.open_actions();
-        let selected = app.view;
+        let selected = app.engine.view;
         key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
-        assert!(app.view == selected);
+        assert!(app.engine.view == selected);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        app.notice = Some("Check failed".into());
+        app.engine.notice = Some("Check failed".into());
         app.open_actions();
         key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Failure(0)));
+        assert!(matches!(app.engine.view, View::Failure(0)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.input.lines(), draft);
         app.open_actions();
         key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::NewMod) && app.input.lines() == [""]);
+        assert!(matches!(app.engine.view, View::NewMod) && app.input.lines() == [""]);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.input.lines(), draft);
     }
@@ -4577,13 +2338,13 @@ mod tests {
     #[test]
     fn every_menu_action_has_an_aligned_shortcut_and_the_dock_shows_menu_sequences() {
         let (_data, mut app, _root) = execution_app();
-        app.notice = Some("Check failed".into());
+        app.engine.notice = Some("Check failed".into());
         for width in [36, 80, 120] {
             app.open_actions();
             let mut columns = Vec::new();
             let dock = app.action_dock();
             for item in dock.menu_actions() {
-                app.view = View::Actions(item.action);
+                app.engine.view = View::Actions(item.action);
                 let rendered = rows(&screen(&mut app, width, 36));
                 assert!(item.action.shortcut().is_some() || item.action.menu_shortcut().is_some());
                 let line = rendered
@@ -4616,23 +2377,23 @@ mod tests {
         let draft = app.input.lines().to_vec();
         let history_offset = app.history_offset;
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
-        assert!(matches!(app.view, View::Actions(Action::Review)));
+        assert!(matches!(app.engine.view, View::Actions(Action::Review)));
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert_eq!(app.input.lines(), draft);
         assert_eq!(app.history_offset, history_offset);
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
-        let id = app.mods[0].id;
-        app.mods[0]
+        let id = app.engine.mods[0].id;
+        app.engine.mods[0]
             .queue
-            .push(app.store.enqueue(id, "Keep these edits").unwrap());
+            .push(app.engine.store.enqueue(id, "Keep these edits").unwrap());
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Actions(Action::Review)));
-        assert!(app.workers.is_empty() && app.mods[0].agent_review.is_none());
+        assert!(matches!(app.engine.view, View::Actions(Action::Review)));
+        assert!(app.engine.workers.is_empty() && app.engine.mods[0].agent_review.is_none());
         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
-        assert!(matches!(app.view, View::Chat));
-        assert!(app.git_jobs.is_empty() && app.review.is_none());
+        assert!(matches!(app.engine.view, View::Chat));
+        assert!(app.engine.git_jobs.is_empty() && app.engine.review.is_none());
         assert_eq!(app.input.lines(), draft);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(queued(&app), ["Keep these edits", "keep this draft"]);
@@ -4641,19 +2402,20 @@ mod tests {
     #[test]
     fn a_stop_selection_cannot_turn_into_a_restart_when_worker_state_changes() {
         let (_data, mut app, _root) = execution_app();
-        let m = &app.mods[0];
-        let record = app.store.worker_for(m.id, Role::Planner).unwrap();
-        let mut worker = Worker::start(&app.project, m, record, Role::Planner, None).unwrap();
+        let m = &app.engine.mods[0];
+        let record = app.engine.store.worker_for(m.id, Role::Planner).unwrap();
+        let mut worker =
+            Worker::start(&app.engine.project, m, record, Role::Planner, None).unwrap();
         worker.status = Status::Running;
-        app.workers.insert(worker.id, worker);
+        app.engine.workers.insert(worker.id, worker);
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
-        app.view = View::Actions(Action::Stop);
-        let worker = app.workers.values_mut().next().unwrap();
+        app.engine.view = View::Actions(Action::Stop);
+        let worker = app.engine.workers.values_mut().next().unwrap();
         worker.enabled = false;
         worker.status = Status::Ready;
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Actions(Action::Stop)));
-        assert!(app.workers.values().all(|w| !w.enabled));
+        assert!(matches!(app.engine.view, View::Actions(Action::Stop)));
+        assert!(app.engine.workers.values().all(|w| !w.enabled));
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 
@@ -4666,17 +2428,17 @@ mod tests {
         paste(&mut app, "Describe a new app");
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::NewMod));
+        assert!(matches!(app.engine.view, View::NewMod));
         assert_eq!(app.input.lines(), ["Describe a new app"]);
         let (_data, mut app, _root) = execution_app();
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
-        app.view = View::Actions(Action::Delete);
+        app.engine.view = View::Actions(Action::Delete);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::DeleteMod(_)));
+        assert!(matches!(app.engine.view, View::DeleteMod(_)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert_eq!(app.input.lines(), ["keep this draft"]);
-        assert!(app.mods.len() == 1 && !app.quit);
+        assert!(app.engine.mods.len() == 1 && !app.quit);
     }
 
     #[test]
@@ -4731,16 +2493,16 @@ mod tests {
             assert!(!text.contains("Next ·") && !text.contains("message ╶"));
         }
         let error = "AssertionError: expected a successful response.\nFull evidence\n".repeat(30);
-        app.notice = Some(error.clone());
+        app.engine.notice = Some(error.clone());
         assert!(app.action_dock().primary == Some(Action::Failure));
         app.perform_action(Action::Failure).unwrap();
-        assert!(matches!(app.view, View::Failure(_)));
+        assert!(matches!(app.engine.view, View::Failure(_)));
         let first = rows(&screen(&mut app, 48, 24)).join("\n");
         assert!(first.contains("error details") && first.contains("AssertionError"));
         key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Failure(scroll) if scroll > 0));
+        assert!(matches!(app.engine.view, View::Failure(scroll) if scroll > 0));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert_eq!(app.worker_error(), Some(error.as_str()));
     }
@@ -4810,17 +2572,18 @@ mod tests {
     #[test]
     fn unified_dock_keeps_worker_progress_during_target_checks() {
         let (_data, mut app, _root) = execution_app();
-        let m = &app.mods[0];
+        let m = &app.engine.mods[0];
         let id = m.id;
-        let record = app.store.worker_for(id, Role::Planner).unwrap();
-        let mut worker = Worker::start(&app.project, m, record, Role::Planner, None).unwrap();
+        let record = app.engine.store.worker_for(id, Role::Planner).unwrap();
+        let mut worker =
+            Worker::start(&app.engine.project, m, record, Role::Planner, None).unwrap();
         worker.role = Role::Executor;
         worker.status = Status::Running;
-        app.workers.insert(worker.id, worker);
+        app.engine.workers.insert(worker.id, worker);
         let working = rows(&screen(&mut app, 100, 30)).join("\n");
         assert!(working.contains("1/1 tasks finished"));
         assert!(working.contains("ctrl+r Pause") && working.contains("↵ Queue instruction"));
-        app.git_jobs.insert(
+        app.engine.git_jobs.insert(
             id,
             Job::start("checking target branch", |_| {
                 Ok(git_mod::Result::ProjectSynced)
@@ -4829,29 +2592,29 @@ mod tests {
         let polling = rows(&screen(&mut app, 100, 30)).join("\n");
         assert!(polling.contains("1/1 tasks finished"));
         assert!(!polling.contains("checking target branch"));
-        app.git_jobs.clear();
-        app.workers.clear();
+        app.engine.git_jobs.clear();
+        app.engine.workers.clear();
         let ready = rows(&screen(&mut app, 100, 30)).join("\n");
         assert!(
             ready.contains("Checks passed · review pending") && ready.contains("↵ Request edits")
         );
         assert_eq!(app.input.lines(), ["keep this draft"]);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
 
-        app.notice = Some("The request failed. ".repeat(30));
+        app.engine.notice = Some("The request failed. ".repeat(30));
         let failed = rows(&screen(&mut app, 48, 30));
         let divider = failed.iter().position(|r| r.contains('├')).unwrap();
         assert!(failed[divider - 1].contains('…'));
         assert!(failed.iter().any(|r| r.contains("^g f Show full error")));
         assert!(failed.iter().any(|r| r.contains("keep this draft")));
 
-        app.notice = None;
-        app.mods[0].closed = true;
+        app.engine.notice = None;
+        app.engine.mods[0].closed = true;
         let closed = rows(&screen(&mut app, 48, 30)).join("\n");
         assert!(closed.contains("Closed · work saved") && closed.contains("^g More"));
         assert!(!closed.contains("Newline") && !closed.contains("keep this draft"));
         assert_eq!(app.scroll.input, ratatui::layout::Rect::default());
-        app.view = View::NewMod;
+        app.engine.view = View::NewMod;
         app.input = ui::name_input();
         let new_mod = rows(&screen(&mut app, 48, 30)).join("\n");
         assert!(new_mod.contains("New codemod") && new_mod.contains("↵ Create codemod"));
@@ -4883,11 +2646,14 @@ mod tests {
         app.input.insert_str("\nsecond\nthird\nfourth\nfifth");
         screen(&mut app, 160, 36);
         assert_eq!(app.scroll.input.height, 5);
-        let id = app.mods[0].id;
-        app.mods[0]
-            .queue
-            .push(app.store.enqueue(id, "Keep the current icons").unwrap());
-        app.view = View::Queue(0);
+        let id = app.engine.mods[0].id;
+        app.engine.mods[0].queue.push(
+            app.engine
+                .store
+                .enqueue(id, "Keep the current icons")
+                .unwrap(),
+        );
+        app.engine.view = View::Queue(0);
         let rendered = rows(&screen(&mut app, 160, 36));
         let footer = rendered.iter().find(|r| r.contains("focus")).unwrap();
         assert!(footer.contains("move↑") && footer.contains("move↓") && footer.contains("back"));
@@ -4897,8 +2663,8 @@ mod tests {
     fn open_outline_wraps_tasks_and_prose_without_a_left_gutter() {
         let (_data, mut app, _root) = execution_app();
         app.plan_details = true;
-        app.mods[0].execution = None;
-        let plan = app.mods[0]
+        app.engine.mods[0].execution = None;
+        let plan = app.engine.mods[0]
             .planning
             .as_mut()
             .unwrap()
@@ -4938,7 +2704,7 @@ mod tests {
                 assert!(rendered[start + 1].contains("intact across updates."));
             }
         }
-        app.mods[0].messages.push(crate::store::Message {
+        app.engine.mods[0].messages.push(crate::store::Message {
             source: None,
             task: None,
             item_id: None,
@@ -4959,7 +2725,7 @@ mod tests {
     #[test]
     fn conflict_inspection_keeps_paths_owners_and_draft_visible() {
         let (_data, mut app, _root) = execution_app();
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         let execution = m.execution.as_mut().unwrap();
         execution.status = "running".into();
         execution.checks.clear();
@@ -4971,12 +2737,12 @@ mod tests {
         conflict.files[0].owners = vec!["one".into()];
         run.conflict = Some(conflict);
         let id = run.id;
-        app.auto_runs.insert(m.id);
+        app.engine.auto_runs.insert(m.id);
         assert_eq!(
             app.action_dock().status,
             "Working · resolving task 1 conflicts"
         );
-        app.view = View::Task(id, 0);
+        app.engine.view = View::Task(id, 0);
         let rendered = rows(&screen(&mut app, 100, 40)).join("\n");
         assert!(rendered.contains("Conflicting files"));
         assert!(rendered.contains("hello.sh · text · owners: one"));
@@ -4987,7 +2753,7 @@ mod tests {
     #[test]
     fn task_inspection_keeps_histories_scoped_and_returns_to_the_draft() {
         let (_data, mut app, _root) = execution_app();
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         let plan = m.planning.as_mut().unwrap().plan.as_mut().unwrap();
         let mut second = plan.tasks[0].clone();
         second.id = "two".into();
@@ -5046,7 +2812,7 @@ mod tests {
         );
         assert!(app.action_dock().primary == Some(Action::RetryTask(first_id)));
         app.perform_action(Action::Failure).unwrap();
-        assert!(matches!(app.view, View::Task(id, 0) if id == first_id));
+        assert!(matches!(app.engine.view, View::Task(id, 0) if id == first_id));
         for width in [36, 100, 160] {
             let text = rows(&screen(&mut app, width, 40)).join("\n");
             assert!(text.contains("Check failed") && text.contains("AssertionError:"));
@@ -5054,12 +2820,12 @@ mod tests {
             assert!(!text.contains("Second task update") && !text.contains("Legacy worker update"));
         }
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Tasks(0)));
+        assert!(matches!(app.engine.view, View::Tasks(0)));
         let text = rows(&screen(&mut app, 100, 30)).join("\n");
         assert!(text.contains("muse · w12 · muse-spark-1.3 · high"));
         let content = app.scroll.content;
         wheel(&mut app, false, content);
-        assert!(matches!(app.view, View::Tasks(1)));
+        assert!(matches!(app.engine.view, View::Tasks(1)));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
         let text = rows(&screen(&mut app, 100, 30)).join("\n");
@@ -5069,12 +2835,12 @@ mod tests {
         let text = rows(&screen(&mut app, 100, 40)).join("\n");
         assert!(text.contains("First task update") && text.contains("Legacy worker update"));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::TaskHistory(id, _) if id == second_id));
+        assert!(matches!(app.engine.view, View::TaskHistory(id, _) if id == second_id));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Tasks(1)));
+        assert!(matches!(app.engine.view, View::Tasks(1)));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert!(!app.plan_details);
         assert!(app.current_mod().unwrap().queue.is_empty());
@@ -5083,7 +2849,7 @@ mod tests {
     #[test]
     fn task_inspection_prioritizes_final_failures_and_handles_replaced_plans() {
         let (_data, mut app, _root) = execution_app();
-        let execution = app.mods[0].execution.as_mut().unwrap();
+        let execution = app.engine.mods[0].execution.as_mut().unwrap();
         let id = execution.tasks[0].id;
         execution.status = "blocked".into();
         execution.checks[0].task = Some(id);
@@ -5092,7 +2858,7 @@ mod tests {
         assert_eq!(app.inspect_task(id).unwrap().state, "Final checks failed");
         assert!(app.action_dock().primary == Some(Action::Retry));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-        assert!(matches!(app.view, View::Checks(0)));
+        assert!(matches!(app.engine.view, View::Checks(0)));
         key(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let text = rows(&screen(&mut app, 100, 30)).join("\n");
@@ -5101,9 +2867,9 @@ mod tests {
                 && text.replace('\u{a0}', " ").contains("Retry final checks"),
             "{text}"
         );
-        app.mods[0].execution.as_mut().unwrap().tasks.clear();
+        app.engine.mods[0].execution.as_mut().unwrap().tasks.clear();
         screen(&mut app, 100, 30);
-        assert!(matches!(app.view, View::Tasks(0)));
+        assert!(matches!(app.engine.view, View::Tasks(0)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
@@ -5169,13 +2935,18 @@ mod tests {
             KeyModifiers::NONE,
         )))
         .unwrap();
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert!(
             app.pending_network().is_none() && crate::network::grants(&root).unwrap().is_empty()
         );
         assert_eq!(
-            app.store.load_project(&app.project).unwrap().mods[0].draft,
+            app.engine
+                .store
+                .load_project(&app.engine.project)
+                .unwrap()
+                .mods[0]
+                .draft,
             "keep this draft"
         );
     }
@@ -5200,16 +2971,16 @@ mod tests {
             .join("\n")
             .replace('\u{a0}', " ");
         assert!(first.contains("model-cache-0.example.com") && first.contains("↑↓ scroll"));
-        let View::Network(id, _) = app.view else {
+        let View::Network(id, _) = app.engine.view else {
             panic!("Network dialog missing")
         };
         let content = app.scroll.content;
         wheel(&mut app, false, content);
-        assert!(matches!(app.view, View::Network(_, scroll) if scroll > 0));
+        assert!(matches!(app.engine.view, View::Network(_, scroll) if scroll > 0));
         assert!(app.pending_network().is_some());
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert!(crate::network::grants(&_root).unwrap().is_empty());
-        app.view = View::Network(id, u16::MAX);
+        app.engine.view = View::Network(id, u16::MAX);
         let last = rows(&screen(&mut app, 80, 24))
             .join("\n")
             .replace('\u{a0}', " ");
@@ -5217,9 +2988,12 @@ mod tests {
             last.contains("ENDREASON") && last.contains("a allow for codemod"),
             "{last}"
         );
-        app.store.follow_up(m.id, "A different task", None).unwrap();
+        app.engine
+            .store
+            .follow_up(m.id, "A different task", None)
+            .unwrap();
         app.refresh_network_requests().unwrap();
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 
@@ -5248,7 +3022,7 @@ mod tests {
         workspace::create(&project, &root).unwrap();
         store.create_execution(m.id, &root, &plan).unwrap();
         let mut app = App::load(project.clone(), false, store).unwrap();
-        app.muse = true;
+        app.engine.muse = true;
         app.input.insert_str("keep the composer draft");
         app.start_worker(0, Role::Executor).unwrap();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -5257,7 +3031,7 @@ mod tests {
             let mut previous = String::new();
             while Instant::now() < deadline {
                 app.poll_workers().unwrap();
-                let state = app.mods[0]
+                let state = app.engine.mods[0]
                     .execution
                     .as_ref()
                     .unwrap()
@@ -5271,11 +3045,12 @@ mod tests {
                     previous = state;
                 }
                 let pending = app
+                    .engine
                     .network_requests
                     .iter()
                     .filter(|r| r.status == "pending")
                     .count();
-                if pending == 2 && !approved && !app.workers.values().any(Worker::busy) {
+                if pending == 2 && !approved && !app.engine.workers.values().any(Worker::busy) {
                     assert!(
                         !crate::sandbox::network(&root)
                             .unwrap()
@@ -5297,11 +3072,14 @@ mod tests {
                     assert_eq!(app.input.lines(), ["keep the composer draft"]);
                 }
                 assert!(
-                    app.workers.values().all(|w| w.status != Status::Failed),
+                    app.engine
+                        .workers
+                        .values()
+                        .all(|w| w.status != Status::Failed),
                     "{}",
                     app.worker_error().unwrap_or("")
                 );
-                if app.mods[0].execution.as_ref().unwrap().status == "review" {
+                if app.engine.mods[0].execution.as_ref().unwrap().status == "review" {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
@@ -5311,7 +3089,7 @@ mod tests {
                 "Both providers must request access through the dispatcher"
             );
             assert_eq!(
-                app.mods[0].execution.as_ref().unwrap().status,
+                app.engine.mods[0].execution.as_ref().unwrap().status,
                 "review",
                 "{}",
                 app.worker_error().unwrap_or("")
@@ -5321,7 +3099,7 @@ mod tests {
                 assert!(text.contains("before-approval") && text.contains("allowed"));
             }
             assert!(
-                app.mods[0]
+                app.engine.mods[0]
                     .execution
                     .as_ref()
                     .unwrap()
@@ -5331,7 +3109,7 @@ mod tests {
             );
             assert_eq!(app.input.lines(), ["keep the composer draft"]);
         }));
-        app.workers.clear();
+        app.engine.workers.clear();
         drop(app);
         crate::sandbox::delete(&root).unwrap();
         if let Err(error) = outcome {
@@ -5344,21 +3122,28 @@ mod tests {
         let (data, store, id, _plan) = crate::scheduler::tests::fixture(&["codex", "muse"], false);
         let mut app = App::load(data.0.join("project"), false, store).unwrap();
         let record = app
+            .engine
             .store
             .worker_provider(id, Role::Executor, 0, "codex")
             .unwrap();
-        let mut worker =
-            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        let mut worker = Worker::start(
+            &app.engine.project,
+            &app.engine.mods[0],
+            record,
+            Role::Planner,
+            None,
+        )
+        .unwrap();
         worker.role = Role::Executor;
         worker.status = Status::Ready;
-        app.workers.insert(worker.id, worker);
-        app.executing_mods.insert(id);
+        app.engine.workers.insert(worker.id, worker);
+        app.engine.executing_mods.insert(id);
         app.toggle_worker().unwrap();
-        assert!(!app.executing_mods.contains(&id));
+        assert!(!app.engine.executing_mods.contains(&id));
         app.poll_workers().unwrap();
-        assert!(app.workers.values().all(|w| !w.enabled));
+        assert!(app.engine.workers.values().all(|w| !w.enabled));
         assert!(
-            app.mods[0]
+            app.engine.mods[0]
                 .execution
                 .as_ref()
                 .unwrap()
@@ -5368,7 +3153,7 @@ mod tests {
         );
         drop(app);
         let app = App::load(data.0.join("project"), false, data.store()).unwrap();
-        assert!(app.executing_mods.is_empty() && app.workers.is_empty());
+        assert!(app.engine.executing_mods.is_empty() && app.engine.workers.is_empty());
     }
 
     #[test]
@@ -5391,27 +3176,27 @@ mod tests {
         app.refresh_network_requests().unwrap();
         app.resume_network_workers().unwrap();
         assert_eq!(
-            app.mods[0].execution.as_ref().unwrap().tasks[0].status,
+            app.engine.mods[0].execution.as_ref().unwrap().tasks[0].status,
             "blocked"
         );
-        assert!(app.workers.is_empty());
-        app.executing_mods.insert(m.id);
+        assert!(app.engine.workers.is_empty());
+        app.engine.executing_mods.insert(m.id);
         app.resume_network_workers().unwrap();
         assert_eq!(
-            app.mods[0].execution.as_ref().unwrap().tasks[0].status,
+            app.engine.mods[0].execution.as_ref().unwrap().tasks[0].status,
             "pending"
         );
         assert_eq!(
-            app.mods[0].execution.as_ref().unwrap().tasks[0].worker,
+            app.engine.mods[0].execution.as_ref().unwrap().tasks[0].worker,
             Some(workers[0])
         );
         assert!(
-            app.workers.is_empty(),
+            app.engine.workers.is_empty(),
             "Approval queues work through admission"
         );
-        app.executing_mods.remove(&m.id);
+        app.engine.executing_mods.remove(&m.id);
         app.poll_workers().unwrap();
-        assert!(app.workers.is_empty());
+        assert!(app.engine.workers.is_empty());
     }
 
     #[test]
@@ -5432,7 +3217,7 @@ mod tests {
         let source = store.planning(id).unwrap().unwrap().source;
         store.save_plan(id, &source, &plan).unwrap();
         let mut app = App::load(project, false, store).unwrap();
-        app.muse = true;
+        app.engine.muse = true;
         app.start_worker(0, Role::Executor).unwrap();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let deadline = Instant::now() + Duration::from_secs(480);
@@ -5441,13 +3226,14 @@ mod tests {
             while Instant::now() < deadline {
                 app.poll_workers().unwrap();
                 assert!(
-                    app.workers
+                    app.engine
+                        .workers
                         .values()
                         .filter(|w| w.role == Role::Executor && w.busy())
                         .count()
                         <= 2
                 );
-                let execution = app.mods[0].execution.as_ref().unwrap();
+                let execution = app.engine.mods[0].execution.as_ref().unwrap();
                 let state = execution
                     .tasks
                     .iter()
@@ -5462,7 +3248,10 @@ mod tests {
                     overlap[wave] |= pair.iter().all(|r| r.status == "running");
                 }
                 assert!(
-                    app.workers.values().all(|w| w.status != Status::Failed),
+                    app.engine
+                        .workers
+                        .values()
+                        .all(|w| w.status != Status::Failed),
                     "{}",
                     app.worker_error().unwrap_or("")
                 );
@@ -5472,13 +3261,13 @@ mod tests {
                 std::thread::sleep(Duration::from_millis(50));
             }
             assert_eq!(
-                app.mods[0].execution.as_ref().unwrap().status,
+                app.engine.mods[0].execution.as_ref().unwrap().status,
                 "review",
                 "{}",
                 app.worker_error().unwrap_or("")
             );
             assert_eq!(overlap, [true, true], "Both pairs must actually overlap");
-            let records = app.store.executors(id).unwrap();
+            let records = app.engine.store.executors(id).unwrap();
             assert_eq!(records.iter().filter(|r| r.provider == "codex").count(), 2);
             assert_eq!(records.iter().filter(|r| r.provider == "muse").count(), 2);
             for i in 0..4 {
@@ -5488,7 +3277,7 @@ mod tests {
                 );
             }
             assert!(
-                app.mods[0]
+                app.engine.mods[0]
                     .execution
                     .as_ref()
                     .unwrap()
@@ -5497,7 +3286,7 @@ mod tests {
                     .all(|c| c.exit_code == Some(0))
             );
         }));
-        app.workers.clear();
+        app.engine.workers.clear();
         drop(app);
         crate::sandbox::delete(&root).unwrap();
         if let Err(error) = outcome {
@@ -5530,7 +3319,7 @@ mod tests {
         let source = store.planning(id).unwrap().unwrap().source;
         store.save_plan(id, &source, &plan).unwrap();
         let mut app = App::load(project, false, store).unwrap();
-        app.muse = true;
+        app.engine.muse = true;
         app.start_worker(0, Role::Executor).unwrap();
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let started = Instant::now();
@@ -5538,7 +3327,7 @@ mod tests {
             let mut previous = String::new();
             while started.elapsed() < Duration::from_secs(480) {
                 app.poll_workers().unwrap();
-                let execution = app.mods[0].execution.as_ref().unwrap();
+                let execution = app.engine.mods[0].execution.as_ref().unwrap();
                 overlap |= execution.tasks[..2].iter().all(|r| r.status == "running");
                 let state = execution
                     .tasks
@@ -5551,7 +3340,10 @@ mod tests {
                     previous = state;
                 }
                 assert!(
-                    app.workers.values().all(|w| w.status != Status::Failed),
+                    app.engine
+                        .workers
+                        .values()
+                        .all(|w| w.status != Status::Failed),
                     "{}",
                     app.worker_error().unwrap_or("")
                 );
@@ -5560,7 +3352,7 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            let execution = app.mods[0].execution.as_ref().unwrap();
+            let execution = app.engine.mods[0].execution.as_ref().unwrap();
             assert_eq!(
                 execution.status,
                 "review",
@@ -5583,7 +3375,7 @@ mod tests {
                 started.elapsed().as_secs_f64()
             );
         }));
-        app.workers.clear();
+        app.engine.workers.clear();
         drop(app);
         crate::sandbox::delete(&root).unwrap();
         if let Err(error) = outcome {
@@ -5655,24 +3447,25 @@ mod tests {
             }
             drop(vm);
             let mut app = App::load(project.clone(), false, store).unwrap();
-            app.muse = true;
+            app.engine.muse = true;
             app.start_worker(0, Role::Executor).unwrap();
             let started = Instant::now();
             while started.elapsed() < Duration::from_secs(300) {
                 app.poll_workers().unwrap();
                 assert!(
-                    app.workers
+                    app.engine
+                        .workers
                         .values()
                         .all(|worker| worker.status != Status::Failed),
                     "{}",
                     app.worker_error().unwrap_or("")
                 );
-                if app.mods[0].execution.as_ref().unwrap().status == "review" {
+                if app.engine.mods[0].execution.as_ref().unwrap().status == "review" {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            let execution = app.mods[0].execution.as_ref().unwrap();
+            let execution = app.engine.mods[0].execution.as_ref().unwrap();
             assert_eq!(
                 execution.status,
                 "review",
@@ -5698,7 +3491,7 @@ mod tests {
                 std::fs::read(root.join("work/check.sh")).unwrap(),
                 std::fs::read(project.join("check.sh")).unwrap()
             );
-            app.workers.clear();
+            app.engine.workers.clear();
             eprintln!("Codex and Muse recovered their own failures; combined checks passed.");
         }));
         crate::sandbox::delete(&root).unwrap();
@@ -5773,24 +3566,25 @@ mod tests {
             }
             drop(vm);
             let mut app = App::load(project.clone(), false, store).unwrap();
-            app.muse = true;
+            app.engine.muse = true;
             app.start_worker(0, Role::Executor).unwrap();
             let started = Instant::now();
             while started.elapsed() < Duration::from_secs(300) {
                 app.poll_workers().unwrap();
                 assert!(
-                    app.workers
+                    app.engine
+                        .workers
                         .values()
                         .all(|worker| worker.status != Status::Failed && worker.error.is_none()),
                     "{}",
                     app.worker_error().unwrap_or("")
                 );
-                if app.mods[0].execution.as_ref().unwrap().status == "review" {
+                if app.engine.mods[0].execution.as_ref().unwrap().status == "review" {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            let execution = app.mods[0].execution.as_ref().unwrap();
+            let execution = app.engine.mods[0].execution.as_ref().unwrap();
             assert_eq!(
                 execution.status,
                 "review",
@@ -5817,7 +3611,7 @@ mod tests {
                 std::fs::read(root.join("work/check.sh")).unwrap(),
                 std::fs::read(project.join("check.sh")).unwrap()
             );
-            app.workers.clear();
+            app.engine.workers.clear();
             eprintln!(
                 "Codex and Muse resolved their own conflicts; combined checks passed in {:.1}s.",
                 started.elapsed().as_secs_f64()
@@ -5847,18 +3641,18 @@ mod tests {
         let mut app = App::load(project.clone(), false, store).unwrap();
         app.maintain_reviews().unwrap();
         assert_eq!(
-            app.mods[0].agent_review.as_ref().unwrap().status,
+            app.engine.mods[0].agent_review.as_ref().unwrap().status,
             "findings"
         );
-        assert!(app.mods[0].execution.as_ref().unwrap().complete());
-        assert!(app.executing_mods.is_empty());
+        assert!(app.engine.mods[0].execution.as_ref().unwrap().complete());
+        assert!(app.engine.executing_mods.is_empty());
         drop(app);
         let mut app = App::load(project, false, data.store()).unwrap();
         app.maintain_reviews().unwrap();
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 0);
+        assert_eq!(app.engine.mods[0].agent_review.as_ref().unwrap().rounds, 0);
         app.input.insert_str("keep my draft");
-        app.mods[0].git_root = Some(m.execution.as_ref().unwrap().workspace.clone());
-        app.git_jobs.insert(
+        app.engine.mods[0].git_root = Some(m.execution.as_ref().unwrap().workspace.clone());
+        app.engine.git_jobs.insert(
             m.id,
             Job::start("checking target branch", |_| {
                 Err(io::Error::other("GitHub unavailable"))
@@ -5866,14 +3660,14 @@ mod tests {
         );
         wait_git(&mut app);
         // This fixture has no Git metadata; only the failed check needed a root.
-        app.mods[0].git_root = None;
+        app.engine.mods[0].git_root = None;
         assert!(app.worker_error().is_none() && app.action_dock().error.is_none());
         assert_eq!(app.sync_status(), Some("Sync needs attention"));
         assert!(app.action_dock().primary == Some(Action::FixIssues));
         assert_eq!(app.action_dock().status, "Review · 1 open issue");
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('i'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Findings(0)));
+        assert!(matches!(app.engine.view, View::Findings(0)));
         let contents = rows(&screen(&mut app, 90, 30)).join("\n");
         assert!(contents.contains("P2  Reject empty names"));
         assert!(contents.contains("greet.sh:2 · runtime") && contents.contains("Open"));
@@ -5884,18 +3678,21 @@ mod tests {
         let content = app.scroll.content;
         wheel(&mut app, false, content);
         assert_ne!(first, screen(&mut app, 48, 20));
-        assert!(matches!(app.view, View::Findings(offset) if offset > 0));
+        assert!(matches!(app.engine.view, View::Findings(offset) if offset > 0));
         screen(&mut app, 120, 50);
-        assert!(matches!(app.view, View::Findings(0)));
+        assert!(matches!(app.engine.view, View::Findings(0)));
         key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::History(0)));
+        assert!(matches!(app.engine.view, View::History(0)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Findings(0)));
+        assert!(matches!(app.engine.view, View::Findings(0)));
         key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().status, "fixing");
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 1);
-        assert!(app.executing_mods.contains(&m.id));
-        let runs = &app.mods[0].execution.as_ref().unwrap().tasks;
+        assert_eq!(
+            app.engine.mods[0].agent_review.as_ref().unwrap().status,
+            "fixing"
+        );
+        assert_eq!(app.engine.mods[0].agent_review.as_ref().unwrap().rounds, 1);
+        assert!(app.engine.executing_mods.contains(&m.id));
+        let runs = &app.engine.mods[0].execution.as_ref().unwrap().tasks;
         assert!(runs.iter().all(|run| run.status == "pending"));
         assert!(
             runs[0]
@@ -5910,22 +3707,28 @@ mod tests {
                 .contains("Fix queued")
         );
         key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 1);
+        assert_eq!(app.engine.mods[0].agent_review.as_ref().unwrap().rounds, 1);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert_eq!(app.input.lines(), ["keep my draft"]);
-        let record = app.store.worker_for(m.id, Role::Planner).unwrap();
-        let mut worker =
-            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        let record = app.engine.store.worker_for(m.id, Role::Planner).unwrap();
+        let mut worker = Worker::start(
+            &app.engine.project,
+            &app.engine.mods[0],
+            record,
+            Role::Planner,
+            None,
+        )
+        .unwrap();
         worker.role = Role::Executor;
         worker.status = Status::Running;
-        app.workers.insert(worker.id, worker);
+        app.engine.workers.insert(worker.id, worker);
         assert!(
             app.action_dock()
                 .status
                 .starts_with("Working · fixing review issues")
         );
-        let task = &app.mods[0]
+        let task = &app.engine.mods[0]
             .planning
             .as_ref()
             .unwrap()
@@ -5959,8 +3762,12 @@ mod tests {
             app.perform_action(Action::Findings).unwrap();
             match reason {
                 "queue" => {
-                    let message = app.store.enqueue(m.id, "Change the request").unwrap();
-                    app.mods[0].queue.push(message);
+                    let message = app
+                        .engine
+                        .store
+                        .enqueue(m.id, "Change the request")
+                        .unwrap();
+                    app.engine.mods[0].queue.push(message);
                     app.maintain_reviews().unwrap();
                 }
                 _ => {
@@ -5976,8 +3783,8 @@ mod tests {
                 }
             }
             key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
-            assert!(app.mods[0].execution.as_ref().unwrap().complete());
-            assert!(app.executing_mods.is_empty());
+            assert!(app.engine.mods[0].execution.as_ref().unwrap().complete());
+            assert!(app.engine.executing_mods.is_empty());
             let contents = rows(&screen(&mut app, 100, 30)).join("\n");
             assert!(contents.contains("Reject empty names"));
             assert!(contents.contains("Outdated"));
@@ -6006,9 +3813,9 @@ mod tests {
         drop(store);
         let mut app = App::load(data.0.join("project"), false, data.store()).unwrap();
         app.input.insert_str("keep my draft");
-        app.auto_reviews.insert(m.id);
+        app.engine.auto_reviews.insert(m.id);
         app.maintain_reviews().unwrap();
-        assert!(app.workers.is_empty() && app.executing_mods.is_empty());
+        assert!(app.engine.workers.is_empty() && app.engine.executing_mods.is_empty());
         assert_eq!(app.action_dock().primary, Some(Action::ReviseRepair));
         assert!(
             !app.action_dock()
@@ -6017,12 +3824,12 @@ mod tests {
                 .any(|a| a.action == Action::FixIssues)
         );
         app.perform_action(Action::FixIssues).unwrap();
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 2);
+        assert_eq!(app.engine.mods[0].agent_review.as_ref().unwrap().rounds, 2);
         app.perform_action(Action::ReviseRepair).unwrap();
-        assert!(app.auto_plans.contains(&m.id));
+        assert!(app.engine.auto_plans.contains(&m.id));
         assert_eq!(app.input.lines(), ["keep my draft"]);
         assert!(
-            app.mods[0]
+            app.engine.mods[0]
                 .messages
                 .iter()
                 .any(|m| m.body.contains("Revise the repair plan"))
@@ -6041,11 +3848,11 @@ mod tests {
             store.record_failures(&m).unwrap();
         }
         let mut app = App::load(data.0.join("project"), false, store).unwrap();
-        app.mods[0].execution = m.execution;
+        app.engine.mods[0].execution = m.execution;
         app.input.insert_str("keep draft");
         assert_eq!(app.action_dock().primary, Some(Action::ReviseRepair));
-        assert!(!app.can_retry_task(app.mods[0].execution.as_ref().unwrap().tasks[0].id));
-        app.view = View::History(0);
+        assert!(!app.can_retry_task(app.engine.mods[0].execution.as_ref().unwrap().tasks[0].id));
+        app.engine.view = View::History(0);
         for width in [48, 140] {
             let text = rows(&screen(&mut app, width, 40)).join("\n");
             assert!(text.contains("3 saved failed attempts"), "{text}");
@@ -6057,7 +3864,7 @@ mod tests {
     fn blocked_diagnosis_keeps_gates_and_offers_a_viable_replan() {
         let (data, store, m, _) = crate::review::tests::fixture();
         let mut app = App::load(data.0.join("project"), false, store).unwrap();
-        let plan = app.mods[0]
+        let plan = app.engine.mods[0]
             .planning
             .as_mut()
             .unwrap()
@@ -6066,7 +3873,7 @@ mod tests {
             .unwrap();
         plan.tasks[0].files = vec!["tests/repro.mjs".into()];
         plan.tasks[1].depends_on = vec![plan.tasks[0].id.clone()];
-        let e = app.mods[0].execution.as_mut().unwrap();
+        let e = app.engine.mods[0].execution.as_mut().unwrap();
         e.status = "blocked".into();
         e.tasks[0].status = "blocked".into();
         e.tasks[0].summary = "Reproduced failure; production owner is waiting".into();
@@ -6076,7 +3883,7 @@ mod tests {
         app.input.insert_str("keep draft");
         assert_eq!(app.action_dock().primary, Some(Action::ReviseRepair));
         assert!(app.state_summary().status.contains("diagnosis"));
-        let plan = app.mods[0]
+        let plan = app.engine.mods[0]
             .planning
             .as_ref()
             .unwrap()
@@ -6084,7 +3891,7 @@ mod tests {
             .as_ref()
             .unwrap();
         assert!(
-            app.mods[0]
+            app.engine.mods[0]
                 .execution
                 .as_ref()
                 .unwrap()
@@ -6092,11 +3899,11 @@ mod tests {
                 .next()
                 .is_none()
         );
-        assert!(!app.mods[0].execution.as_ref().unwrap().complete());
+        assert!(!app.engine.mods[0].execution.as_ref().unwrap().complete());
         app.perform_action(Action::ReviseRepair).unwrap();
-        assert!(app.auto_plans.contains(&m.id));
+        assert!(app.engine.auto_plans.contains(&m.id));
         assert_eq!(app.input.lines(), ["keep draft"]);
-        assert!(app.mods[0].messages.iter().any(|m| {
+        assert!(app.engine.mods[0].messages.iter().any(|m| {
             m.body
                 .contains("combine reproduction and production repair")
         }));
@@ -6128,7 +3935,7 @@ mod tests {
         app.perform_action(Action::ReviseRepair).unwrap();
         assert_eq!(app.input.lines(), ["keep draft"]);
         assert!(
-            app.mods[0]
+            app.engine.mods[0]
                 .messages
                 .iter()
                 .any(|m| m.body.contains("Chromium library missing"))
@@ -6168,12 +3975,12 @@ mod tests {
             }
         }
         assert_eq!(
-            app.mods[0].execution.as_ref().unwrap().tasks[0].status,
+            app.engine.mods[0].execution.as_ref().unwrap().tasks[0].status,
             "done"
         );
         app.perform_action(Action::ReviseRepair).unwrap();
         assert_eq!(app.input.lines(), ["keep this draft"]);
-        assert!(app.auto_plans.contains(&m.id));
+        assert!(app.engine.auto_plans.contains(&m.id));
     }
 
     #[test]
@@ -6234,23 +4041,30 @@ mod tests {
             .unwrap();
         let mut app = App::load(data.0.join("project"), false, store).unwrap();
         app.maintain_reviews().unwrap();
-        assert!(app.workers.is_empty() && app.executing_mods.is_empty());
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 1);
-        app.auto_reviews.insert(m.id);
+        assert!(app.engine.workers.is_empty() && app.engine.executing_mods.is_empty());
+        assert_eq!(app.engine.mods[0].agent_review.as_ref().unwrap().rounds, 1);
+        app.engine.auto_reviews.insert(m.id);
         app.maintain_reviews().unwrap();
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 2);
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().auto_remaining, 0);
+        assert_eq!(app.engine.mods[0].agent_review.as_ref().unwrap().rounds, 2);
+        assert_eq!(
+            app.engine.mods[0]
+                .agent_review
+                .as_ref()
+                .unwrap()
+                .auto_remaining,
+            0
+        );
         assert!(!app.repair_stalled());
         assert_eq!(
-            app.mods[0].execution.as_ref().unwrap().tasks[0].status,
+            app.engine.mods[0].execution.as_ref().unwrap().tasks[0].status,
             "done"
         );
         assert_eq!(
-            app.mods[0].execution.as_ref().unwrap().tasks[1].status,
+            app.engine.mods[0].execution.as_ref().unwrap().tasks[1].status,
             "pending"
         );
         app.maintain_reviews().unwrap();
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().rounds, 2);
+        assert_eq!(app.engine.mods[0].agent_review.as_ref().unwrap().rounds, 2);
     }
 
     #[test]
@@ -6281,12 +4095,15 @@ mod tests {
         let expanded = rows(&overview_screen(&mut app, 120, 36)).join("\n");
         assert!(expanded.contains("Inspected greeting"));
         assert_eq!(app.input.lines().join("\n"), "keep draft");
-        let id = app.mods[0].id;
-        app.mods[0]
+        let id = app.engine.mods[0].id;
+        app.engine.mods[0]
             .queue
-            .push(app.store.enqueue(id, "Request changes").unwrap());
+            .push(app.engine.store.enqueue(id, "Request changes").unwrap());
         app.maintain_reviews().unwrap();
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().status, "stale");
+        assert_eq!(
+            app.engine.mods[0].agent_review.as_ref().unwrap().status,
+            "stale"
+        );
         assert!(
             rows(&overview_screen(&mut app, 120, 36))
                 .join("\n")
@@ -6298,27 +4115,36 @@ mod tests {
     fn stopping_a_review_before_dispatch_preserves_ready_changes_and_draft() {
         let (data, store, _, _) = crate::review::tests::fixture();
         let mut app = App::load(data.0.join("project"), false, store).unwrap();
-        let id = app.mods[0].id;
-        let fingerprint = app.mods[0]
+        let id = app.engine.mods[0].id;
+        let fingerprint = app.engine.mods[0]
             .execution
             .as_ref()
             .unwrap()
             .fingerprint
             .clone()
             .unwrap();
-        app.store.begin_review(id, &fingerprint).unwrap();
-        app.mods[0].agent_review = app.store.review_state(id).unwrap();
-        let record = app.store.worker_for(id, Role::Reviewer).unwrap();
-        let mut worker =
-            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        app.engine.store.begin_review(id, &fingerprint).unwrap();
+        app.engine.mods[0].agent_review = app.engine.store.review_state(id).unwrap();
+        let record = app.engine.store.worker_for(id, Role::Reviewer).unwrap();
+        let mut worker = Worker::start(
+            &app.engine.project,
+            &app.engine.mods[0],
+            record,
+            Role::Planner,
+            None,
+        )
+        .unwrap();
         worker.role = Role::Reviewer;
         worker.status = Status::Ready;
-        app.workers.insert(worker.id, worker);
+        app.engine.workers.insert(worker.id, worker);
         app.input.insert_str("keep draft");
         app.toggle_worker().unwrap();
-        assert!(app.workers.values().all(|w| !w.enabled));
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().status, "paused");
-        assert!(app.mods[0].execution.as_ref().unwrap().complete());
+        assert!(app.engine.workers.values().all(|w| !w.enabled));
+        assert_eq!(
+            app.engine.mods[0].agent_review.as_ref().unwrap().status,
+            "paused"
+        );
+        assert!(app.engine.mods[0].execution.as_ref().unwrap().complete());
         assert!(app.version_ready());
         assert_eq!(app.input.lines().join("\n"), "keep draft");
     }
@@ -6376,7 +4202,7 @@ mod tests {
                 .unwrap();
             drop(vm);
             let mut app = App::load(project.clone(), false, store).unwrap();
-            app.executing_mods.insert(m.id);
+            app.engine.executing_mods.insert(m.id);
             app.schedule_execution(0).unwrap();
             app.maintain_reviews().unwrap();
             let mut saw_fix = false;
@@ -6384,7 +4210,7 @@ mod tests {
             let started = Instant::now();
             while started.elapsed() < Duration::from_secs(360) {
                 app.poll_workers().unwrap();
-                let state = app.mods[0].agent_review.as_ref().unwrap();
+                let state = app.engine.mods[0].agent_review.as_ref().unwrap();
                 saw_fix |= state.status == "fixing";
                 if previous != state.status {
                     eprintln!(
@@ -6401,7 +4227,10 @@ mod tests {
                     break;
                 }
                 assert!(
-                    app.workers.values().all(|w| w.status != Status::Failed),
+                    app.engine
+                        .workers
+                        .values()
+                        .all(|w| w.status != Status::Failed),
                     "{}",
                     app.worker_error().unwrap_or("")
                 );
@@ -6410,7 +4239,7 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(50));
             }
-            let state = app.mods[0].agent_review.as_ref().unwrap();
+            let state = app.engine.mods[0].agent_review.as_ref().unwrap();
             assert!(
                 saw_fix,
                 "Review did not identify the seeded defect: {} · {}",
@@ -6429,13 +4258,13 @@ mod tests {
                     |r| r.summary.clone()
                 )
             );
-            let execution = app.mods[0].execution.as_ref().unwrap();
+            let execution = app.engine.mods[0].execution.as_ref().unwrap();
             assert!(
                 execution.complete() && execution.checks.iter().all(|r| r.exit_code == Some(0))
             );
             assert_eq!(execution.tasks[0].worker, runs[0].worker);
             assert_eq!(
-                app.mods[0]
+                app.engine.mods[0]
                     .planning
                     .as_ref()
                     .unwrap()
@@ -6449,7 +4278,7 @@ mod tests {
             let source = std::fs::read_to_string(root.join("work/greet.sh")).unwrap();
             assert!(source.contains("exit") || source.contains("return"));
             assert_eq!(workspace::source_state(&project).unwrap(), original);
-            app.workers.clear();
+            app.engine.workers.clear();
             eprintln!(
                 "Independent reviewer found the bug; its owner repaired it, checks and fresh review passed."
             );
@@ -6463,19 +4292,28 @@ mod tests {
     #[test]
     fn verified_work_starts_one_review_and_a_deliberate_pause_survives_restart() {
         let (data, mut app, _) = execution_app();
-        let id = app.mods[0].id;
+        let id = app.engine.mods[0].id;
         // Loading a saved version is passive; completing an active run starts review.
         assert!(!app.review_due(0));
-        app.executing_mods.insert(id);
+        app.engine.executing_mods.insert(id);
         app.schedule_execution(0).unwrap();
         assert!(app.review_due(0));
         app.maintain_reviews().unwrap();
-        let source = app.mods[0].agent_review.as_ref().unwrap().source.clone();
-        assert!(!app.auto_reviews.contains(&id));
+        let source = app.engine.mods[0]
+            .agent_review
+            .as_ref()
+            .unwrap()
+            .source
+            .clone();
+        assert!(!app.engine.auto_reviews.contains(&id));
         app.maintain_reviews().unwrap();
-        assert_eq!(app.mods[0].agent_review.as_ref().unwrap().source, source);
         assert_eq!(
-            app.workers
+            app.engine.mods[0].agent_review.as_ref().unwrap().source,
+            source
+        );
+        assert_eq!(
+            app.engine
+                .workers
                 .values()
                 .filter(|w| w.role == Role::Reviewer)
                 .count(),
@@ -6484,19 +4322,22 @@ mod tests {
         assert_eq!(app.state_summary().phase, state::Phase::Reviewing);
         assert!(app.action_dock().primary.is_none());
         key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
-        assert!(app.mods[0].user_paused);
+        assert!(app.engine.mods[0].user_paused);
         assert_eq!(app.state_summary().phase, state::Phase::Paused);
-        let project = app.project.clone();
+        let project = app.engine.project.clone();
         drop(app);
         let mut app = App::load(project, false, data.store()).unwrap();
         app.maintain_reviews().unwrap();
-        assert!(app.workers.is_empty() && app.mods[0].user_paused);
+        assert!(app.engine.workers.is_empty() && app.engine.mods[0].user_paused);
         assert_eq!(app.action_dock().status, "Paused by you");
         assert!(app.action_dock().primary == Some(Action::Review));
         assert_eq!(app.input.lines(), ["keep this draft"]);
         app.perform_action(Action::Review).unwrap();
-        assert!(!app.mods[0].user_paused);
-        assert_ne!(app.mods[0].agent_review.as_ref().unwrap().source, source);
+        assert!(!app.engine.mods[0].user_paused);
+        assert_ne!(
+            app.engine.mods[0].agent_review.as_ref().unwrap().source,
+            source
+        );
     }
 
     #[test]
@@ -6557,7 +4398,10 @@ mod tests {
                 drop(store);
                 let mut app = App::load(project, false, data.store()).unwrap();
                 app.maintain_reviews().unwrap();
-                assert!(app.workers.is_empty(), "Reopening waits for the user");
+                assert!(
+                    app.engine.workers.is_empty(),
+                    "Reopening waits for the user"
+                );
                 assert_eq!(app.published(), !changed);
                 assert!(app.can_review());
                 assert_eq!(app.action_dock().primary, Some(Action::Review));
@@ -6589,38 +4433,52 @@ mod tests {
                     "{display}"
                 );
                 if automatic {
-                    app.auto_reviews.insert(m.id);
+                    app.engine.auto_reviews.insert(m.id);
                     assert!(app.review_due(0));
                     app.maintain_reviews().unwrap();
                 } else {
                     key(&mut app, KeyCode::Char('e'), KeyModifiers::CONTROL);
                 }
-                let source = app.mods[0].agent_review.as_ref().unwrap().source.clone();
+                let source = app.engine.mods[0]
+                    .agent_review
+                    .as_ref()
+                    .unwrap()
+                    .source
+                    .clone();
                 assert_ne!(source, m.agent_review.as_ref().unwrap().source);
                 assert_eq!(
-                    app.mods[0].agent_review.as_ref().unwrap().fingerprint,
+                    app.engine.mods[0]
+                        .agent_review
+                        .as_ref()
+                        .unwrap()
+                        .fingerprint,
                     fingerprint
                 );
                 app.maintain_reviews().unwrap();
-                assert_eq!(app.mods[0].agent_review.as_ref().unwrap().source, source);
                 assert_eq!(
-                    app.workers
+                    app.engine.mods[0].agent_review.as_ref().unwrap().source,
+                    source
+                );
+                assert_eq!(
+                    app.engine
+                        .workers
                         .values()
                         .filter(|w| w.role == Role::Reviewer)
                         .count(),
                     1
                 );
                 assert_eq!(app.input.lines(), ["keep my draft"]);
-                app.workers.clear();
+                app.engine.workers.clear();
                 let report = if automatic {
                     r#"{"status":"clean","summary":"Repairs confirmed.","findings":[],"assessments":[{"id":1,"outcome":"resolved","reason":"Guard rejects empty names.","evidence":"The named regression passed and the source was inspected."}]}"#.into()
                 } else {
                     crate::review::tests::finding()
                 };
-                app.store
-                    .finish_review(&app.mods[0], &source, &report)
+                app.engine
+                    .store
+                    .finish_review(&app.engine.mods[0], &source, &report)
                     .unwrap();
-                app.mods[0].agent_review = app.store.review_state(m.id).unwrap();
+                app.engine.mods[0].agent_review = app.engine.store.review_state(m.id).unwrap();
                 if automatic {
                     assert_eq!(
                         app.action_dock().status,
@@ -6649,26 +4507,26 @@ mod tests {
     #[test]
     fn resumed_planning_restores_continuation_and_publishing_shows_review_state() {
         let (_data, mut app, _) = execution_app();
-        app.view = View::Publish;
+        app.engine.view = View::Publish;
         let display = rows(&screen(&mut app, 100, 40)).join("\n");
         assert!(display.contains("Checks 1/1 passed") && display.contains("Review not started"));
-        app.view = View::Chat;
-        app.mods[0].execution = None;
-        app.mods[0].planning.as_mut().unwrap().status = "pending".into();
+        app.engine.view = View::Chat;
+        app.engine.mods[0].execution = None;
+        app.engine.mods[0].planning.as_mut().unwrap().status = "pending".into();
         app.start_worker(0, Role::Planner).unwrap();
-        let id = app.mods[0].id;
-        assert!(app.auto_runs.contains(&id));
+        let id = app.engine.mods[0].id;
+        assert!(app.engine.auto_runs.contains(&id));
         app.toggle_worker().unwrap();
-        assert!(app.mods[0].user_paused && !app.auto_runs.contains(&id));
+        assert!(app.engine.mods[0].user_paused && !app.engine.auto_runs.contains(&id));
         app.toggle_worker().unwrap();
-        assert!(!app.mods[0].user_paused && app.auto_runs.contains(&id));
+        assert!(!app.engine.mods[0].user_paused && app.engine.auto_runs.contains(&id));
     }
 
     #[test]
     fn automatic_review_respects_version_decisions_queues_and_pause() {
         let (_data, mut app, root) = execution_app();
-        let id = app.mods[0].id;
-        app.auto_reviews.insert(id);
+        let id = app.engine.mods[0].id;
+        app.engine.auto_reviews.insert(id);
         assert!(app.review_due(0));
         for view in [
             View::Publish,
@@ -6676,36 +4534,39 @@ mod tests {
             View::DeleteMod(0),
             View::CloseMod(0),
         ] {
-            app.view = view;
+            app.engine.view = view;
             assert!(!app.review_due(0));
         }
-        app.view = View::Checks(0);
+        app.engine.view = View::Checks(0);
         assert!(app.review_due(0));
-        app.mods[0]
+        app.engine.mods[0]
             .queue
-            .push(app.store.enqueue(id, "an edit").unwrap());
+            .push(app.engine.store.enqueue(id, "an edit").unwrap());
         assert!(!app.review_due(0));
-        app.mods[0].queue.clear();
-        app.mods[0].steering.push("pending delivery".into());
+        app.engine.mods[0].queue.clear();
+        app.engine.mods[0].steering.push("pending delivery".into());
         assert!(!app.review_due(0));
-        app.mods[0].steering.clear();
-        app.mods[0].closed = true;
+        app.engine.mods[0].steering.clear();
+        app.engine.mods[0].closed = true;
         assert!(!app.review_due(0));
-        app.mods[0].closed = false;
+        app.engine.mods[0].closed = false;
         app.set_paused(0, true).unwrap();
         assert!(!app.review_due(0));
         app.set_paused(0, false).unwrap();
         std::fs::write(root.join("work/hello.sh"), "changed after checks\n").unwrap();
         app.maintain_reviews().unwrap();
-        assert!(app.workers.is_empty() && app.mods[0].agent_review.is_none());
-        assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "blocked");
+        assert!(app.engine.workers.is_empty() && app.engine.mods[0].agent_review.is_none());
+        assert_eq!(
+            app.engine.mods[0].execution.as_ref().unwrap().status,
+            "blocked"
+        );
         assert!(!app.review_due(0));
     }
 
     #[test]
     fn current_review_outcomes_never_loop_automatically() {
         let (_data, mut app, _) = execution_app();
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         let id = m.id;
         m.agent_review = Some(crate::review::State {
             source: "review:1".into(),
@@ -6716,47 +4577,47 @@ mod tests {
             report: None,
             ..Default::default()
         });
-        app.auto_reviews.insert(id);
+        app.engine.auto_reviews.insert(id);
         for status in [
             "clean", "findings", "blocked", "paused", "pending", "running",
         ] {
-            app.mods[0].agent_review.as_mut().unwrap().status = status.into();
+            app.engine.mods[0].agent_review.as_mut().unwrap().status = status.into();
             assert!(!app.review_due(0), "{status}");
         }
-        app.mods[0].agent_review.as_mut().unwrap().status = "fixing".into();
+        app.engine.mods[0].agent_review.as_mut().unwrap().status = "fixing".into();
         assert!(app.review_due(0));
-        app.auto_reviews.clear();
+        app.engine.auto_reviews.clear();
         assert!(!app.review_due(0));
-        app.auto_reviews.insert(id);
-        app.mods[0].agent_review.as_mut().unwrap().status = "stale".into();
+        app.engine.auto_reviews.insert(id);
+        app.engine.mods[0].agent_review.as_mut().unwrap().status = "stale".into();
         assert!(app.review_due(0));
     }
 
     #[test]
     fn implementation_checks_and_review_have_distinct_truthful_states() {
         let (_data, mut app, _) = execution_app();
-        let id = app.mods[0].id;
-        let e = app.mods[0].execution.as_mut().unwrap();
+        let id = app.engine.mods[0].id;
+        let e = app.engine.mods[0].execution.as_mut().unwrap();
         e.status = "verifying".into();
-        app.executing_mods.insert(id);
+        app.engine.executing_mods.insert(id);
         assert_eq!(app.state_summary().phase, state::Phase::Checking);
         assert!(app.action_dock().primary.is_none());
         assert!(!app.action_dock().evidence.contains("Review clear"));
-        app.executing_mods.clear();
-        let e = app.mods[0].execution.as_mut().unwrap();
+        app.engine.executing_mods.clear();
+        let e = app.engine.mods[0].execution.as_mut().unwrap();
         e.status = "blocked".into();
         e.checks[0].exit_code = Some(1);
         e.checks[0].output = "AssertionError: current failure".into();
         assert_eq!(app.state_summary().phase, state::Phase::NeedsYou);
         assert!(app.action_dock().primary == Some(Action::Retry));
         assert!(app.action_dock().evidence.contains("1 failed"));
-        let e = app.mods[0].execution.as_mut().unwrap();
+        let e = app.engine.mods[0].execution.as_mut().unwrap();
         e.status = "review".into();
         e.checks[0].exit_code = Some(0);
         e.checks[0].output.clear();
         assert_eq!(app.state_summary().phase, state::Phase::Paused);
         assert!(app.action_dock().primary == Some(Action::Review));
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         m.agent_review = Some(crate::review::State {
             source: "review:1".into(),
             plan_source: m.planning.as_ref().unwrap().source.clone(),
@@ -6768,7 +4629,7 @@ mod tests {
         });
         assert_eq!(app.state_summary().phase, state::Phase::Ready);
         assert!(app.action_dock().primary == Some(Action::Publish));
-        app.mods[0].execution.as_mut().unwrap().fingerprint = None;
+        app.engine.mods[0].execution.as_mut().unwrap().fingerprint = None;
         assert!(app.action_dock().evidence.contains("Review outdated"));
         assert!(!app.action_dock().evidence.contains("Review clear"));
     }
@@ -6776,14 +4637,14 @@ mod tests {
     #[test]
     fn details_tabs_evidence_and_mouse_scroll_preserve_the_draft() {
         let (_data, mut app, _) = execution_app();
-        let e = app.mods[0].execution.as_mut().unwrap();
+        let e = app.engine.mods[0].execution.as_mut().unwrap();
         e.checks[0].output = "A saved successful check output".into();
         for width in [36, 80, 120] {
-            app.view = View::Chat;
+            app.engine.view = View::Chat;
             key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-            assert!(matches!(app.view, View::Tasks(0)));
+            assert!(matches!(app.engine.view, View::Tasks(0)));
             key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-            assert!(matches!(app.view, View::Checks(0)));
+            assert!(matches!(app.engine.view, View::Checks(0)));
             let text = rows(&screen(&mut app, width, 40)).join("\n");
             assert!(
                 text.contains("Checks") && text.contains("Review") && text.contains("Activity")
@@ -6793,22 +4654,23 @@ mod tests {
             let text = rows(&screen(&mut app, width, 40)).join("\n");
             assert!(text.contains("/usr/bin/true") && text.contains("saved successful"));
             key(&mut app, KeyCode::Char('3'), KeyModifiers::NONE);
-            assert!(matches!(app.view, View::Findings(0)));
+            assert!(matches!(app.engine.view, View::Findings(0)));
             key(&mut app, KeyCode::Char('4'), KeyModifiers::NONE);
-            assert!(matches!(app.view, View::History(0)));
+            assert!(matches!(app.engine.view, View::History(0)));
             key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
-            assert!(matches!(app.view, View::Findings(0)));
+            assert!(matches!(app.engine.view, View::Findings(0)));
             key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-            assert!(matches!(app.view, View::Chat));
+            assert!(matches!(app.engine.view, View::Chat));
             assert_eq!(app.input.lines(), ["keep this draft"]);
-            assert!(app.workers.is_empty() && app.git_jobs.is_empty());
+            assert!(app.engine.workers.is_empty() && app.engine.git_jobs.is_empty());
         }
-        app.mods[0].execution.as_mut().unwrap().checks[0].output = "saved evidence\n".repeat(100);
-        app.view = View::Checks(0);
+        app.engine.mods[0].execution.as_mut().unwrap().checks[0].output =
+            "saved evidence\n".repeat(100);
+        app.engine.view = View::Checks(0);
         screen(&mut app, 80, 24);
         let content = app.scroll.content;
         wheel(&mut app, false, content);
-        assert!(matches!(app.view, View::Checks(offset) if offset > 0));
+        assert!(matches!(app.engine.view, View::Checks(offset) if offset > 0));
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 
@@ -6861,7 +4723,7 @@ mod tests {
     fn task_updates_belong_to_the_current_attempt_and_split_details_stay_compact() {
         use timeline::Key;
         let (_data, mut app, _) = execution_app();
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         let e = m.execution.as_mut().unwrap();
         e.status = "blocked".into();
         e.checks.clear();
@@ -6892,7 +4754,7 @@ mod tests {
                 .any(|item| item.key == Key::Failure(id))
         );
         for width in [80, 124, 160] {
-            app.view = View::Chat;
+            app.engine.view = View::Chat;
             overview_screen(&mut app, width, 42);
             app.timeline.selected = Some(Key::Task(id));
             app.timeline.expanded.insert(Key::Task(id), true);
@@ -6901,7 +4763,7 @@ mod tests {
             assert!(!text.contains("Earlier repair passed") && !text.contains("task complete"));
             assert!(text.contains("Retry task 1"));
         }
-        app.mods[0].messages.push(crate::store::Message {
+        app.engine.mods[0].messages.push(crate::store::Message {
             source: Some(source),
             item_id: Some("current-update".into()),
             body: "Checking this repair".into(),
@@ -6909,7 +4771,7 @@ mod tests {
         });
         let text = rows(&overview_screen(&mut app, 160, 42)).join("\n");
         assert_eq!(text.matches("Checking this repair").count(), 1);
-        app.view = View::TaskHistory(id, 0);
+        app.engine.view = View::TaskHistory(id, 0);
         let text = rows(&overview_screen(&mut app, 100, 42)).join("\n");
         assert!(text.contains("Earlier repair passed") && text.contains("Checking this repair"));
         assert_eq!(app.input.lines(), ["keep this draft"]);
@@ -6919,7 +4781,7 @@ mod tests {
     fn timeline_navigation_preserves_draft_and_opens_existing_evidence() {
         use timeline::Key;
         let (_data, mut app, _) = execution_app();
-        let id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
+        let id = app.engine.mods[0].execution.as_ref().unwrap().tasks[0].id;
         overview_screen(&mut app, 100, 40);
         assert!(!app.timeline_items().iter().any(|i| i.key == Key::Task(id)));
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
@@ -6929,17 +4791,17 @@ mod tests {
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         assert_eq!(app.timeline.selected, Some(Key::Task(id)));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Task(task, 0) if task == id));
+        assert!(matches!(app.engine.view, View::Task(task, 0) if task == id));
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert!(queued(&app).is_empty());
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         // Removed rows cannot activate their former action or submit the draft.
         app.timeline.focus = timeline::Focus::Timeline;
         app.timeline.selected = Some(Key::Task(-1));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert!(queued(&app).is_empty());
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(app.timeline.focus == timeline::Focus::Composer && !app.quit);
@@ -6953,7 +4815,7 @@ mod tests {
     fn timeline_keeps_repairs_previous_failures_and_current_evidence_distinct() {
         use timeline::{Key, State};
         let (_data, mut app, _) = execution_app();
-        let e = app.mods[0].execution.as_mut().unwrap();
+        let e = app.engine.mods[0].execution.as_mut().unwrap();
         e.status = "running".into();
         e.fingerprint = None;
         e.checks.clear();
@@ -6964,7 +4826,7 @@ mod tests {
         run.verification_feedback = std::mem::take(&mut run.checks);
         run.verification_feedback[0].exit_code = Some(1);
         run.verification_feedback[0].output = "AssertionError: preserved evidence".into();
-        app.executing_mods.insert(app.mods[0].id);
+        app.engine.executing_mods.insert(app.engine.mods[0].id);
         let items = app.timeline_items();
         let failure = items.iter().find(|i| i.key == Key::Failure(id)).unwrap();
         assert!(failure.state == State::Previous && failure.action.is_none());
@@ -6985,11 +4847,11 @@ mod tests {
         );
         assert!(items.iter().find(|i| i.key == Key::Checks).unwrap().state == State::Waiting);
         assert!(!items.iter().any(|i| i.title == "Ready to publish"));
-        let e = app.mods[0].execution.as_mut().unwrap();
+        let e = app.engine.mods[0].execution.as_mut().unwrap();
         e.tasks[0].status = "done".into();
         e.status = "review".into();
         e.fingerprint = Some("checked-version".into());
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         m.agent_review = Some(crate::review::State {
             source: "review:1".into(),
             plan_source: m.planning.as_ref().unwrap().source.clone(),
@@ -7004,7 +4866,7 @@ mod tests {
                 .iter()
                 .any(|i| i.title == "Ready to publish")
         );
-        app.mods[0].execution.as_mut().unwrap().fingerprint = None;
+        app.engine.mods[0].execution.as_mut().unwrap().fingerprint = None;
         assert!(
             !app.timeline_items()
                 .iter()
@@ -7021,7 +4883,7 @@ mod tests {
     fn combined_checks_prioritize_failures_group_tasks_and_keep_evidence() {
         use ratatui::style::Color;
         let (_data, mut app, _) = execution_app();
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         m.name = "Browser-only todo app".into();
         let plan = m.planning.as_mut().unwrap().plan.as_mut().unwrap();
         plan.tasks[0].title = "Verify the static app".into();
@@ -7088,7 +4950,7 @@ mod tests {
                 .collect();
         }
         for width in [160, 124, 80] {
-            app.view = View::Checks(0);
+            app.engine.view = View::Checks(0);
             app.show_evidence = false;
             let buffer = screen(&mut app, width, 50);
             let text = rows(&buffer).join("\n");
@@ -7117,18 +4979,18 @@ mod tests {
             );
         }
         app.show_evidence = true;
-        app.view = View::Checks(0);
+        app.engine.view = View::Checks(0);
         let text = rows(&screen(&mut app, 120, 70)).join("\n");
         for i in 0..6 {
             assert!(text.contains(&format!("scenario-{i}.mjs")));
         }
-        app.view = View::Task(first_id, 0);
+        app.engine.view = View::Task(first_id, 0);
         assert!(
             rows(&screen(&mut app, 100, 50))
                 .join("\n")
                 .contains("Earlier task report · before combined checks")
         );
-        app.view = View::Chat;
+        app.engine.view = View::Chat;
         app.show_evidence = false;
         app.timeline.focus = timeline::Focus::Inspector;
         app.timeline.held = true;
@@ -7145,7 +5007,7 @@ mod tests {
         use ratatui::style::Color;
         use timeline::{Focus, Key};
         let (_data, mut app, _) = execution_app();
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         let plan = m.planning.as_mut().unwrap().plan.as_mut().unwrap();
         plan.tasks[0].title = "Implement the durable browser repository".into();
         let mut task = plan.tasks[0].clone();
@@ -7239,7 +5101,7 @@ mod tests {
             (pane.y..pane.bottom()).any(|y| buffer[(pane.x + 2, y)].symbol() == "✓"
                 && buffer[(pane.x + 2, y)].fg == Color::Green)
         );
-        app.view = View::Task(done_id, 0);
+        app.engine.view = View::Task(done_id, 0);
         let text = rows(&overview_screen(&mut app, 80, 46)).join("\n");
         assert!(text.contains("Worker report") && text.contains("3 passed"));
         assert_eq!(app.input.lines(), ["keep this draft"]);
@@ -7249,7 +5111,7 @@ mod tests {
     fn timeline_scroll_crosses_task_separators_without_snapping_back() {
         use timeline::{Focus, Key};
         let (_data, mut app, _) = execution_app();
-        let plan = app.mods[0]
+        let plan = app.engine.mods[0]
             .planning
             .as_mut()
             .unwrap()
@@ -7262,7 +5124,7 @@ mod tests {
             task.title = format!("Independent task {index}");
             plan.tasks.push(task);
         }
-        app.mods[0].execution = None;
+        app.engine.mods[0].execution = None;
         overview_screen(&mut app, 160, 36);
         app.timeline.focus = Focus::Timeline;
         app.timeline.selected = Some(Key::Planned(0));
@@ -7298,7 +5160,7 @@ mod tests {
     fn timeline_scrollback_anchors_to_rows_and_jump_follows_current_work() {
         use timeline::Key;
         let (_data, mut app, _) = execution_app();
-        let plan = app.mods[0]
+        let plan = app.engine.mods[0]
             .planning
             .as_mut()
             .unwrap()
@@ -7311,7 +5173,7 @@ mod tests {
             task.title = format!("Independent task {index}");
             plan.tasks.push(task);
         }
-        app.mods[0].execution = None;
+        app.engine.mods[0].execution = None;
         overview_screen(&mut app, 100, 36);
         app.timeline.focus = timeline::Focus::Timeline;
         app.timeline.selected = Some(Key::Planned(10));
@@ -7323,7 +5185,7 @@ mod tests {
         overview_screen(&mut app, 100, 36);
         let anchor = app.timeline.anchor;
         let top = app.timeline.top;
-        app.mods[0]
+        app.engine.mods[0]
             .planning
             .as_mut()
             .unwrap()
@@ -7341,10 +5203,10 @@ mod tests {
         overview_screen(&mut app, 100, 36);
         assert!(!app.timeline.held);
         assert_eq!(app.input.lines(), draft);
-        app.mods[0].planning.as_mut().unwrap().status = "failed".into();
+        app.engine.mods[0].planning.as_mut().unwrap().status = "failed".into();
         overview_screen(&mut app, 100, 36);
         assert_eq!(app.timeline.selected, Some(Key::Plan));
-        app.mods[0].planning.as_mut().unwrap().source = "next-plan".into();
+        app.engine.mods[0].planning.as_mut().unwrap().source = "next-plan".into();
         overview_screen(&mut app, 100, 36);
         assert!(app.timeline.focus == timeline::Focus::Composer && !app.timeline.held);
     }
@@ -7370,7 +5232,7 @@ mod tests {
             .unwrap();
         store.save_draft(m.id, "keep this draft").unwrap();
         let mut app = App::load(data.0.join("project"), false, store).unwrap();
-        app.mods[0]
+        app.engine.mods[0]
             .agent_review
             .as_mut()
             .unwrap()
@@ -7447,7 +5309,7 @@ mod tests {
                     assert_eq!(app.timeline.top, top);
                     assert!(!app.timeline.held);
                     assert_eq!(app.input.lines(), ["keep this draft"]);
-                    assert!(queued(&app).is_empty() && app.workers.is_empty());
+                    assert!(queued(&app).is_empty() && app.engine.workers.is_empty());
                 }
             }
         }
@@ -7458,9 +5320,9 @@ mod tests {
         use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         use timeline::Key;
         let (_data, mut app, _) = execution_app();
-        app.mods[0].description =
+        app.engine.mods[0].description =
             "First request line\nSecond request line\nThird request line".into();
-        app.mods[0].messages.clear();
+        app.engine.mods[0].messages.clear();
         for width in [36, 80, 160] {
             let buffer = overview_screen(&mut app, width, 40);
             let input = app.scroll.input;
@@ -7511,7 +5373,7 @@ mod tests {
     fn timeline_split_focus_and_evidence_preserve_the_draft() {
         use timeline::{Focus, Key};
         let (_data, mut app, _) = execution_app();
-        let id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
+        let id = app.engine.mods[0].execution.as_ref().unwrap().tasks[0].id;
         overview_screen(&mut app, 160, 45);
         assert!(!app.timeline.inspector.area.is_empty());
         assert!(
@@ -7536,9 +5398,9 @@ mod tests {
         key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
         assert!(app.show_evidence);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.view == View::Task(id, 0));
+        assert!(app.engine.view == View::Task(id, 0));
         assert!(queued(&app).is_empty());
-        app.view = View::Chat;
+        app.engine.view = View::Chat;
         overview_screen(&mut app, 160, 45);
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         assert_eq!(app.timeline.focus, Focus::Composer);
@@ -7556,7 +5418,7 @@ mod tests {
     fn timeline_inspector_scroll_is_independent_and_survives_resize() {
         use timeline::{Focus, Key};
         let (_data, mut app, _) = execution_app();
-        app.mods[0]
+        app.engine.mods[0]
             .planning
             .as_mut()
             .unwrap()
@@ -7625,9 +5487,9 @@ mod tests {
                 .contains("no longer in the current plan")
         );
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.view == View::Chat);
+        assert!(app.engine.view == View::Chat);
         assert!(queued(&app).is_empty());
-        app.mods[0].planning.as_mut().unwrap().source = "a new plan".into();
+        app.engine.mods[0].planning.as_mut().unwrap().source = "a new plan".into();
         overview_screen(&mut app, 160, 45);
         assert_eq!(app.timeline.focus, Focus::Composer);
         assert!(!app.timeline.held);
@@ -7658,7 +5520,7 @@ mod tests {
 
     fn wait_git(app: &mut App) {
         let start = Instant::now();
-        while !app.git_jobs.is_empty() || app.project_job.is_some() {
+        while !app.engine.git_jobs.is_empty() || app.engine.project_job.is_some() {
             assert!(start.elapsed() < Duration::from_secs(15));
             std::thread::sleep(Duration::from_millis(10));
             app.poll_git_jobs().unwrap();
@@ -7676,10 +5538,10 @@ mod tests {
         let mut app = App::load(project.clone(), false, data.store()).unwrap();
         paste(&mut app, "Build a greeting");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        let root = app.mods[0].git_root.clone().unwrap();
+        let root = app.engine.mods[0].git_root.clone().unwrap();
         wait_git(&mut app);
         assert!(app.worker_error().is_none());
-        assert!(app.auto_plans.contains(&app.mods[0].id));
+        assert!(app.engine.auto_plans.contains(&app.engine.mods[0].id));
         assert_eq!(
             std::fs::read_to_string(git_mod::checkout(&root).join("hello.txt")).unwrap(),
             "committed\n"
@@ -7691,11 +5553,15 @@ mod tests {
         paste(&mut app, "saved draft");
         drop(app);
         let mut app = App::load(project, false, data.store()).unwrap();
-        assert!(app.git_jobs.is_empty() && app.workers.is_empty() && app.auto_plans.is_empty());
+        assert!(
+            app.engine.git_jobs.is_empty()
+                && app.engine.workers.is_empty()
+                && app.engine.auto_plans.is_empty()
+        );
         assert_eq!(app.input.lines(), ["saved draft"]);
         app.delete_mod(0).unwrap();
         wait_git(&mut app);
-        assert!(app.mods.is_empty() && !root.exists());
+        assert!(app.engine.mods.is_empty() && !root.exists());
     }
 
     #[test]
@@ -7707,14 +5573,14 @@ mod tests {
         commit_project(&project);
         let mut app = App::load(project, false, data.store()).unwrap();
         for description in ["First goal", "Second goal"] {
-            app.view = View::NewMod;
+            app.engine.view = View::NewMod;
             app.input.clear();
             paste(&mut app, description);
             key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
             wait_git(&mut app);
         }
-        let removed = app.mods[0].git_root.clone().unwrap();
-        let remaining = app.mods[1].id;
+        let removed = app.engine.mods[0].git_root.clone().unwrap();
+        let remaining = app.engine.mods[1].id;
         app.delete_mod(0).unwrap();
         paste(&mut app, "instruction");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
@@ -7725,7 +5591,7 @@ mod tests {
         let input = app.input.lines().to_vec();
         wait_git(&mut app);
         assert_eq!(app.current_mod().unwrap().id, remaining);
-        assert!(matches!(app.view, View::EditQueue(0)));
+        assert!(matches!(app.engine.view, View::EditQueue(0)));
         assert_eq!(app.input.lines(), input);
         assert_eq!(app.current_mod().unwrap().draft, "composer draft");
         assert!(!removed.exists());
@@ -7738,15 +5604,20 @@ mod tests {
     #[test]
     fn saved_pr_recovers_history_and_stays_editable() {
         let (data, app, root) = execution_app();
-        let project = app.project.clone();
-        let id = app.mods[0].id;
+        let project = app.engine.project.clone();
+        let id = app.engine.mods[0].id;
         commit_project(&project);
         git_mod::prepare(&project, &root, &std::sync::atomic::AtomicBool::new(false)).unwrap();
-        app.store.save_git_root(id, &root).unwrap();
+        app.engine.store.save_git_root(id, &root).unwrap();
         let mut state = git_mod::load(&root).unwrap();
         state.pr = Some("https://github.com/fixture/project/pull/1".into());
         state.phase = "published".into();
-        state.fingerprint = app.mods[0].execution.as_ref().unwrap().fingerprint.clone();
+        state.fingerprint = app.engine.mods[0]
+            .execution
+            .as_ref()
+            .unwrap()
+            .fingerprint
+            .clone();
         std::fs::write(
             root.join("git-mod.json"),
             serde_json::to_vec(&state).unwrap(),
@@ -7754,7 +5625,7 @@ mod tests {
         .unwrap();
         drop(app);
         let mut app = App::load(project.clone(), false, data.store()).unwrap();
-        app.auto_reviews.insert(id);
+        app.engine.auto_reviews.insert(id);
         assert!(
             !app.review_due(0),
             "Publishing ends automatic review intent"
@@ -7762,21 +5633,24 @@ mod tests {
         let display = rows(&screen(&mut app, 116, 40)).join("\n");
         assert!(display.contains("PR published") && display.contains("Request edits"));
         assert!(display.contains("PR published") && !display.contains("changes ready"));
-        assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "review");
-        app.git_states.get_mut(&id).unwrap().phase = "ready".into();
+        assert_eq!(
+            app.engine.mods[0].execution.as_ref().unwrap().status,
+            "review"
+        );
+        app.engine.git_states.get_mut(&id).unwrap().phase = "ready".into();
         assert!(
             app.state_summary()
                 .evidence
                 .contains("PR open · update pending")
         );
-        app.git_states.get_mut(&id).unwrap().phase = "published".into();
+        app.engine.git_states.get_mut(&id).unwrap().phase = "published".into();
         assert!(!app.read_only() && git_mod::checkout(&root).exists());
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(queued(&app), ["keep this draft"]);
         drop(app);
         let app = App::load(project, false, data.store()).unwrap();
         assert_eq!(
-            app.mods[0]
+            app.engine.mods[0]
                 .messages
                 .iter()
                 .filter(|m| m.item_id.as_deref() == Some(&format!("pr:{id}")))
@@ -7788,8 +5662,8 @@ mod tests {
     #[test]
     fn closing_archives_history_and_the_picker_separates_closed_mods() {
         let (data, mut app, root) = execution_app();
-        let id = app.mods[0].id;
-        let history = app.mods[0]
+        let id = app.engine.mods[0].id;
+        let history = app.engine.mods[0]
             .messages
             .iter()
             .map(|m| m.body.clone())
@@ -7804,19 +5678,19 @@ mod tests {
         }
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::CloseMod(0)));
+        assert!(matches!(app.engine.view, View::CloseMod(0)));
         assert!(
             rows(&screen(&mut app, 100, 30))
                 .join("\n")
                 .contains("Save a checkpoint")
         );
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::ProjectSetup(true, _)));
+        assert!(matches!(app.engine.view, View::ProjectSetup(true, _)));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(root.exists() && git_mod::checkout(&root).exists());
-        assert!(app.mods[0].closed);
-        assert!(matches!(app.view, View::NewMod));
-        let project = app.project.clone();
+        assert!(app.engine.mods[0].closed);
+        assert!(matches!(app.engine.view, View::NewMod));
+        let project = app.engine.project.clone();
         drop(app);
         let mut app = App::load(project, false, data.store()).unwrap();
         assert!(app.current_mod().is_none());
@@ -7837,7 +5711,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.current_mod().unwrap().id, id);
         assert_eq!(
-            app.mods[0]
+            app.engine.mods[0]
                 .messages
                 .iter()
                 .map(|m| m.body.clone())
@@ -7848,18 +5722,18 @@ mod tests {
         assert!(display.contains("Closed · work saved"));
         assert!(!display.contains("Describe a feature"));
         paste(&mut app, "ignored in closed history");
-        assert_eq!(app.mods[0].draft, "keep this draft");
+        assert_eq!(app.engine.mods[0].draft, "keep this draft");
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.mods.is_empty());
+        assert!(app.engine.mods.is_empty());
     }
 
     #[test]
     fn background_edits_preserve_the_selected_mod_and_its_draft() {
         let (data, mut app, _root) = execution_app();
-        let selected = app.mods[0].id;
-        let plan = app.mods[0]
+        let selected = app.engine.mods[0].id;
+        let plan = app.engine.mods[0]
             .planning
             .as_ref()
             .unwrap()
@@ -7868,49 +5742,68 @@ mod tests {
             .unwrap()
             .clone();
         let other = app
+            .engine
             .store
-            .create_mod(app.project_id, "Another goal")
+            .create_mod(app.engine.project_id, "Another goal")
             .unwrap();
-        app.store
+        app.engine
+            .store
             .save_plan(other.id, &other.planning.as_ref().unwrap().source, &plan)
             .unwrap();
-        app.store
+        app.engine
+            .store
             .create_execution(other.id, &data.0.join("other"), &plan)
             .unwrap();
-        app.store.execution_status(other.id, "blocked").unwrap();
-        app.store.enqueue(other.id, "Fix the failed check").unwrap();
-        app.store.select_mod(app.project_id, selected).unwrap();
-        let state = app.store.load_project(&app.project).unwrap();
-        app.mods = state.mods;
+        app.engine
+            .store
+            .execution_status(other.id, "blocked")
+            .unwrap();
+        app.engine
+            .store
+            .enqueue(other.id, "Fix the failed check")
+            .unwrap();
+        app.engine
+            .store
+            .select_mod(app.engine.project_id, selected)
+            .unwrap();
+        let state = app.engine.store.load_project(&app.engine.project).unwrap();
+        app.engine.mods = state.mods;
         app.poll_workers().unwrap();
         assert_eq!(app.current_mod().unwrap().id, selected);
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert_eq!(
-            app.store.load_project(&app.project).unwrap().active_mod_id,
+            app.engine
+                .store
+                .load_project(&app.engine.project)
+                .unwrap()
+                .active_mod_id,
             Some(selected)
         );
-        assert!(app.auto_plans.contains(&other.id));
-        assert_eq!(app.mods[1].execution.as_ref().unwrap().status, "planning");
-        assert!(app.mods[1].queue.is_empty());
+        assert!(app.engine.auto_plans.contains(&other.id));
+        assert_eq!(
+            app.engine.mods[1].execution.as_ref().unwrap().status,
+            "planning"
+        );
+        assert!(app.engine.mods[1].queue.is_empty());
     }
 
     #[test]
     fn completed_plans_schedule_execution_only_for_the_active_round() {
         let (_data, mut app, _root) = execution_app();
-        let id = app.mods[0].id;
-        app.auto_runs.insert(id);
+        let id = app.engine.mods[0].id;
+        app.engine.auto_runs.insert(id);
         assert!(app.ready_plans().is_empty());
-        app.mods[0].execution.as_mut().unwrap().status = "planning".into();
+        app.engine.mods[0].execution.as_mut().unwrap().status = "planning".into();
         assert_eq!(app.ready_plans(), [0]);
-        app.mods[0].closed = true;
+        app.engine.mods[0].closed = true;
         assert!(app.ready_plans().is_empty());
-        app.mods[0].closed = false;
-        app.mods[0].planning.as_mut().unwrap().status = "paused".into();
+        app.engine.mods[0].closed = false;
+        app.engine.mods[0].planning.as_mut().unwrap().status = "paused".into();
         assert!(app.ready_plans().is_empty());
     }
 
     fn mark_review_clean(app: &mut App) {
-        let m = &mut app.mods[0];
+        let m = &mut app.engine.mods[0];
         m.agent_review = Some(crate::review::State {
             source: "test-clean".into(),
             plan_source: m.planning.as_ref().unwrap().source.clone(),
@@ -7924,33 +5817,41 @@ mod tests {
     fn direct_publish_does_not_use_a_stale_diff_after_source_changes() {
         let (_data, mut app, root) = execution_app();
         mark_review_clean(&mut app);
-        commit_project(&app.project);
+        commit_project(&app.engine.project);
         let flag = std::sync::atomic::AtomicBool::new(false);
-        git_mod::prepare(&app.project, &root, &flag).unwrap();
-        let id = app.mods[0].id;
-        app.store.save_git_root(id, &root).unwrap();
-        app.mods[0].git_root = Some(root.clone());
-        app.git_states.insert(id, git_mod::load(&root).unwrap());
+        git_mod::prepare(&app.engine.project, &root, &flag).unwrap();
+        let id = app.engine.mods[0].id;
+        app.engine.store.save_git_root(id, &root).unwrap();
+        app.engine.mods[0].git_root = Some(root.clone());
+        app.engine
+            .git_states
+            .insert(id, git_mod::load(&root).unwrap());
         app.open_review().unwrap();
         wait_git(&mut app);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        app.review = Some(workspace::review(&root).unwrap());
+        app.engine.review = Some(workspace::review(&root).unwrap());
         std::fs::write(root.join("work/hello.sh"), "not checked\n").unwrap();
         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
         assert!(!app.can_publish());
-        assert!(matches!(app.view, View::Review(_)));
-        assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "blocked");
-        assert!(!app.publish_after_review);
+        assert!(matches!(app.engine.view, View::Review(_)));
+        assert_eq!(
+            app.engine.mods[0].execution.as_ref().unwrap().status,
+            "blocked"
+        );
+        assert!(!app.engine.publish_after_review);
     }
 
     #[test]
     fn follow_up_keeps_conversation_and_prepares_a_fresh_plan() {
         let (_data, mut app, _root) = execution_app();
-        let id = app.mods[0].id;
-        let previous_source = app.mods[0].planning.as_ref().unwrap().source.clone();
-        let count = app.mods[0].messages.len();
-        app.store.follow_up(id, "Add due dates", None).unwrap();
-        let state = app.store.load_project(&app.project).unwrap();
+        let id = app.engine.mods[0].id;
+        let previous_source = app.engine.mods[0].planning.as_ref().unwrap().source.clone();
+        let count = app.engine.mods[0].messages.len();
+        app.engine
+            .store
+            .follow_up(id, "Add due dates", None)
+            .unwrap();
+        let state = app.engine.store.load_project(&app.engine.project).unwrap();
         let code_mod = &state.mods[0];
         assert!(!code_mod.closed && code_mod.execution.as_ref().unwrap().status == "planning");
         assert_eq!(code_mod.draft, "keep this draft");
@@ -7980,17 +5881,17 @@ mod tests {
         assert!(!app.read_only());
         app.finish_mod(0, false, false).unwrap();
         wait_git(&mut app);
-        assert!(app.mods[0].closed && git_mod::checkout(&root).exists());
+        assert!(app.engine.mods[0].closed && git_mod::checkout(&root).exists());
         git_mod::prune(&root, &flag).unwrap();
         assert!(!git_mod::checkout(&root).exists());
         app.reopen_mod(0);
         wait_git(&mut app);
-        assert!(!app.mods[0].closed && app.published());
+        assert!(!app.engine.mods[0].closed && app.published());
         paste(&mut app, "Add sorting");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         paste(&mut app, "keep another draft");
         let restored_root = root.clone();
-        app.git_jobs.insert(
+        app.engine.git_jobs.insert(
             code_mod.id,
             Job::start("preparing edits", move |cancelled| {
                 git_mod::prepare_edits(&restored_root, &program, cancelled)?;
@@ -7999,11 +5900,22 @@ mod tests {
         );
         wait_git(&mut app);
         assert!(!app.published());
-        assert_eq!(app.mods[0].planning.as_ref().unwrap().status, "pending");
-        assert!(app.auto_plans.contains(&code_mod.id));
+        assert_eq!(
+            app.engine.mods[0].planning.as_ref().unwrap().status,
+            "pending"
+        );
+        assert!(app.engine.auto_plans.contains(&code_mod.id));
         assert!(queued(&app).is_empty());
-        assert_eq!(app.mods[0].messages.last().unwrap().body, "Add sorting");
-        assert!(app.mods[0].messages.iter().any(|m| m.body.contains(&pr)));
+        assert_eq!(
+            app.engine.mods[0].messages.last().unwrap().body,
+            "Add sorting"
+        );
+        assert!(
+            app.engine.mods[0]
+                .messages
+                .iter()
+                .any(|m| m.body.contains(&pr))
+        );
         assert_eq!(
             std::fs::read_to_string(root.join("work/a.txt")).unwrap(),
             "published\n"
@@ -8024,7 +5936,7 @@ mod tests {
         let mut app = App::load(project.clone(), false, data.store()).unwrap();
         paste(&mut app, "Change greeting");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        let root = app.mods[0].git_root.clone().unwrap();
+        let root = app.engine.mods[0].git_root.clone().unwrap();
         workspace::create(&git_mod::checkout(&root), &root).unwrap();
         std::fs::write(root.join("work/a.txt"), "unpublished\n").unwrap();
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
@@ -8032,20 +5944,20 @@ mod tests {
         let display = rows(&screen(&mut app, 100, 30)).join("\n");
         assert!(display.contains("Save a checkpoint") && !display.contains("draft PR"));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.mods[0].closed && git_mod::checkout(&root).exists());
+        assert!(app.engine.mods[0].closed && git_mod::checkout(&root).exists());
         assert!(git_mod::load(&root).unwrap().pr.is_none());
         assert_eq!(
             std::fs::read_to_string(git_mod::checkout(&root).join("a.txt")).unwrap(),
             "unpublished\n"
         );
-        assert_eq!(app.mods[0].messages[0].body, "Change greeting");
+        assert_eq!(app.engine.mods[0].messages[0].body, "Change greeting");
         assert_eq!(
             std::fs::read_to_string(project.join("a.txt")).unwrap(),
             "original\n"
         );
         app.reopen_mod(0);
         wait_git(&mut app);
-        assert!(!app.mods[0].closed && !app.read_only());
+        assert!(!app.engine.mods[0].closed && !app.read_only());
         app.delete_mod(0).unwrap();
         wait_git(&mut app);
         assert!(!root.exists());
@@ -8069,36 +5981,38 @@ mod tests {
         paste(&mut app, "First goal");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         wait_git(&mut app);
-        assert!(matches!(app.view, View::ProjectSetup(false, _)));
+        assert!(matches!(app.engine.view, View::ProjectSetup(false, _)));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         wait_git(&mut app);
-        assert!(app.worker_error().is_none() && git_mod::has_commit(&app.project));
-        let root = app.mods[0].git_root.clone().unwrap();
+        assert!(app.worker_error().is_none() && git_mod::has_commit(&app.engine.project));
+        let root = app.engine.mods[0].git_root.clone().unwrap();
         app.delete_mod(0).unwrap();
         wait_git(&mut app);
-        assert!(app.mods.is_empty() && !root.exists());
+        assert!(app.engine.mods.is_empty() && !root.exists());
     }
 
     #[test]
     fn publication_preview_shows_generated_text_and_preserves_drafts() {
         let (_data, mut app, root) = execution_app();
-        commit_project(&app.project);
+        commit_project(&app.engine.project);
         let flag = std::sync::atomic::AtomicBool::new(false);
-        git_mod::prepare(&app.project, &root, &flag).unwrap();
-        let id = app.mods[0].id;
-        app.mods[0].git_root = Some(root.clone());
-        app.git_states.insert(id, git_mod::load(&root).unwrap());
+        git_mod::prepare(&app.engine.project, &root, &flag).unwrap();
+        let id = app.engine.mods[0].id;
+        app.engine.mods[0].git_root = Some(root.clone());
+        app.engine
+            .git_states
+            .insert(id, git_mod::load(&root).unwrap());
         mark_review_clean(&mut app);
-        app.review = Some(workspace::review(&root).unwrap());
-        let draft = crate::publication::tests::seed(&root, &app.mods[0].description);
-        app.git_jobs.insert(
+        app.engine.review = Some(workspace::review(&root).unwrap());
+        let draft = crate::publication::tests::seed(&root, &app.engine.mods[0].description);
+        app.engine.git_jobs.insert(
             id,
             Job::start("writing commit and PR text", move |_| {
                 Ok(git_mod::Result::PublicationDraft(draft))
             }),
         );
         wait_git(&mut app);
-        assert!(matches!(app.view, View::Publish));
+        assert!(matches!(app.engine.view, View::Publish));
         for width in [52, 100] {
             let rendered = rows(&screen(&mut app, width, 36)).join("\n");
             assert!(
@@ -8119,7 +6033,7 @@ mod tests {
         assert!(git_mod::load(&root).unwrap().pr.is_none());
         std::fs::write(root.join("work/hello.sh"), "changed after preview\n").unwrap();
         app.start_publication(0);
-        assert!(app.git_jobs.is_empty());
+        assert!(app.engine.git_jobs.is_empty());
         assert!(app.worker_error().unwrap().contains("outdated"));
     }
 
@@ -8128,18 +6042,18 @@ mod tests {
         let (_data, mut app, _root) = execution_app();
         mark_review_clean(&mut app);
         key(&mut app, KeyCode::Char('s'), KeyModifiers::CONTROL);
-        assert!(matches!(app.view, View::ProjectSetup(true, _)));
+        assert!(matches!(app.engine.view, View::ProjectSetup(true, _)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Review(_)));
+        assert!(matches!(app.engine.view, View::Review(_)));
         assert!(app.can_publish());
         let rendered = rows(&screen(&mut app, 100, 30))
             .join("\n")
             .replace('\u{a0}', " ");
         assert!(rendered.contains("publish PR") && !rendered.contains("apply"));
         key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Review(_)));
+        assert!(matches!(app.engine.view, View::Review(_)));
         assert_eq!(
-            std::fs::read_to_string(app.project.join("hello.sh")).unwrap(),
+            std::fs::read_to_string(app.engine.project.join("hello.sh")).unwrap(),
             "old\n"
         );
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
@@ -8149,14 +6063,14 @@ mod tests {
     #[test]
     fn changes_after_final_verification_require_rechecking_even_after_reopening() {
         let (data, app, root) = execution_app();
-        let project = app.project.clone();
+        let project = app.engine.project.clone();
         drop(app);
         std::fs::write(root.join("work/another.txt"), "not verified").unwrap();
         let mut app = App::load(project, false, data.store()).unwrap();
         key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL);
         assert!(!app.can_publish());
         key(&mut app, KeyCode::Char('a'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Review(_)));
+        assert!(matches!(app.engine.view, View::Review(_)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(
             rows(&screen(&mut app, 116, 40))
@@ -8171,7 +6085,7 @@ mod tests {
         app.finish_mod(0, false, false).unwrap();
         assert!(root.join("close-request").exists());
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat) && !app.mods[0].closed);
+        assert!(matches!(app.engine.view, View::Chat) && !app.engine.mods[0].closed);
         assert!(!root.join("close-request").exists());
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert_eq!(
@@ -8183,47 +6097,54 @@ mod tests {
     #[test]
     fn edit_round_consumes_one_request_once_and_keeps_the_execution_workspace() {
         let (data, mut app, root) = execution_app();
-        let id = app.mods[0].id;
-        let first = app.store.enqueue(id, "Add sorting").unwrap();
-        let next = app.store.enqueue(id, "Add filtering").unwrap();
-        app.mods[0].queue = vec![first, next];
-        app.store.save_draft(id, "keep this draft").unwrap();
+        let id = app.engine.mods[0].id;
+        let first = app.engine.store.enqueue(id, "Add sorting").unwrap();
+        let next = app.engine.store.enqueue(id, "Add filtering").unwrap();
+        app.engine.mods[0].queue = vec![first, next];
+        app.engine.store.save_draft(id, "keep this draft").unwrap();
         app.finish_edit(0).unwrap();
-        assert_eq!(app.mods[0].execution.as_ref().unwrap().workspace, root);
-        assert_eq!(app.mods[0].execution.as_ref().unwrap().status, "planning");
+        assert_eq!(
+            app.engine.mods[0].execution.as_ref().unwrap().workspace,
+            root
+        );
+        assert_eq!(
+            app.engine.mods[0].execution.as_ref().unwrap().status,
+            "planning"
+        );
         assert_eq!(queued(&app), ["Add filtering"]);
-        let count = app.mods[0].messages.len();
+        let count = app.engine.mods[0].messages.len();
         drop(app);
         let mut app = App::load(data.0.join("project"), false, data.store()).unwrap();
         app.finish_edit(0).unwrap();
-        assert_eq!(app.mods[0].messages.len(), count);
+        assert_eq!(app.engine.mods[0].messages.len(), count);
         assert_eq!(queued(&app), ["Add filtering"]);
         assert_eq!(app.input.lines(), ["keep this draft"]);
-        assert!(app.auto_plans.contains(&id));
+        assert!(app.engine.auto_plans.contains(&id));
     }
 
     #[test]
     fn active_worker_animates_while_replies_keep_their_model_and_effort() {
         let (_data, mut app, _root) = execution_app();
         let code_mod = app.current_mod().unwrap();
-        let record = app.store.worker(code_mod.id).unwrap();
+        let record = app.engine.store.worker(code_mod.id).unwrap();
         let mut worker =
-            Worker::start(&app.project, code_mod, record, Role::Planner, None).unwrap();
+            Worker::start(&app.engine.project, code_mod, record, Role::Planner, None).unwrap();
         worker.role = Role::Executor;
         worker.status = Status::Running;
         worker.model = Some("current-model".into());
         worker.effort = Some("high".into());
         let id = worker.id;
-        app.workers.insert(worker.id, worker);
-        let execution = app.mods[0].execution.as_mut().unwrap();
+        app.engine.workers.insert(worker.id, worker);
+        let execution = app.engine.mods[0].execution.as_mut().unwrap();
         execution.status = "running".into();
         execution.tasks[0].status = "running".into();
         execution.tasks[0].worker = Some(id);
-        app.workers
+        app.engine
+            .workers
             .get_mut(&id)
             .unwrap()
             .bind_test_task(execution.tasks[0].source.clone());
-        app.mods[0].messages.push(crate::store::Message {
+        app.engine.mods[0].messages.push(crate::store::Message {
             source: None,
             task: None,
             item_id: Some("previous-reply".into()),
@@ -8251,8 +6172,8 @@ mod tests {
             "⠿ codex · executor · w{id} · current-model · high"
         )));
         assert!(still.contains("⠿ 1. Greeting"));
-        app.workers.values_mut().next().unwrap().status = Status::Checking;
-        app.mods[0].execution.as_mut().unwrap().tasks[0].status = "checking".into();
+        app.engine.workers.values_mut().next().unwrap().status = Status::Checking;
+        app.engine.mods[0].execution.as_mut().unwrap().tasks[0].status = "checking".into();
         let checking = rows(&overview_screen_at(
             &mut app,
             116,
@@ -8261,7 +6182,7 @@ mod tests {
         ))
         .join("\n");
         assert!(checking.contains("⠙ 1. Greeting"));
-        let execution = app.mods[0].execution.as_mut().unwrap();
+        let execution = app.engine.mods[0].execution.as_mut().unwrap();
         execution.tasks[0].status = "done".into();
         execution.status = "verifying".into();
         assert!(
@@ -8269,7 +6190,7 @@ mod tests {
                 .status
                 .starts_with("Working · combined checks")
         );
-        app.workers.values_mut().next().unwrap().status = Status::Ready;
+        app.engine.workers.values_mut().next().unwrap().status = Status::Ready;
         let idle = rows(&overview_screen_at(
             &mut app,
             116,
@@ -8288,7 +6209,7 @@ mod tests {
         assert!(history.contains("Previous reply."));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        app.workers.values_mut().next().unwrap().role = Role::Planner;
+        app.engine.workers.values_mut().next().unwrap().role = Role::Planner;
         let planner = rows(&overview_screen(&mut app, 116, 40)).join("\n");
         assert!(planner.contains("▤ codex · planner · current-model · high"));
     }
@@ -8296,8 +6217,14 @@ mod tests {
     #[test]
     fn retry_one_failed_task_preserves_running_peers_and_waits_for_capacity() {
         let (_data, mut app, _root) = execution_app();
-        let mod_id = app.mods[0].id;
-        let mut plan = app.mods[0].planning.as_ref().unwrap().plan.clone().unwrap();
+        let mod_id = app.engine.mods[0].id;
+        let mut plan = app.engine.mods[0]
+            .planning
+            .as_ref()
+            .unwrap()
+            .plan
+            .clone()
+            .unwrap();
         let mut ids = Vec::new();
         let mut workers = Vec::new();
         for (index, (provider, status)) in [
@@ -8314,11 +6241,18 @@ mod tests {
             task.worker = (*provider).into();
             task.files = vec![format!("task-{index}.txt")];
             let record = app
+                .engine
                 .store
                 .worker_provider(mod_id, Role::Executor, index.saturating_sub(1), provider)
                 .unwrap();
-            let mut worker =
-                Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+            let mut worker = Worker::start(
+                &app.engine.project,
+                &app.engine.mods[0],
+                record,
+                Role::Planner,
+                None,
+            )
+            .unwrap();
             worker.role = Role::Executor;
             worker.status = if index == 0 {
                 Status::Failed
@@ -8327,24 +6261,25 @@ mod tests {
             };
             worker.enabled = index != 0;
             workers.push(worker.id);
-            app.store.0.execute("INSERT INTO task_runs(mod_id,task_id,source,status,worker_id,summary) VALUES (?1,?2,?3,?4,?5,'saved evidence')",
+            app.engine.store.0.execute("INSERT INTO task_runs(mod_id,task_id,source,status,worker_id,summary) VALUES (?1,?2,?3,?4,?5,'saved evidence')",
                 rusqlite::params![mod_id,task.id,format!("fixture-{index}"),status,worker.id]).unwrap();
-            ids.push(app.store.0.last_insert_rowid());
-            app.workers.insert(worker.id, worker);
+            ids.push(app.engine.store.0.last_insert_rowid());
+            app.engine.workers.insert(worker.id, worker);
             plan.tasks.push(task);
         }
-        app.store
+        app.engine
+            .store
             .save_plan(
                 mod_id,
-                &app.mods[0].planning.as_ref().unwrap().source,
+                &app.engine.mods[0].planning.as_ref().unwrap().source,
                 &plan,
             )
             .unwrap();
-        app.mods[0].planning = app.store.planning(mod_id).unwrap();
-        app.mods[0].execution = app.store.execution(mod_id).unwrap();
-        app.muse = true;
-        app.executing_mods.insert(mod_id);
-        let before = app.store.execution(mod_id).unwrap().unwrap();
+        app.engine.mods[0].planning = app.engine.store.planning(mod_id).unwrap();
+        app.engine.mods[0].execution = app.engine.store.execution(mod_id).unwrap();
+        app.engine.muse = true;
+        app.engine.executing_mods.insert(mod_id);
+        let before = app.engine.store.execution(mod_id).unwrap().unwrap();
         let dock = app.action_dock();
         assert_eq!(dock.status, "Task 2 needs attention");
         assert!(
@@ -8357,11 +6292,11 @@ mod tests {
         assert!(visible.contains("Task 2 needs attention"));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Tasks(1)));
+        assert!(matches!(app.engine.view, View::Tasks(1)));
         let visible = rows(&screen(&mut app, 120, 36)).join("\n");
         assert!(visible.replace('\u{a0}', " ").contains("retry task"));
         key(&mut app, KeyCode::Char('r'), KeyModifiers::NONE);
-        let after = app.mods[0].execution.as_ref().unwrap();
+        let after = app.engine.mods[0].execution.as_ref().unwrap();
         assert_eq!(after.tasks[1].status, "pending");
         assert_ne!(after.tasks[1].source, before.tasks[1].source);
         assert_eq!(after.tasks[1].worker, Some(workers[0]));
@@ -8370,11 +6305,12 @@ mod tests {
             assert_eq!(after.tasks[index].status, before.tasks[index].status);
             assert_eq!(after.tasks[index].summary, before.tasks[index].summary);
         }
-        assert!(!app.workers.contains_key(&workers[0]));
+        assert!(!app.engine.workers.contains_key(&workers[0]));
         assert!(
             workers[1..]
                 .iter()
-                .all(|w| app.workers[w].status == Status::Running && app.workers[w].enabled)
+                .all(|w| app.engine.workers[w].status == Status::Running
+                    && app.engine.workers[w].enabled)
         );
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert_eq!(
@@ -8383,12 +6319,14 @@ mod tests {
         );
         assert!(!app.can_retry_task(ids[0]));
         let selected = app
+            .engine
             .store
             .schedule_workers(mod_id, &plan, &workers[1..], &[], &["codex", "muse"])
             .unwrap();
         assert_eq!(selected.len(), 2);
         assert!(selected.iter().all(|w| workers[1..].contains(&w.id)));
-        app.store
+        app.engine
+            .store
             .finish_task(
                 mod_id,
                 &before.tasks[2].source,
@@ -8398,13 +6336,19 @@ mod tests {
             )
             .unwrap();
         let selected = app
+            .engine
             .store
             .schedule_workers(mod_id, &plan, &workers[2..], &[], &["codex", "muse"])
             .unwrap();
         assert!(selected.iter().any(|w| w.id == workers[0]));
-        assert!(!app.store.retry_task(mod_id, before.tasks[0].id).unwrap());
-        assert!(!app.store.retry_task(mod_id, ids[1]).unwrap());
-        assert!(!app.store.retry_task(mod_id + 1000, ids[0]).unwrap());
+        assert!(
+            !app.engine
+                .store
+                .retry_task(mod_id, before.tasks[0].id)
+                .unwrap()
+        );
+        assert!(!app.engine.store.retry_task(mod_id, ids[1]).unwrap());
+        assert!(!app.engine.store.retry_task(mod_id + 1000, ids[0]).unwrap());
     }
 
     #[test]
@@ -8414,11 +6358,12 @@ mod tests {
         let mut workers = Vec::new();
         for provider in ["codex", "muse"] {
             let record = app
+                .engine
                 .store
                 .worker_provider(id, Role::Executor, 0, provider)
                 .unwrap();
             let mut worker = Worker::start(
-                &app.project,
+                &app.engine.project,
                 app.current_mod().unwrap(),
                 record,
                 Role::Planner,
@@ -8430,9 +6375,9 @@ mod tests {
             worker.model = Some("test-model".into());
             worker.effort = Some("high".into());
             workers.push(worker.id);
-            app.workers.insert(worker.id, worker);
+            app.engine.workers.insert(worker.id, worker);
         }
-        let plan = app.mods[0]
+        let plan = app.engine.mods[0]
             .planning
             .as_mut()
             .unwrap()
@@ -8444,7 +6389,7 @@ mod tests {
         second.title = "Second task".into();
         second.worker = "muse".into();
         plan.tasks.push(second);
-        let execution = app.mods[0].execution.as_mut().unwrap();
+        let execution = app.engine.mods[0].execution.as_mut().unwrap();
         execution.status = "running".into();
         execution.tasks[0].status = "running".into();
         execution.tasks[0].worker = Some(workers[0]);
@@ -8455,7 +6400,8 @@ mod tests {
         second.source = crate::store::task_source(second.id, 1);
         execution.tasks.push(second);
         for run in &execution.tasks {
-            app.workers
+            app.engine
+                .workers
                 .get_mut(&run.worker.unwrap())
                 .unwrap()
                 .bind_test_task(run.source.clone());
@@ -8473,26 +6419,42 @@ mod tests {
         assert!(narrow.contains("2 workers running"));
         assert!(view.contains("⠙ 1. Greeting · Working"), "{view}");
         assert!(view.contains("⠙ 2. Second task · Working"), "{view}");
-        let queued = app.store.enqueue(id, "Only the second worker").unwrap();
-        app.mods[0].queue.push(queued);
+        let queued = app
+            .engine
+            .store
+            .enqueue(id, "Only the second worker")
+            .unwrap();
+        app.engine.mods[0].queue.push(queued);
         key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('t'), KeyModifiers::NONE);
-        assert_eq!(app.steer_target, Some(workers[1]));
+        assert_eq!(app.engine.steer_target, Some(workers[1]));
         let view = rows(&overview_screen(&mut app, 120, 36))
             .join("\n")
             .replace('\u{a0}', " ");
         assert!(view.contains(&format!("target: w{}", workers[1])));
         key(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert_eq!(app.input.lines(), ["keep this draft"]);
-        assert!(app.store.next_steering(id, workers[0]).unwrap().is_none());
-        assert!(app.store.next_steering(id, workers[1]).unwrap().is_some());
-        for worker in app.workers.values_mut() {
+        assert!(
+            app.engine
+                .store
+                .next_steering(id, workers[0])
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            app.engine
+                .store
+                .next_steering(id, workers[1])
+                .unwrap()
+                .is_some()
+        );
+        for worker in app.engine.workers.values_mut() {
             worker.status = Status::Ready;
         }
         key(&mut app, KeyCode::Char('r'), KeyModifiers::CONTROL);
-        assert!(app.workers.values().all(|w| !w.enabled));
+        assert!(app.engine.workers.values().all(|w| !w.enabled));
     }
 
     #[test]
@@ -8500,37 +6462,39 @@ mod tests {
         let (_data, mut app, _root) = execution_app();
         assert_eq!(app.companion_mood(), sprout::Mood::Finished);
         let other = app
+            .engine
             .store
-            .create_mod(app.project_id, "Another goal")
+            .create_mod(app.engine.project_id, "Another goal")
             .unwrap();
-        let record = app.store.worker(other.id).unwrap();
-        let worker = Worker::start(&app.project, &other, record, Role::Planner, None).unwrap();
-        app.workers.insert(worker.id, worker);
-        app.mods.push(other);
+        let record = app.engine.store.worker(other.id).unwrap();
+        let worker =
+            Worker::start(&app.engine.project, &other, record, Role::Planner, None).unwrap();
+        app.engine.workers.insert(worker.id, worker);
+        app.engine.mods.push(other);
         assert_eq!(app.companion_mood(), sprout::Mood::Finished);
 
-        app.active = Some(1);
+        app.engine.active = Some(1);
         assert_eq!(app.companion_mood(), sprout::Mood::Planning);
-        let worker = app.workers.values_mut().next().unwrap();
+        let worker = app.engine.workers.values_mut().next().unwrap();
         worker.role = Role::Executor;
         assert_eq!(app.companion_mood(), sprout::Mood::Working);
-        let worker = app.workers.values_mut().next().unwrap();
+        let worker = app.engine.workers.values_mut().next().unwrap();
         worker.enabled = false;
         worker.status = Status::Ready;
         assert_eq!(app.companion_mood(), sprout::Mood::Idle);
-        app.workers.values_mut().next().unwrap().status = Status::Failed;
+        app.engine.workers.values_mut().next().unwrap().status = Status::Failed;
         assert_eq!(app.companion_mood(), sprout::Mood::Blocked);
-        app.mods[1].closed = true;
+        app.engine.mods[1].closed = true;
         assert_eq!(app.companion_mood(), sprout::Mood::Idle);
-        app.active = Some(0);
-        app.mods[0].execution.as_mut().unwrap().status = "blocked".into();
+        app.engine.active = Some(0);
+        app.engine.mods[0].execution.as_mut().unwrap().status = "blocked".into();
         assert_eq!(app.companion_mood(), sprout::Mood::Blocked);
     }
 
     #[test]
     fn missing_recorded_effort_is_visible_without_guessing_a_level() {
         let (_data, mut app, _root) = execution_app();
-        app.mods[0].messages.push(crate::store::Message {
+        app.engine.mods[0].messages.push(crate::store::Message {
             source: None,
             task: None,
             item_id: Some("old-reply".into()),
@@ -8548,7 +6512,7 @@ mod tests {
     #[test]
     fn completed_versions_separate_results_details_and_history() {
         let (data, mut app, root) = execution_app();
-        let id = app.mods[0].id;
+        let id = app.engine.mods[0].id;
         let message = crate::store::Message {
             source: None,
             task: None,
@@ -8558,9 +6522,9 @@ mod tests {
             model: Some("gpt-6.1-sol".into()),
             effort: Some("xhigh".into()),
         };
-        app.store.save_message(id, &message).unwrap();
-        app.mods[0].messages.push(message);
-        let plan = app.mods[0]
+        app.engine.store.save_message(id, &message).unwrap();
+        app.engine.mods[0].messages.push(message);
+        let plan = app.engine.mods[0]
             .planning
             .as_mut()
             .unwrap()
@@ -8574,7 +6538,7 @@ mod tests {
             task.title = title.into();
             plan.tasks.push(task);
         }
-        let execution = app.mods[0].execution.as_mut().unwrap();
+        let execution = app.engine.mods[0].execution.as_mut().unwrap();
         for id in ["two", "three"] {
             let mut run = execution.tasks[0].clone();
             run.task_id = id.into();
@@ -8605,9 +6569,13 @@ mod tests {
             assert!(actions.contains("Details") && !actions.contains("Publish PR"));
             key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         }
-        let instruction = app.store.enqueue(id, "Keep the current icons").unwrap();
-        app.mods[0].queue.push(instruction);
-        app.store.save_draft(id, "keep this draft").unwrap();
+        let instruction = app
+            .engine
+            .store
+            .enqueue(id, "Keep the current icons")
+            .unwrap();
+        app.engine.mods[0].queue.push(instruction);
+        app.engine.store.save_draft(id, "keep this draft").unwrap();
         key(&mut app, KeyCode::Char('o'), KeyModifiers::CONTROL);
         let details = rows(&overview_screen(&mut app, 116, 50)).join("\n");
         assert!(
@@ -8616,7 +6584,7 @@ mod tests {
         assert!(details.contains("risk confidence 0.47 < 0.80"));
         assert!(!details.contains("I will inspect"));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-        assert!(matches!(app.view, View::Tasks(0)));
+        assert!(matches!(app.engine.view, View::Tasks(0)));
         key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
         let history = rows(&overview_screen(&mut app, 116, 40)).join("\n");
         assert!(
@@ -8627,16 +6595,16 @@ mod tests {
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         key(&mut app, KeyCode::PageDown, KeyModifiers::NONE);
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Tasks(0)));
+        assert!(matches!(app.engine.view, View::Tasks(0)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat) && app.plan_details);
+        assert!(matches!(app.engine.view, View::Chat) && app.plan_details);
         assert_eq!(app.input.lines(), ["keep this draft"]);
         assert_eq!(queued(&app), ["Keep the current icons"]);
         assert_eq!(
             std::fs::read_to_string(root.join("work/hello.sh")).unwrap(),
             "new\n"
         );
-        let reopened = App::load(app.project.clone(), false, data.store()).unwrap();
+        let reopened = App::load(app.engine.project.clone(), false, data.store()).unwrap();
         assert!(!reopened.plan_details && matches!(reopened.view, View::Chat));
         assert_eq!(reopened.input.lines(), ["keep this draft"]);
         assert_eq!(queued(&reopened), ["Keep the current icons"]);
@@ -8651,7 +6619,7 @@ mod tests {
     #[test]
     fn expanded_checks_keep_code_indentation_and_the_toggle_in_view() {
         let (_data, mut app, _root) = execution_app();
-        let result = &mut app.mods[0].execution.as_mut().unwrap().tasks[0].checks[0];
+        let result = &mut app.engine.mods[0].execution.as_mut().unwrap().tasks[0].checks[0];
         result.command = vec!["/workspace/.venv/bin/python".into(), "-c".into(), "with app.test_client() as client:\n    response = client.get('/health')\n    assert response.status_code == 200, 'the server must return a successful response'".into()];
         for width in [48, 116] {
             app.plan_details = true;
@@ -8728,7 +6696,7 @@ mod tests {
     fn final_verification_groups_skipped_commands_and_offers_retry() {
         for width in [80, 120] {
             let (_data, mut app, _) = execution_app();
-            let e = app.mods[0].execution.as_mut().unwrap();
+            let e = app.engine.mods[0].execution.as_mut().unwrap();
             for task in &mut e.tasks {
                 task.status = "done".into();
             }
@@ -8768,21 +6736,33 @@ mod tests {
     #[test]
     fn verification_results_show_the_assertion_and_label_worker_claims() {
         let (_data, mut app, _) = execution_app();
-        let id = app.mods[0].id;
-        let mut plan = app.mods[0].planning.as_ref().unwrap().plan.clone().unwrap();
-        plan.tasks[0].checks = vec!["Suite".into(), "Browser flows".into(), "Real model".into()];
-        app.store
-            .save_plan(id, &app.mods[0].planning.as_ref().unwrap().source, &plan)
+        let id = app.engine.mods[0].id;
+        let mut plan = app.engine.mods[0]
+            .planning
+            .as_ref()
+            .unwrap()
+            .plan
+            .clone()
             .unwrap();
-        let source = app.mods[0].execution.as_ref().unwrap().tasks[0]
+        plan.tasks[0].checks = vec!["Suite".into(), "Browser flows".into(), "Real model".into()];
+        app.engine
+            .store
+            .save_plan(
+                id,
+                &app.engine.mods[0].planning.as_ref().unwrap().source,
+                &plan,
+            )
+            .unwrap();
+        let source = app.engine.mods[0].execution.as_ref().unwrap().tasks[0]
             .source
             .clone();
         let checks = vec![crate::execution::CheckResult { timeout_seconds: None, duration_ms: None, missing_runtime: None, task: None, check: "Suite".into(), command: vec!["/bin/true".into()], exit_code: Some(0), output: String::new() }, crate::execution::CheckResult { timeout_seconds: None, duration_ms: None, missing_runtime: None, task: None, check: "Browser flows".into(), command: vec!["/bin/false".into()], exit_code: Some(1), output: "DeprecationWarning: dependency\nTraceback\nAssertionError: Upload retry\nactual: undefined\nexpected: true".into() }];
-        app.store
+        app.engine
+            .store
             .finish_task(id, &source, "blocked", "All checks passed", &checks)
             .unwrap();
-        app.mods[0].planning = app.store.planning(id).unwrap();
-        app.mods[0].execution = app.store.execution(id).unwrap();
+        app.engine.mods[0].planning = app.engine.store.planning(id).unwrap();
+        app.engine.mods[0].execution = app.engine.store.execution(id).unwrap();
         app.plan_details = true;
         let rendered = rows(&screen(&mut app, 120, 50)).join("\n");
         assert!(
@@ -8806,7 +6786,7 @@ mod tests {
     fn repeated_check_names_show_every_command_and_accurate_progress() {
         for failed in [false, true] {
             let (_data, mut app, _) = execution_app();
-            let m = &mut app.mods[0];
+            let m = &mut app.engine.mods[0];
             m.planning.as_mut().unwrap().plan.as_mut().unwrap().tasks[0].checks =
                 vec!["Real model".into(), "Browser flows".into(), "Suites".into()];
             let execution = m.execution.as_mut().unwrap();
@@ -8978,10 +6958,10 @@ mod tests {
         assert!(!app.plan_details);
         assert_eq!(app.input.lines(), ["draft stays"]);
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-        assert!(matches!(app.view, View::History(_)));
+        assert!(matches!(app.engine.view, View::History(_)));
         assert_eq!(app.input.lines(), ["draft stays"]);
         for width in [36, 60, 100] {
-            app.view = View::History(0);
+            app.engine.view = View::History(0);
             let buffer = screen(&mut app, width, 40);
             let rows = rows(&buffer);
             let first = rows.iter().position(|row| row.contains("> café")).unwrap() as u16;
@@ -9033,7 +7013,7 @@ mod tests {
         assert_eq!(code_mod.messages[0].body, code_mod.description);
         assert!(code_mod.queue.is_empty());
         assert_eq!(code_mod.planning.as_ref().unwrap().status, "pending");
-        assert!(app.auto_plans.contains(&code_mod.id));
+        assert!(app.engine.auto_plans.contains(&code_mod.id));
         drop(app);
         let reopened = App::load(project, false, data.store()).unwrap();
         assert!(reopened.auto_plans.is_empty());
@@ -9046,9 +7026,9 @@ mod tests {
         let data = TestData::new();
         let project = test_project(&data, "project");
         let mut app = App::load(project.clone(), false, data.store()).unwrap();
-        assert!(matches!(app.view, View::NewMod));
+        assert!(matches!(app.engine.view, View::NewMod));
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(app.mods.is_empty());
+        assert!(app.engine.mods.is_empty());
         paste(&mut app, "feature A");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         paste(&mut app, "message A");
@@ -9090,8 +7070,8 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         paste(&mut app, "discard this name");
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat));
-        assert_eq!(app.mods.len(), 1);
+        assert!(matches!(app.engine.view, View::Chat));
+        assert_eq!(app.engine.mods.len(), 1);
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 
@@ -9117,7 +7097,7 @@ mod tests {
             key(&mut app, code, KeyModifiers::NONE);
         }
         assert_eq!(queued(&app), ["second", "third", "first"]);
-        assert!(matches!(app.view, View::Queue(2)));
+        assert!(matches!(app.engine.view, View::Queue(2)));
 
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         app.input.clear();
@@ -9128,7 +7108,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         app.input.clear();
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::EditQueue(2)));
+        assert!(matches!(app.engine.view, View::EditQueue(2)));
         paste(&mut app, "edited");
         key(&mut app, KeyCode::Char('j'), KeyModifiers::CONTROL);
         paste(&mut app, "second line");
@@ -9145,9 +7125,9 @@ mod tests {
             key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
         }
         assert!(queued(&app).is_empty());
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         key(&mut app, KeyCode::Char('q'), KeyModifiers::CONTROL);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert_eq!(app.input.lines(), ["keep this draft"]);
         drop(app);
         assert!(
@@ -9172,7 +7152,7 @@ mod tests {
         key(&mut app, KeyCode::Up, KeyModifiers::NONE);
         key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('s'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert!(app.queue_selection.is_empty());
         assert_eq!(app.input.lines(), ["keep draft"]);
         let reopened = App::load(project, false, data.store()).unwrap();
@@ -9194,7 +7174,7 @@ mod tests {
         paste(&mut app, "keep draft");
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::DeleteMod(0)));
+        assert!(matches!(app.engine.view, View::DeleteMod(0)));
         paste(&mut app, "ignored paste");
         app.handle(Event::Key(KeyEvent::new_with_kind(
             KeyCode::Enter,
@@ -9202,16 +7182,16 @@ mod tests {
             KeyEventKind::Repeat,
         )))
         .unwrap();
-        assert!(matches!(app.view, View::DeleteMod(0)));
+        assert!(matches!(app.engine.view, View::DeleteMod(0)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Mods(0)));
+        assert!(matches!(app.engine.view, View::Mods(0)));
         key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Mods(1)));
+        assert!(matches!(app.engine.view, View::Mods(1)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.input.lines(), ["keep draft"]);
         assert_eq!(queued(&app), ["keep queue"]);
-        assert_eq!(app.mods.len(), 1);
+        assert_eq!(app.engine.mods.len(), 1);
     }
 
     #[test]
@@ -9233,7 +7213,7 @@ mod tests {
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::Chat));
+        assert!(matches!(app.engine.view, View::Chat));
         assert_eq!(app.current_mod().unwrap().name, "a");
         assert_eq!(app.input.lines(), ["draft a"]);
         drop(app);
@@ -9255,8 +7235,8 @@ mod tests {
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert!(matches!(app.view, View::NewMod));
-        assert!(app.mods.is_empty());
+        assert!(matches!(app.engine.view, View::NewMod));
+        assert!(app.engine.mods.is_empty());
         assert!(app.input.lines()[0].is_empty());
         let mut reopened = App::load(project, false, data.store()).unwrap();
         assert!(matches!(reopened.view, View::NewMod));

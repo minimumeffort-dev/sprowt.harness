@@ -4,6 +4,8 @@
 
 The harness saves work automatically in SQLite and private source checkpoints. Run from the same project root to restore its codemods, drafts, queue and history.
 
+The terminal and [macOS app](macos.md) use the same database. Only one controller can open a project at a time; close the active interface before switching. The project lock is released after worker cleanup on exit.
+
 ## What survives
 
 | Event | Source and history | Runtime and native conversations | Does work resume? |

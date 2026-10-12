@@ -57,6 +57,8 @@ sprowt-harness --help
 
 **Expected:** help lists `setup`, `--no-motion` and `--closed-worktree-days`. If the command is not found, make sure Cargo's binary directory is on your shell's `PATH`.
 
+To use the native interface, follow [Build and open the macOS app](macos.md#build-and-open) after worker setup.
+
 ## 3. Open your project
 
 Change to the project you want to work on, then launch:

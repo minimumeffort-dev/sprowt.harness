@@ -1,0 +1,157 @@
+{
+  "error": null,
+  "protocol_version": 1,
+  "request_id": 7,
+  "snapshot": {
+    "actions": [
+      {
+        "id": "retry",
+        "label": "Retry work",
+        "task_id": null
+      },
+      {
+        "id": "update",
+        "label": "Sync project / target",
+        "task_id": null
+      },
+      {
+        "id": "failure",
+        "label": "Show full error",
+        "task_id": null
+      },
+      {
+        "id": "diff",
+        "label": "View diff",
+        "task_id": null
+      },
+      {
+        "id": "close",
+        "label": "Close codemod",
+        "task_id": null
+      },
+      {
+        "id": "delete",
+        "label": "Delete codemod",
+        "task_id": null
+      }
+    ],
+    "active_mod": {
+      "checks": [
+        {
+          "label": "Final checks · CLI regression suite passes",
+          "output": "cargo test\n\nDraft did not survive reopening",
+          "status": "failed"
+        }
+      ],
+      "closed": false,
+      "description": "Add native controls",
+      "draft": "Do not lose this draft",
+      "findings": [
+        {
+          "detail": "src/engine.rs:42\nReopening discarded the composer text.\nPersist the draft before switching sessions.",
+          "id": "1",
+          "status": "confirmed",
+          "title": "Keep the unsent draft"
+        }
+      ],
+      "history": [
+        {
+          "body": "Add native controls",
+          "effort": null,
+          "model": null,
+          "role": "user"
+        },
+        {
+          "body": "I will split this into two tasks.",
+          "effort": "high",
+          "model": "gpt-6.1-sol",
+          "role": "planner"
+        }
+      ],
+      "id": 1,
+      "messages": [
+        {
+          "body": "Add native controls",
+          "effort": null,
+          "model": null,
+          "role": "user"
+        }
+      ],
+      "name": "Add native controls",
+      "plan": {
+        "status": "ready",
+        "summary": "Share the engine with native controls",
+        "tasks": [
+          {
+            "checks": [
+              "CLI regression suite passes"
+            ],
+            "depends_on": [],
+            "detail": "",
+            "files": [
+              "src/engine.rs"
+            ],
+            "id": "core",
+            "outcome": "Both clients use the same lifecycle rules",
+            "status": "pending",
+            "title": "Extract the engine"
+          },
+          {
+            "checks": [
+              "Draft survives reopening"
+            ],
+            "depends_on": [
+              "core"
+            ],
+            "detail": "",
+            "files": [
+              "macos/Sources"
+            ],
+            "id": "native",
+            "outcome": "Open a project and manage codemods",
+            "status": "pending",
+            "title": "Add native controls"
+          }
+        ]
+      },
+      "queue": [
+        {
+          "body": "Keep keyboard shortcuts",
+          "id": 1
+        }
+      ],
+      "steering": [
+        "Preserve the existing keyboard controls"
+      ],
+      "user_paused": false,
+      "workers": []
+    },
+    "detail": "0 resolved · 1 remaining · 1 new · 0/0 tasks finished",
+    "dialog": {
+      "body": "Delete “Add native controls”, its conversation, queued instructions and local working folder?",
+      "confirm_label": "Delete codemod",
+      "domains": [],
+      "kind": "delete",
+      "repository_create": false,
+      "repository_slug": null,
+      "request_id": null,
+      "title": "Delete codemod"
+    },
+    "error": null,
+    "evidence": "Checks · 0 passed · 1 failed · 0 not run · Review outdated",
+    "mods": [
+      {
+        "closed": false,
+        "id": 1,
+        "name": "Add native controls"
+      },
+      {
+        "closed": false,
+        "id": 2,
+        "name": "Other codemod"
+      }
+    ],
+    "project": "/example/project",
+    "status": "Work saved · ready to resume"
+  }
+}

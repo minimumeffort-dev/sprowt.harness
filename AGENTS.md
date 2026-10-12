@@ -51,6 +51,12 @@
 - After implementing and verifying an approved batch, commit its changes and push to `main`. Include documentation changes.
 - Committing and pushing are part of finishing the batch; no separate approval is needed.
 
+## Keep both interfaces in sync
+
+- Put workflow rules, permissions and persistence in the shared Rust engine. Terminal and SwiftUI code handle presentation and input.
+- When a feature changes available commands or visible state, update both interfaces in the same batch. Keep the desktop protocol and its Rust/Swift contract checks current.
+- Build the native bundle from the same checkout as its Rust executable. Run the Rust and Swift checks before completing a change to their shared boundary.
+
 ## Keep the UX focused
 
 - Every visible element and interaction must serve a requested or approved feature.

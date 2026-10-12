@@ -16,9 +16,12 @@ cargo clippy --all-targets -- -D warnings
 cargo test --locked
 python3 -m unittest discover -s examples -p 'test_*.py'
 python3 examples/check_skills.py
+swift test --package-path macos
 ```
 
 The default Rust suite omits live tests marked `ignored`. The Python suite exercises broker and transport behavior without live provider sessions. Passing these suites does not establish live provider or VM compatibility.
+
+For native interface changes, [build the macOS bundle](macos.md#build-and-open) and exercise the changed flow in the app. The Rust and Swift protocol checks must agree before a shared boundary change is complete.
 
 To inspect CLI help without starting the interactive app:
 
@@ -104,15 +107,18 @@ Standalone compatibility probes live in [examples](../examples). They are separa
 
 | Responsibility | Entry points |
 | --- | --- |
-| CLI and application loop | [`main.rs`](../src/main.rs), [`app.rs`](../src/app.rs) |
-| State and actions | [`app/state.rs`](../src/app/state.rs), [`app/actions.rs`](../src/app/actions.rs) |
+| CLI and terminal loop | [`main.rs`](../src/main.rs), [`app.rs`](../src/app.rs) |
+| Shared controller | [`engine.rs`](../src/engine.rs), [`engine`](../src/engine) |
+| State and actions | [`engine/state.rs`](../src/engine/state.rs), [`engine/actions.rs`](../src/engine/actions.rs) |
+| Native command protocol | [`desktop.rs`](../src/desktop.rs), [`engine/api.rs`](../src/engine/api.rs), [`engine/snapshot.rs`](../src/engine/snapshot.rs) |
+| Native macOS interface | [`macos/Sources`](../macos/Sources), [build and development guide](macos.md) |
 | Workbench and navigation | [`app/timeline.rs`](../src/app/timeline.rs), [`app/controls.rs`](../src/app/controls.rs), [`ui/workbench.rs`](../src/ui/workbench.rs) |
 | Dock and full evidence views | [`ui/dock.rs`](../src/ui/dock.rs), [`ui/timeline.rs`](../src/ui/timeline.rs), [`ui/inspector.rs`](../src/ui/inspector.rs) |
 | Terminal rendering and companion | [`ui.rs`](../src/ui.rs), [`sprout.rs`](../src/sprout.rs) |
 | Plans, assignment and routing | [`plan.rs`](../src/plan.rs), [`scheduler.rs`](../src/scheduler.rs), [`router.rs`](../src/router.rs) |
 | Project preparation, bounded asset reuse and baseline receipts | [`environment.rs`](../src/environment.rs), [`environment/cache.rs`](../src/environment/cache.rs), [`environment_cache.py`](../sandbox/environment_cache.py) |
 | Worker orchestration | [`worker.rs`](../src/worker.rs), [`agents.rs`](../src/agents.rs) |
-| Startup ownership and measurements | [`app/preparation.rs`](../src/app/preparation.rs), [`codex/shared_vm.rs`](../src/codex/shared_vm.rs), [`diagnostics.rs`](../src/diagnostics.rs), [`diagnostics/timing.rs`](../src/diagnostics/timing.rs) |
+| Startup ownership and measurements | [`engine/preparation.rs`](../src/engine/preparation.rs), [`codex/shared_vm.rs`](../src/codex/shared_vm.rs), [`diagnostics.rs`](../src/diagnostics.rs), [`diagnostics/timing.rs`](../src/diagnostics/timing.rs) |
 | Provider connections | [`codex.rs`](../src/codex.rs), [`muse.rs`](../src/muse.rs), [`muse_bridge.py`](../src/muse_bridge.py), [`muse_transport.py`](../src/muse_transport.py) |
 | Tested Muse releases, downloads and private binary cache | [`muse_release.py`](../src/muse_release.py) |
 | Pinned skill delivery | [`skills.rs`](../src/skills.rs), [`build.rs`](../build.rs), [`skills`](../skills/INDEX.md) |

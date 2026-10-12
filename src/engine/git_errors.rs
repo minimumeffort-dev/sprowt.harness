@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 #[derive(Default)]
-pub(super) struct Errors(BTreeMap<i64, Vec<(&'static str, String)>>);
+pub(crate) struct Errors(BTreeMap<i64, Vec<(&'static str, String)>>);
 
 impl Errors {
     pub fn record(&mut self, mod_id: i64, operation: &'static str, error: String) {

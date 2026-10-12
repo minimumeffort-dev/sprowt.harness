@@ -21,6 +21,7 @@ Build a change, understand its progress, and publish a checked PR.
 | Guide | What you will learn |
 | --- | --- |
 | [Quickstart](quickstart.md) | Install, sign in, describe a change and publish |
+| [macOS app](macos.md) | Build the native interface and continue saved CLI work |
 | [Terminal](terminal.md) | Navigate the timeline, inspect evidence and use shortcuts |
 | [Codemods and messages](codemods.md) | Manage work, queue edits and steer active workers |
 | [Review and repairs](review.md) | Read findings, start fixes and understand repair limits |

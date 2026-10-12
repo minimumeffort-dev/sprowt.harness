@@ -7,7 +7,7 @@ pub(super) fn source_changed_app(legacy: bool) -> (TestData, App, PathBuf, i64) 
     } else {
         "Setup or baseline changed source: package-lock.json, source.txt.\nEdits are retained. Revise the setup recipe before retrying."
     };
-    let execution = app.mods[0].execution.as_ref().unwrap();
+    let execution = app.engine.mods[0].execution.as_ref().unwrap();
     let source = &execution.tasks[0].source;
     let mut receipt = crate::environment::load(&root, id).unwrap().unwrap();
     receipt.error = Some(reason.into());
@@ -24,14 +24,15 @@ pub(super) fn source_changed_app(legacy: bool) -> (TestData, App, PathBuf, i64) 
         )
         .unwrap();
     }
-    app.store
+    app.engine
+        .store
         .0
         .execute(
             "UPDATE task_runs SET summary=?2 WHERE id=?1",
             rusqlite::params![id, format!("Environment preflight failed: {reason}")],
         )
         .unwrap();
-    let project = app.project.clone();
+    let project = app.engine.project.clone();
     drop(app);
     let app = App::load(project, false, data.store()).unwrap();
     (data, app, root, id)
@@ -40,7 +41,7 @@ pub(super) fn source_changed_app(legacy: bool) -> (TestData, App, PathBuf, i64) 
 #[test]
 fn workbench_source_changing_preparation_recommends_correction_after_restart() {
     let (_data, mut app, root, id) = source_changed_app(true);
-    let mod_id = app.mods[0].id;
+    let mod_id = app.engine.mods[0].id;
     assert_eq!(app.state_summary().primary, Some(Action::ReviseRepair));
     let dock = app.action_dock();
     assert!(
@@ -54,21 +55,21 @@ fn workbench_source_changing_preparation_recommends_correction_after_restart() {
             .any(|a| a.action == Action::RetryTask(id))
     );
     assert_eq!(app.input.lines(), ["keep this draft"]);
-    let before = app.store.execution(mod_id).unwrap().unwrap().tasks[0]
+    let before = app.engine.store.execution(mod_id).unwrap().unwrap().tasks[0]
         .source
         .clone();
     key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
     key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
-    assert!(matches!(app.view, View::Task(task, 0) if task == id));
+    assert!(matches!(app.engine.view, View::Task(task, 0) if task == id));
     assert_eq!(
-        app.store.execution(mod_id).unwrap().unwrap().tasks[0].source,
+        app.engine.store.execution(mod_id).unwrap().unwrap().tasks[0].source,
         before
     );
     assert!(root.exists());
     key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
     key(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
-    assert!(app.auto_plans.contains(&mod_id));
-    assert!(app.mods[0].messages.iter().any(|message| {
+    assert!(app.engine.auto_plans.contains(&mod_id));
+    assert!(app.engine.mods[0].messages.iter().any(|message| {
         message
             .body
             .contains("Correct the setup recipe that changed source")
@@ -79,7 +80,7 @@ fn workbench_source_changing_preparation_recommends_correction_after_restart() {
 #[test]
 fn workbench_source_change_paths_reach_full_evidence_and_correction() {
     let (_data, mut app, _root, id) = source_changed_app(false);
-    app.view = View::Task(id, 0);
+    app.engine.view = View::Task(id, 0);
     key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
     let text = rows(&screen(&mut app, 160, 70)).join("\n");
     assert!(
@@ -90,7 +91,7 @@ fn workbench_source_change_paths_reach_full_evidence_and_correction() {
     );
     key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
     key(&mut app, KeyCode::Char('v'), KeyModifiers::NONE);
-    let message = app.mods[0]
+    let message = app.engine.mods[0]
         .messages
         .iter()
         .find(|message| {
@@ -110,15 +111,15 @@ fn workbench_source_change_paths_reach_full_evidence_and_correction() {
 #[test]
 fn workbench_earlier_source_change_does_not_replace_current_download_retry() {
     let (data, app, root, id) = source_changed_app(false);
-    let mod_id = app.mods[0].id;
-    let project = app.project.clone();
-    let old_source = &app.mods[0].execution.as_ref().unwrap().tasks[0].source;
+    let mod_id = app.engine.mods[0].id;
+    let project = app.engine.project.clone();
+    let old_source = &app.engine.mods[0].execution.as_ref().unwrap().tasks[0].source;
     std::fs::remove_file(
         root.join("environments")
             .join(format!("{id}-{old_source}.json")),
     )
     .unwrap();
-    app.store.0.execute("UPDATE task_runs SET source=?2,summary=?3 WHERE id=?1", rusqlite::params![id,crate::store::task_source(id, 3),"Environment preflight failed: Setup failed: Download browser\nGuest command timed out after 180s."]).unwrap();
+    app.engine.store.0.execute("UPDATE task_runs SET source=?2,summary=?3 WHERE id=?1", rusqlite::params![id,crate::store::task_source(id, 3),"Environment preflight failed: Setup failed: Download browser\nGuest command timed out after 180s."]).unwrap();
     drop(app);
     let app = App::load(project, false, data.store()).unwrap();
     assert_eq!(app.state_summary().primary, Some(Action::RetryTask(id)));
@@ -128,20 +129,26 @@ fn workbench_earlier_source_change_does_not_replace_current_download_retry() {
             .iter()
             .any(|a| a.action == Action::ReviseRepair)
     );
-    assert_eq!(app.mods[0].id, mod_id);
+    assert_eq!(app.engine.mods[0].id, mod_id);
 }
 
 #[test]
 fn workbench_source_change_correction_hint_waits_for_busy_peer() {
     let (_data, mut app, _, id) = source_changed_app(false);
-    let record = app.store.worker(app.mods[0].id).unwrap();
-    let mut worker =
-        Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+    let record = app.engine.store.worker(app.engine.mods[0].id).unwrap();
+    let mut worker = Worker::start(
+        &app.engine.project,
+        &app.engine.mods[0],
+        record,
+        Role::Planner,
+        None,
+    )
+    .unwrap();
     worker.role = Role::Executor;
     worker.status = Status::Running;
     worker.bind_test_task(crate::store::task_source(id + 1, 1));
-    app.workers.insert(worker.id, worker);
-    app.view = View::Task(id, 0);
+    app.engine.workers.insert(worker.id, worker);
+    app.engine.view = View::Task(id, 0);
     let text = rows(&screen(&mut app, 160, 70)).join("\n");
     assert!(
         text.contains("package-lock.json") && text.contains("source.txt"),

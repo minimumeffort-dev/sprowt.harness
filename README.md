@@ -1,6 +1,6 @@
 # sprowt harness
 
-A local terminal app that takes a software change from a request to a checked, reviewed pull request. Codex and Muse work in isolated Linux environments; you follow the timeline and step in when a decision needs you.
+A local coding harness with terminal and native macOS interfaces that takes a software change from a request to a checked, reviewed pull request. Codex and Muse work in isolated Linux environments; you follow the work and step in when a decision needs you.
 
 **[Get started →](docs/quickstart.md)** · [Documentation](docs/README.md) · [Troubleshooting](docs/troubleshooting.md)
 
@@ -43,11 +43,21 @@ Then, from the project you want to change:
 sprowt-harness
 ```
 
+For the native SwiftUI app, build with Xcode 26 or newer:
+
+```sh
+./macos/build.sh
+open target/macos/Sprowt.app
+```
+
+Both interfaces use the same Rust engine and saved work. Close one before opening the same project in the other. See the [macOS guide](docs/macos.md).
+
 ## Find what you need
 
 | I want to… | Read |
 | --- | --- |
 | Make my first PR | [Quickstart](docs/quickstart.md) |
+| Use the native app | [macOS guide](docs/macos.md) |
 | Navigate the timeline and inspect results | [Terminal guide](docs/terminal.md) |
 | Send edits, steer workers or reopen work | [Codemods and messages](docs/codemods.md) |
 | Reuse a project's setup commands | [Environment recipe](docs/environments.md#add-a-project-recipe) |
@@ -59,6 +69,6 @@ sprowt-harness
 
 ## Scope
 
-Execution and review run in Linux. Native macOS and iOS builds are not supported. Downloads use a domain allowlist; additional access needs your approval. GitHub publication is supported, with one harness instance per project. See [sandbox boundaries](docs/sandbox.md) and [local data](docs/local-state.md).
+Worker execution and review run in Linux; building macOS and iOS projects through workers is not supported. Downloads use a domain allowlist; additional access needs your approval. GitHub publication is supported, with one harness instance per project. See [sandbox boundaries](docs/sandbox.md) and [local data](docs/local-state.md).
 
 This is a learning project, built one layer at a time. It is independent of sprowt.finance.

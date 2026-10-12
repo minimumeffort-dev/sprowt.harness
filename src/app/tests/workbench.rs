@@ -47,7 +47,7 @@ fn click(app: &mut App, control: Control) {
 
 fn failed_app() -> (TestData, App, PathBuf) {
     let (data, mut app, root) = execution_app();
-    let e = app.mods[0].execution.as_mut().unwrap();
+    let e = app.engine.mods[0].execution.as_mut().unwrap();
     e.status = "blocked".into();
     e.checks[0].exit_code = Some(1);
     e.checks[0].output = "Expected an empty name to exit nonzero; received exit 0.\nhello".into();
@@ -58,7 +58,7 @@ fn failed_app() -> (TestData, App, PathBuf) {
 
 fn setup_failed_app() -> (TestData, App, PathBuf, i64) {
     let (data, mut app, root) = execution_app();
-    let m = &app.mods[0];
+    let m = &app.engine.mods[0];
     let id = m.execution.as_ref().unwrap().tasks[0].id;
     let source = crate::store::task_source(id, 2);
     let recipe = crate::environment::Recipe {
@@ -85,11 +85,13 @@ fn setup_failed_app() -> (TestData, App, PathBuf, i64) {
     };
     let mut plan = m.planning.as_ref().unwrap().plan.clone().unwrap();
     plan.environment = Some(recipe.clone());
-    app.store
+    app.engine
+        .store
         .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
         .unwrap();
-    app.store.0.execute("UPDATE task_runs SET status='paused',attempt=2,source=?2,summary=?3,checks='[]' WHERE id=?1", rusqlite::params![id,source,"Environment preflight failed: Setup failed: Install browser runtime\nGuest command timed out after 180s."]).unwrap();
-    app.store
+    app.engine.store.0.execute("UPDATE task_runs SET status='paused',attempt=2,source=?2,summary=?3,checks='[]' WHERE id=?1", rusqlite::params![id,source,"Environment preflight failed: Setup failed: Install browser runtime\nGuest command timed out after 180s."]).unwrap();
+    app.engine
+        .store
         .0
         .execute(
             "UPDATE executions SET status='running',checks='[]',fingerprint=NULL WHERE mod_id=?1",
@@ -137,7 +139,7 @@ fn setup_failed_app() -> (TestData, App, PathBuf, i64) {
     for name in [format!("{id}.json"), format!("{id}-{source}.json")] {
         std::fs::write(root.join("environments").join(name), &bytes).unwrap();
     }
-    let project = app.project.clone();
+    let project = app.engine.project.clone();
     drop(app);
     let app = App::load(project, false, data.store()).unwrap();
     (data, app, root, id)
@@ -147,7 +149,7 @@ fn setup_failed_app() -> (TestData, App, PathBuf, i64) {
 fn workbench_persisted_setup_failure_is_visible_without_a_live_worker() {
     for width in [80, 160] {
         let (_data, mut app, _, id) = setup_failed_app();
-        assert!(app.workers.is_empty());
+        assert!(app.engine.workers.is_empty());
         assert!(
             app.state_summary()
                 .error
@@ -155,7 +157,14 @@ fn workbench_persisted_setup_failure_is_visible_without_a_live_worker() {
                 .is_some_and(|error| error.contains("Guest command timed out after 180s"))
         );
         assert!(app.inspect_task(id).unwrap().checks.is_empty());
-        assert!(app.mods[0].execution.as_ref().unwrap().checks.is_empty());
+        assert!(
+            app.engine.mods[0]
+                .execution
+                .as_ref()
+                .unwrap()
+                .checks
+                .is_empty()
+        );
         assert!(
             app.timeline_items().iter().any(
                 |item| item.key == Key::Environment && item.state == timeline::State::Attention
@@ -188,7 +197,7 @@ fn workbench_persisted_setup_failure_is_visible_without_a_live_worker() {
         assert!(text.contains("Saved preparation") && text.contains("not run"));
         assert!(!text.contains("1 failed · 0 not run"));
         click(&mut app, Control::Action(Action::Failure));
-        assert!(matches!(app.view, View::Task(task, 0) if task == id));
+        assert!(matches!(app.engine.view, View::Task(task, 0) if task == id));
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
 }
@@ -196,7 +205,7 @@ fn workbench_persisted_setup_failure_is_visible_without_a_live_worker() {
 #[test]
 fn workbench_preparation_full_evidence_includes_the_output_tail() {
     let (_data, mut app, _, id) = setup_failed_app();
-    app.view = View::Task(id, 0);
+    app.engine.view = View::Task(id, 0);
     let compact = rows(&screen(&mut app, 160, 70)).join("\n");
     assert!(!compact.contains("RAW_PREPARATION_TAIL"));
     key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
@@ -212,7 +221,7 @@ fn workbench_failure_shortcut_inspects_without_retrying_the_task() {
     let source = app.inspect_task(id).unwrap().run.source.clone();
     key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
     key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
-    assert!(matches!(app.view, View::Task(task, 0) if task == id));
+    assert!(matches!(app.engine.view, View::Task(task, 0) if task == id));
     assert_eq!(app.inspect_task(id).unwrap().run.source, source);
     assert_eq!(app.inspect_task(id).unwrap().run.status, "paused");
     assert_eq!(app.input.lines(), ["keep this draft"]);
@@ -222,15 +231,15 @@ fn workbench_failure_shortcut_inspects_without_retrying_the_task() {
 fn workbench_previous_preparation_never_becomes_a_new_attempt_failure() {
     let (_data, mut app, _, id) = setup_failed_app();
     let next_source = crate::store::task_source(id, 3);
-    app.store.0.execute("UPDATE task_runs SET status='pending',attempt=3,source=?2,summary='',checks='[]' WHERE id=?1", rusqlite::params![id,next_source]).unwrap();
-    app.mods[0].execution = app.store.execution(app.mods[0].id).unwrap();
+    app.engine.store.0.execute("UPDATE task_runs SET status='pending',attempt=3,source=?2,summary='',checks='[]' WHERE id=?1", rusqlite::params![id,next_source]).unwrap();
+    app.engine.mods[0].execution = app.engine.store.execution(app.engine.mods[0].id).unwrap();
     assert!(app.state_summary().error.is_none());
     assert!(
         !app.timeline_items()
             .iter()
             .any(|item| item.key == Key::Environment && item.state == timeline::State::Attention)
     );
-    app.view = View::Task(id, 0);
+    app.engine.view = View::Task(id, 0);
     let saved = rows(&screen(&mut app, 160, 70)).join("\n");
     assert!(saved.contains("Earlier preparation"), "{saved}");
     assert!(saved.contains("Guest command timed out after 180s"));
@@ -240,17 +249,23 @@ fn workbench_previous_preparation_never_becomes_a_new_attempt_failure() {
 #[test]
 fn workbench_active_worker_takes_precedence_over_saved_preparation_failure() {
     let (_data, mut app, _, id) = setup_failed_app();
-    let record = app.store.worker(app.mods[0].id).unwrap();
-    let mut worker =
-        Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+    let record = app.engine.store.worker(app.engine.mods[0].id).unwrap();
+    let mut worker = Worker::start(
+        &app.engine.project,
+        &app.engine.mods[0],
+        record,
+        Role::Planner,
+        None,
+    )
+    .unwrap();
     worker.role = Role::Executor;
     worker.status = Status::Starting;
     worker.enabled = true;
     worker.bind_test_task(app.inspect_task(id).unwrap().run.source.clone());
-    let run = &mut app.mods[0].execution.as_mut().unwrap().tasks[0];
+    let run = &mut app.engine.mods[0].execution.as_mut().unwrap().tasks[0];
     run.worker = Some(worker.id);
     run.status = "running".into();
-    app.workers.insert(worker.id, worker);
+    app.engine.workers.insert(worker.id, worker);
     assert_eq!(app.inspect_task(id).unwrap().state, "Starting");
     assert!(app.inspect_task(id).unwrap().error.is_none());
     assert!(app.state_summary().error.is_none());
@@ -274,30 +289,31 @@ fn stopped_setup_app() -> (TestData, App, PathBuf, i64) {
     let bytes = serde_json::to_vec(&receipt).unwrap();
     std::fs::write(path, &bytes).unwrap();
     std::fs::write(root.join("environments").join(format!("{id}.json")), bytes).unwrap();
-    app.store
+    app.engine
+        .store
         .finish_task(
-            app.mods[0].id,
+            app.engine.mods[0].id,
             &source,
             "paused",
             "Environment preflight failed: Environment preparation stopped.",
             &[],
         )
         .unwrap();
-    app.mods[0].execution = app.store.execution(app.mods[0].id).unwrap();
+    app.engine.mods[0].execution = app.engine.store.execution(app.engine.mods[0].id).unwrap();
     (data, app, root, id)
 }
 
 #[test]
 fn workbench_stopped_preparation_is_not_a_failed_environment() {
     let (_data, mut app, _, id) = stopped_setup_app();
-    app.mods[0].user_paused = true;
+    app.engine.mods[0].user_paused = true;
     assert!(app.state_summary().error.is_none());
     assert!(
         !app.timeline_items()
             .iter()
             .any(|item| item.key == Key::Environment && item.state == timeline::State::Attention)
     );
-    app.view = View::Task(id, 0);
+    app.engine.view = View::Task(id, 0);
     let text = rows(&screen(&mut app, 160, 60)).join("\n");
     assert!(
         text.contains("Preparation stopped") && text.contains("Guest command stopped."),
@@ -312,25 +328,35 @@ fn workbench_retained_worker_and_restart_keep_manual_preparation_stop_quiet() {
     for paused in [false, true] {
         let (data, mut app, _, id) = stopped_setup_app();
         let source = app.inspect_task(id).unwrap().run.source.clone();
-        let record = app.store.worker(app.mods[0].id).unwrap();
-        let mut worker =
-            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        let record = app.engine.store.worker(app.engine.mods[0].id).unwrap();
+        let mut worker = Worker::start(
+            &app.engine.project,
+            &app.engine.mods[0],
+            record,
+            Role::Planner,
+            None,
+        )
+        .unwrap();
         worker.role = Role::Executor;
         worker.status = Status::Failed;
         worker.bind_test_task(source);
         worker.error =
             Some("Environment preflight failed: Environment preparation stopped.".into());
-        app.store
+        app.engine
+            .store
             .0
             .execute(
                 "UPDATE task_runs SET worker_id=?2 WHERE id=?1",
                 rusqlite::params![id, worker.id],
             )
             .unwrap();
-        app.mods[0].execution = app.store.execution(app.mods[0].id).unwrap();
-        app.store.set_user_paused(app.mods[0].id, paused).unwrap();
-        app.mods[0].user_paused = paused;
-        app.workers.insert(worker.id, worker);
+        app.engine.mods[0].execution = app.engine.store.execution(app.engine.mods[0].id).unwrap();
+        app.engine
+            .store
+            .set_user_paused(app.engine.mods[0].id, paused)
+            .unwrap();
+        app.engine.mods[0].user_paused = paused;
+        app.engine.workers.insert(worker.id, worker);
         assert!(
             app.inspect_task(id).unwrap().error.is_none(),
             "retained worker; paused={paused}"
@@ -341,13 +367,13 @@ fn workbench_retained_worker_and_restart_keep_manual_preparation_stop_quiet() {
                 |item| item.key == Key::Environment && item.state == timeline::State::Attention
             )
         );
-        let project = app.project.clone();
+        let project = app.engine.project.clone();
         drop(app);
         let mut app = App::load(project, false, data.store()).unwrap();
-        assert!(app.workers.is_empty());
+        assert!(app.engine.workers.is_empty());
         assert!(app.inspect_task(id).unwrap().error.is_none());
         assert!(app.state_summary().error.is_none());
-        app.view = View::Task(id, 0);
+        app.engine.view = View::Task(id, 0);
         let text = rows(&screen(&mut app, 160, 60)).join("\n");
         assert!(
             text.contains("Preparation stopped") && !text.contains("Needs attention"),
@@ -360,12 +386,18 @@ fn workbench_retained_worker_and_restart_keep_manual_preparation_stop_quiet() {
 #[test]
 fn workbench_non_executor_errors_remain_visible_with_saved_task_stop() {
     let (_data, mut app, _, id) = stopped_setup_app();
-    let record = app.store.worker(app.mods[0].id).unwrap();
-    let mut worker =
-        Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+    let record = app.engine.store.worker(app.engine.mods[0].id).unwrap();
+    let mut worker = Worker::start(
+        &app.engine.project,
+        &app.engine.mods[0],
+        record,
+        Role::Planner,
+        None,
+    )
+    .unwrap();
     worker.status = Status::Failed;
     worker.error = Some("Planner could not connect to its provider.".into());
-    app.workers.insert(worker.id, worker);
+    app.engine.workers.insert(worker.id, worker);
     assert!(app.inspect_task(id).unwrap().error.is_none());
     assert_eq!(
         app.state_summary().error.as_deref(),
@@ -418,7 +450,7 @@ fn export_workbench_buffers() {
         ("setup-failure", &mut setup, Key::Build),
         ("source-change", &mut source, Key::Build),
     ] {
-        app.project = PathBuf::from("/example/project");
+        app.engine.project = PathBuf::from("/example/project");
         for (suffix, width, height) in [("desktop", 180, 52), ("narrow", 80, 42), ("small", 36, 36)]
         {
             screen(app, width, height);
@@ -445,7 +477,7 @@ fn export_workbench_buffers() {
 #[test]
 fn workbench_tabs_preserve_draft_and_independent_offsets() {
     let (_data, mut app, _) = execution_app();
-    app.mods[0]
+    app.engine.mods[0]
         .planning
         .as_mut()
         .unwrap()
@@ -482,8 +514,9 @@ fn workbench_tabs_preserve_draft_and_independent_offsets() {
 #[test]
 fn activity_displays_persisted_operation_timings_with_the_draft_intact() {
     let (_data, mut app, _) = execution_app();
-    let mod_id = app.mods[0].id;
-    app.store
+    let mod_id = app.engine.mods[0].id;
+    app.engine
+        .store
         .record_timing(
             mod_id,
             0,
@@ -497,7 +530,7 @@ fn activity_displays_persisted_operation_timings_with_the_draft_intact() {
             },
         )
         .unwrap();
-    app.mods[0].diagnostics = app.store.diagnostics(mod_id).unwrap();
+    app.engine.mods[0].diagnostics = app.engine.store.diagnostics(mod_id).unwrap();
     screen(&mut app, 160, 44);
     click(&mut app, Control::Stage(Key::Build));
     screen(&mut app, 160, 44);
@@ -514,7 +547,7 @@ fn activity_displays_persisted_operation_timings_with_the_draft_intact() {
 fn workbench_selected_repair_keeps_successful_evidence_after_completion() {
     for width in [80, 160] {
         let (_data, mut app, _) = execution_app();
-        let execution = app.mods[0].execution.as_mut().unwrap();
+        let execution = app.engine.mods[0].execution.as_mut().unwrap();
         execution.status = "running".into();
         execution.checks.clear();
         let run = &mut execution.tasks[0];
@@ -543,11 +576,12 @@ fn workbench_selected_repair_keeps_successful_evidence_after_completion() {
         let before = rows(&screen(&mut app, width, 46)).join("\n");
         assert!(before.contains("Repair has not passed yet"));
 
-        let mod_id = app.mods[0].id;
-        app.store
+        let mod_id = app.engine.mods[0].id;
+        app.engine
+            .store
             .finish_task(mod_id, &source, "done", "Repair passed", &passed)
             .unwrap();
-        app.mods[0].execution = app.store.execution(mod_id).unwrap();
+        app.engine.mods[0].execution = app.engine.store.execution(mod_id).unwrap();
         let after = rows(&screen(&mut app, width, 46)).join("\n");
         assert!(after.contains("✓ prints hello"), "{width}:\n{after}");
         assert!(after.contains("Repair passed"));
@@ -570,7 +604,7 @@ fn workbench_selected_repair_keeps_successful_evidence_after_completion() {
 #[test]
 fn overview_inspected_repair_keeps_result_when_implementation_finishes() {
     let (_data, mut app, _) = execution_app();
-    let execution = app.mods[0].execution.as_mut().unwrap();
+    let execution = app.engine.mods[0].execution.as_mut().unwrap();
     execution.status = "running".into();
     execution.checks.clear();
     let run = &mut execution.tasks[0];
@@ -583,14 +617,20 @@ fn overview_inspected_repair_keeps_result_when_implementation_finishes() {
     let mut passed = run.checks.clone();
     passed[0].exit_code = Some(0);
     passed[0].output = "Repair passed".into();
-    let record = app.store.worker(app.mods[0].id).unwrap();
-    let mut worker =
-        Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+    let record = app.engine.store.worker(app.engine.mods[0].id).unwrap();
+    let mut worker = Worker::start(
+        &app.engine.project,
+        &app.engine.mods[0],
+        record,
+        Role::Planner,
+        None,
+    )
+    .unwrap();
     worker.role = Role::Executor;
     worker.status = Status::Checking;
     worker.bind_test_task(source.clone());
-    app.mods[0].execution.as_mut().unwrap().tasks[0].worker = Some(worker.id);
-    app.workers.insert(worker.id, worker);
+    app.engine.mods[0].execution.as_mut().unwrap().tasks[0].worker = Some(worker.id);
+    app.engine.workers.insert(worker.id, worker);
     let following = rows(&overview_screen(&mut app, 160, 46)).join("\n");
     assert_eq!(app.timeline.selected, Some(Key::Task(id)), "{following}");
     assert!(!app.timeline.held);
@@ -603,12 +643,13 @@ fn overview_inspected_repair_keeps_result_when_implementation_finishes() {
     assert_eq!(app.timeline.focus, Focus::Inspector);
     assert!(app.timeline.held);
 
-    let mod_id = app.mods[0].id;
-    app.store
+    let mod_id = app.engine.mods[0].id;
+    app.engine
+        .store
         .finish_task(mod_id, &source, "done", "Repair passed", &passed)
         .unwrap();
-    app.mods[0].execution = app.store.execution(mod_id).unwrap();
-    app.workers.values_mut().next().unwrap().status = Status::Complete;
+    app.engine.mods[0].execution = app.engine.store.execution(mod_id).unwrap();
+    app.engine.workers.values_mut().next().unwrap().status = Status::Complete;
     let after = rows(&overview_screen(&mut app, 160, 46)).join("\n");
     assert!(after.contains("Repair passed"), "{after}");
     assert!(after.contains("✓ prints hello"));
@@ -618,7 +659,7 @@ fn overview_inspected_repair_keeps_result_when_implementation_finishes() {
     assert!(!app.timeline.expanded.contains_key(&Key::Build));
     assert_eq!(app.input.lines(), ["keep this draft"]);
 
-    let mut peer = app.mods[0]
+    let mut peer = app.engine.mods[0]
         .planning
         .as_ref()
         .unwrap()
@@ -629,11 +670,11 @@ fn overview_inspected_repair_keeps_result_when_implementation_finishes() {
         .clone();
     peer.id = "completed-peer".into();
     peer.title = "Another completed task".into();
-    let mut peer_run = app.mods[0].execution.as_ref().unwrap().tasks[0].clone();
+    let mut peer_run = app.engine.mods[0].execution.as_ref().unwrap().tasks[0].clone();
     peer_run.id += 1;
     peer_run.task_id = peer.id.clone();
     peer_run.source = crate::store::task_source(peer_run.id, 1);
-    app.mods[0]
+    app.engine.mods[0]
         .planning
         .as_mut()
         .unwrap()
@@ -642,7 +683,12 @@ fn overview_inspected_repair_keeps_result_when_implementation_finishes() {
         .unwrap()
         .tasks
         .push(peer);
-    app.mods[0].execution.as_mut().unwrap().tasks.push(peer_run);
+    app.engine.mods[0]
+        .execution
+        .as_mut()
+        .unwrap()
+        .tasks
+        .push(peer_run);
     app.timeline.expanded.insert(Key::Build, false);
     let collapsed = rows(&overview_screen(&mut app, 160, 46)).join("\n");
     assert!(collapsed.contains("Repair passed") && collapsed.contains("✓ prints hello"));
@@ -660,7 +706,7 @@ fn overview_inspected_repair_keeps_result_when_implementation_finishes() {
 #[test]
 fn workbench_narrow_tabs_and_task_drilldown_are_accessible() {
     let (_data, mut app, _) = execution_app();
-    let id = app.mods[0].execution.as_ref().unwrap().tasks[0].id;
+    let id = app.engine.mods[0].execution.as_ref().unwrap().tasks[0].id;
     for width in [36, 48, 80, 104, 160] {
         screen(&mut app, width, 46);
         app.activate_control(Control::Stage(Key::Build)).unwrap();
@@ -736,7 +782,7 @@ fn workbench_controls_clear_under_dialogs_and_use_canonical_actions() {
     let expected = app.action_dock().primary.unwrap();
     assert_eq!(expected, Action::FixIssues);
     click(&mut app, Control::MenuAction(expected));
-    assert!(app.executing_mods.contains(&app.mods[0].id));
+    assert!(app.engine.executing_mods.contains(&app.engine.mods[0].id));
     assert!(app.controls.hits.is_empty());
     assert_eq!(app.input.lines(), ["keep this draft"]);
 }
@@ -748,13 +794,13 @@ fn workbench_picker_rows_are_clickable_and_preserve_the_draft() {
     click(&mut app, Control::Action(Action::Mods));
     screen(&mut app, 100, 42);
     click(&mut app, Control::PickMod(0));
-    assert!(app.view == View::Chat);
+    assert!(app.engine.view == View::Chat);
     screen(&mut app, 100, 42);
     click(&mut app, Control::Action(Action::Mods));
     screen(&mut app, 100, 42);
     click(&mut app, Control::PickMod(1));
-    assert!(app.view == View::NewMod);
-    assert_eq!(app.mods[0].draft, "keep this draft");
+    assert!(app.engine.view == View::NewMod);
+    assert_eq!(app.engine.mods[0].draft, "keep this draft");
 }
 
 #[test]
@@ -771,9 +817,9 @@ fn workbench_header_status_aligns_with_the_dock_and_reports_pending_work() {
     }
     app.input.insert_str(" changed");
     assert_eq!(app.local_status(), "Saving draft…");
-    app.auto_runs.insert(app.mods[0].id);
+    app.engine.auto_runs.insert(app.engine.mods[0].id);
     assert_eq!(app.local_status(), "Starting work…");
-    app.view = View::NewMod;
+    app.engine.view = View::NewMod;
     assert_eq!(app.local_status(), "New codemod · not submitted");
 }
 
@@ -794,7 +840,7 @@ fn workbench_global_shortcuts_are_not_consumed_by_pane_controls() {
         assert!(!app.show_evidence);
         app.timeline.focus = focus;
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
-        assert!(!matches!(app.view, View::Chat));
+        assert!(!matches!(app.engine.view, View::Chat));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
     }
 }
@@ -802,7 +848,7 @@ fn workbench_global_shortcuts_are_not_consumed_by_pane_controls() {
 #[test]
 fn workbench_stage_scroll_does_not_follow_the_selected_task_back() {
     let (_data, mut app, _) = execution_app();
-    let original = app.mods[0]
+    let original = app.engine.mods[0]
         .planning
         .as_ref()
         .unwrap()
@@ -815,7 +861,7 @@ fn workbench_stage_scroll_does_not_follow_the_selected_task_back() {
         let mut next = original.clone();
         next.id = format!("task-{index}");
         next.title = format!("Additional task {index}");
-        app.mods[0]
+        app.engine.mods[0]
             .planning
             .as_mut()
             .unwrap()
@@ -848,7 +894,7 @@ fn workbench_stage_scroll_does_not_follow_the_selected_task_back() {
 #[test]
 fn workbench_collapsed_implementation_retains_blocked_task_attention() {
     let (_data, mut app, _) = execution_app();
-    let execution = app.mods[0].execution.as_mut().unwrap();
+    let execution = app.engine.mods[0].execution.as_mut().unwrap();
     execution.status = "blocked".into();
     execution.checks.clear();
     execution.tasks[0].status = "blocked".into();
@@ -878,7 +924,7 @@ fn workbench_collapsed_implementation_retains_blocked_task_attention() {
 #[test]
 fn workbench_review_opens_unresolved_findings_and_keeps_selected_identity() {
     let (_data, mut app) = reviewed_app();
-    let review = app.mods[0].agent_review.as_mut().unwrap();
+    let review = app.engine.mods[0].agent_review.as_mut().unwrap();
     let mut open = review.issues[0].clone();
     open.id = 2;
     open.finding.id = Some(2);
@@ -893,7 +939,7 @@ fn workbench_review_opens_unresolved_findings_and_keeps_selected_identity() {
     click(&mut app, Control::Finding(1));
     screen(&mut app, 160, 50);
     assert_eq!(app.timeline.inspector.finding, Some(1));
-    let review = app.mods[0].agent_review.as_mut().unwrap();
+    let review = app.engine.mods[0].agent_review.as_mut().unwrap();
     let mut new_issue = review.issues[1].clone();
     new_issue.id = 3;
     new_issue.finding.id = Some(3);
@@ -914,8 +960,8 @@ fn workbench_review_opens_unresolved_findings_and_keeps_selected_identity() {
 #[test]
 fn workbench_new_codemod_newline_remains_editable_with_a_closed_selection() {
     let (_data, mut app, _) = execution_app();
-    app.mods[0].closed = true;
-    app.view = View::NewMod;
+    app.engine.mods[0].closed = true;
+    app.engine.view = View::NewMod;
     app.input.clear();
     app.input.insert_str("New request");
     screen(&mut app, 100, 42);
@@ -927,7 +973,7 @@ fn workbench_new_codemod_newline_remains_editable_with_a_closed_selection() {
 #[test]
 fn workbench_environment_receipts_open_tasks_when_review_needs_attention() {
     let (_data, mut app) = reviewed_app();
-    app.mods[0]
+    app.engine.mods[0]
         .planning
         .as_mut()
         .unwrap()
@@ -952,6 +998,6 @@ fn workbench_environment_receipts_open_tasks_when_review_needs_attention() {
         .unwrap();
     screen(&mut app, 160, 46);
     click(&mut app, Control::FullEvidence);
-    assert!(matches!(app.view, View::Tasks(0)));
+    assert!(matches!(app.engine.view, View::Tasks(0)));
     assert_eq!(app.input.lines(), ["keep this draft"]);
 }

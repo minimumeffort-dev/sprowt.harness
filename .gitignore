@@ -1,4 +1,6 @@
 /target/
+/macos/.build/
+/macos/.swiftpm/
 
 # Local credentials
 .env

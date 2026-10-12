@@ -9,16 +9,18 @@ Rust owns the workflow. Agents propose plans, make scoped changes and report evi
 ```mermaid
 flowchart TB
     subgraph host["Your Mac"]
-        ui["Terminal + Rust controller"]
+        ui["Terminal or SwiftUI interface"]
+        controller["Shared Rust engine"]
         state[("Saved state + source checkpoints")]
         planner["Read-only planner"]
         writer["Read-only publication writer"]
         git["Git + GitHub publication"]
-        ui <--> state
-        ui --> planner
-        ui --> writer
+        ui <--> controller
+        controller <--> state
+        controller --> planner
+        controller --> writer
         writer -->|"Text for your confirmation"| git
-        ui --> git
+        controller --> git
     end
     subgraph guest["One Linux VM per executing codemod"]
         first["Executor 1 · task worktree + home"]
@@ -29,19 +31,23 @@ flowchart TB
         second --> combined
         combined --> reviewer
     end
-    ui --> first
-    ui --> second
-    ui --> reviewer
+    controller --> first
+    controller --> second
+    controller --> reviewer
     combined -->|"Source export"| state
 ```
 
 Source is copied into the VM. Host project folders and Git credentials are not mounted there. The production Codex connection keeps its app server on the host and sends execution into Linux; Muse runs its CLI in Linux behind a host credential broker.
+
+The terminal calls the Rust engine directly. The SwiftUI app starts a bundled copy of the Rust executable and exchanges typed commands and state snapshots over local stdin/stdout. One controller owns a project at a time; both interfaces reuse the same saved state. See the [macOS guide](macos.md#switch-between-interfaces).
 
 ## Responsibilities
 
 | Component | Owns | Read more |
 | --- | --- | --- |
 | Terminal | Evidence Workbench, stage selection, drafts and contextual actions | [Terminal](terminal.md) |
+| macOS interface | Native project picker, codemod views, composer and confirmations | [macOS app](macos.md) |
+| Shared engine | Workflow transitions, allowed actions and controller lifetime | [Development](development.md#source-map) |
 | Planner | Contracts, tasks, scopes, dependencies and checks | [Planning](planning.md) |
 | Scheduler | Ready tasks, two active slots and saved provider assignments | [Execution](execution.md) |
 | Executors | Implementation within a task folder; repeatable check commands | [Workers](workers.md) |

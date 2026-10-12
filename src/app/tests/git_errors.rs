@@ -2,17 +2,18 @@ use super::*;
 
 fn add_other_mod(app: &mut App, root: &std::path::Path) -> i64 {
     let mut code_mod = app
+        .engine
         .store
-        .create_mod(app.project_id, "Other codemod")
+        .create_mod(app.engine.project_id, "Other codemod")
         .unwrap();
     code_mod.git_root = Some(root.to_path_buf());
     let id = code_mod.id;
-    app.mods.push(code_mod);
+    app.engine.mods.push(code_mod);
     id
 }
 
 fn fail_job(app: &mut App, id: i64, label: &'static str, detail: &'static str) {
-    app.git_jobs.insert(
+    app.engine.git_jobs.insert(
         id,
         Job::start(label, move |_| Err(io::Error::other(detail))),
     );
@@ -22,7 +23,7 @@ fn fail_job(app: &mut App, id: i64, label: &'static str, detail: &'static str) {
 #[test]
 fn background_git_failure_stays_with_its_codemod_when_switching() {
     let (_data, mut app, root) = execution_app();
-    app.mods[0].git_root = Some(root.clone());
+    app.engine.mods[0].git_root = Some(root.clone());
     let other_id = add_other_mod(&mut app, &root);
     fail_job(
         &mut app,
@@ -36,7 +37,7 @@ fn background_git_failure_stays_with_its_codemod_when_switching() {
     assert!(!active.contains("Other publication failed"), "{active}");
     assert_eq!(app.input.lines(), ["keep this draft"]);
 
-    app.view = View::Mods(1);
+    app.engine.view = View::Mods(1);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     let other = rows(&screen(&mut app, 120, 36)).join("\n");
     assert_eq!(
@@ -45,11 +46,11 @@ fn background_git_failure_stays_with_its_codemod_when_switching() {
     );
     assert!(other.contains("Other publication failed"), "{other}");
 
-    app.view = View::Mods(0);
+    app.engine.view = View::Mods(0);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(app.worker_error().is_none());
     assert_eq!(app.input.lines(), ["keep this draft"]);
-    app.view = View::Mods(1);
+    app.engine.view = View::Mods(1);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         app.worker_error(),
@@ -60,8 +61,8 @@ fn background_git_failure_stays_with_its_codemod_when_switching() {
 #[test]
 fn background_git_success_preserves_active_publication_failure() {
     let (_data, mut app, root) = execution_app();
-    app.mods[0].git_root = Some(root.clone());
-    let active_id = app.mods[0].id;
+    app.engine.mods[0].git_root = Some(root.clone());
+    let active_id = app.engine.mods[0].id;
     let other_id = add_other_mod(&mut app, &root);
     fail_job(
         &mut app,
@@ -69,7 +70,7 @@ fn background_git_success_preserves_active_publication_failure() {
         "publishing PR",
         "Active publication failed",
     );
-    app.git_jobs.insert(
+    app.engine.git_jobs.insert(
         other_id,
         Job::start("publishing PR", |_| Ok(git_mod::Result::Published)),
     );
@@ -87,11 +88,11 @@ fn background_git_success_preserves_active_publication_failure() {
 #[test]
 fn successful_git_operation_clears_only_its_own_failure() {
     let (_data, mut app, root) = execution_app();
-    app.mods[0].git_root = Some(root);
-    let id = app.mods[0].id;
+    app.engine.mods[0].git_root = Some(root);
+    let id = app.engine.mods[0].id;
     fail_job(&mut app, id, "publishing PR", "Publication failed");
     fail_job(&mut app, id, "saving verified merge", "Merge save failed");
-    app.git_jobs.insert(
+    app.engine.git_jobs.insert(
         id,
         Job::start("publishing PR", |_| Ok(git_mod::Result::Published)),
     );
@@ -104,7 +105,7 @@ fn successful_git_operation_clears_only_its_own_failure() {
     assert!(failed.contains("Merge save failed"), "{failed}");
 
     let (resume, waiting) = std::sync::mpsc::channel();
-    app.git_jobs.insert(
+    app.engine.git_jobs.insert(
         id,
         Job::start("saving verified merge", move |_| {
             waiting.recv().unwrap();
@@ -128,9 +129,9 @@ fn successful_git_operation_clears_only_its_own_failure() {
 fn git_setup_retry_clears_the_initial_failure_even_when_its_label_changes() {
     for saved in [false, true] {
         let (_data, mut app, root) = execution_app();
-        commit_project(&app.project);
-        app.mods[0].git_root = Some(root.clone());
-        let id = app.mods[0].id;
+        commit_project(&app.engine.project);
+        app.engine.mods[0].git_root = Some(root.clone());
+        let id = app.engine.mods[0].id;
         if saved {
             std::fs::write(root.join("project-setup"), "saved").unwrap();
         }
@@ -153,45 +154,47 @@ fn git_setup_retry_clears_the_initial_failure_even_when_its_label_changes() {
         assert_eq!(app.git_state().unwrap().phase, "ready");
         assert!(git_mod::checkout(&root).join("hello.sh").exists());
         assert_eq!(app.input.lines(), ["keep this draft"]);
-        assert!(app.workers.is_empty());
+        assert!(app.engine.workers.is_empty());
     }
 }
 
 #[test]
 fn publication_writer_recovery_keeps_the_publish_error_until_publication_succeeds() {
     let (_data, mut app, root) = execution_app();
-    commit_project(&app.project);
+    commit_project(&app.engine.project);
     git_mod::prepare(
-        &app.project,
+        &app.engine.project,
         &root,
         &std::sync::atomic::AtomicBool::new(false),
     )
     .unwrap();
-    let id = app.mods[0].id;
-    app.mods[0].git_root = Some(root.clone());
-    app.git_states.insert(id, git_mod::load(&root).unwrap());
+    let id = app.engine.mods[0].id;
+    app.engine.mods[0].git_root = Some(root.clone());
+    app.engine
+        .git_states
+        .insert(id, git_mod::load(&root).unwrap());
     mark_review_clean(&mut app);
-    app.review = Some(workspace::review(&root).unwrap());
-    let draft = crate::publication::tests::seed(&root, &app.mods[0].description);
+    app.engine.review = Some(workspace::review(&root).unwrap());
+    let draft = crate::publication::tests::seed(&root, &app.engine.mods[0].description);
     fail_job(&mut app, id, "writing commit and PR text", "Writer failed");
     assert_eq!(
         app.worker_error(),
         Some("Writer failed Work is retained; Ctrl+S retries.")
     );
     fail_job(&mut app, id, "publishing PR", "Push failed");
-    app.git_jobs.insert(
+    app.engine.git_jobs.insert(
         id,
         Job::start("writing commit and PR text", move |_| {
             Ok(git_mod::Result::PublicationDraft(draft))
         }),
     );
     wait_git(&mut app);
-    assert!(matches!(app.view, View::Publish));
+    assert!(matches!(app.engine.view, View::Publish));
     assert_eq!(
         app.worker_error(),
         Some("Push failed Work is retained; Ctrl+R retries.")
     );
-    app.git_jobs.insert(
+    app.engine.git_jobs.insert(
         id,
         Job::start("publishing PR", |_| Ok(git_mod::Result::Published)),
     );
@@ -220,7 +223,7 @@ fn saving_a_merge_keeps_recovery_for_an_unresolved_update_failure() {
     fail_job(&mut app, id, "updating from target branch", "Update failed");
     fail_job(&mut app, id, "saving verified merge", "Merge save failed");
     let fingerprint = workspace::review(&root).unwrap().fingerprint;
-    app.git_jobs.insert(
+    app.engine.git_jobs.insert(
         id,
         Job::start("saving verified merge", move |cancelled| {
             crate::mod_sync::finish(&root, &fingerprint, cancelled)?;

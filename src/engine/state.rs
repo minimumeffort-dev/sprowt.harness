@@ -1,4 +1,4 @@
-use super::{Action, App, Tone, View};
+use super::{Action, Engine, Tone, View};
 use crate::plan::Role;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -53,7 +53,7 @@ impl Summary {
     }
 }
 
-impl App {
+impl Engine {
     pub fn state_summary(&self) -> Summary {
         use Action::*;
         use Phase::*;

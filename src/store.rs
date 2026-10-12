@@ -28,6 +28,18 @@ pub struct CodeMod {
 }
 
 impl CodeMod {
+    pub fn shows_message(&self, message: &Message) -> bool {
+        let saved = self
+            .planning
+            .as_ref()
+            .is_some_and(|p| p.status == "ready" && p.plan.is_some());
+        !(message.role == "codex"
+            || message.role.starts_with("codex:")
+            || message.role.starts_with("muse:")
+            || message.role == "reviewer"
+            || saved && message.role == "planner")
+    }
+
     pub fn question(&self) -> Option<&crate::mailbox::Envelope> {
         self.coordination.iter().find(|m| self.needs_answer(m))
     }
@@ -93,10 +105,10 @@ pub struct ProjectState {
 pub struct Store(pub(crate) Connection);
 
 impl Store {
-    pub fn local() -> io::Result<Self> {
+    pub fn local_path() -> io::Result<std::path::PathBuf> {
         let dirs = ProjectDirs::from("", "", "sprowt-harness")
             .ok_or_else(|| io::Error::other("Cannot locate the local data directory."))?;
-        Self::open(&dirs.data_local_dir().join("state.db"))
+        Ok(dirs.data_local_dir().join("state.db"))
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {

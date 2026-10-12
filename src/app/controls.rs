@@ -86,25 +86,28 @@ impl App {
         match control {
             Control::Action(action) => self.perform_action(action)?,
             Control::MenuAction(action) => {
-                if matches!(self.view, View::Actions(_)) {
+                if matches!(self.engine.view, View::Actions(_)) {
                     self.actions_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), action)?;
                 }
             }
             Control::PickMod(index) => {
-                if matches!(self.view, View::Mods(_)) && index <= self.picker_indices().len() {
+                if matches!(self.engine.view, View::Mods(_)) && index <= self.picker_indices().len()
+                {
                     self.picker_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), index)?;
                 }
             }
             Control::Submit => {
                 self.timeline.focus = Focus::Composer;
-                match self.view {
+                match self.engine.view {
                     View::Chat => self.submit()?,
                     View::NewMod => self.create_mod()?,
                     _ => {}
                 }
             }
             Control::Newline => {
-                if self.view == View::NewMod || self.view == View::Chat && !self.read_only() {
+                if self.engine.view == View::NewMod
+                    || self.engine.view == View::Chat && !self.read_only()
+                {
                     self.timeline.focus = Focus::Composer;
                     self.input.insert_newline();
                 }
@@ -197,23 +200,24 @@ impl App {
         }
         if self.execution_busy()
             || self.current_mod().is_some_and(|m| {
-                self.auto_plans.contains(&m.id)
-                    || self.auto_runs.contains(&m.id)
-                    || self.auto_reviews.contains(&m.id)
+                self.engine.auto_plans.contains(&m.id)
+                    || self.engine.auto_runs.contains(&m.id)
+                    || self.engine.auto_reviews.contains(&m.id)
             })
         {
             return "Starting work…".into();
         }
-        if self.project_job.is_some()
+        if self.engine.project_job.is_some()
             || self
                 .current_mod()
-                .is_some_and(|m| self.git_jobs.contains_key(&m.id))
+                .is_some_and(|m| self.engine.git_jobs.contains_key(&m.id))
         {
             return "Operation in progress".into();
         }
         match self.current_mod() {
             Some(m)
-                if matches!(self.view, View::Chat) && self.input.lines().join("\n") != m.draft =>
+                if matches!(self.engine.view, View::Chat)
+                    && self.input.lines().join("\n") != m.draft =>
             {
                 "Saving draft…".into()
             }
