@@ -26,7 +26,9 @@ struct SprowtApp: App {
                 }
         }
         .defaultSize(width: 1280, height: 860)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
+            SidebarCommands()
             CommandGroup(replacing: .newItem) {
                 Button("New codemod") { session.beginCreation() }
                     .keyboardShortcut("n")

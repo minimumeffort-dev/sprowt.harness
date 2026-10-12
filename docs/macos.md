@@ -43,7 +43,9 @@ The creation editor shows headings, emphasis, lists, checklists and code as form
 
 The editor sends Markdown through the existing Rust command. Supported formatting appears in the app; unsupported Markdown remains literal, with its source preserved. Code blocks contain literal text, so inline emphasis does not apply inside them. The full request is stored in both interfaces.
 
-The sidebar's project menu contains **Open project…** and the switch between active and closed codemods. **⌘O** opens a project folder directly. Each codemod has a diamond glyph, status and agent count when workers exist.
+The **Sprowt** menu at the top of the sidebar contains **Open project…** and the switch between active and closed codemods. **⌘O** opens a project folder directly. Each codemod has a diamond glyph, status and agent count when workers exist.
+
+Use the title bar's sidebar button or the sidebar command in **View** to hide or show the sidebar. **⌃⌘S** works while the sidebar is hidden. Your codemod selection and composer drafts stay in place.
 
 Use the composer to answer a question or queue an instruction. Expand the attached queue to edit, reorder, remove or steer pending instructions. Save an edit before choosing **Steer**. These actions preserve the composer draft. Removing the last queued instruction closes the queue and returns focus to the composer. Steering without connected workers saves instructions as waiting for workers; it does not claim delivery.
 

@@ -4,8 +4,10 @@ struct ContentView: View {
     @Bindable var session: Session
 
     var body: some View {
-        HSplitView {
-            SidebarView(session: session).frame(minWidth: 190, idealWidth: 220, maxWidth: 240)
+        NavigationSplitView {
+            SidebarView(session: session)
+                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 240)
+        } detail: {
             VStack(spacing: 0) {
                 if let error = session.error ?? session.snapshot?.error {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -39,6 +41,9 @@ struct ContentView: View {
                 }
             }.frame(minWidth: 650, maxWidth: .infinity, maxHeight: .infinity).background(Theme.paper)
         }
+        .navigationSplitViewStyle(.balanced)
+        .toolbarBackground(Theme.sidebar, for: .windowToolbar)
+        .toolbarBackground(.visible, for: .windowToolbar)
         .font(Theme.font()).foregroundStyle(Theme.ink).tint(Theme.ink)
         .background(Theme.paper)
         .sheet(item: Binding(get: { session.dialog.flatMap { $0.isInspection ? nil : $0 } }, set: { _ in })) { dialog in

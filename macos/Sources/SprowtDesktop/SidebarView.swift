@@ -5,6 +5,18 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            Menu {
+                Button("Open project…", systemImage: "folder.badge.plus") { session.chooseProject() }
+                    .disabled(session.connection == .stopping)
+                Divider()
+                Button(session.showClosed ? "Active codemods" : "Closed codemods",
+                       systemImage: session.showClosed ? "diamond" : "archivebox") { session.showClosed.toggle() }
+                    .disabled(!session.interactive)
+            } label: {
+                Text("Sprowt").font(Theme.font(19, weight: .semibold))
+            }.menuStyle(.borderlessButton).menuIndicator(.visible).fixedSize()
+                .accessibilityLabel("Sprowt menu").help("Sprowt menu")
+                .padding(.horizontal, 9).padding(.bottom, 20)
             Button { session.beginCreation() } label: {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Image(systemName: "square.and.pencil").font(.system(size: 13)).symbolBaseline(textSize: 12)
@@ -20,18 +32,6 @@ struct SidebarView: View {
                     .font(Theme.font(12, weight: .medium)).lineLimit(1)
                     .help(session.snapshot?.project ?? "")
                 Spacer(minLength: 0)
-                Menu {
-                    Button("Open project…", systemImage: "folder.badge.plus") { session.chooseProject() }
-                        .disabled(session.connection == .stopping)
-                    Divider()
-                    Button(session.showClosed ? "Active codemods" : "Closed codemods",
-                           systemImage: session.showClosed ? "diamond" : "archivebox") { session.showClosed.toggle() }
-                        .disabled(!session.interactive)
-                } label: {
-                    Image(systemName: "ellipsis").font(.system(size: 13)).frame(width: 20, height: 20)
-                }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                    .symbolBaseline(textSize: 12)
-                    .accessibilityLabel("Project actions").help("Project actions")
             }.padding(.horizontal, 9).padding(.bottom, 12)
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
