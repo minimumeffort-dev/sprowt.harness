@@ -165,7 +165,10 @@ impl Store {
         already_allowed: bool,
         source: Option<&str>,
     ) -> rusqlite::Result<String> {
-        let tx = self.0.unchecked_transaction()?;
+        let tx = rusqlite::Transaction::new_unchecked(
+            &self.0,
+            rusqlite::TransactionBehavior::Immediate,
+        )?;
         let task: i64 = tx.query_row("SELECT t.id FROM task_runs t JOIN workers w ON w.id=t.worker_id JOIN code_mods m ON m.id=t.mod_id WHERE t.mod_id=?1 AND w.id=?2 AND w.mod_id=?1 AND w.role='executor' AND m.closed=0 AND t.status IN ('running','sending') AND (?3 IS NULL OR t.source=?3 AND t.status='sending')", params![mod_id,worker,source], |r| r.get(0))?;
         let domains = json!(request.domains).to_string();
         tx.execute("INSERT OR IGNORE INTO network_requests(mod_id,worker_id,task_id,domains,reason) VALUES(?1,?2,?3,?4,?5)", params![mod_id,worker,task,domains,request.reason])?;
