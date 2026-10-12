@@ -1,5 +1,6 @@
 mod dock;
 mod findings;
+mod formatting;
 mod inspector;
 mod tasks;
 mod timeline;
@@ -93,7 +94,8 @@ pub fn draw(
     let composer_view = app.composer_view();
     let show_dock = matches!(composer_view, View::Chat | View::NewMod);
     let dock = app.action_dock();
-    let menu_open = matches!(app.view, View::Actions(_));
+    let menu_open = matches!(app.view, View::Actions(_))
+        || app.view == View::NewMod && app.formatting_menu.is_some();
     let dock_width = area.width.saturating_sub(4);
     let dock_header = dock::header(&dock, dock_width, elapsed, menu_open);
     let dock_hints = dock::hints(app, dock_width, menu_open);
@@ -484,6 +486,9 @@ pub fn draw(
             }
         }
         dock_hints.draw(frame, app, hints);
+    }
+    if app.view == View::NewMod && app.formatting_menu.is_some() {
+        formatting::draw(frame, app, dialog_area);
     }
     app.scroll.finish(app.view);
     heading

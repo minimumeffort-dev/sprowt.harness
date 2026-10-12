@@ -206,7 +206,9 @@ pub(super) fn hints(app: &App, width: u16, menu_open: bool) -> Rows {
     };
     let mut actions = Vec::new();
     let dock = app.action_dock();
-    if !new_mod {
+    if new_mod {
+        actions.push(button("F2", "Format", Control::Format));
+    } else {
         if dock.primary != Some(Action::Stop)
             && dock.actions.iter().any(|i| i.action == Action::Stop)
         {

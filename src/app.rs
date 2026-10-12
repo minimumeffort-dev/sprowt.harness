@@ -15,6 +15,7 @@ use std::{
 use tachyonfx::Effect;
 mod actions;
 pub mod controls;
+pub mod formatting;
 mod inspector;
 mod scroll;
 mod tasks;
@@ -32,6 +33,7 @@ pub struct App {
     pub queue_selection: std::collections::BTreeSet<i64>,
     pub show_closed: bool,
     pub input: TextArea<'static>,
+    pub formatting_menu: Option<formatting::Menu>,
     pub scroll: Scroll,
     pub timeline: timeline::Timeline,
     pub controls: controls::Controls,
@@ -73,6 +75,7 @@ impl App {
             show_closed: false,
             engine,
             input: ui::input(),
+            formatting_menu: None,
             scroll: Scroll::default(),
             timeline: timeline::Timeline::default(),
             controls: controls::Controls::default(),
@@ -85,6 +88,7 @@ impl App {
         app
     }
     fn reset_editor(&mut self) {
+        self.formatting_menu = None;
         self.input = match self.engine.view {
             View::NewMod => ui::name_input(),
             View::Repository(_) | View::ConfirmRepository(_) => ui::repository_input(),
@@ -304,6 +308,9 @@ impl App {
     }
 
     fn handle(&mut self, event: Event) -> Result<()> {
+        if self.engine.view != View::NewMod || matches!(event, Event::Paste(_)) {
+            self.formatting_menu = None;
+        }
         match event {
             Event::Mouse(mouse) => self.mouse_scroll(mouse)?,
             Event::Paste(text) => match self.engine.view {
@@ -353,6 +360,9 @@ impl App {
                     return Ok(());
                 }
                 if self.inspector_key(key)? {
+                    return Ok(());
+                }
+                if self.formatting_key(key) {
                     return Ok(());
                 }
                 match self.engine.view {
@@ -843,6 +853,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    mod formatting;
     mod git_errors;
     mod workbench;
     use super::*;

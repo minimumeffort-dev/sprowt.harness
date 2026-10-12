@@ -34,6 +34,8 @@ pub enum Control {
     Action(Action),
     MenuAction(Action),
     PickMod(usize),
+    Format,
+    FormatItem(super::formatting::Format),
     Submit,
     Newline,
     More,
@@ -96,6 +98,8 @@ impl App {
                     self.picker_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), index)?;
                 }
             }
+            Control::Format => self.open_formatting(),
+            Control::FormatItem(format) => self.choose_format(format),
             Control::Submit => {
                 self.timeline.focus = Focus::Composer;
                 match self.engine.view {

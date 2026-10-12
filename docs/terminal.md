@@ -141,6 +141,10 @@ Background GitHub sync failures have a separate warning. **Ctrl+U** retries sync
 
 The composer starts with four rows and grows to eight, then scrolls. Wrapped text and blank lines count. On short terminals it shrinks to keep controls visible.
 
+When creating a codemod, **F2 · Format** opens Markdown helpers for heading, bold, italic, bulleted list, checklist, inline code and code block. A `/` on an empty line opens the same menu. **↑**, **↓** and **Enter** choose a format; **Esc** cancels and leaves the slash intact. Typing a path such as `/Users/...` closes the menu without changing the path. **Ctrl+Z** undoes creation edits; **Ctrl+Shift+Z** or **Ctrl+R** redoes them.
+
+Use the terminal application's system dictation if it supports it, or paste a dictated request. Multiline paste inserts the whole request and preserves the draft; it never acts as Enter. Sprowt does not capture microphone audio in the terminal.
+
 **Enter** performs the action named beside the composer: create, answer, request edits or queue for the next pass. It never activates the dock's recommendation. **Ctrl+J** inserts a newline. See [messages and steering](codemods.md#send-an-instruction).
 
 The submit and newline controls also work by click. **Inspect** opens full Details; **More** opens all available actions. Your draft stays intact while navigating.
@@ -160,6 +164,9 @@ Shortcuts are contextual. **Ctrl+G · More** lists actions available in the curr
 | Ctrl+L | Jump to current from any of those three panes |
 | Home / End | Top / bottom of inspector; End jumps to current in timeline |
 | Ctrl+J | Newline in composer |
+| F2 | Format menu in new codemod composer |
+| Ctrl+Z | Undo in new codemod composer |
+| Ctrl+Shift+Z / Ctrl+R | Redo in new codemod composer |
 | Ctrl+T | Open Details / return to conversation |
 | Ctrl+O | Toggle plan details |
 | Ctrl+G | More actions |

@@ -33,6 +33,16 @@ The header button shows Rust's recommended action; **More** holds the other avai
 
 Choose **New codemod** or press **⌘N** to describe the change in the compact creation editor. **Create codemod** or **⌘Return** starts the same planning and execution flow as the terminal app. The planner supplies a short title while the complete request stays in the conversation. Setup, network access, publication, closing and deletion retain their explicit confirmation steps.
 
+![Native creation editor](assets/macos-composer.jpg)
+
+Actual native creation editor using a disposable project. No plan was created.
+
+The creation editor shows headings, emphasis, lists, checklists and code as formatted text. Choose **Format**, or type `/` at the start of an empty line, to select a format. Use **↑**, **↓** and **Return**, or click a choice. **Esc** closes the menu and preserves its slash; continuing a path such as `/Users/...` closes the menu and preserves the path. **⌘B**, **⌘I** and **⌘E** toggle bold, italic and inline code. **⌘Z** and **⇧⌘Z** undo and redo edits.
+
+**Dictate** starts macOS Dictation at the editor's caret. Enable it in **System Settings → Keyboard → Dictation** if needed. You can also choose **Edit → Start Dictation**. System controls show dictation feedback. Dictation only inserts text; choose **Create codemod** or **⌘Return** explicitly when the request is ready.
+
+The editor sends Markdown through the existing Rust command. Supported formatting appears in the app; unsupported Markdown remains literal, with its source preserved. Code blocks contain literal text, so inline emphasis does not apply inside them. The full request is stored in both interfaces.
+
 The sidebar's project menu contains **Open project…** and the switch between active and closed codemods. **⌘O** opens a project folder directly. Each codemod has a diamond glyph, status and agent count when workers exist.
 
 Use the composer to answer a question or queue an instruction. Expand the attached queue to edit, reorder, remove or steer pending instructions. Save an edit before choosing **Steer**. These actions preserve the composer draft. Removing the last queued instruction closes the queue and returns focus to the composer. Steering without connected workers saves instructions as waiting for workers; it does not claim delivery.
@@ -50,6 +60,8 @@ Both interfaces use the same plans, task inspection, check results and action ru
 | Checks, Changes and Activity panes | **1–4** in the workbench; full results in Details |
 | Attached queue | **Ctrl+Q · Queue** |
 | Contextual actions | Action dock or **Ctrl+G · More** |
+| Creation editor's Format menu | **F2 · Format** in the new codemod composer |
+| Dictate | Host terminal's dictation or paste, when supported |
 
 ## Switch between interfaces
 

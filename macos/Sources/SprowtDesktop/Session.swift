@@ -109,7 +109,7 @@ final class Session {
     }
 
     func create() {
-        guard !newDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        guard interactive, !busy, !newDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         creation = (newDescription, active?.id)
         enqueue(Command(type: "new_mod", description: newDescription))
     }

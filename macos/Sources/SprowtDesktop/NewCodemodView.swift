@@ -2,7 +2,7 @@ import SwiftUI
 
 struct NewCodemodView: View {
     @Bindable var session: Session
-    @FocusState private var focused: Bool
+    @State private var editor = ComposerEditorController()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -14,14 +14,19 @@ struct NewCodemodView: View {
                     Spacer(minLength: 0)
                 }
                 VStack(spacing: 0) {
-                    TextEditor(text: $session.newDescription)
-                        .font(Theme.font(14)).padding(16)
-                        .scrollContentBackground(.hidden).background(Theme.paper)
-                        .frame(height: 166).focused($focused)
-                        .accessibilityLabel("Describe the codemod")
-                    HStack {
+                    ComposerEditor(text: $session.newDescription, controller: editor,
+                                   enabled: session.interactive && !session.busy) { create() }
+                        .frame(height: 166)
+                        .background(Theme.paper)
+                    HStack(spacing: 8) {
+                        Button { editor.toggleMenu() } label: {
+                            Label("Format", systemImage: "textformat")
+                        }.buttonStyle(WorkspaceButtonStyle(selected: editor.menu != nil))
+                            .disabled(!session.interactive || session.busy)
+                        GlyphButton(symbol: "mic", label: "Dictate") { editor.dictate() }
+                            .disabled(!session.interactive || session.busy)
                         Spacer()
-                        Button { session.create() } label: {
+                        Button { create() } label: {
                             HStack(spacing: 10) {
                                 Text("Create codemod")
                                 Text("⌘↩").font(Theme.font(10)).foregroundStyle(Theme.muted)
@@ -35,6 +40,27 @@ struct NewCodemodView: View {
                 .background(Theme.paper, in: RoundedRectangle(cornerRadius: 12))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line))
+                .overlay(alignment: .bottomLeading) {
+                    if let menu = editor.menu {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(ComposerFormat.allCases.enumerated()), id: \.element) { index, format in
+                                Button { editor.apply(format) } label: {
+                                    HStack {
+                                        Label(format.title, systemImage: format.symbol)
+                                        Spacer()
+                                        if let shortcut = format.shortcut {
+                                            Text(shortcut).font(Theme.font(10)).foregroundStyle(Theme.muted)
+                                        }
+                                    }.frame(maxWidth: .infinity, alignment: .leading)
+                                }.buttonStyle(WorkspaceButtonStyle(selected: index == menu.selected))
+                            }
+                        }.padding(6).frame(width: 192)
+                            .background(Theme.panel, in: RoundedRectangle(cornerRadius: 8))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line))
+                            .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
+                            .padding(.leading, 14).offset(y: -52)
+                    }
+                }
             }.frame(maxWidth: 620)
             Spacer(minLength: 32)
             Spacer(minLength: 0)
@@ -47,6 +73,10 @@ struct NewCodemodView: View {
                     .padding(Theme.inset)
             }
         }
-        .onAppear { focused = true }
+    }
+
+    private func create() {
+        editor.commit()
+        session.create()
     }
 }

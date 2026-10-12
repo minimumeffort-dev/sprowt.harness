@@ -19,7 +19,11 @@ Open **Ctrl+P** to select a codemod.
 
 The planner generates a short title from your request in the same planning turn. Until the plan is ready, the codemod appears as **New codemod**. The full request stays in its conversation. Existing saved names stay unchanged until you request a new plan.
 
-**Ctrl+J** adds a newline. **Esc** cancels creation, or quits when there is no codemod.
+The request can use Markdown headings, emphasis, lists, checklists and code. In the terminal's new codemod composer, **F2 · Format** opens helpers for those formats. A `/` on an empty line opens the same menu. Choose with **↑**, **↓** and **Enter**, or click a choice. **Esc** closes the menu without removing its slash; continuing `/Users/...` keeps the literal path.
+
+**Ctrl+J** adds a newline. **Enter** creates the codemod outside the formatting menu. **Ctrl+Z** undoes edits; **Ctrl+Shift+Z** or **Ctrl+R** redoes them. Wrapping text or formatting several lines can require more than one undo. **Esc** cancels creation, or quits when there is no codemod.
+
+The [macOS creation editor](macos.md#work-on-a-project) displays the supported formats and provides system dictation. Terminal dictation depends on the terminal application's macOS support. Dictated or pasted multiline text only edits the draft; it never submits automatically.
 
 See [Git workflow](git-workflow.md) for starting files, publication and checkpoint recovery. After a PR is merged or closed, create a new codemod from the updated project.
 
