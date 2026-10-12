@@ -426,7 +426,7 @@ impl App {
                 .filter(|_| !repairing)
             {
                 item.detail
-                    .push(format!("{}: {}", task.checks_label, check.brief()));
+                    .push(format!("{}: {}", task.check_origin.label(), check.brief()));
             }
             if let Some(latest) = task.latest {
                 item.detail.push(format!(

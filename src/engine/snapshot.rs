@@ -1,4 +1,5 @@
-use super::{Engine, View, api::AvailableAction};
+use super::{Engine, View, api::AvailableAction, state::Phase};
+use crate::{execution::CheckResult, store::CodeMod, worker::Status};
 use serde::Serialize;
 
 #[derive(Serialize)]
@@ -7,6 +8,7 @@ pub struct Snapshot {
     pub mods: Vec<ModSummary>,
     pub active_mod: Option<ModDetail>,
     pub status: String,
+    pub phase: &'static str,
     pub detail: String,
     pub evidence: String,
     pub error: Option<String>,
@@ -18,6 +20,18 @@ pub struct ModSummary {
     id: i64,
     name: String,
     closed: bool,
+    status: String,
+    workers: Vec<WorkerSummary>,
+}
+#[derive(Serialize)]
+pub struct WorkerSummary {
+    id: i64,
+    provider: String,
+    identity: String,
+    role: &'static str,
+    task_id: Option<String>,
+    state: &'static str,
+    activity: String,
 }
 #[derive(Serialize)]
 pub struct ModDetail {
@@ -35,6 +49,7 @@ pub struct ModDetail {
     checks: Vec<Check>,
     findings: Vec<Finding>,
     workers: Vec<String>,
+    worker_details: Vec<WorkerSummary>,
 }
 #[derive(Serialize)]
 pub struct Message {
@@ -64,12 +79,34 @@ pub struct Task {
     detail: String,
     files: Vec<String>,
     checks: Vec<String>,
+    run_id: Option<i64>,
+    identity: String,
+    source: Option<String>,
+    error: Option<String>,
+    latest: Option<Message>,
+    results: Vec<Check>,
+    checks_label: &'static str,
+    completed: bool,
+    preparation: Option<PreparationEvidence>,
+    actions: Vec<AvailableAction>,
 }
 #[derive(Serialize)]
 pub struct Check {
+    id: String,
+    task_id: Option<String>,
+    // check, final_check, previous_check, preparation_setup/capabilities/baseline.
+    kind: &'static str,
     label: String,
     status: &'static str,
     output: String,
+}
+#[derive(Serialize)]
+pub struct PreparationEvidence {
+    source: String,
+    current: bool,
+    stopped: bool,
+    error: Option<String>,
+    results: Vec<Check>,
 }
 #[derive(Serialize)]
 pub struct Finding {
@@ -120,9 +157,195 @@ impl From<&crate::store::Message> for Message {
     }
 }
 
+impl Check {
+    fn new(
+        id: String,
+        task_id: Option<String>,
+        kind: &'static str,
+        owner: &str,
+        result: &CheckResult,
+    ) -> Self {
+        Self {
+            id,
+            task_id,
+            kind,
+            label: format!("{owner} · {}", result.check),
+            status: if result.skipped() {
+                "skipped"
+            } else if result.failed() {
+                "failed"
+            } else {
+                "passed"
+            },
+            output: format!("{}\n\n{}", result.command.join(" "), result.output),
+        }
+    }
+}
+
 impl Engine {
+    fn worker_summaries(&self, code_mod: &CodeMod) -> Vec<WorkerSummary> {
+        self.workers
+            .values()
+            .filter(|worker| worker.mod_id == code_mod.id)
+            .map(|worker| WorkerSummary {
+                id: worker.id,
+                provider: worker.provider().into(),
+                identity: worker.label(Some("")).trim().into(),
+                role: worker.role.name(),
+                task_id: code_mod.execution.as_ref().and_then(|execution| {
+                    execution
+                        .tasks
+                        .iter()
+                        .find(|run| Some(run.id) == worker.task_run_id())
+                        .map(|run| run.task_id.clone())
+                }),
+                state: match worker.status {
+                    Status::Routing => "routing",
+                    Status::Connecting => "connecting",
+                    Status::Ready => "ready",
+                    Status::Starting => "starting",
+                    Status::Running => "running",
+                    Status::Stopping => "stopping",
+                    Status::Failed => "failed",
+                    Status::Complete => "complete",
+                    Status::Checking => "checking",
+                },
+                activity: if worker.busy() {
+                    worker
+                        .progress()
+                        .map_or_else(|| worker.activity(code_mod), Into::into)
+                } else {
+                    worker.error.clone().unwrap_or_default()
+                },
+            })
+            .collect()
+    }
+
+    fn final_check(&self, code_mod: &CodeMod, index: usize, result: &CheckResult) -> Check {
+        let execution = code_mod.execution.as_ref().unwrap();
+        Check::new(
+            format!(
+                "final:{}:{index}",
+                execution.fingerprint.as_deref().unwrap_or("unverified")
+            ),
+            result.task.and_then(|id| {
+                execution
+                    .tasks
+                    .iter()
+                    .find(|run| run.id == id)
+                    .map(|run| run.task_id.clone())
+            }),
+            "final_check",
+            "Final checks",
+            result,
+        )
+    }
+
+    fn snapshot_checks(&self, code_mod: &CodeMod) -> Vec<Check> {
+        code_mod
+            .execution
+            .iter()
+            .flat_map(|execution| {
+                execution
+                    .checks
+                    .iter()
+                    .enumerate()
+                    .map(|(index, result)| self.final_check(code_mod, index, result))
+                    .chain(execution.tasks.iter().flat_map(|run| {
+                        run.checks.iter().enumerate().map(move |(index, result)| {
+                            Check::new(
+                                format!("task:{}:{}:check:{index}", run.id, run.source),
+                                Some(run.task_id.clone()),
+                                "check",
+                                &format!("Task {}", run.task_id),
+                                result,
+                            )
+                        })
+                    }))
+            })
+            .collect()
+    }
+
+    fn task_results(
+        &self,
+        code_mod: &CodeMod,
+        task: &super::tasks::TaskInspection<'_>,
+    ) -> Vec<Check> {
+        if task.check_origin == super::CheckOrigin::Final {
+            return code_mod
+                .execution
+                .as_ref()
+                .unwrap()
+                .checks
+                .iter()
+                .enumerate()
+                .filter(|(_, result)| result.task == Some(task.run.id))
+                .map(|(index, result)| self.final_check(code_mod, index, result))
+                .collect();
+        }
+        let kind = if task.check_origin == super::CheckOrigin::Previous {
+            "previous_check"
+        } else {
+            "check"
+        };
+        task.checks
+            .iter()
+            .enumerate()
+            .map(|(index, result)| {
+                Check::new(
+                    format!("task:{}:{}:{kind}:{index}", task.run.id, task.run.source),
+                    Some(task.task.id.clone()),
+                    kind,
+                    &format!("Task {}", task.task.id),
+                    result,
+                )
+            })
+            .collect()
+    }
+
+    fn preparation_evidence(&self, id: i64) -> Option<PreparationEvidence> {
+        let task = self.inspect_task(id)?;
+        let preparation = self.task_preparation(id)?;
+        let source = &preparation.receipt.source;
+        let task_id = &task.task.id;
+        let results = [
+            ("preparation_setup", "Setup", &preparation.receipt.setup),
+            (
+                "preparation_capabilities",
+                "Capabilities",
+                &preparation.receipt.capabilities,
+            ),
+            (
+                "preparation_baseline",
+                "Baseline",
+                &preparation.receipt.baseline,
+            ),
+        ]
+        .into_iter()
+        .flat_map(|(kind, label, results)| {
+            results.iter().enumerate().map(move |(index, result)| {
+                Check::new(
+                    format!("task:{id}:{source}:{kind}:{index}"),
+                    Some(task_id.clone()),
+                    kind,
+                    label,
+                    result,
+                )
+            })
+        })
+        .collect();
+        Some(PreparationEvidence {
+            stopped: preparation.stopped(),
+            source: preparation.receipt.source,
+            current: preparation.current,
+            error: preparation.receipt.error,
+            results,
+        })
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let dock = self.action_dock();
+        let phase = self.state_summary().phase;
         Snapshot {
             project: self.project.display().to_string(),
             mods: self
@@ -132,6 +355,20 @@ impl Engine {
                     id: m.id,
                     name: m.name.clone(),
                     closed: m.closed,
+                    status: if self.current_mod().is_some_and(|active| active.id == m.id) {
+                        dock.status.clone()
+                    } else if m.closed {
+                        "Closed · work saved".into()
+                    } else if m.user_paused {
+                        "Paused by you".into()
+                    } else if let Some(execution) = &m.execution {
+                        format!("Execution · {}", execution.status)
+                    } else if let Some(planning) = &m.planning {
+                        format!("Planning · {}", planning.status)
+                    } else {
+                        "Work saved".into()
+                    },
+                    workers: self.worker_summaries(m),
                 })
                 .collect(),
             active_mod: self.current_mod().map(|m| ModDetail {
@@ -202,40 +439,47 @@ impl Engine {
                                     .or_else(|| run.map(|r| r.status.clone()))
                                     .unwrap_or_else(|| "pending".into()),
                                 detail: inspection
-                                    .map(|i| i.note)
+                                    .as_ref()
+                                    .map(|i| i.note.clone())
                                     .or_else(|| run.map(|r| r.summary.clone()))
                                     .unwrap_or_default(),
                                 files: task.files.clone(),
                                 checks: task.checks.clone(),
+                                run_id: run.map(|r| r.id),
+                                identity: inspection
+                                    .as_ref()
+                                    .map(|i| i.identity.clone())
+                                    .unwrap_or_else(|| "Worker not assigned".into()),
+                                source: run.map(|r| r.source.clone()),
+                                error: inspection.as_ref().and_then(|i| i.error.map(Into::into)),
+                                latest: inspection
+                                    .as_ref()
+                                    .and_then(|i| i.latest.map(Message::from)),
+                                results: inspection
+                                    .as_ref()
+                                    .map(|i| self.task_results(m, i))
+                                    .unwrap_or_default(),
+                                checks_label: inspection
+                                    .as_ref()
+                                    .map_or("Checks", |i| i.check_origin.label()),
+                                completed: run.is_some_and(|r| r.status == "done"),
+                                preparation: run.and_then(|r| self.preparation_evidence(r.id)),
+                                actions: run
+                                    .into_iter()
+                                    .flat_map(|r| self.task_desktop_actions(r.id))
+                                    .filter_map(|a| {
+                                        a.action.desktop_id().map(|(id, task_id)| AvailableAction {
+                                            id,
+                                            task_id,
+                                            label: a.label,
+                                        })
+                                    })
+                                    .collect(),
                             }
                         })
                         .collect(),
                 }),
-                checks: m
-                    .execution
-                    .iter()
-                    .flat_map(|e| {
-                        e.checks
-                            .iter()
-                            .map(|c| ("Final checks".to_owned(), c))
-                            .chain(e.tasks.iter().flat_map(|run| {
-                                run.checks
-                                    .iter()
-                                    .map(move |c| (format!("Task {}", run.task_id), c))
-                            }))
-                    })
-                    .map(|(owner, c)| Check {
-                        label: format!("{owner} · {}", c.check),
-                        status: if c.skipped() {
-                            "skipped"
-                        } else if c.failed() {
-                            "failed"
-                        } else {
-                            "passed"
-                        },
-                        output: format!("{}\n\n{}", c.command.join(" "), c.output),
-                    })
-                    .collect(),
+                checks: self.snapshot_checks(m),
                 findings: m
                     .agent_review
                     .iter()
@@ -251,8 +495,23 @@ impl Engine {
                     })
                     .collect(),
                 workers: self.worker_activity(),
+                worker_details: self.worker_summaries(m),
             }),
             status: dock.status,
+            phase: match phase {
+                Phase::New => "new",
+                Phase::Planning => "planning",
+                Phase::Building => "building",
+                Phase::Checking => "checking",
+                Phase::Recovering => "recovering",
+                Phase::Reviewing => "reviewing",
+                Phase::Git => "git",
+                Phase::NeedsYou => "needs_you",
+                Phase::Paused => "paused",
+                Phase::Ready => "ready",
+                Phase::Published => "published",
+                Phase::Closed => "closed",
+            },
             detail: dock.detail,
             evidence: dock.evidence,
             error: dock.error,

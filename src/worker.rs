@@ -59,6 +59,10 @@ pub struct Worker {
 }
 
 impl Worker {
+    pub fn provider(&self) -> &str {
+        &self.provider
+    }
+
     #[cfg(test)]
     pub fn bind_test_task(&mut self, source: String) {
         self.task_source = Some(source);

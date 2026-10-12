@@ -14,10 +14,10 @@ final class Session {
     private(set) var snapshot: Snapshot?
     private(set) var connection = Connection.disconnected
     private(set) var error: String?
-    private(set) var busy = false
     var newDescription = ""
     var showingNew = false
     var showClosed = false
+    var workspace = WorkspaceSelection()
     private(set) var drafts = Drafts()
     private var transport: Sidecar?
     private var nextId: UInt64 = 0
@@ -33,8 +33,14 @@ final class Session {
     var active: CodemodDetail? { snapshot?.activeMod }
     var dialog: EngineDialog? { connection == .ready ? snapshot?.dialog : nil }
     var editable: Bool { connection == .ready }
+    var interactive: Bool { editable && dialog == nil }
+    var busy: Bool {
+        current.map { $0.request.command.type != "set_draft" } == true ||
+        pending.contains { $0.request.command.type != "set_draft" }
+    }
+    var canBeginCreation: Bool { interactive && !busy }
     var canCompose: Bool {
-        editable && active?.closed == false && current?.request.command.type != "select_mod" &&
+        interactive && active?.closed == false && current?.request.command.type != "select_mod" &&
         !pending.contains(where: { $0.request.command.type == "select_mod" })
     }
     var draft: String { active.map { drafts.text(for: $0.id, fallback: $0.draft) } ?? "" }
@@ -108,6 +114,11 @@ final class Session {
         enqueue(Command(type: "new_mod", description: newDescription))
     }
 
+    func beginCreation() {
+        guard canBeginCreation else { return }
+        showingNew = true
+    }
+
     func select(_ id: Int64) {
         showingNew = false
         enqueue(Command(type: "select_mod", modId: id))
@@ -132,12 +143,10 @@ final class Session {
     private func sendNext() {
         guard current == nil else { return }
         guard !pending.isEmpty else {
-            busy = false
             if connection == .stopping { transport?.closeInput() }
             return
         }
         current = pending.removeFirst()
-        busy = current?.request.command.type != "set_draft"
         do {
             guard let transport else { throw CocoaError(.fileWriteUnknown) }
             try transport.send(current!.request)
@@ -153,7 +162,6 @@ final class Session {
             restoreInterruptedSubmission()
             pending.removeAll()
             current = nil
-            busy = false
             connection = .stopping
             transport?.closeInput()
         case .ended(let status):
@@ -166,7 +174,6 @@ final class Session {
             transport = nil
             pending.removeAll()
             current = nil
-            busy = false
             let completion = finishClosing
             finishClosing = nil
             completion?()
@@ -208,6 +215,8 @@ final class Session {
             if request.request.command.type != "set_draft" || response.error != nil { error = response.error }
         } else if let message = response.error { error = message }
         snapshot = response.snapshot
+        workspace.reconcile(response.snapshot)
+        if response.snapshot.dialog?.isInspection == true { showingNew = false }
         if let creation, let active, active.id != creation.previousMod, response.snapshot.dialog == nil {
             if newDescription == creation.description { newDescription = "" }
             showingNew = false

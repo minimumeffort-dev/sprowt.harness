@@ -29,6 +29,7 @@ mod sync;
 mod tasks;
 mod workers;
 pub use actions::{Action, ActionDock, ActionItem, Tone};
+pub use tasks::CheckOrigin;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum View {

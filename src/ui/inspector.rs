@@ -219,7 +219,7 @@ pub(super) fn check_summary(app: &App, width: u16) -> Vec<Line<'static>> {
                 lines.extend(tasks::failure_lines(error, width));
             }
             lines.extend(preparation);
-            lines.push(Line::from(task.checks_label).fg(ACCENT).bold());
+            lines.push(Line::from(task.check_origin.label()).fg(ACCENT).bold());
             if task.checks.is_empty() {
                 for expected in &task.task.checks {
                     lines.extend(wrap_line(

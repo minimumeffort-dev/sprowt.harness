@@ -16,7 +16,24 @@ pub struct TaskInspection<'a> {
     pub error: Option<&'a str>,
     pub latest: Option<&'a Message>,
     pub checks: Vec<&'a CheckResult>,
-    pub checks_label: &'static str,
+    pub check_origin: CheckOrigin,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CheckOrigin {
+    Task,
+    Final,
+    Previous,
+}
+
+impl CheckOrigin {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Task => "Checks",
+            Self::Final => "Final checks",
+            Self::Previous => "Previous failed checks",
+        }
+    }
 }
 
 pub struct Preparation {
@@ -264,10 +281,10 @@ impl Engine {
             .iter()
             .filter(|check| check.task == Some(id))
             .collect();
-        let mut checks_label = "Final checks";
+        let mut check_origin = CheckOrigin::Final;
         if checks.is_empty() {
             checks = run.checks.iter().collect();
-            checks_label = "Checks";
+            check_origin = CheckOrigin::Task;
         }
         let busy = worker.is_some_and(|w| w.busy());
         let error = visible_task_error(
@@ -356,7 +373,7 @@ impl Engine {
             }
         } else if checks.iter().any(|check| check.failed()) {
             (
-                if checks_label == "Final checks" {
+                if check_origin == CheckOrigin::Final {
                     "Final checks failed"
                 } else {
                     "Check failed"
@@ -395,7 +412,7 @@ impl Engine {
         };
         if checks.is_empty() && !run.verification_feedback.is_empty() {
             checks = run.verification_feedback.iter().collect();
-            checks_label = "Previous failed checks";
+            check_origin = CheckOrigin::Previous;
         }
         Some(TaskInspection {
             number: index + 1,
@@ -407,7 +424,7 @@ impl Engine {
             error,
             latest,
             checks,
-            checks_label,
+            check_origin,
         })
     }
 

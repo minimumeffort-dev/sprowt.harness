@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS("26.0")],
     products: [.executable(name: "SprowtDesktop", targets: ["SprowtDesktop"])],
     targets: [
-        .executableTarget(name: "SprowtDesktop"),
+        .executableTarget(name: "SprowtDesktop", resources: [.copy("Resources/Manrope")]),
         .testTarget(name: "SprowtDesktopTests", dependencies: ["SprowtDesktop"])
     ]
 )

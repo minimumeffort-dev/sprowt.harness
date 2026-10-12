@@ -434,6 +434,7 @@ impl Engine {
             .actions
             .iter()
             .any(|a| a.action == action)
+            && !matches!(action, Action::RetryTask(id) if self.can_retry_task(id))
         {
             return Ok(());
         }

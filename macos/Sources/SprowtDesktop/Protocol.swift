@@ -31,6 +31,7 @@ enum ProtocolError: LocalizedError {
 
 struct Snapshot: Decodable, Sendable {
     let project: String
+    let phase: WorkflowPhase
     let mods: [CodemodSummary]
     let activeMod: CodemodDetail?
     let status: String
@@ -45,6 +46,8 @@ struct CodemodSummary: Decodable, Identifiable, Sendable {
     let id: Int64
     let name: String
     let closed: Bool
+    let status: String
+    let workers: [WorkerSummary]
 }
 
 struct CodemodDetail: Decodable, Identifiable, Sendable {
@@ -62,6 +65,40 @@ struct CodemodDetail: Decodable, Identifiable, Sendable {
     let checks: [Check]
     let findings: [Finding]
     let workers: [String]
+    let workerDetails: [WorkerSummary]
+}
+
+enum WorkflowPhase: String, Decodable, Sendable {
+    case new, planning, building, checking, recovering, reviewing, git
+    case needsYou = "needs_you"
+    case paused, ready, published, closed
+}
+
+struct WorkerSummary: Decodable, Identifiable, Sendable {
+    let id: Int64
+    let provider: String
+    let identity: String
+    let role: String
+    let taskId: String?
+    let state: String
+    let activity: String
+}
+
+enum EvidenceKind: String, Decodable, Sendable {
+    case check
+    case finalCheck = "final_check"
+    case previousCheck = "previous_check"
+    case preparationSetup = "preparation_setup"
+    case preparationCapabilities = "preparation_capabilities"
+    case preparationBaseline = "preparation_baseline"
+}
+
+struct PreparationEvidence: Decodable, Sendable {
+    let source: String
+    let current: Bool
+    let stopped: Bool
+    let error: String?
+    let results: [Check]
 }
 
 struct ConversationMessage: Decodable, Sendable {
@@ -91,11 +128,31 @@ struct PlanTask: Decodable, Identifiable, Sendable {
     let detail: String
     let files: [String]
     let checks: [String]
+    let runId: Int64?
+    let identity: String
+    let source: String?
+    let error: String?
+    let latest: ConversationMessage?
+    let results: [Check]
+    let checksLabel: String
+    let completed: Bool
+    let preparation: PreparationEvidence?
+    let actions: [EngineAction]
+
+    var hasCurrentFailure: Bool {
+        error != nil || results.contains { $0.kind != .previousCheck && $0.status == .failed } ||
+        (preparation.map { $0.current && !$0.stopped && $0.error != nil } ?? false)
+    }
 }
 
-struct Check: Decodable, Sendable {
+enum CheckStatus: String, Decodable, Sendable { case passed, failed, skipped }
+
+struct Check: Decodable, Identifiable, Sendable {
+    let id: String
+    let taskId: String?
+    let kind: EvidenceKind
     let label: String
-    let status: String
+    let status: CheckStatus
     let output: String
 }
 

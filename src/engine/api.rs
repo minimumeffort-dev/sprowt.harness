@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::{Action, Engine, View};
+use super::{Action, ActionItem, Engine, View};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,6 +118,26 @@ impl Action {
 }
 
 impl Engine {
+    pub(crate) fn task_desktop_actions(&self, id: i64) -> Vec<ActionItem> {
+        let Some(task) = self.inspect_task(id) else {
+            return Vec::new();
+        };
+        let mut actions = Vec::new();
+        if self.can_retry_task(id) {
+            actions.push(ActionItem {
+                action: Action::RetryTask(id),
+                label: format!("Retry task {}", task.number),
+            });
+        }
+        if self.failed_check_owner() == Some(id) {
+            actions.push(ActionItem {
+                action: Action::FixCheck(id),
+                label: "Fix failed check".into(),
+            });
+        }
+        actions
+    }
+
     pub fn response(&self, request_id: Option<u64>, error: Option<String>) -> Response {
         Response {
             protocol_version: 1,
@@ -187,6 +207,11 @@ impl Engine {
                     .action_dock()
                     .actions
                     .into_iter()
+                    .chain(
+                        task_id
+                            .into_iter()
+                            .flat_map(|id| self.task_desktop_actions(id)),
+                    )
                     .find(|a| a.action.desktop_id() == Some((action.as_str(), task_id)))
                     .ok_or("This action is no longer available. Review the updated state.")?;
                 self.perform_action(selected.action)

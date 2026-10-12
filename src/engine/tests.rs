@@ -383,22 +383,50 @@ fn desktop_contract_matches_the_native_fixture() {
     engine.mods[0]
         .steering
         .push("Preserve the existing keyboard controls".into());
-    engine.mods[0].execution = Some(crate::execution::Execution {
-        workspace: PathBuf::from("/example/workspace"),
-        backend: "apple-container".into(),
-        status: "blocked".into(),
-        tasks: Vec::new(),
-        fingerprint: None,
-        checks: vec![crate::execution::CheckResult {
-            timeout_seconds: Some(60),
-            duration_ms: Some(50),
-            task: None,
-            check: "CLI regression suite passes".into(),
-            command: vec!["cargo".into(), "test".into()],
-            exit_code: Some(1),
-            output: "Draft did not survive reopening".into(),
-            missing_runtime: None,
-        }],
+    engine
+        .store
+        .create_execution(first, &PathBuf::from("/example/workspace"), &plan)
+        .unwrap();
+    let mut execution = engine.store.execution(first).unwrap().unwrap();
+    execution.status = "blocked".into();
+    execution.tasks[0].status = "done".into();
+    execution.tasks[1].status = "paused".into();
+    execution.tasks[1].summary = "Preserve the native composer draft.".into();
+    execution.checks = vec![crate::execution::CheckResult {
+        timeout_seconds: Some(60),
+        duration_ms: Some(50),
+        task: Some(execution.tasks[1].id),
+        check: "CLI regression suite passes".into(),
+        command: vec!["cargo".into(), "test".into()],
+        exit_code: Some(1),
+        output: "Draft did not survive reopening".into(),
+        missing_runtime: None,
+    }];
+    let run_id = execution.tasks[1].id;
+    let source = execution.tasks[1].source.clone();
+    engine.mods[0].execution = Some(execution);
+    let record = engine.store.worker(first).unwrap();
+    let mut worker = Worker::start(
+        &engine.project,
+        &engine.mods[0],
+        record,
+        Role::Planner,
+        None,
+    )
+    .unwrap();
+    worker.status = Status::Ready;
+    worker.enabled = false;
+    worker.model = Some("gpt-6.1-sol".into());
+    worker.effort = Some("high".into());
+    engine.workers.insert(worker.id, worker);
+    engine.mods[0].messages.push(crate::store::Message {
+        source: Some(source),
+        task: Some(run_id),
+        item_id: None,
+        role: "codex:executor".into(),
+        body: "Native controls are ready; draft persistence needs repair.".into(),
+        model: Some("gpt-6.1-sol".into()),
+        effort: Some("high".into()),
     });
     engine.mods[0].agent_review = Some(crate::review::State {
         status: "findings".into(),
@@ -436,7 +464,7 @@ fn desktop_contract_matches_the_native_fixture() {
             .as_array()
             .unwrap()
             .len(),
-        2
+        3
     );
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/desktop.json");
     if std::env::var_os("SPROWT_DESKTOP_FIXTURE").is_some() {
@@ -476,5 +504,420 @@ fn ownership_excludes_a_separate_process() {
         "{}\n{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn snapshot_check(
+    task: i64,
+    output: &str,
+    exit_code: Option<i64>,
+) -> crate::execution::CheckResult {
+    crate::execution::CheckResult {
+        task: Some(task),
+        check: "Shared check name".into(),
+        command: vec!["/usr/bin/test".into()],
+        exit_code,
+        output: output.into(),
+        timeout_seconds: None,
+        duration_ms: None,
+        missing_runtime: None,
+    }
+}
+
+#[test]
+fn desktop_task_evidence_preserves_attempt_identity_and_final_check_ownership() {
+    let (data, mut store, m, _, _) = crate::network::tests::fixture();
+    let first = &m.execution.as_ref().unwrap().tasks[0];
+    let id = first.id;
+    let source = first.source.clone();
+    store
+        .finish_task(m.id, &source, "paused", "Repair the implementation", &[])
+        .unwrap();
+    for (attempt, body, model) in [
+        (source.as_str(), "Current attempt update", "current-model"),
+        ("earlier-attempt", "Old completion report", "old-model"),
+    ] {
+        store
+            .save_message(
+                m.id,
+                &crate::store::Message {
+                    source: Some(attempt.into()),
+                    task: Some(id),
+                    item_id: Some(format!("result:{attempt}")),
+                    role: "codex:executor".into(),
+                    body: body.into(),
+                    model: Some(model.into()),
+                    effort: Some("high".into()),
+                },
+            )
+            .unwrap();
+    }
+    let mut engine = Engine::load(data.0.join("project"), store).unwrap();
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    let task = &snapshot["active_mod"]["plan"]["tasks"][0];
+    assert_eq!(task["run_id"], id);
+    assert_eq!(task["source"], source);
+    assert_eq!(task["completed"], false);
+    assert_eq!(task["error"], "Repair the implementation");
+    assert_eq!(task["latest"]["body"], "Current attempt update");
+    assert_eq!(task["latest"]["model"], "current-model");
+    assert!(task["identity"].as_str().unwrap().contains("current-model"));
+    assert!(!task["identity"].as_str().unwrap().contains("old-model"));
+
+    let execution = engine.mods[0].execution.as_mut().unwrap();
+    let other = execution.tasks[1].id;
+    execution.tasks[0].status = "done".into();
+    execution.tasks[0].checks = vec![snapshot_check(id, "Earlier task check passed", Some(0))];
+    execution.checks = vec![
+        snapshot_check(other, "Other task failed", Some(1)),
+        snapshot_check(id, "Current final check failed", Some(1)),
+    ];
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    let detail = &snapshot["active_mod"];
+    let task = &detail["plan"]["tasks"][0];
+    assert_eq!(task["status"], "Final checks failed");
+    assert_eq!(task["completed"], true);
+    assert_eq!(task["checks_label"], "Final checks");
+    assert_eq!(task["results"].as_array().unwrap().len(), 1);
+    assert_eq!(task["results"][0]["task_id"], "a");
+    assert_eq!(task["results"][0]["kind"], "final_check");
+    assert_eq!(task["results"][0]["id"], detail["checks"][1]["id"]);
+    assert_eq!(
+        task["results"][0]["output"],
+        "/usr/bin/test\n\nCurrent final check failed"
+    );
+    assert_eq!(detail["checks"][0]["task_id"], "b");
+    assert_ne!(detail["checks"][0]["id"], detail["checks"][1]["id"]);
+    assert_eq!(detail["checks"][2]["kind"], "check");
+
+    let execution = engine.mods[0].execution.as_mut().unwrap();
+    execution.checks.clear();
+    execution.tasks[0].checks.clear();
+    execution.tasks[0].verification_feedback =
+        vec![snapshot_check(id, "Previous failure retained", Some(1))];
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    let task = &snapshot["active_mod"]["plan"]["tasks"][0];
+    assert_eq!(task["checks_label"], "Previous failed checks");
+    assert_eq!(task["results"][0]["kind"], "previous_check");
+    assert_eq!(
+        task["results"][0]["output"],
+        "/usr/bin/test\n\nPrevious failure retained"
+    );
+}
+
+#[test]
+fn desktop_worker_summaries_are_scoped_to_their_codemod_and_actual_state() {
+    let (data, mut store, m, _, _) = crate::network::tests::fixture();
+    let other = store.create_mod(1, "Other saved work").unwrap().id;
+    store.select_mod(1, m.id).unwrap();
+    let mut engine = Engine::load(data.0.join("project"), store).unwrap();
+    let record = engine.store.worker(m.id).unwrap();
+    let mut worker = Worker::start(
+        &engine.project,
+        &engine.mods[0],
+        record,
+        Role::Planner,
+        None,
+    )
+    .unwrap();
+    worker.role = Role::Executor;
+    worker.status = Status::Running;
+    worker.model = Some("current-model".into());
+    worker.effort = Some("high".into());
+    let run = &mut engine.mods[0].execution.as_mut().unwrap().tasks[0];
+    run.worker = Some(worker.id);
+    run.status = "running".into();
+    worker.bind_test_task(run.source.clone());
+    engine.mods[0].execution.as_mut().unwrap().tasks[1].status = "pending".into();
+    let worker_id = worker.id;
+    engine.workers.insert(worker.id, worker);
+    let record = engine.store.worker(other).unwrap();
+    let mut worker = Worker::start(
+        &engine.project,
+        &engine.mods[1],
+        record,
+        Role::Planner,
+        None,
+    )
+    .unwrap();
+    worker.status = Status::Failed;
+    let other_worker_id = worker.id;
+    engine.workers.insert(worker.id, worker);
+    engine.mods[1].user_paused = true;
+
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    assert_eq!(snapshot["phase"], "building");
+    assert_eq!(snapshot["mods"][0]["status"], "Working · 1 worker");
+    assert_eq!(snapshot["mods"][1]["status"], "Paused by you");
+    let worker = &snapshot["mods"][0]["workers"][0];
+    assert_eq!(worker["id"], worker_id);
+    assert_eq!(worker["role"], "executor");
+    assert_eq!(worker["task_id"], "a");
+    assert_eq!(worker["state"], "running");
+    assert_eq!(worker["activity"], format!("codex w{worker_id} · task 1"));
+    assert_eq!(
+        worker["identity"],
+        format!("codex · executor · w{worker_id} · current-model · high")
+    );
+    assert_eq!(snapshot["active_mod"]["worker_details"][0], *worker);
+    assert_eq!(snapshot["mods"][1]["workers"][0]["id"], other_worker_id);
+    assert_eq!(snapshot["mods"][1]["workers"][0]["state"], "failed");
+    assert_eq!(
+        snapshot["mods"][1]["workers"][0]["task_id"],
+        serde_json::Value::Null
+    );
+    engine.mods[1].closed = true;
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    assert_eq!(snapshot["mods"][1]["status"], "Closed · work saved");
+}
+
+#[test]
+fn desktop_preparation_is_separate_from_completion_and_keeps_earlier_source_evidence() {
+    let (data, store, m, root, _) = crate::network::tests::fixture();
+    let run = &m.execution.as_ref().unwrap().tasks[0];
+    let recipe = serde_json::from_value(serde_json::json!({
+        "inputs":[],"setup":[],"capabilities":[{"name":"Runtime","argv":["/usr/bin/true"],"timeout_seconds":5}],"baseline":[]
+    })).unwrap();
+    let receipt = crate::environment::Receipt {
+        recipe,
+        error: Some("Environment preparation stopped.".into()),
+        source_changes: Vec::new(),
+        environment: "fixture-environment".into(),
+        source: "earlier-source-fingerprint".into(),
+        runtime_home: "/home/worker".into(),
+        cache: crate::environment::cache::Use::Miss,
+        cache_saved: None,
+        setup: vec![snapshot_check(run.id, "Guest command stopped.", Some(-1))],
+        capabilities: vec![snapshot_check(run.id, "Not run.", None)],
+        baseline: Vec::new(),
+    };
+    let directory = root.join("environments");
+    std::fs::create_dir_all(&directory).unwrap();
+    let bytes = serde_json::to_vec(&receipt).unwrap();
+    std::fs::write(directory.join(format!("{}.json", run.id)), &bytes).unwrap();
+    let engine = Engine::load(data.0.join("project"), store).unwrap();
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    let task = &snapshot["active_mod"]["plan"]["tasks"][0];
+    assert_eq!(task["completed"], false);
+    assert_eq!(task["results"], serde_json::json!([]));
+    assert_eq!(task["preparation"]["current"], false);
+    assert_eq!(task["preparation"]["source"], "earlier-source-fingerprint");
+    assert_eq!(task["preparation"]["stopped"], true);
+    assert_eq!(
+        task["preparation"]["results"][0]["kind"],
+        "preparation_setup"
+    );
+    assert_eq!(task["preparation"]["results"][0]["task_id"], "a");
+    assert_eq!(task["preparation"]["results"][0]["status"], "failed");
+    assert_eq!(
+        task["preparation"]["results"][1]["kind"],
+        "preparation_capabilities"
+    );
+    assert_eq!(task["preparation"]["results"][1]["status"], "skipped");
+    std::fs::write(
+        directory.join(format!("{}-{}.json", run.id, run.source)),
+        bytes,
+    )
+    .unwrap();
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    assert_eq!(
+        snapshot["active_mod"]["plan"]["tasks"][0]["preparation"]["current"],
+        true
+    );
+}
+
+#[test]
+fn desktop_selected_task_retry_matches_terminal_policy_and_rejects_stale_or_busy_tasks() {
+    let (data, mut store, m, _, _) = crate::network::tests::fixture();
+    for run in &m.execution.as_ref().unwrap().tasks {
+        store
+            .finish_task(m.id, &run.source, "paused", "Task interrupted", &[])
+            .unwrap();
+    }
+    let mut engine = Engine::load(data.0.join("project"), store).unwrap();
+    engine
+        .command(Command::SetDraft {
+            mod_id: m.id,
+            text: "Keep this draft during retries".into(),
+        })
+        .unwrap();
+    let execution = engine.mods[0].execution.as_ref().unwrap();
+    let first = execution.tasks[0].id;
+    let second = execution.tasks[1].id;
+    let old_source = execution.tasks[1].source.clone();
+    assert_eq!(engine.failed_task(), Some(first));
+    assert!(engine.can_retry_task(second));
+    assert!(
+        !engine
+            .action_dock()
+            .actions
+            .iter()
+            .any(|a| a.action == Action::RetryTask(second))
+    );
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    assert_eq!(
+        snapshot["active_mod"]["plan"]["tasks"][1]["actions"],
+        serde_json::json!([{"id":"retry_task","label":"Retry task 2","task_id":second}])
+    );
+    engine
+        .command(Command::Action {
+            mod_id: Some(m.id),
+            action: "retry_task".into(),
+            task_id: Some(second),
+        })
+        .unwrap();
+    let run = &engine.mods[0].execution.as_ref().unwrap().tasks[1];
+    assert_eq!(run.status, "pending");
+    assert_ne!(run.source, old_source);
+    assert_eq!(engine.mods[0].draft, "Keep this draft during retries");
+    assert_eq!(
+        engine.store.load_project(&engine.project).unwrap().mods[0].draft,
+        "Keep this draft during retries"
+    );
+
+    for id in [second, second + 100] {
+        assert_eq!(
+            engine
+                .command(Command::Action {
+                    mod_id: Some(m.id),
+                    action: "retry_task".into(),
+                    task_id: Some(id),
+                })
+                .unwrap_err(),
+            "This action is no longer available. Review the updated state."
+        );
+    }
+    let record = engine.store.worker(m.id).unwrap();
+    let mut worker = Worker::start(
+        &engine.project,
+        &engine.mods[0],
+        record,
+        Role::Planner,
+        None,
+    )
+    .unwrap();
+    worker.role = Role::Executor;
+    worker.status = Status::Running;
+    worker.bind_test_task(
+        engine.mods[0].execution.as_ref().unwrap().tasks[0]
+            .source
+            .clone(),
+    );
+    engine.workers.insert(worker.id, worker);
+    assert!(!engine.can_retry_task(first));
+    assert!(
+        engine
+            .command(Command::Action {
+                mod_id: Some(m.id),
+                action: "retry_task".into(),
+                task_id: Some(first),
+            })
+            .is_err()
+    );
+    engine.workers.clear();
+    engine.view = View::DeleteMod(0);
+    assert!(
+        engine
+            .command(Command::Action {
+                mod_id: Some(m.id),
+                action: "retry_task".into(),
+                task_id: Some(first),
+            })
+            .is_err()
+    );
+    engine.command(Command::Cancel {}).unwrap();
+    let other = engine.store.create_mod(1, "Other context").unwrap();
+    engine.mods.push(other);
+    engine
+        .command(Command::SelectMod {
+            mod_id: engine.mods[1].id,
+        })
+        .unwrap();
+    assert_eq!(
+        engine
+            .command(Command::Action {
+                mod_id: Some(m.id),
+                action: "retry_task".into(),
+                task_id: Some(first),
+            })
+            .unwrap_err(),
+        "The selected codemod changed. Review it before continuing."
+    );
+    assert_eq!(engine.mods[0].draft, "Keep this draft during retries");
+}
+
+#[test]
+fn desktop_task_fix_check_is_available_only_for_the_canonical_failed_owner() {
+    let (data, mut store, m, _, _) = crate::network::tests::fixture();
+    let execution = m.execution.as_ref().unwrap();
+    for run in &execution.tasks {
+        store
+            .finish_task(
+                m.id,
+                &run.source,
+                "done",
+                "Task finished",
+                &[snapshot_check(run.id, "Task check passed", Some(0))],
+            )
+            .unwrap();
+    }
+    let first = execution.tasks[0].id;
+    let second = execution.tasks[1].id;
+    store
+        .execution_checks(
+            m.id,
+            "blocked",
+            &[snapshot_check(first, "Combined regression failed", Some(1))],
+            Some("version"),
+        )
+        .unwrap();
+    let mut engine = Engine::load(data.0.join("project"), store).unwrap();
+    engine
+        .command(Command::SetDraft {
+            mod_id: m.id,
+            text: "Keep the draft".into(),
+        })
+        .unwrap();
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    assert_eq!(
+        snapshot["active_mod"]["plan"]["tasks"][0]["actions"],
+        serde_json::json!([{"id":"fix_check","label":"Fix failed check","task_id":first}])
+    );
+    assert_eq!(
+        snapshot["active_mod"]["plan"]["tasks"][1]["actions"],
+        serde_json::json!([])
+    );
+    assert!(
+        engine
+            .command(Command::Action {
+                mod_id: Some(m.id),
+                action: "fix_check".into(),
+                task_id: Some(second)
+            })
+            .is_err()
+    );
+    engine
+        .command(Command::Action {
+            mod_id: Some(m.id),
+            action: "fix_check".into(),
+            task_id: Some(first),
+        })
+        .unwrap();
+    let run = &engine.mods[0].execution.as_ref().unwrap().tasks[0];
+    assert_eq!(run.status, "pending");
+    assert!(run.check_repair);
+    assert_eq!(
+        run.verification_feedback[0].output,
+        "Combined regression failed"
+    );
+    assert_eq!(engine.mods[0].draft, "Keep the draft");
+    assert!(
+        engine
+            .command(Command::Action {
+                mod_id: Some(m.id),
+                action: "fix_check".into(),
+                task_id: Some(first)
+            })
+            .is_err()
     );
 }

@@ -6,10 +6,13 @@ struct SprowtApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var session = Session()
 
+    init() { Theme.registerFonts() }
+
     var body: some Scene {
         Window("Sprowt", id: "main") {
             ContentView(session: session)
-                .frame(minWidth: 840, minHeight: 600)
+                .frame(minWidth: 900, minHeight: 650)
+                .preferredColorScheme(.light)
                 .task {
                     delegate.session = session
                     let arguments = ProcessInfo.processInfo.arguments
@@ -22,12 +25,12 @@ struct SprowtApp: App {
                     }
                 }
         }
-        .defaultSize(width: 1100, height: 780)
+        .defaultSize(width: 1280, height: 860)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New codemod") { session.showingNew = true }
+                Button("New codemod") { session.beginCreation() }
                     .keyboardShortcut("n")
-                    .disabled(!session.editable)
+                    .disabled(!session.canBeginCreation)
                 Button("Open project…") { session.chooseProject() }
                     .keyboardShortcut("o")
                     .disabled(session.connection == .stopping)

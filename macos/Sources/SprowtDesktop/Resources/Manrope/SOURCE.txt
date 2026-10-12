@@ -1,0 +1,4 @@
+Manrope variable font, unmodified from Google Fonts.
+Source: https://github.com/google/fonts/tree/b31870aff700ab7a1d74fa0c6887d95beb9e0037/ofl/manrope
+Original filename: Manrope[wght].ttf
+License and release notes: OFL.txt and FONTLOG.txt in this directory.

@@ -257,13 +257,15 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
             .as_deref()
             .is_some_and(|id| id.starts_with("result:"));
         lines.push(
-            Line::from(if result && task.checks_label == "Final checks" {
-                "Earlier task report · before combined checks"
-            } else if result {
-                "Worker report"
-            } else {
-                "Latest update"
-            })
+            Line::from(
+                if result && task.check_origin == crate::engine::CheckOrigin::Final {
+                    "Earlier task report · before combined checks"
+                } else if result {
+                    "Worker report"
+                } else {
+                    "Latest update"
+                },
+            )
             .fg(ACCENT)
             .bold(),
         );
@@ -279,7 +281,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         lines.push(Line::default());
     } else if task.run.status == "done" && !task.run.summary.is_empty() {
         lines.extend(wrap_line(
-            Line::from(if task.checks_label == "Final checks" {
+            Line::from(if task.check_origin == crate::engine::CheckOrigin::Final {
                 "Earlier task report · before combined checks"
             } else {
                 "Worker report"
@@ -299,7 +301,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         .count();
     let failed = task.checks.iter().filter(|check| check.failed()).count();
     let unrun = task.checks.iter().filter(|check| check.skipped()).count();
-    lines.push(Line::from(task.checks_label).fg(ACCENT).bold());
+    lines.push(Line::from(task.check_origin.label()).fg(ACCENT).bold());
     if !task.checks.is_empty() {
         let mut counts = Vec::new();
         for (count, label, color) in [

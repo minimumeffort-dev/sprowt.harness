@@ -10,13 +10,18 @@
         "task_id": null
       },
       {
+        "id": "retry_task",
+        "label": "Retry task 2",
+        "task_id": 2
+      },
+      {
         "id": "update",
         "label": "Sync project / target",
         "task_id": null
       },
       {
         "id": "failure",
-        "label": "Show full error",
+        "label": "Inspect failure",
         "task_id": null
       },
       {
@@ -38,9 +43,12 @@
     "active_mod": {
       "checks": [
         {
+          "id": "final:unverified:0",
+          "kind": "final_check",
           "label": "Final checks · CLI regression suite passes",
           "output": "cargo test\n\nDraft did not survive reopening",
-          "status": "failed"
+          "status": "failed",
+          "task_id": "native"
         }
       ],
       "closed": false,
@@ -66,6 +74,12 @@
           "effort": "high",
           "model": "gpt-6.1-sol",
           "role": "planner"
+        },
+        {
+          "body": "Native controls are ready; draft persistence needs repair.",
+          "effort": "high",
+          "model": "gpt-6.1-sol",
+          "role": "codex:executor"
         }
       ],
       "id": 1,
@@ -83,33 +97,73 @@
         "summary": "Share the engine with native controls",
         "tasks": [
           {
+            "actions": [],
             "checks": [
               "CLI regression suite passes"
             ],
+            "checks_label": "Checks",
+            "completed": true,
             "depends_on": [],
             "detail": "",
+            "error": null,
             "files": [
               "src/engine.rs"
             ],
             "id": "core",
+            "identity": "codex",
+            "latest": null,
             "outcome": "Both clients use the same lifecycle rules",
-            "status": "pending",
+            "preparation": null,
+            "results": [],
+            "run_id": 1,
+            "source": "00000004-0001-4000-8000-000000000001",
+            "status": "Done",
             "title": "Extract the engine"
           },
           {
+            "actions": [
+              {
+                "id": "retry_task",
+                "label": "Retry task 2",
+                "task_id": 2
+              }
+            ],
             "checks": [
               "Draft survives reopening"
             ],
+            "checks_label": "Final checks",
+            "completed": false,
             "depends_on": [
               "core"
             ],
             "detail": "",
+            "error": "Preserve the native composer draft.",
             "files": [
               "macos/Sources"
             ],
             "id": "native",
+            "identity": "codex · gpt-6.1-sol · high",
+            "latest": {
+              "body": "Native controls are ready; draft persistence needs repair.",
+              "effort": "high",
+              "model": "gpt-6.1-sol",
+              "role": "codex:executor"
+            },
             "outcome": "Open a project and manage codemods",
-            "status": "pending",
+            "preparation": null,
+            "results": [
+              {
+                "id": "final:unverified:0",
+                "kind": "final_check",
+                "label": "Final checks · CLI regression suite passes",
+                "output": "cargo test\n\nDraft did not survive reopening",
+                "status": "failed",
+                "task_id": "native"
+              }
+            ],
+            "run_id": 2,
+            "source": "00000004-0001-4000-8000-000000000002",
+            "status": "Final checks failed",
             "title": "Add native controls"
           }
         ]
@@ -124,9 +178,20 @@
         "Preserve the existing keyboard controls"
       ],
       "user_paused": false,
+      "worker_details": [
+        {
+          "activity": "",
+          "id": 1,
+          "identity": "codex · planner · gpt-6.1-sol · high",
+          "provider": "codex",
+          "role": "planner",
+          "state": "ready",
+          "task_id": null
+        }
+      ],
       "workers": []
     },
-    "detail": "0 resolved · 1 remaining · 1 new · 0/0 tasks finished",
+    "detail": "0 resolved · 1 remaining · 1 new · 1/2 tasks finished",
     "dialog": {
       "body": "Delete “Add native controls”, its conversation, queued instructions and local working folder?",
       "confirm_label": "Delete codemod",
@@ -137,21 +202,36 @@
       "request_id": null,
       "title": "Delete codemod"
     },
-    "error": null,
+    "error": "Preserve the native composer draft.",
     "evidence": "Checks · 0 passed · 1 failed · 0 not run · Review outdated",
     "mods": [
       {
         "closed": false,
         "id": 1,
-        "name": "Add native controls"
+        "name": "Add native controls",
+        "status": "Task 2 needs attention",
+        "workers": [
+          {
+            "activity": "",
+            "id": 1,
+            "identity": "codex · planner · gpt-6.1-sol · high",
+            "provider": "codex",
+            "role": "planner",
+            "state": "ready",
+            "task_id": null
+          }
+        ]
       },
       {
         "closed": false,
         "id": 2,
-        "name": "Other codemod"
+        "name": "Other codemod",
+        "status": "Planning · pending",
+        "workers": []
       }
     ],
+    "phase": "needs_you",
     "project": "/example/project",
-    "status": "Work saved · ready to resume"
+    "status": "Task 2 needs attention"
   }
 }

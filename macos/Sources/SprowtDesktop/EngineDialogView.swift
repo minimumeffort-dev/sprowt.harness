@@ -8,13 +8,13 @@ struct EngineDialogView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(dialog.title).font(.title2.weight(.semibold))
+            Text(dialog.title).font(Theme.font(20, weight: .semibold))
             if let error = session.error ?? session.snapshot?.error {
-                Text(error).foregroundStyle(.red).textSelection(.enabled)
+                Text(error).foregroundStyle(Theme.red).textSelection(.enabled)
             }
             ScrollView {
                 Text(dialog.body).textSelection(.enabled)
-                    .font(dialog.kind == "diff" ? .system(.body, design: .monospaced) : .body)
+                    .font(dialog.kind == "diff" ? .system(.body, design: .monospaced) : Theme.font())
                     .frame(maxWidth: .infinity, alignment: .leading)
             }.frame(maxHeight: 360)
             if !dialog.domains.isEmpty {
@@ -33,14 +33,14 @@ struct EngineDialogView: View {
                 if dialog.kind == "network", let requestId = dialog.requestId {
                     Button("Deny") { network(requestId, allow: false) }
                     Button("Allow") { network(requestId, allow: true) }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(WorkspaceButtonStyle(prominent: true))
                 } else if let label = dialog.confirmLabel {
                     Button(label) { confirm() }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(WorkspaceButtonStyle(prominent: true))
                         .keyboardShortcut(.defaultAction)
                 }
             }.disabled(!session.editable || session.busy)
-        }.padding(24).frame(width: 620)
+        }.padding(24).frame(width: 620).font(Theme.font()).foregroundStyle(Theme.ink).background(Theme.paper)
         .onAppear {
             repositorySlug = dialog.repositorySlug ?? ""
             repositoryCreate = dialog.repositoryCreate

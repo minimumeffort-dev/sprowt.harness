@@ -424,14 +424,18 @@ fn checks(app: &App, item: &Item, d: &mut Document, detailed: bool) {
         _ => None,
     };
     if let Some(task) = task {
-        d.heading(&format!("{} · {}", task.task.title, task.checks_label));
+        d.heading(&format!(
+            "{} · {}",
+            task.task.title,
+            task.check_origin.label()
+        ));
         d.gap();
         if let Some(error) = task.error {
             d.lines.extend(tasks::failure_lines(error, d.width));
         }
         d.lines
             .extend(tasks::preparation_lines(app, task.run.id, d.width));
-        d.heading(task.checks_label);
+        d.heading(task.check_origin.label());
         if task.checks.is_empty() {
             for expected in &task.task.checks {
                 d.text(&format!("  ○ {expected} · not run"));

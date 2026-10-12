@@ -208,4 +208,6 @@ The Sprowt companion uses an 8-column, 4-row area of terminal cells. It is curio
 
 On exit, normal input, mouse, paste handling and the previous terminal screen are restored.
 
+The [native macOS workspace](macos.md#find-the-same-work-in-the-terminal) exposes the same task evidence, checks, changes, queue and contextual actions. Close the terminal interface before opening the same project in the app.
+
 **Next:** [Manage codemods](codemods.md) · [Read review findings](review.md) · [Troubleshoot a failure](troubleshooting.md)
