@@ -108,7 +108,7 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
                 keys.push(("ctrl+r", action.label.as_str()))
             }
             Action::RetryGit => keys.push(("ctrl+r", action.label.as_str())),
-            Action::Network => keys.push(("ctrl+n", "review domains")),
+            Action::Network => keys.push(("ctrl+n", "review network access")),
             _ => {}
         }
     }

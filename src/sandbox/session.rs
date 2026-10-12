@@ -351,6 +351,34 @@ impl TaskSession {
     pub(crate) fn command(&mut self, check: &Check, cancelled: &AtomicBool) -> CheckResult {
         run_check_command(&mut self.rpc, &self.scope, check, cancelled)
     }
+    pub(crate) fn require_network(
+        &mut self,
+        request: crate::network::Request,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        let policy = self.accept(cancelled, |_| {
+            let (database, mod_id) = self.authorization.as_ref().ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "Preparation network access requires its current task attempt.",
+                )
+            })?;
+            let store = crate::store::Store::open(database)?;
+            let policy = crate::sandbox::network(&self.root)?;
+            crate::network::require_preparation(
+                &store,
+                &self.root,
+                *mod_id,
+                self.owner,
+                &self.source,
+                request,
+                &policy,
+            )?;
+            Ok(policy)
+        })?;
+        self.scope.domains = policy;
+        Ok(())
+    }
     pub(crate) fn snapshot(&mut self, cancelled: &AtomicBool) -> io::Result<Snapshot> {
         let prefix = format!("/opt/sprowt-transfer/task-{}-{}", self.id, self.token);
         let snapshot = transfer::snapshot(

@@ -319,7 +319,7 @@ impl Engine {
             }
             if self.pending_network().is_some() && !m.closed {
                 dock.actions
-                    .push(ActionItem::new(Network, "Review domains"));
+                    .push(ActionItem::new(Network, "Review network access"));
             }
             if details {
                 dock.actions

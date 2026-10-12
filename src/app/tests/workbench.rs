@@ -4,7 +4,7 @@ use crate::app::{
     controls::{Control, EvidenceTab},
     timeline::{Focus, Key},
 };
-use preparation::source_changed_app;
+use preparation::{network_preparation_app, setup_failed_app, source_changed_app};
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 fn reviewed_app() -> (TestData, App) {
@@ -54,95 +54,6 @@ fn failed_app() -> (TestData, App, PathBuf) {
     e.checks[0].duration_ms = Some(82);
     e.checks[0].task = Some(e.tasks[0].id);
     (data, app, root)
-}
-
-fn setup_failed_app() -> (TestData, App, PathBuf, i64) {
-    let (data, mut app, root) = execution_app();
-    let m = &app.engine.mods[0];
-    let id = m.execution.as_ref().unwrap().tasks[0].id;
-    let source = crate::store::task_source(id, 2);
-    let recipe = crate::environment::Recipe {
-        resources: None,
-        reusable_paths: vec![],
-        inputs: vec![],
-        system_packages: vec![],
-        setup: vec![crate::environment::Command {
-            name: "Install browser runtime".into(),
-            argv: vec![
-                "/usr/bin/npm".into(),
-                "exec".into(),
-                "playwright".into(),
-                "install".into(),
-            ],
-            timeout_seconds: 180,
-        }],
-        capabilities: vec![crate::environment::Command {
-            name: "Browser runtime available".into(),
-            argv: vec!["/usr/bin/node".into(), "--version".into()],
-            timeout_seconds: 5,
-        }],
-        baseline: vec![],
-    };
-    let mut plan = m.planning.as_ref().unwrap().plan.clone().unwrap();
-    plan.environment = Some(recipe.clone());
-    app.engine
-        .store
-        .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
-        .unwrap();
-    app.engine.store.0.execute("UPDATE task_runs SET status='paused',attempt=2,source=?2,summary=?3,checks='[]' WHERE id=?1", rusqlite::params![id,source,"Environment preflight failed: Setup failed: Install browser runtime\nGuest command timed out after 180s."]).unwrap();
-    app.engine
-        .store
-        .0
-        .execute(
-            "UPDATE executions SET status='running',checks='[]',fingerprint=NULL WHERE mod_id=?1",
-            [m.id],
-        )
-        .unwrap();
-    let output = format!(
-        "Guest command timed out after 180s.\n{}\nRAW_PREPARATION_TAIL: headless-shell download reached 30%",
-        (1..=12)
-            .map(|i| format!("browser download progress {i}"))
-            .collect::<Vec<_>>()
-            .join("\n")
-    );
-    let receipt = crate::environment::Receipt {
-        recipe,
-        source_changes: Vec::new(),
-        error: Some(
-            "Setup failed: Install browser runtime\nGuest command timed out after 180s.".into(),
-        ),
-        environment: "fixture-environment".into(),
-        source: "fixture-source-fingerprint".into(),
-        runtime_home: "/home/worker".into(),
-        cache: crate::environment::cache::Use::Miss,
-        cache_saved: None,
-        setup: vec![crate::execution::CheckResult {
-            task: Some(id),
-            check: "Install browser runtime".into(),
-            command: vec![
-                "/usr/bin/npm".into(),
-                "exec".into(),
-                "playwright".into(),
-                "install".into(),
-            ],
-            timeout_seconds: Some(180),
-            duration_ms: Some(180000),
-            exit_code: Some(-1),
-            missing_runtime: None,
-            output,
-        }],
-        capabilities: vec![],
-        baseline: vec![],
-    };
-    std::fs::create_dir_all(root.join("environments")).unwrap();
-    let bytes = serde_json::to_vec(&receipt).unwrap();
-    for name in [format!("{id}.json"), format!("{id}-{source}.json")] {
-        std::fs::write(root.join("environments").join(name), &bytes).unwrap();
-    }
-    let project = app.engine.project.clone();
-    drop(app);
-    let app = App::load(project, false, data.store()).unwrap();
-    (data, app, root, id)
 }
 
 #[test]
@@ -424,6 +335,8 @@ fn export_workbench_buffers() {
     let (_idle_data, mut idle, _) = execution_app();
     let (_setup_data, mut setup, _, _) = setup_failed_app();
     let (_source_data, mut source, _, _) = source_changed_app(false);
+    let (_network_data, mut network, _, _) = network_preparation_app();
+    let (_network_dialog_data, mut network_dialog, _, _) = network_preparation_app();
     let record = working.store.worker(working.mods[0].id).unwrap();
     let mut worker = Worker::start(
         &working.project,
@@ -449,6 +362,12 @@ fn export_workbench_buffers() {
         ("idle", &mut idle, Key::Plan),
         ("setup-failure", &mut setup, Key::Build),
         ("source-change", &mut source, Key::Build),
+        ("preparation-network", &mut network, Key::Build),
+        (
+            "preparation-network-dialog",
+            &mut network_dialog,
+            Key::Build,
+        ),
     ] {
         app.engine.project = PathBuf::from("/example/project");
         for (suffix, width, height) in [("desktop", 180, 52), ("narrow", 80, 42), ("small", 36, 36)]
@@ -459,6 +378,9 @@ fn export_workbench_buffers() {
             if matches!(name, "setup-failure" | "source-change") {
                 app.activate_control(Control::Tab(EvidenceTab::Checks))
                     .unwrap();
+            }
+            if name == "preparation-network-dialog" {
+                app.engine.view = View::Network(app.pending_network().unwrap().id, 0);
             }
             let buffer = screen(app, width, height);
             let cells: Vec<_> = buffer.content.iter().enumerate().map(|(index, cell)| serde_json::json!({"x": index % width as usize, "y": index / width as usize, "symbol": cell.symbol(), "fg": format!("{:?}", cell.fg), "bg": format!("{:?}", cell.bg), "bold": cell.modifier.contains(ratatui::style::Modifier::BOLD)})).collect();
@@ -988,6 +910,7 @@ fn workbench_environment_receipts_open_tasks_when_review_needs_attention() {
         setup: Vec::new(),
         baseline: Vec::new(),
         capabilities: vec![crate::environment::Command {
+            network_domains: Vec::new(),
             name: "Shell available".into(),
             argv: vec!["/bin/sh".into(), "--version".into()],
             timeout_seconds: 5,

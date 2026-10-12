@@ -28,6 +28,50 @@ pub struct Request {
     pub reason: String,
 }
 
+pub(crate) fn allowed(policy: &BTreeMap<String, String>, domain: &str) -> bool {
+    policy.iter().any(|(host, action)| {
+        action == "allow"
+            && (domain == host
+                || host
+                    .strip_prefix('*')
+                    .is_some_and(|suffix| domain.ends_with(suffix)))
+    })
+}
+
+pub(crate) fn require_preparation(
+    store: &Store,
+    root: &Path,
+    mod_id: i64,
+    worker: i64,
+    source: &str,
+    request: Request,
+    policy: &BTreeMap<String, String>,
+) -> io::Result<()> {
+    crate::checks::authorize(store, root, mod_id, worker, source)?;
+    let missing: Vec<_> = request
+        .domains
+        .into_iter()
+        .filter(|domain| !allowed(policy, domain))
+        .collect();
+    if missing.is_empty() {
+        return Ok(());
+    }
+    let request = Request {
+        domains: missing,
+        reason: request.reason,
+    };
+    let status = store
+        .request_network_inner(mod_id, worker, &request, false, Some(source))
+        .map_err(io::Error::other)?;
+    Err(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!(
+            "Network access {status}: {}. Review network access before preparing this task.",
+            request.domains.join(", ")
+        ),
+    ))
+}
+
 impl Request {
     pub fn parse(value: Value) -> io::Result<Self> {
         serde_json::from_value::<Self>(value)?.validate()
@@ -106,21 +150,35 @@ impl Store {
         request: Request,
         already_allowed: bool,
     ) -> rusqlite::Result<String> {
-        let task: i64 = self.0.query_row("SELECT t.id FROM task_runs t JOIN workers w ON w.id=t.worker_id JOIN code_mods m ON m.id=t.mod_id WHERE t.mod_id=?1 AND w.id=?2 AND w.mod_id=?1 AND w.role='executor' AND m.closed=0 AND t.status IN ('running','sending')", params![mod_id,worker], |r| r.get(0))?;
-        let domains = json!(request.domains).to_string();
-        self.0.execute("INSERT OR IGNORE INTO network_requests(mod_id,worker_id,task_id,domains,reason) VALUES(?1,?2,?3,?4,?5)", params![mod_id,worker,task,domains,request.reason])?;
-        if already_allowed {
-            self.0.execute("UPDATE network_requests SET status='approved',resumed=0 WHERE mod_id=?1 AND task_id=?2 AND domains=?3",params![mod_id,task,domains])?;
-        }
-        let status: String = self.0.query_row(
-            "SELECT status FROM network_requests WHERE mod_id=?1 AND task_id=?2 AND domains=?3",
-            params![mod_id, task, domains],
-            |r| r.get(0),
-        )?;
+        let status = self.request_network_inner(mod_id, worker, &request, already_allowed, None)?;
         Ok(format!(
             "Network access {status}: {}. Return completed:false with this blocker. The harness reconnects and retries after user approval; do not poll or bypass the policy.",
             request.domains.join(", ")
         ))
+    }
+
+    fn request_network_inner(
+        &self,
+        mod_id: i64,
+        worker: i64,
+        request: &Request,
+        already_allowed: bool,
+        source: Option<&str>,
+    ) -> rusqlite::Result<String> {
+        let tx = self.0.unchecked_transaction()?;
+        let task: i64 = tx.query_row("SELECT t.id FROM task_runs t JOIN workers w ON w.id=t.worker_id JOIN code_mods m ON m.id=t.mod_id WHERE t.mod_id=?1 AND w.id=?2 AND w.mod_id=?1 AND w.role='executor' AND m.closed=0 AND t.status IN ('running','sending') AND (?3 IS NULL OR t.source=?3 AND t.status='sending')", params![mod_id,worker,source], |r| r.get(0))?;
+        let domains = json!(request.domains).to_string();
+        tx.execute("INSERT OR IGNORE INTO network_requests(mod_id,worker_id,task_id,domains,reason) VALUES(?1,?2,?3,?4,?5)", params![mod_id,worker,task,domains,request.reason])?;
+        if already_allowed {
+            tx.execute("UPDATE network_requests SET status='approved',resumed=0 WHERE mod_id=?1 AND task_id=?2 AND domains=?3",params![mod_id,task,domains])?;
+        }
+        let status: String = tx.query_row(
+            "SELECT status FROM network_requests WHERE mod_id=?1 AND task_id=?2 AND domains=?3",
+            params![mod_id, task, domains],
+            |r| r.get(0),
+        )?;
+        tx.commit()?;
+        Ok(status)
     }
 
     pub fn network_requests(&self, mod_id: i64) -> rusqlite::Result<Vec<Access>> {
@@ -239,6 +297,7 @@ pub fn grants(root: &Path) -> io::Result<BTreeMap<String, String>> {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    mod preparation;
     use crate::{
         plan::{Plan, Role},
         store::{CodeMod, test_support::TestData},

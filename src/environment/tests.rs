@@ -1,4 +1,5 @@
 use super::*;
+mod network;
 
 #[test]
 fn preparation_commands_preserve_declared_exact_download_hosts() {
@@ -12,16 +13,34 @@ fn preparation_commands_preserve_declared_exact_download_hosts() {
     let parsed: Recipe = serde_json::from_value(value).unwrap();
     parsed.validate().unwrap();
     let saved = serde_json::to_value(&parsed).unwrap();
-    assert_eq!(saved["setup"][0]["network_domains"], json!(["models.example.org", "cdn.example.org"]));
+    assert_eq!(
+        saved["setup"][0]["network_domains"],
+        json!(["models.example.org", "cdn.example.org"])
+    );
     assert_eq!(saved["setup"][0]["timeout_seconds"], 300);
-    assert_eq!(saved["setup"][0]["argv"], json!(["/usr/bin/curl", "--fail", "https://models.example.org/model.bin"]));
+    assert_eq!(
+        saved["setup"][0]["argv"],
+        json!([
+            "/usr/bin/curl",
+            "--fail",
+            "https://models.example.org/model.bin"
+        ])
+    );
     let old: Recipe = serde_json::from_value(serde_json::to_value(recipe()).unwrap()).unwrap();
     old.validate().unwrap();
 }
 
 #[test]
 fn preparation_commands_reject_broad_or_non_public_network_requests() {
-    for domain in ["*.example.org", "https://example.org", "example.org:443", "127.0.0.1", "localhost", "example.local", "example.org\n"] {
+    for domain in [
+        "*.example.org",
+        "https://example.org",
+        "example.org:443",
+        "127.0.0.1",
+        "localhost",
+        "example.local",
+        "example.org\n",
+    ] {
         let mut value = serde_json::to_value(recipe()).unwrap();
         value["capabilities"][0]["network_domains"] = json!([domain]);
         let parsed: Recipe = serde_json::from_value(value).unwrap();
@@ -95,6 +114,7 @@ fn recipe() -> Recipe {
         reusable_paths: vec![],
         setup: vec![],
         capabilities: vec![Command {
+            network_domains: Vec::new(),
             name: "Node".into(),
             argv: vec![
                 "/usr/local/bin/mise".into(),
@@ -155,6 +175,7 @@ fn setup_budgets_allow_large_downloads_without_extending_probes_or_baselines() {
 fn validated_setup_budget_reaches_the_command_and_saved_result() {
     let mut r = recipe();
     r.setup = vec![Command {
+        network_domains: Vec::new(),
         name: "Download browser".into(),
         argv: vec!["/bin/sh".into(), "-c".into(), "printf ready".into()],
         timeout_seconds: 600,
@@ -257,6 +278,7 @@ fn dependency_snapshots_are_opt_in_and_need_locked_current_inputs() {
     r.inputs = vec!["package.json".into(), "package-lock.json".into()];
     assert!(r.validate().is_err());
     r.setup = vec![Command {
+        network_domains: Vec::new(),
         name: "Install dependencies".into(),
         argv: vec!["/bin/true".into()],
         timeout_seconds: 30,
@@ -294,6 +316,7 @@ fn live_prepared_assets_are_private_and_locked_dependencies_reuse_only_exact_inp
     .unwrap();
     let flag = AtomicBool::new(false);
     let cmd = |name: &str, shell: &str| Command {
+        network_domains: Vec::new(),
         name: name.into(),
         argv: vec!["/bin/sh".into(), "-c".into(), shell.into()],
         timeout_seconds: 30,
@@ -459,6 +482,7 @@ fn live_preflight_retains_evidence_and_reuses_only_proven_setup() {
     .unwrap();
     let flag = AtomicBool::new(false);
     let cmd = |name: &str, shell: &str| Command {
+        network_domains: Vec::new(),
         name: name.into(),
         argv: vec!["/bin/sh".into(), "-c".into(), shell.into()],
         timeout_seconds: 30,

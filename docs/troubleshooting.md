@@ -79,6 +79,8 @@ Read the saved failure in the dock or **Implementation → 2 · Checks**. Choose
 | Invalid runtime version or setup command | **Revise repair plan** with the failed recipe and evidence |
 | Download denied | **Ctrl+N** to inspect the requested domain |
 | Download progresses but reaches the setup limit | Request edits with an explicit longer setup budget, up to 600 seconds; existing plans keep their declared limit |
+| Setup asks for download access | Choose **Review network access**; allow only the listed hosts needed by the project |
+| A Node download reports `EAI_AGAIN` or `ENOTFOUND` | Inspect the saved command and permission request; declare required hosts and use a proxy-aware client. Increasing the timeout does not configure its proxy |
 | Setup succeeds, capability probe fails | Check the actual runtime/browser startup error; installation alone is insufficient |
 | Only baseline tests fail | The worker can proceed with that starting failure recorded |
 | Preparation changes source or a lockfile | Inspect the listed paths, then choose **Revise setup recipe**; remove source-writing commands from preparation |

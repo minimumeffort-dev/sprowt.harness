@@ -491,14 +491,10 @@ impl<'a> Dispatcher<'a> {
                     }
                     let request = request.validate()?;
                     let policy = crate::sandbox::network(root)?;
-                    let already_allowed = request.domains.iter().all(|domain| {
-                        policy.keys().any(|allowed| {
-                            domain == allowed
-                                || allowed
-                                    .strip_prefix('*')
-                                    .is_some_and(|suffix| domain.ends_with(suffix))
-                        })
-                    });
+                    let already_allowed = request
+                        .domains
+                        .iter()
+                        .all(|domain| network::allowed(&policy, domain));
                     store
                         .request_network(
                             self.context.mod_id.unwrap(),

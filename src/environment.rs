@@ -62,6 +62,8 @@ pub struct Command {
     pub name: String,
     pub argv: Vec<String>,
     pub timeout_seconds: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub network_domains: Vec<String>,
 }
 
 const MAX_SETUP_TIMEOUT: u64 = 600;
@@ -134,6 +136,9 @@ impl Recipe {
                         "Environment {phase} commands need a name, absolute executable, portable arguments and a 1–{maximum} second budget; temporary worker paths are not reusable."
                     ));
                 }
+                command
+                    .network_request()
+                    .map_err(|error| error.to_string())?;
             }
         }
         Ok(())
@@ -189,11 +194,26 @@ impl Recipe {
     }
 }
 
+impl Command {
+    fn network_request(&self) -> io::Result<Option<crate::network::Request>> {
+        if self.network_domains.is_empty() {
+            return Ok(None);
+        }
+        crate::network::Request {
+            domains: self.network_domains.clone(),
+            reason: format!("Preparation: {}", self.name),
+        }
+        .validate()
+        .map(Some)
+    }
+}
+
 pub fn schema() -> Value {
     let command = |maximum| {
         json!({"type":"object","additionalProperties":false,"properties":{
         "name":{"type":"string"},"argv":{"type":"array","items":{"type":"string"}},
-        "timeout_seconds":{"type":"integer","minimum":1,"maximum":maximum}},"required":["name","argv","timeout_seconds"]})
+        "timeout_seconds":{"type":"integer","minimum":1,"maximum":maximum},
+        "network_domains":{"type":"array","items":{"type":"string"},"maxItems":8}},"required":["name","argv","timeout_seconds","network_domains"]})
     };
     json!({"type":["object","null"],"additionalProperties":false,"properties":{
         "inputs":{"type":"array","items":{"type":"string"}},
@@ -679,6 +699,11 @@ impl Runner for crate::sandbox::session::TaskSession {
     ) -> io::Result<Vec<CheckResult>> {
         let _lease = self.read_lease(cancelled)?;
         self.authorize(cancelled)?;
+        for command in commands {
+            if let Some(request) = command.network_request()? {
+                self.require_network(request, cancelled)?;
+            }
+        }
         command_batch(commands, cancelled, phase, progress, |check| {
             self.command(check, cancelled)
         })

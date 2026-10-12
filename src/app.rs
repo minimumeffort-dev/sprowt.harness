@@ -2890,7 +2890,8 @@ mod tests {
             .replace('\u{a0}', " ");
         assert!(app.action_dock().primary == Some(Action::Network));
         assert!(
-            notice.contains("Needs network access") && notice.contains("ctrl+n Review domains"),
+            notice.contains("Needs network access")
+                && notice.contains("ctrl+n Review network access"),
             "{notice}"
         );
         app.handle(Event::Key(KeyEvent::new(
@@ -3057,7 +3058,7 @@ mod tests {
                             .contains_key("example.com")
                     );
                     let screen = rows(&screen(&mut app, 120, 36)).join("\n");
-                    assert!(screen.contains("ctrl+n Review domains"));
+                    assert!(screen.contains("ctrl+n Review network access"));
                     app.handle(Event::Key(KeyEvent::new(
                         KeyCode::Char('n'),
                         KeyModifiers::CONTROL,

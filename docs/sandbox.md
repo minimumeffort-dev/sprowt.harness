@@ -75,11 +75,13 @@ The default allowlist covers common runtime/package sources and Playwright brows
 
 ### Approve a domain for one codemod
 
-1. A worker requests exact domains and a reason using `request_network_access`.
+1. A worker requests exact domains and a reason using `request_network_access`, or preparation requests missing hosts declared in a command's `network_domains`.
 2. The task shows **Network access needed**. Press **Ctrl+N**.
 3. Press **a** to allow, **d** to deny, or **Esc** to defer.
 
 Approval waits for the requesting turn to stop, reconnects that worker with updated policy, and queues its saved task. Source, runtime and peers remain. Other connections receive the new policy on reconnect.
+
+Preparation can ask before the editing turn starts. The command waits for a decision; approval retries with its saved source. See [setup downloads](environments.md#approve-setup-downloads).
 
 Requests accept 1–8 exact public hostnames. Workers cannot approve requests or request URLs, ports, IPs or wildcards. Redirects to another blocked host need separate access. Already approved requests do not ask again.
 

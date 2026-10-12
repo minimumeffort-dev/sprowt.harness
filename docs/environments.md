@@ -7,10 +7,11 @@ Before a task starts editing, the controller prepares its Linux environment and 
 ```mermaid
 flowchart LR
     recipe["Recipe + image + setup inputs"] --> copy["Copy matching prepared assets"]
-    copy --> setup["Run setup, unless locked dependencies are proven"]
-    setup --> probes["Prove current capabilities"]
-    probes -->|"Pass"| baseline["Run current baseline"] --> worker["Start worker"]
-    probes -->|"Fail"| pause["Pause with setup evidence"]
+    copy --> access["Check declared domains before each command"]
+    access -->|"Allowed"| commands["Setup → capabilities → baseline"]
+    access -->|"Pending / denied"| wait["Pause with network request"]
+    commands -->|"Current capabilities pass"| worker["Start worker"]
+    commands -->|"Setup / capability failure"| pause["Pause with evidence"]
 ```
 
 ## Where the recipe comes from
@@ -86,7 +87,7 @@ Browser projects also need a real browser startup probe and the required Debian 
 | `capabilities` | Prove the runtime or browser actually starts | 1–12 commands |
 | `baseline` | Record tests before editing | Up to 12 commands |
 
-Each command needs `name`, `argv` and `timeout_seconds`. Setup supports **1–600 seconds**. Capability probes and baselines support **1–180 seconds**. Begin `argv` with an absolute executable. Use project-relative file arguments; temporary task and worker paths are rejected.
+Each command needs `name`, `argv` and `timeout_seconds`. Optional `network_domains` declares up to **8 exact public hostnames** required by that command; it defaults to `[]`. Include redirect hosts. URLs, ports, IP addresses and wildcards are rejected. Declaring a host requests permission; it never grants access. Setup supports **1–600 seconds**. Capability probes and baselines support **1–180 seconds**. Begin `argv` with an absolute executable. Use project-relative file arguments; temporary task and worker paths are rejected.
 
 For a large browser download, declare its budget explicitly in the recipe's `setup` array:
 
@@ -104,10 +105,30 @@ Existing plans keep their declared budgets. To change an accepted plan's setup, 
 
 Add `"resources": {"memory_gib": 8}` when your project explicitly needs that memory, for example for browser checks. The accepted plan recipe takes precedence over the source file. The harness does not infer memory needs from project type. Requests apply before source binding; an existing bound VM retains its allocation. See [resource admission and retained VMs](performance.md#vm-resource-budget).
 
+## Approve setup downloads
+
+A preparation command can need access before the editing agent starts. Declare its download hosts beside the command. This example is illustrative: replace `models.example.org` with your actual public host and URL.
+
+```json
+{
+  "name": "Check model download access",
+  "argv": ["/usr/bin/curl", "--fail", "--head", "--max-time", "20", "https://models.example.org/fixture.bin"],
+  "network_domains": ["models.example.org"],
+  "timeout_seconds": 30
+}
+```
+
+**Expected:** a missing permission pauses preparation before that command runs. Choose **Review network access**, then **Allow** or **Deny**. In the terminal, use **Ctrl+N**. Approval resumes the saved task with the same source and a refreshed policy. Denial keeps it paused. Grants apply only to that codemod.
+
+Use a client that respects the sandbox proxy, such as `curl`. Node 22.16's plain `fetch` needs explicit proxy configuration; an approved domain alone does not configure the client. Keep model hashes, byte-size checks and partial-file cleanup in the downloader. A DNS error alone is not evidence that the domain was denied.
+
+Existing recipes without `network_domains` still run under the existing policy. Correct the accepted recipe to declare missing hosts; updating only the project file does not replace it.
+
 ## What the results mean
 
 | Phase | Failure behavior |
 | --- | --- |
+| Missing declared download permission | Pause before the command; choose **Review network access** |
 | System packages or setup | Pause before sending an editing turn |
 | Capability probes | Pause and retain the failed command and output |
 | Baseline tests | Save the failure and let the worker repair the starting source |

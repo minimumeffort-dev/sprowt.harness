@@ -21,6 +21,85 @@ fn session() -> (TestData, Engine, i64, i64) {
 }
 
 #[test]
+fn desktop_preparation_network_dialog_preserves_draft_and_applies_explicit_decision() {
+    for allow in [true, false] {
+        let (data, mut store, m, root, workers) = crate::network::tests::fixture();
+        let source = &m.execution.as_ref().unwrap().tasks[0].source;
+        let policy = crate::sandbox::network(&root).unwrap();
+        let request = crate::network::Request::parse(serde_json::json!({"domains":["models.example.org"],"reason":"Preparation: Download verified fixtures"})).unwrap();
+        let error = crate::network::require_preparation(
+            &store, &root, m.id, workers[0], source, request, &policy,
+        )
+        .unwrap_err();
+        store
+            .finish_task(
+                m.id,
+                source,
+                "paused",
+                &format!("Environment preflight failed: {error}"),
+                &[],
+            )
+            .unwrap();
+        let mut engine = Engine::load(data.0.join("project"), store).unwrap();
+        engine.refresh_network_requests().unwrap();
+        engine
+            .command(Command::SetDraft {
+                mod_id: m.id,
+                text: "Keep this draft".into(),
+            })
+            .unwrap();
+        let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+        assert!(
+            snapshot["status"]
+                .as_str()
+                .unwrap()
+                .starts_with("Needs network access")
+        );
+        assert!(
+            snapshot["actions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|action| action["id"] == "network"
+                    && action["label"] == "Review network access")
+        );
+        engine
+            .command(Command::Action {
+                mod_id: Some(m.id),
+                action: "network".into(),
+                task_id: None,
+            })
+            .unwrap();
+        let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+        assert_eq!(snapshot["dialog"]["kind"], "network");
+        assert_eq!(
+            snapshot["dialog"]["domains"],
+            serde_json::json!(["models.example.org"])
+        );
+        let request_id = snapshot["dialog"]["request_id"].as_i64().unwrap();
+        assert!(crate::network::grants(&root).unwrap().is_empty());
+        engine
+            .command(Command::NetworkDecision {
+                mod_id: m.id,
+                request_id,
+                allow,
+            })
+            .unwrap();
+        assert_eq!(engine.mods[0].draft, "Keep this draft");
+        assert_eq!(
+            engine.store.network_requests(m.id).unwrap()[0].status,
+            if allow { "approved" } else { "denied" }
+        );
+        assert_eq!(
+            crate::network::grants(&root)
+                .unwrap()
+                .contains_key("models.example.org"),
+            allow
+        );
+    }
+}
+
+#[test]
 fn desktop_commands_preserve_drafts_queue_order_and_saved_steering_on_reopen() {
     let (data, mut engine, first, second) = session();
     engine
