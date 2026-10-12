@@ -1124,13 +1124,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "recovers an old metadata merge conflict in a disposable Apple Container VM"]
-    fn tracked_package_metadata_does_not_conflict_with_parallel_source_edits() {
+    #[ignore = "recovers old metadata/cache merge conflicts in a disposable Apple Container VM"]
+    fn tracked_generated_metadata_does_not_conflict_with_parallel_source_edits() {
         let data = TestData::new();
         let project = data.0.join("project");
         fs::create_dir_all(project.join("local.egg-info")).unwrap();
+        fs::create_dir_all(project.join(".pytest_cache/v/cache")).unwrap();
         fs::write(project.join("first.txt"), "before").unwrap();
         fs::write(project.join("local.egg-info/SOURCES.txt"), "baseline\n").unwrap();
+        fs::write(project.join(".pytest_cache/v/cache/nodeids"), "baseline\n").unwrap();
         for args in [
             vec!["init"],
             vec!["add", "."],
@@ -1159,17 +1161,19 @@ mod tests {
                 vm.guest(&["/bin/sh", "-c", r#"set -eu
                 saved_git() { /usr/bin/git -c user.name=Sprowt -c user.email=sprowt@localhost "$@"; }
                 cd /tasks/1
-                saved_git update-index --no-skip-worktree -- local.egg-info/SOURCES.txt
+                saved_git update-index --no-skip-worktree -- local.egg-info/SOURCES.txt .pytest_cache/v/cache/nodeids
                 printf runtime > runtime.mjs
                 printf 'runtime.mjs\n' > local.egg-info/SOURCES.txt
+                printf 'runtime.mjs\n' > .pytest_cache/v/cache/nodeids
                 saved_git add .; saved_git commit -m runtime
                 cd /tasks/2
-                saved_git update-index --no-skip-worktree -- local.egg-info/SOURCES.txt
+                saved_git update-index --no-skip-worktree -- local.egg-info/SOURCES.txt .pytest_cache/v/cache/nodeids
                 printf panel > panel.mjs
                 printf 'panel.mjs\n' > local.egg-info/SOURCES.txt
+                printf 'panel.mjs\n' > .pytest_cache/v/cache/nodeids
                 saved_git add .; saved_git commit -m panel
                 cd /workspace
-                saved_git update-index --no-skip-worktree -- local.egg-info/SOURCES.txt
+                saved_git update-index --no-skip-worktree -- local.egg-info/SOURCES.txt .pytest_cache/v/cache/nodeids
                 saved_git reset --hard integration
                 saved_git merge --no-ff --no-edit task/2
                 if saved_git merge --no-ff --no-edit task/1; then exit 1; fi
@@ -1178,6 +1182,7 @@ mod tests {
                 if saved_git merge --no-ff --no-edit integration; then exit 1; fi
                 saved_git add .; saved_git commit -m conflict
                 grep -q '<<<<<<<' local.egg-info/SOURCES.txt
+                grep -q '<<<<<<<' .pytest_cache/v/cache/nodeids
             "#], &flag)?;
                 vm.tasks.integrated.insert(2);
                 vm.tasks.active = Some(1);
@@ -1197,6 +1202,7 @@ mod tests {
                     Some(0)
                 );
                 vm.guest(&["/bin/sh", "-c", "set -eu; grep -q '<<<<<<<' /tasks/1/local.egg-info/SOURCES.txt; cd /tasks/1; ! git diff --name-only | grep -q egg-info; test \"$(git show HEAD:local.egg-info/SOURCES.txt)\" = baseline"], &flag)?;
+                vm.guest(&["/bin/sh", "-c", "set -eu; grep -q '<<<<<<<' /tasks/1/.pytest_cache/v/cache/nodeids; cd /tasks/1; ! git diff --name-only | grep -q pytest_cache; test \"$(git show HEAD:.pytest_cache/v/cache/nodeids)\" = baseline"], &flag)?;
                 let source = vm.snapshot("/workspace", &flag)?;
                 assert_eq!(source, workspace::source_state(&root.join("work"))?);
                 let review = workspace::review(&root)?;
@@ -1205,6 +1211,7 @@ mod tests {
                     [Path::new("panel.mjs"), Path::new("runtime.mjs")]
                 );
                 assert!(!review.patch.contains("egg-info"));
+                assert!(!review.patch.contains("pytest_cache"));
                 let (_, checks) = vm.verify_execution("final:1", &[check], &flag)?;
                 assert_eq!(checks[0].exit_code, Some(0));
                 Ok(())

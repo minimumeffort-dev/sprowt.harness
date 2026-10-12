@@ -384,7 +384,11 @@ fn live_preflight_retains_evidence_and_reuses_only_proven_setup() {
     fs::create_dir_all(&data.0).unwrap();
     let root = data.0.join("preflight");
     workspace::create_snapshot(
-        &vec![(PathBuf::from("source.txt"), b"original".to_vec(), 0o644)],
+        &vec![
+            (PathBuf::from("source.txt"), b"original".to_vec(), 0o644),
+            (PathBuf::from("package-lock.json"), b"locked".to_vec(), 0o644),
+            (PathBuf::from(".pytest_cache/v/cache/nodeids"), b"tracked baseline".to_vec(), 0o644),
+        ],
         &root,
     )
     .unwrap();
@@ -401,10 +405,10 @@ fn live_preflight_retains_evidence_and_reuses_only_proven_setup() {
         reusable_paths: vec![],
         setup: vec![cmd(
             "prepare",
-            "echo prepared >> \"$HOME/preflight-count\"; touch \"$HOME/preflight-ready\"",
+            "echo prepared >> \"$HOME/preflight-count\"; touch \"$HOME/preflight-ready\"; printf refreshed > .pytest_cache/v/cache/nodeids",
         )],
         capabilities: vec![cmd("available", "test -f \"$HOME/preflight-ready\"")],
-        baseline: vec![cmd("known failure", "test original = broken")],
+        baseline: vec![cmd("known failure", "printf tested > .pytest_cache/v/cache/nodeids; test original = broken")],
     };
     r.setup[0].timeout_seconds = 600;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
@@ -418,6 +422,7 @@ fn live_preflight_retains_evidence_and_reuses_only_proven_setup() {
         assert_eq!(receipt.setup[0].exit_code, Some(0));
         assert!(receipt.setup[0].duration_ms.unwrap() < 10_000);
         assert!(receipt.baseline[0].failed());
+        assert_eq!(workspace::source_state(&root.join("work"))?.iter().find(|f| f.0 == Path::new(".pytest_cache/v/cache/nodeids")).unwrap().1, b"tracked baseline");
         vm.preflight(Some(&r), 1, "attempt-2", &flag, |_| {})?;
         assert!(load(&root, 1)?.unwrap().setup.is_empty());
         assert_eq!(
@@ -452,13 +457,9 @@ fn live_preflight_retains_evidence_and_reuses_only_proven_setup() {
         let failed = load(&root, 1)?.unwrap();
         assert!(failed.baseline.is_empty());
         assert!(failed.error.is_some());
-        r.setup = vec![cmd("bad setup", "echo changed > source.txt; exit 1")];
-        assert!(
-            vm.preflight(Some(&r), 1, "attempt-5", &flag, |_| {})
-                .unwrap_err()
-                .to_string()
-                .contains("changed source")
-        );
+        r.setup = vec![cmd("bad setup", "echo changed > source.txt; echo changed > package-lock.json; exit 1")];
+        let error = vm.preflight(Some(&r), 1, "attempt-5", &flag, |_| {}).unwrap_err().to_string();
+        assert!(error.contains("changed source") && error.contains("source.txt") && error.contains("package-lock.json") && error.contains("Setup failed: bad setup"), "{error}");
         assert_eq!(
             fs::read_to_string(root.join("work/source.txt"))?,
             "changed\n"

@@ -191,6 +191,28 @@ fn workbench_persisted_setup_failure_is_visible_without_a_live_worker() {
 }
 
 #[test]
+fn workbench_source_changing_preparation_recommends_correction_after_restart() {
+    let (data, app, root, id) = setup_failed_app();
+    let reason = "Environment preflight failed: Setup or baseline changed source. Edits are retained; correct the recipe before retrying.";
+    let mod_id = app.mods[0].id;
+    let project = app.project.clone();
+    app.store.0.execute("UPDATE task_runs SET summary=?2 WHERE id=?1", rusqlite::params![id, reason]).unwrap();
+    drop(app);
+    let mut app = App::load(project, false, data.store()).unwrap();
+    assert_eq!(app.state_summary().primary, Some(Action::ReviseRepair));
+    let dock = app.action_dock();
+    assert!(dock.actions.iter().any(|a| a.action == Action::ReviseRepair && a.label == "Revise setup recipe"));
+    assert!(dock.actions.iter().any(|a| a.action == Action::RetryTask(id)));
+    assert_eq!(app.input.lines(), ["keep this draft"]);
+    let before = app.store.execution(mod_id).unwrap().unwrap().tasks[0].source.clone();
+    key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+    assert!(matches!(app.view, View::Task(task, 0) if task == id));
+    assert_eq!(app.store.execution(mod_id).unwrap().unwrap().tasks[0].source, before);
+    assert!(root.exists());
+}
+
+#[test]
 fn workbench_preparation_full_evidence_includes_the_output_tail() {
     let (_data, mut app, _, id) = setup_failed_app();
     app.view = View::Task(id, 0);

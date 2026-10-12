@@ -716,6 +716,10 @@ mod tests {
             "tracked metadata",
         )
         .unwrap();
+        for path in [".pytest_cache/v/cache/nodeids", ".mypy_cache/check.json", ".ruff_cache/check"] {
+            fs::create_dir_all(project.join(path).parent().unwrap()).unwrap();
+            fs::write(project.join(path), "tracked cache").unwrap();
+        }
         for args in [
             vec!["init"],
             vec!["add", "."],
@@ -759,12 +763,18 @@ mod tests {
             "regenerated metadata",
         )
         .unwrap();
+        for path in [".pytest_cache/v/cache/nodeids", ".mypy_cache/check.json", ".ruff_cache/check"] {
+            fs::write(root.join("work").join(path), "new runtime cache").unwrap();
+        }
         assert_eq!(source_state(&root.join("work")).unwrap(), before);
         // Simulate a review index left by an older harness version.
         run_git(&root, &["add", "--force", "--all"]).unwrap();
         fs::write(root.join("work/a.txt"), "requested edit").unwrap();
         let review = review(&root).unwrap();
         assert_eq!(review.paths().collect::<Vec<_>>(), [Path::new("a.txt")]);
+        for path in [".pytest_cache/v/cache/nodeids", ".mypy_cache/check.json", ".ruff_cache/check"] {
+            assert_eq!(fs::read_to_string(project.join(path)).unwrap(), "tracked cache");
+        }
         assert_eq!(
             fs::read_to_string(root.join("work/runtime.duckdb")).unwrap(),
             "generated"
