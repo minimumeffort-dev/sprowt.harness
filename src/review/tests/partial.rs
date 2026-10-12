@@ -132,3 +132,110 @@ fn blocked_partial_review_adds_known_findings_without_closing_omitted_issues() {
     );
     assert!(!state.clear(&m));
 }
+
+#[test]
+fn blocked_partial_review_cannot_repair_changed_source_queued_edits_or_exhausted_budget() {
+    for cause in ["source", "queue", "budget"] {
+        let (_data, mut store, mut m) = partial_fixture();
+        match cause {
+            "source" => fs::write(
+                m.execution
+                    .as_ref()
+                    .unwrap()
+                    .workspace
+                    .join("work/greet.sh"),
+                "changed\n",
+            )
+            .unwrap(),
+            "queue" => {
+                store.enqueue(m.id, "Change the greeting").unwrap();
+            }
+            _ => {
+                store
+                    .0
+                    .execute("UPDATE reviews SET rounds=2 WHERE mod_id=?1", [m.id])
+                    .unwrap();
+            }
+        }
+        m.agent_review = store.review_state(m.id).unwrap();
+        assert!(!store.review_fixes(&m).unwrap(), "{cause}");
+        assert!(
+            store.execution(m.id).unwrap().unwrap().complete(),
+            "{cause}"
+        );
+        assert!(
+            !store.review_state(m.id).unwrap().unwrap().clear(&m),
+            "{cause}"
+        );
+    }
+}
+
+#[test]
+fn blocked_review_without_findings_keeps_reason_and_open_ledger_without_enabling_repairs() {
+    let (_data, mut store, mut m) = partial_fixture();
+    let source = start(&mut store, &mut m);
+    let mut blocked = report();
+    blocked["findings"] = json!([]);
+    blocked["summary"] = json!("Required source inspection is unavailable.");
+    store
+        .finish_review(&m, &source, &blocked.to_string())
+        .unwrap();
+    let state = store.review_state(m.id).unwrap().unwrap();
+    assert_eq!(
+        state.report.as_ref().unwrap().summary,
+        "Required source inspection is unavailable."
+    );
+    assert_eq!(state.issues[0].status, "confirmed");
+    assert!(!state.repairable() && !state.clear(&m));
+    assert!(!store.review_fixes(&m).unwrap());
+}
+
+#[test]
+fn blocked_partial_review_cannot_bypass_no_progress_after_a_repair_pass() {
+    let (_data, mut store, mut m) = partial_fixture();
+    assert!(store.review_fixes(&m).unwrap());
+    let execution = store.execution(m.id).unwrap().unwrap();
+    let plan = store.planning(m.id).unwrap().unwrap().plan.unwrap();
+    let mut checks = Vec::new();
+    for (run, task) in execution.tasks.iter().zip(&plan.tasks) {
+        let results: Vec<_> = task
+            .checks
+            .iter()
+            .map(|check| CheckResult {
+                duration_ms: None,
+                timeout_seconds: None,
+                missing_runtime: None,
+                task: Some(run.id),
+                check: check.clone(),
+                command: vec!["/bin/true".into()],
+                exit_code: Some(0),
+                output: "Passed".into(),
+            })
+            .collect();
+        store
+            .finish_task(m.id, &run.source, "done", "Checks pass", &results)
+            .unwrap();
+        checks.extend(results);
+    }
+    let fingerprint = workspace::review(&execution.workspace).unwrap().fingerprint;
+    store
+        .execution_checks(m.id, "review", &checks, Some(&fingerprint))
+        .unwrap();
+    m.planning = store.planning(m.id).unwrap();
+    m.execution = store.execution(m.id).unwrap();
+    let source = start(&mut store, &mut m);
+    store
+        .finish_review(&m, &source, &report().to_string())
+        .unwrap();
+    let state = store.review_state(m.id).unwrap().unwrap();
+    assert_eq!(state.status, "blocked");
+    assert_eq!(state.rounds, 1);
+    assert!(
+        state
+            .halt
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("No finding was resolved"))
+    );
+    assert!(!state.repairable() && !state.clear(&m));
+    assert!(!store.review_fixes(&m).unwrap());
+}

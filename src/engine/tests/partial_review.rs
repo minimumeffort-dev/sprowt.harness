@@ -37,3 +37,25 @@ fn blocked_partial_review_native_status_and_actions_preserve_reason_and_findings
     assert_eq!(engine.mods[0].draft, "Keep this draft");
     assert!(!engine.can_publish());
 }
+
+#[test]
+fn blocked_partial_review_inspection_title_keeps_partial_caption_and_reason() {
+    let (data, store, m) = crate::review::tests::partial::partial_fixture();
+    let mut engine = Engine::load(data.0.join("project"), store).unwrap();
+    engine
+        .command(Command::Action {
+            mod_id: Some(m.id),
+            action: "findings".into(),
+            task_id: None,
+        })
+        .unwrap();
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    assert_eq!(
+        snapshot["dialog"]["title"],
+        "Review incomplete · 1 known issue"
+    );
+    assert_eq!(
+        snapshot["dialog"]["body"],
+        crate::review::tests::partial::report()["summary"]
+    );
+}
