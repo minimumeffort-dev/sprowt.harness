@@ -444,7 +444,13 @@ impl App {
             state.evidence.push_str("PR open · update pending");
         }
         if state.phase == NeedsYou && state.error.is_none() {
-            state.error = self.worker_error().map(str::to_owned);
+            let error = self.worker_error();
+            state.error = if failed.is_some() {
+                super::tasks::visible_task_error(error, m.user_paused)
+            } else {
+                error
+            }
+            .map(str::to_owned);
         }
         state
     }

@@ -138,6 +138,11 @@ pub struct Client {
 
 impl Client {
     #[cfg(test)]
+    pub(crate) fn cancellation_for_test(&self) -> Arc<AtomicBool> {
+        self.cancelled.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn disconnect_for_test(&self) {
         if let Some(child) = self.child.lock().unwrap().as_mut() {
             child.kill().unwrap();

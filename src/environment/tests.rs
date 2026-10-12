@@ -53,6 +53,83 @@ fn recipe() -> Recipe {
     }
 }
 #[test]
+fn setup_budgets_allow_large_downloads_without_extending_probes_or_baselines() {
+    let mut r = recipe();
+    let command = r.capabilities[0].clone();
+    r.setup = vec![command.clone()];
+    for budget in [1, 180, 181, 600] {
+        r.setup[0].timeout_seconds = budget;
+        let parsed: Recipe = serde_json::from_slice(&serde_json::to_vec(&r).unwrap()).unwrap();
+        parsed.validate().unwrap();
+    }
+    for budget in [0, 601] {
+        r.setup[0].timeout_seconds = budget;
+        assert!(r.validate().unwrap_err().contains("1–600"));
+    }
+    r.setup[0].timeout_seconds = 600;
+    r.baseline = vec![command];
+    for phase in ["capabilities", "baseline"] {
+        for budget in [1, 180] {
+            let commands = if phase == "capabilities" {
+                &mut r.capabilities
+            } else {
+                &mut r.baseline
+            };
+            commands[0].timeout_seconds = budget;
+            r.validate().unwrap();
+        }
+        for budget in [0, 181, 600] {
+            let commands = if phase == "capabilities" {
+                &mut r.capabilities
+            } else {
+                &mut r.baseline
+            };
+            commands[0].timeout_seconds = budget;
+            assert!(r.validate().unwrap_err().contains("1–180"));
+        }
+        r.capabilities[0].timeout_seconds = 30;
+        r.baseline[0].timeout_seconds = 30;
+    }
+    r.setup[0].argv[0] = "/tasks/65/.venv/bin/python".into();
+    assert!(r.validate().unwrap_err().contains("temporary worker paths"));
+}
+
+#[test]
+fn validated_setup_budget_reaches_the_command_and_saved_result() {
+    let mut r = recipe();
+    r.setup = vec![Command {
+        name: "Download browser".into(),
+        argv: vec!["/bin/sh".into(), "-c".into(), "printf ready".into()],
+        timeout_seconds: 600,
+    }];
+    r.validate().unwrap();
+    let results = command_batch(
+        &r.setup,
+        &AtomicBool::new(false),
+        "setup",
+        &mut |_| {},
+        |check| {
+            assert_eq!(check.command, ["/bin/sh", "-c", "printf ready"]);
+            assert_eq!(check.timeout(), 600);
+            CheckResult {
+                timeout_seconds: Some(check.timeout()),
+                duration_ms: Some(1),
+                task: check.task,
+                check: check.check.clone(),
+                command: check.command.clone(),
+                exit_code: Some(0),
+                output: "ready".into(),
+                missing_runtime: None,
+            }
+        },
+    )
+    .unwrap();
+    assert_eq!(results[0].timeout_seconds, Some(600));
+    assert_eq!(results[0].exit_code, Some(0));
+    assert_eq!(results[0].output, "ready");
+}
+
+#[test]
 fn recipes_reject_ephemeral_paths_and_invalidate_on_dependency_changes() {
     let mut r = recipe();
     r.validate().unwrap();
@@ -329,13 +406,18 @@ fn live_preflight_retains_evidence_and_reuses_only_proven_setup() {
         capabilities: vec![cmd("available", "test -f \"$HOME/preflight-ready\"")],
         baseline: vec![cmd("known failure", "test original = broken")],
     };
+    r.setup[0].timeout_seconds = 600;
     let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
         let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
         vm.prepare_tasks(&[1], &flag)?;
         vm.assign_task(1, 1, &flag)?;
         let first = vm.preflight(Some(&r), 1, "attempt-1", &flag, |_| {})?;
         assert!(first.contains("Baseline 0/1 passed"));
-        assert!(load(&root, 1)?.unwrap().baseline[0].failed());
+        let receipt = load(&root, 1)?.unwrap();
+        assert_eq!(receipt.setup[0].timeout_seconds, Some(600));
+        assert_eq!(receipt.setup[0].exit_code, Some(0));
+        assert!(receipt.setup[0].duration_ms.unwrap() < 10_000);
+        assert!(receipt.baseline[0].failed());
         vm.preflight(Some(&r), 1, "attempt-2", &flag, |_| {})?;
         assert!(load(&root, 1)?.unwrap().setup.is_empty());
         assert_eq!(
@@ -382,6 +464,32 @@ fn live_preflight_retains_evidence_and_reuses_only_proven_setup() {
             "changed\n"
         );
         assert!(root.join("environments/1-attempt-1.json").exists());
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let stop = cancelled.clone();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let result = vm.run_check_command(
+            &Check {
+                task: None,
+                check: "Long setup is cancellable".into(),
+                command: vec![
+                    "/bin/sh".into(),
+                    "-c".into(),
+                    "printf cancellation-started; sleep 15; printf should-not-finish".into(),
+                ],
+                timeout_seconds: Some(600),
+            },
+            &cancelled,
+        );
+        thread.join().unwrap();
+        assert_eq!(result.timeout_seconds, Some(600));
+        assert!(result.failed());
+        assert!(result.output.contains("Guest command stopped"));
+        assert!(result.output.contains("cancellation-started"));
+        assert!(!result.output.contains("should-not-finish"));
+        assert!(result.duration_ms.unwrap() < 10_000);
         Ok(())
     }));
     crate::sandbox::delete(&root).unwrap();

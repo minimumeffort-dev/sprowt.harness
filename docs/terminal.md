@@ -31,7 +31,7 @@ Select a stage, then click a tab or press **1–4** while exploring.
 | Tab | Shows |
 | --- | --- |
 | **1 · Summary** | The selected stage's outcome and next action; review findings with evidence and proposed fixes |
-| **2 · Checks** | Observed results, with failed checks first |
+| **2 · Checks** | Saved setup failures and observed task results, with failed checks first |
 | **3 · Changes** | Access to the current diff when available |
 | **4 · Activity** | Saved updates for a selected task, or codemod history for a stage |
 
@@ -89,7 +89,7 @@ Details opens Review when findings need attention, Checks after a combined failu
 | **Saved results** after a source change | Historical evidence; the current version still needs verification |
 | **Observed worker time** | Time by phase across restarts/plans; concurrent workers count separately and offline gaps are excluded |
 
-Press **e** to expand commands, output, elapsed time and limits. Worker narration and elapsed time do not prove progress.
+Press **e** to expand commands, full preparation output, elapsed time and limits. Saved setup failures remain visible in the dock and Checks after restart. Choose **Inspect failure** to open the affected task. Worker narration and elapsed time do not prove progress.
 
 Failed tasks include recovery guidance when the cause is known. Three attempts with identical saved failure evidence recommend **Revise repair plan**, carrying that history forward. New checks and review are still required.
 

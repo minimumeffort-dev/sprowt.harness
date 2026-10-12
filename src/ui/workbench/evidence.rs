@@ -81,6 +81,9 @@ fn summary(app: &App, item: &Item, d: &mut Document) {
         task(app, id, d);
         return;
     }
+    if item.key == Key::Build {
+        inspect_failure(app, d);
+    }
     d.heading(if item.key == Key::Request {
         "Requested outcome"
     } else {
@@ -132,6 +135,9 @@ fn summary(app: &App, item: &Item, d: &mut Document) {
                     3,
                 ));
                 d.text(&format!("   {}", planned.outcome));
+                if let Some(error) = task.as_ref().and_then(|task| task.error) {
+                    d.lines.extend(tasks::failure_lines(error, d.width));
+                }
                 d.gap();
             }
             if item.key == Key::Build {
@@ -174,6 +180,20 @@ fn summary(app: &App, item: &Item, d: &mut Document) {
             }
         }
         Key::Environment => {
+            for id in app.task_ids() {
+                let lines = tasks::preparation_lines(app, id, d.width);
+                if !lines.is_empty() {
+                    let task = app.inspect_task(id).unwrap();
+                    d.heading(&format!("{}. {}", task.number, task.task.title));
+                    d.lines.extend(lines);
+                    d.control(
+                        format!("Inspect task {} preparation", task.number),
+                        Control::Drill(Key::Task(id)),
+                        false,
+                    );
+                    d.gap();
+                }
+            }
             if let Some(recipe) = &plan.environment {
                 for (label, commands) in [
                     ("Setup", &recipe.setup),
@@ -406,6 +426,12 @@ fn checks(app: &App, item: &Item, d: &mut Document, detailed: bool) {
     if let Some(task) = task {
         d.heading(&format!("{} · {}", task.task.title, task.checks_label));
         d.gap();
+        if let Some(error) = task.error {
+            d.lines.extend(tasks::failure_lines(error, d.width));
+        }
+        d.lines
+            .extend(tasks::preparation_lines(app, task.run.id, d.width));
+        d.heading(task.checks_label);
         if task.checks.is_empty() {
             for expected in &task.task.checks {
                 d.text(&format!("  ○ {expected} · not run"));
@@ -418,7 +444,8 @@ fn checks(app: &App, item: &Item, d: &mut Document, detailed: bool) {
             ));
         }
     } else if detailed {
-        d.lines = inspector::check_summary(app, d.width);
+        inspect_failure(app, d);
+        d.lines.extend(inspector::check_summary(app, d.width));
     } else if let Some(e) = app.current_mod().and_then(|m| m.execution.as_ref()) {
         d.heading(if e.checks.iter().any(|check| check.failed()) {
             "Combined checks · Needs attention"
@@ -472,6 +499,18 @@ fn checks(app: &App, item: &Item, d: &mut Document, detailed: bool) {
         Control::Evidence,
         app.show_evidence,
     );
+}
+
+fn inspect_failure(app: &App, d: &mut Document) {
+    if let Some(id) = app.failed_task() {
+        let number = app.inspect_task(id).unwrap().number;
+        d.control(
+            format!("ctrl+g f Inspect failure · task {number}"),
+            Control::Action(Action::Failure),
+            false,
+        );
+        d.gap();
+    }
 }
 
 fn changes(app: &App, item: &Item, d: &mut Document) {

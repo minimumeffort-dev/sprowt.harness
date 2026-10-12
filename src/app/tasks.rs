@@ -20,7 +20,54 @@ pub struct TaskInspection<'a> {
     pub checks_label: &'static str,
 }
 
+pub struct Preparation {
+    pub receipt: crate::environment::Receipt,
+    pub current: bool,
+}
+
+impl Preparation {
+    pub fn stopped(&self) -> bool {
+        self.receipt.error.as_deref() == Some("Environment preparation stopped.")
+    }
+
+    pub fn failed(&self) -> bool {
+        self.current && self.receipt.error.is_some() && !self.stopped()
+    }
+}
+
+pub(super) fn visible_task_error(error: Option<&str>, user_paused: bool) -> Option<&str> {
+    error.filter(|reason| {
+        !user_paused
+            && !reason.trim().is_empty()
+            && *reason != "Environment preflight failed: Environment preparation stopped."
+    })
+}
+
 impl App {
+    pub fn task_preparation(&self, id: i64) -> Option<Preparation> {
+        let execution = self.current_mod()?.execution.as_ref()?;
+        let run = execution.tasks.iter().find(|run| run.id == id)?;
+        let path = execution
+            .workspace
+            .join("environments")
+            .join(format!("{id}-{}.json", run.source));
+        match std::fs::read(path) {
+            Ok(bytes) => Some(Preparation {
+                receipt: serde_json::from_slice(&bytes).ok()?,
+                current: true,
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                crate::environment::load(&execution.workspace, id)
+                    .ok()?
+                    .map(|receipt| Preparation {
+                        receipt,
+                        current: false,
+                    })
+            }
+            Err(_) => None,
+        }
+    }
+
     pub fn failed_check_owner(&self) -> Option<i64> {
         let m = self.current_mod()?;
         if m.closed || self.execution_busy() {
@@ -209,8 +256,21 @@ impl App {
             checks = run.checks.iter().collect();
             checks_label = "Checks";
         }
-        let error = worker.and_then(|worker| worker.error.as_deref());
         let busy = worker.is_some_and(|w| w.busy());
+        let error = visible_task_error(
+            (!busy)
+                .then(|| {
+                    worker
+                        .and_then(|worker| worker.error.as_deref())
+                        .or_else(|| {
+                            (matches!(run.status.as_str(), "paused" | "blocked" | "repair_paused")
+                                && !run.summary.trim().is_empty())
+                            .then_some(run.summary.as_str())
+                        })
+                })
+                .flatten(),
+            m.user_paused,
+        );
         let dependencies = task
             .depends_on
             .iter()

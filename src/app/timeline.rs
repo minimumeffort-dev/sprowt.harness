@@ -262,10 +262,56 @@ impl App {
             .unwrap_or(build.state != Done);
         let mut items = vec![asked, planned];
         if let Some(recipe) = &plan.environment {
+            let ids = self.task_ids();
+            let preparations: Vec<_> = ids
+                .iter()
+                .filter_map(|id| self.task_preparation(*id))
+                .collect();
+            let failed = ids.iter().find_map(|id| {
+                let task = self.inspect_task(*id)?;
+                let saved = self.task_preparation(*id);
+                let stopped = saved
+                    .as_ref()
+                    .is_some_and(|preparation| preparation.current && preparation.stopped());
+                let busy = self
+                    .active_workers()
+                    .any(|worker| worker.task_run_id() == Some(*id));
+                (!busy
+                    && !stopped
+                    && (saved
+                        .as_ref()
+                        .is_some_and(|preparation| preparation.failed())
+                        || task.error.is_some_and(|error| {
+                            error.starts_with("Environment preflight failed")
+                        })))
+                .then_some(*id)
+            });
+            let preparing: Vec<_> = self
+                .active_workers()
+                .filter(|worker| worker.role == Role::Executor)
+                .filter_map(|worker| {
+                    worker
+                        .progress()
+                        .filter(|progress| progress.starts_with("Preflight"))
+                })
+                .collect();
             let mut environment = Item::new(
                 Key::Environment,
                 "Environment · per-worker preparation",
-                Previous,
+                if !preparing.is_empty() {
+                    Active
+                } else if failed.is_some() {
+                    Attention
+                } else if !preparations.is_empty()
+                    && preparations.len() == ids.len()
+                    && preparations.iter().all(|preparation| {
+                        preparation.current && preparation.receipt.error.is_none()
+                    })
+                {
+                    Done
+                } else {
+                    Waiting
+                },
             );
             environment.detail.push(format!(
                 "{} setup commands · {} capability probes · {} baseline checks",
@@ -273,8 +319,10 @@ impl App {
                 recipe.capabilities.len(),
                 recipe.baseline.len()
             ));
-            environment.detail.push("Preparation runs for each worker. Inspect a task for its saved preparation receipt.".into());
-            environment.inspect = Some(View::Tasks(0));
+            environment
+                .detail
+                .extend(preparing.into_iter().map(str::to_owned));
+            environment.inspect = Some(failed.map_or(View::Tasks(0), |id| View::Task(id, 0)));
             items.push(environment);
         }
         items.push(build);

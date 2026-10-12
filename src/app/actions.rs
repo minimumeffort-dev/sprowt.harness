@@ -120,10 +120,8 @@ impl ActionDock {
         self.actions
             .iter()
             .filter(|item| {
-                !matches!(
-                    item.action,
-                    Action::Details | Action::Findings | Action::Failure
-                ) || self.primary == Some(item.action)
+                !matches!(item.action, Action::Details | Action::Findings)
+                    || self.primary == Some(item.action)
             })
             .collect()
     }

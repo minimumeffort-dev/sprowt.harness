@@ -183,65 +183,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         }
         lines.push(Line::default());
     }
-    if let Some(root) = app
-        .current_mod()
-        .and_then(|m| m.execution.as_ref())
-        .map(|e| &e.workspace)
-        && let Ok(Some(receipt)) = crate::environment::load(root, id)
-    {
-        lines.push(
-            Line::from("Saved preparation · before this attempt")
-                .fg(ACCENT)
-                .bold(),
-        );
-        lines.extend(indented_text(&receipt.cache_summary(), width, 2));
-        for (phase, results) in [
-            ("Setup", &receipt.setup),
-            ("Capabilities", &receipt.capabilities),
-            ("Baseline", &receipt.baseline),
-        ] {
-            if results.is_empty() {
-                continue;
-            }
-            let passed = results.iter().filter(|c| c.exit_code == Some(0)).count();
-            lines.push(
-                Line::from(format!("  {phase} · {passed}/{} passed", results.len())).fg(KEY_HINT),
-            );
-            for result in results
-                .iter()
-                .filter(|c| app.show_evidence || c.exit_code != Some(0))
-            {
-                lines.extend(wrap_line(
-                    Line::from(format!(
-                        "    {} {}",
-                        if result.exit_code == Some(0) {
-                            "✓"
-                        } else {
-                            "!"
-                        },
-                        result.check
-                    ))
-                    .fg(if result.exit_code == Some(0) {
-                        ACCENT
-                    } else {
-                        Color::Yellow
-                    }),
-                    width,
-                    4,
-                ));
-                if app.show_evidence {
-                    lines.extend(command_lines(&result.command, width));
-                }
-                if result.exit_code != Some(0) || app.show_evidence {
-                    lines.extend(indented_text(&result.evidence(), width, 4));
-                }
-            }
-        }
-        if let Some(error) = receipt.error {
-            lines.extend(indented_text(&error, width, 2));
-        }
-        lines.push(Line::default());
-    }
+    lines.extend(preparation_lines(app, id, width));
     if let Some(conflict) = &task.run.conflict {
         lines.push(Line::from("Conflicting files").fg(ACCENT).bold());
         lines.push(
@@ -421,5 +363,101 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
             }
         }
     }
+    lines
+}
+
+pub(super) fn preparation_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
+    let Some(preparation) = app.task_preparation(id) else {
+        return Vec::new();
+    };
+    let stopped = preparation.stopped();
+    let busy = app
+        .active_workers()
+        .any(|worker| worker.task_run_id() == Some(id));
+    let color = if busy || stopped || !preparation.current {
+        KEY_HINT
+    } else if preparation.failed() {
+        Color::Red
+    } else {
+        ACCENT
+    };
+    let label = if !preparation.current {
+        "Earlier preparation · before this attempt"
+    } else if stopped {
+        "Preparation stopped · saved for this attempt"
+    } else if busy {
+        "Saved preparation · before current work"
+    } else {
+        "Saved preparation · current attempt"
+    };
+    let mut lines = wrap_line(Line::from(label).fg(color).bold(), width, 0);
+    lines.extend(wrap_line(
+        Line::from("Setup and baseline evidence · separate from completion checks.").fg(KEY_HINT),
+        width,
+        0,
+    ));
+    let receipt = preparation.receipt;
+    if app.show_evidence {
+        lines.extend(indented_text(&receipt.cache_summary(), width, 2));
+    }
+    for (phase, results) in [
+        ("Setup", &receipt.setup),
+        ("Capabilities", &receipt.capabilities),
+        ("Baseline", &receipt.baseline),
+    ] {
+        if results.is_empty() {
+            continue;
+        }
+        let passed = results
+            .iter()
+            .filter(|result| result.exit_code == Some(0))
+            .count();
+        lines.extend(wrap_line(
+            Line::from(format!("  {phase} · {passed}/{} passed", results.len())).fg(KEY_HINT),
+            width,
+            2,
+        ));
+        let selected: Vec<_> = results
+            .iter()
+            .filter(|result| app.show_evidence || result.exit_code != Some(0))
+            .collect();
+        let rendered = inspector::check_lines(&selected, width, app.show_evidence);
+        lines.extend(
+            rendered
+                .into_iter()
+                .map(|line| if stopped { line.fg(KEY_HINT) } else { line }),
+        );
+    }
+    if let Some(error) = &receipt.error
+        && !receipt
+            .setup
+            .iter()
+            .chain(&receipt.capabilities)
+            .chain(&receipt.baseline)
+            .any(|result| result.failed())
+    {
+        lines.extend(
+            indented_text(error, width, 2)
+                .into_iter()
+                .map(|line| line.fg(color)),
+        );
+    }
+    lines.push(Line::default());
+    lines
+}
+
+pub(super) fn failure_lines(reason: &str, width: u16) -> Vec<Line<'static>> {
+    let mut lines = wrap_line(
+        Line::from("Needs attention").fg(Color::Red).bold(),
+        width,
+        0,
+    );
+    let brief = reason.lines().take(2).collect::<Vec<_>>().join("\n");
+    lines.extend(
+        indented_text(&brief, width, 2)
+            .into_iter()
+            .map(|line| line.fg(Color::Red)),
+    );
+    lines.push(Line::default());
     lines
 }

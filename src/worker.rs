@@ -210,7 +210,8 @@ impl Worker {
         if self.enabled {
             self.enabled = false;
             if self.status == Status::Checking
-                || (self.role != Role::Planner && self.status == Status::Connecting)
+                || (self.role != Role::Planner
+                    && matches!(self.status, Status::Connecting | Status::Starting))
             {
                 self.client.as_ref().unwrap().cancel_checks();
             }
@@ -2630,6 +2631,67 @@ mod tests {
         }];
         worker.verify_before = Some(workspace::source_state(&root.join("work")).unwrap());
         (data, store, code_mod, worker)
+    }
+
+    #[test]
+    fn pause_setup_cancels_both_providers_before_turn_acceptance() {
+        for provider in ["codex", "muse"] {
+            for status in [Status::Connecting, Status::Starting] {
+                let (_data, mut store, mut m, mut worker) = executor();
+                let (client, actions) = Client::recording();
+                let cancelled = client.cancellation_for_test();
+                worker.client = Some(client);
+                worker.provider = provider.into();
+                worker.status = status;
+                worker.enabled = true;
+                worker.toggle();
+                assert!(
+                    cancelled.load(std::sync::atomic::Ordering::Relaxed),
+                    "{provider} preflight must receive Pause before a turn is accepted"
+                );
+                assert!(!worker.enabled);
+                assert!(worker.turn.is_none());
+                worker
+                    .poll(&mut store, &mut m, true, Path::new("/planner-project"))
+                    .unwrap();
+                assert!(actions.try_recv().is_err(), "Pause must not start a turn");
+            }
+        }
+    }
+
+    #[test]
+    fn pause_preserves_planner_routing_and_active_turn_stop() {
+        let (_data, mut store, mut m, mut planner) = planner();
+        planner.toggle();
+        planner
+            .poll(&mut store, &mut m, true, Path::new("/planner-project"))
+            .unwrap();
+        assert!(!planner.enabled && planner.status == Status::Routing);
+        assert!(planner.client.is_none());
+
+        for role in [Role::Planner, Role::Executor] {
+            let (_data, _store, _m, mut worker) = executor();
+            let (client, actions) = Client::recording();
+            let cancelled = client.cancellation_for_test();
+            worker.client = Some(client);
+            worker.role = role;
+            worker.status = Status::Starting;
+            if role == Role::Planner {
+                worker.toggle();
+                assert!(!cancelled.load(std::sync::atomic::Ordering::Relaxed));
+                assert!(actions.try_recv().is_err());
+                worker.enabled = true;
+            }
+            worker.status = Status::Running;
+            worker.turn = Some("accepted-turn".into());
+            worker.toggle();
+            assert!(!worker.enabled && worker.status == Status::Stopping);
+            assert!(cancelled.load(std::sync::atomic::Ordering::Relaxed));
+            assert!(
+                matches!(actions.try_recv().unwrap(), Action::Stop { turn } if turn == "accepted-turn")
+            );
+            assert!(actions.try_recv().is_err());
+        }
     }
 
     #[test]

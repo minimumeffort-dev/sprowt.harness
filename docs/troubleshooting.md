@@ -59,17 +59,18 @@ Select the failed task in **Details → Tasks**, then press **r**. Independent p
 
 ## Project preparation fails
 
-Open the task's Details and inspect the saved preparation command and output.
+Read the saved failure in the dock or **Implementation → 2 · Checks**. Choose **Inspect failure**, or press **Ctrl+G → f**, to open the affected task. Press **e** for its full preparation output, command, elapsed time and limit. These results survive restart.
 
 | Failure | Next step |
 | --- | --- |
 | Invalid runtime version or setup command | **Revise repair plan** with the failed recipe and evidence |
 | Download denied | **Ctrl+N** to inspect the requested domain |
+| Download progresses but reaches the setup limit | Request edits with an explicit longer setup budget, up to 600 seconds; existing plans keep their declared limit |
 | Setup succeeds, capability probe fails | Check the actual runtime/browser startup error; installation alone is insufficient |
 | Only baseline tests fail | The worker can proceed with that starting failure recorded |
 | Preparation changes source or a lockfile | Correct the recipe so setup leaves source unchanged |
 
-See [the recipe example](environments.md#add-a-project-recipe). Keep the project recipe in sync with any accepted correction.
+See [the recipe example and setup budgets](environments.md#recipe-fields). Keep the project recipe in sync with any accepted correction. Baselines and completion checks retain their own limits.
 
 ## Checks fail or take too long
 

@@ -63,6 +63,8 @@ pub struct Command {
     pub timeout_seconds: u64,
 }
 
+const MAX_SETUP_TIMEOUT: u64 = 600;
+
 impl Recipe {
     pub fn validate(&self) -> Result<(), String> {
         if self
@@ -101,25 +103,36 @@ impl Recipe {
                 return Err("Environment inputs must be exact project-relative paths.".into());
             }
         }
-        for command in self
-            .setup
-            .iter()
-            .chain(&self.capabilities)
-            .chain(&self.baseline)
-        {
-            if command.name.trim().is_empty()
-                || command.name.len() > 160
-                || !(1..=180).contains(&command.timeout_seconds)
-                || command.argv.is_empty()
-                || !Path::new(&command.argv[0]).is_absolute()
-                || command.argv.iter().any(|a| {
-                    a.contains('\0')
-                        || a.contains("/tasks/")
-                        || a.contains("/home/sprowt/workers/")
-                        || a.len() > 16000
-                })
-            {
-                return Err("Environment commands need a name, absolute executable, portable arguments and a 1–180 second budget; temporary worker paths are not reusable.".into());
+        for (phase, commands, maximum) in [
+            ("setup", &self.setup, MAX_SETUP_TIMEOUT),
+            (
+                "capabilities",
+                &self.capabilities,
+                crate::execution::MAX_CHECK_TIMEOUT,
+            ),
+            (
+                "baseline",
+                &self.baseline,
+                crate::execution::MAX_CHECK_TIMEOUT,
+            ),
+        ] {
+            for command in commands {
+                if command.name.trim().is_empty()
+                    || command.name.len() > 160
+                    || !(1..=maximum).contains(&command.timeout_seconds)
+                    || command.argv.is_empty()
+                    || !Path::new(&command.argv[0]).is_absolute()
+                    || command.argv.iter().any(|a| {
+                        a.contains('\0')
+                            || a.contains("/tasks/")
+                            || a.contains("/home/sprowt/workers/")
+                            || a.len() > 16000
+                    })
+                {
+                    return Err(format!(
+                        "Environment {phase} commands need a name, absolute executable, portable arguments and a 1–{maximum} second budget; temporary worker paths are not reusable."
+                    ));
+                }
             }
         }
         Ok(())
@@ -176,15 +189,19 @@ impl Recipe {
 }
 
 pub fn schema() -> Value {
-    let command = json!({"type":"object","additionalProperties":false,"properties":{
+    let command = |maximum| {
+        json!({"type":"object","additionalProperties":false,"properties":{
         "name":{"type":"string"},"argv":{"type":"array","items":{"type":"string"}},
-        "timeout_seconds":{"type":"integer","minimum":1,"maximum":180}},"required":["name","argv","timeout_seconds"]});
+        "timeout_seconds":{"type":"integer","minimum":1,"maximum":maximum}},"required":["name","argv","timeout_seconds"]})
+    };
     json!({"type":["object","null"],"additionalProperties":false,"properties":{
         "inputs":{"type":"array","items":{"type":"string"}},
         "system_packages":{"type":"array","items":{"type":"string"}},
         "resources":{"type":["object","null"],"additionalProperties":false,"properties":{"memory_gib":{"type":"integer","enum":[8]}},"required":["memory_gib"]},
         "reusable_paths":{"type":"array","items":{"type":"string","enum":["node_modules"]},"maxItems":1},
-        "setup":{"type":"array","items":command},"capabilities":{"type":"array","items":command},"baseline":{"type":"array","items":command}},
+        "setup":{"type":"array","items":command(MAX_SETUP_TIMEOUT)},
+        "capabilities":{"type":"array","items":command(crate::execution::MAX_CHECK_TIMEOUT)},
+        "baseline":{"type":"array","items":command(crate::execution::MAX_CHECK_TIMEOUT)}},
         "required":["inputs","system_packages","reusable_paths","resources","setup","capabilities","baseline"]})
 }
 

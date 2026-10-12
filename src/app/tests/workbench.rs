@@ -54,6 +54,323 @@ fn failed_app() -> (TestData, App, PathBuf) {
     (data, app, root)
 }
 
+fn setup_failed_app() -> (TestData, App, PathBuf, i64) {
+    let (data, mut app, root) = execution_app();
+    let m = &app.mods[0];
+    let id = m.execution.as_ref().unwrap().tasks[0].id;
+    let source = crate::store::task_source(id, 2);
+    let recipe = crate::environment::Recipe {
+        resources: None,
+        reusable_paths: vec![],
+        inputs: vec![],
+        system_packages: vec![],
+        setup: vec![crate::environment::Command {
+            name: "Install browser runtime".into(),
+            argv: vec![
+                "/usr/bin/npm".into(),
+                "exec".into(),
+                "playwright".into(),
+                "install".into(),
+            ],
+            timeout_seconds: 180,
+        }],
+        capabilities: vec![crate::environment::Command {
+            name: "Browser runtime available".into(),
+            argv: vec!["/usr/bin/node".into(), "--version".into()],
+            timeout_seconds: 5,
+        }],
+        baseline: vec![],
+    };
+    let mut plan = m.planning.as_ref().unwrap().plan.clone().unwrap();
+    plan.environment = Some(recipe.clone());
+    app.store
+        .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
+        .unwrap();
+    app.store.0.execute("UPDATE task_runs SET status='paused',attempt=2,source=?2,summary=?3,checks='[]' WHERE id=?1", rusqlite::params![id,source,"Environment preflight failed: Setup failed: Install browser runtime\nGuest command timed out after 180s."]).unwrap();
+    app.store
+        .0
+        .execute(
+            "UPDATE executions SET status='running',checks='[]',fingerprint=NULL WHERE mod_id=?1",
+            [m.id],
+        )
+        .unwrap();
+    let output = format!(
+        "Guest command timed out after 180s.\n{}\nRAW_PREPARATION_TAIL: headless-shell download reached 30%",
+        (1..=12)
+            .map(|i| format!("browser download progress {i}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    let receipt = crate::environment::Receipt {
+        recipe,
+        error: Some(
+            "Setup failed: Install browser runtime\nGuest command timed out after 180s.".into(),
+        ),
+        environment: "fixture-environment".into(),
+        source: "fixture-source-fingerprint".into(),
+        runtime_home: "/home/worker".into(),
+        cache: crate::environment::cache::Use::Miss,
+        cache_saved: None,
+        setup: vec![crate::execution::CheckResult {
+            task: Some(id),
+            check: "Install browser runtime".into(),
+            command: vec![
+                "/usr/bin/npm".into(),
+                "exec".into(),
+                "playwright".into(),
+                "install".into(),
+            ],
+            timeout_seconds: Some(180),
+            duration_ms: Some(180000),
+            exit_code: Some(-1),
+            missing_runtime: None,
+            output,
+        }],
+        capabilities: vec![],
+        baseline: vec![],
+    };
+    std::fs::create_dir_all(root.join("environments")).unwrap();
+    let bytes = serde_json::to_vec(&receipt).unwrap();
+    for name in [format!("{id}.json"), format!("{id}-{source}.json")] {
+        std::fs::write(root.join("environments").join(name), &bytes).unwrap();
+    }
+    let project = app.project.clone();
+    drop(app);
+    let app = App::load(project, false, data.store()).unwrap();
+    (data, app, root, id)
+}
+
+#[test]
+fn workbench_persisted_setup_failure_is_visible_without_a_live_worker() {
+    for width in [80, 160] {
+        let (_data, mut app, _, id) = setup_failed_app();
+        assert!(app.workers.is_empty());
+        assert!(
+            app.state_summary()
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("Guest command timed out after 180s"))
+        );
+        assert!(app.inspect_task(id).unwrap().checks.is_empty());
+        assert!(app.mods[0].execution.as_ref().unwrap().checks.is_empty());
+        assert!(
+            app.timeline_items().iter().any(
+                |item| item.key == Key::Environment && item.state == timeline::State::Attention
+            )
+        );
+        screen(&mut app, width, 64);
+        app.activate_control(Control::Stage(Key::Build)).unwrap();
+        app.activate_control(Control::Tab(EvidenceTab::Checks))
+            .unwrap();
+        let rendered = rows(&screen(&mut app, width, 64));
+        if width == 160 {
+            let dock = rendered
+                .iter()
+                .position(|row| row.contains("Task 1 needs attention"))
+                .unwrap();
+            assert!(
+                rendered[dock..].iter().any(|row| {
+                    row.contains("Guest command timed out after 180s.")
+                        && !row.contains("Install browser runtime")
+                }),
+                "The dock must preserve separate cause and timeout lines"
+            );
+        }
+        let text = rendered.join("\n");
+        assert!(
+            text.contains("Install browser runtime")
+                && text.contains("180.0s elapsed · 180s limit"),
+            "{width}:\n{text}"
+        );
+        assert!(text.contains("Saved preparation") && text.contains("not run"));
+        assert!(!text.contains("1 failed · 0 not run"));
+        click(&mut app, Control::Action(Action::Failure));
+        assert!(matches!(app.view, View::Task(task, 0) if task == id));
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+}
+
+#[test]
+fn workbench_preparation_full_evidence_includes_the_output_tail() {
+    let (_data, mut app, _, id) = setup_failed_app();
+    app.view = View::Task(id, 0);
+    let compact = rows(&screen(&mut app, 160, 70)).join("\n");
+    assert!(!compact.contains("RAW_PREPARATION_TAIL"));
+    key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
+    let full = rows(&screen(&mut app, 160, 70)).join("\n");
+    assert!(full.contains("RAW_PREPARATION_TAIL"), "{full}");
+    assert!(full.contains("/usr/bin/npm") && full.contains("180.0s elapsed · 180s limit"));
+    assert_eq!(app.input.lines(), ["keep this draft"]);
+}
+
+#[test]
+fn workbench_failure_shortcut_inspects_without_retrying_the_task() {
+    let (_data, mut app, _, id) = setup_failed_app();
+    let source = app.inspect_task(id).unwrap().run.source.clone();
+    key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
+    assert!(matches!(app.view, View::Task(task, 0) if task == id));
+    assert_eq!(app.inspect_task(id).unwrap().run.source, source);
+    assert_eq!(app.inspect_task(id).unwrap().run.status, "paused");
+    assert_eq!(app.input.lines(), ["keep this draft"]);
+}
+
+#[test]
+fn workbench_previous_preparation_never_becomes_a_new_attempt_failure() {
+    let (_data, mut app, _, id) = setup_failed_app();
+    let next_source = crate::store::task_source(id, 3);
+    app.store.0.execute("UPDATE task_runs SET status='pending',attempt=3,source=?2,summary='',checks='[]' WHERE id=?1", rusqlite::params![id,next_source]).unwrap();
+    app.mods[0].execution = app.store.execution(app.mods[0].id).unwrap();
+    assert!(app.state_summary().error.is_none());
+    assert!(
+        !app.timeline_items()
+            .iter()
+            .any(|item| item.key == Key::Environment && item.state == timeline::State::Attention)
+    );
+    app.view = View::Task(id, 0);
+    let saved = rows(&screen(&mut app, 160, 70)).join("\n");
+    assert!(saved.contains("Earlier preparation"), "{saved}");
+    assert!(saved.contains("Guest command timed out after 180s"));
+    assert_eq!(app.input.lines(), ["keep this draft"]);
+}
+
+#[test]
+fn workbench_active_worker_takes_precedence_over_saved_preparation_failure() {
+    let (_data, mut app, _, id) = setup_failed_app();
+    let record = app.store.worker(app.mods[0].id).unwrap();
+    let mut worker =
+        Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+    worker.role = Role::Executor;
+    worker.status = Status::Starting;
+    worker.enabled = true;
+    worker.bind_test_task(app.inspect_task(id).unwrap().run.source.clone());
+    let run = &mut app.mods[0].execution.as_mut().unwrap().tasks[0];
+    run.worker = Some(worker.id);
+    run.status = "running".into();
+    app.workers.insert(worker.id, worker);
+    assert_eq!(app.inspect_task(id).unwrap().state, "Starting");
+    assert!(app.inspect_task(id).unwrap().error.is_none());
+    assert!(app.state_summary().error.is_none());
+    assert!(
+        !app.timeline_items()
+            .iter()
+            .any(|item| item.key == Key::Environment && item.state == timeline::State::Attention)
+    );
+}
+
+fn stopped_setup_app() -> (TestData, App, PathBuf, i64) {
+    let (data, mut app, root, id) = setup_failed_app();
+    let source = app.inspect_task(id).unwrap().run.source.clone();
+    let path = root
+        .join("environments")
+        .join(format!("{id}-{source}.json"));
+    let mut receipt: crate::environment::Receipt =
+        serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    receipt.error = Some("Environment preparation stopped.".into());
+    receipt.setup[0].output = "Guest command stopped.".into();
+    let bytes = serde_json::to_vec(&receipt).unwrap();
+    std::fs::write(path, &bytes).unwrap();
+    std::fs::write(root.join("environments").join(format!("{id}.json")), bytes).unwrap();
+    app.store
+        .finish_task(
+            app.mods[0].id,
+            &source,
+            "paused",
+            "Environment preflight failed: Environment preparation stopped.",
+            &[],
+        )
+        .unwrap();
+    app.mods[0].execution = app.store.execution(app.mods[0].id).unwrap();
+    (data, app, root, id)
+}
+
+#[test]
+fn workbench_stopped_preparation_is_not_a_failed_environment() {
+    let (_data, mut app, _, id) = stopped_setup_app();
+    app.mods[0].user_paused = true;
+    assert!(app.state_summary().error.is_none());
+    assert!(
+        !app.timeline_items()
+            .iter()
+            .any(|item| item.key == Key::Environment && item.state == timeline::State::Attention)
+    );
+    app.view = View::Task(id, 0);
+    let text = rows(&screen(&mut app, 160, 60)).join("\n");
+    assert!(
+        text.contains("Preparation stopped") && text.contains("Guest command stopped."),
+        "{text}"
+    );
+    assert!(!text.contains("RAW_PREPARATION_TAIL"));
+    assert_eq!(app.input.lines(), ["keep this draft"]);
+}
+
+#[test]
+fn workbench_retained_worker_and_restart_keep_manual_preparation_stop_quiet() {
+    for paused in [false, true] {
+        let (data, mut app, _, id) = stopped_setup_app();
+        let source = app.inspect_task(id).unwrap().run.source.clone();
+        let record = app.store.worker(app.mods[0].id).unwrap();
+        let mut worker =
+            Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+        worker.role = Role::Executor;
+        worker.status = Status::Failed;
+        worker.bind_test_task(source);
+        worker.error =
+            Some("Environment preflight failed: Environment preparation stopped.".into());
+        app.store
+            .0
+            .execute(
+                "UPDATE task_runs SET worker_id=?2 WHERE id=?1",
+                rusqlite::params![id, worker.id],
+            )
+            .unwrap();
+        app.mods[0].execution = app.store.execution(app.mods[0].id).unwrap();
+        app.store.set_user_paused(app.mods[0].id, paused).unwrap();
+        app.mods[0].user_paused = paused;
+        app.workers.insert(worker.id, worker);
+        assert!(
+            app.inspect_task(id).unwrap().error.is_none(),
+            "retained worker; paused={paused}"
+        );
+        assert!(app.state_summary().error.is_none());
+        assert!(
+            !app.timeline_items().iter().any(
+                |item| item.key == Key::Environment && item.state == timeline::State::Attention
+            )
+        );
+        let project = app.project.clone();
+        drop(app);
+        let mut app = App::load(project, false, data.store()).unwrap();
+        assert!(app.workers.is_empty());
+        assert!(app.inspect_task(id).unwrap().error.is_none());
+        assert!(app.state_summary().error.is_none());
+        app.view = View::Task(id, 0);
+        let text = rows(&screen(&mut app, 160, 60)).join("\n");
+        assert!(
+            text.contains("Preparation stopped") && !text.contains("Needs attention"),
+            "{text}"
+        );
+        assert_eq!(app.input.lines(), ["keep this draft"]);
+    }
+}
+
+#[test]
+fn workbench_non_executor_errors_remain_visible_with_saved_task_stop() {
+    let (_data, mut app, _, id) = stopped_setup_app();
+    let record = app.store.worker(app.mods[0].id).unwrap();
+    let mut worker =
+        Worker::start(&app.project, &app.mods[0], record, Role::Planner, None).unwrap();
+    worker.status = Status::Failed;
+    worker.error = Some("Planner could not connect to its provider.".into());
+    app.workers.insert(worker.id, worker);
+    assert!(app.inspect_task(id).unwrap().error.is_none());
+    assert_eq!(
+        app.state_summary().error.as_deref(),
+        Some("Planner could not connect to its provider.")
+    );
+    assert_eq!(app.input.lines(), ["keep this draft"]);
+}
+
 #[test]
 #[ignore = "exports actual Ratatui buffers for visual inspection"]
 fn export_workbench_buffers() {
@@ -70,6 +387,7 @@ fn export_workbench_buffers() {
         .checks
         .clear();
     let (_idle_data, mut idle, _) = execution_app();
+    let (_setup_data, mut setup, _, _) = setup_failed_app();
     let record = working.store.worker(working.mods[0].id).unwrap();
     let mut worker = Worker::start(
         &working.project,
@@ -93,6 +411,7 @@ fn export_workbench_buffers() {
         ("failed-check", &mut failed, Key::Checks),
         ("working", &mut working, Key::Build),
         ("idle", &mut idle, Key::Plan),
+        ("setup-failure", &mut setup, Key::Build),
     ] {
         app.project = PathBuf::from("/example/project");
         for (suffix, width, height) in [("desktop", 180, 52), ("narrow", 80, 42), ("small", 36, 36)]
@@ -100,6 +419,10 @@ fn export_workbench_buffers() {
             screen(app, width, height);
             app.activate_control(Control::Stage(selected)).unwrap();
             app.timeline.focus = Focus::Inspector;
+            if name == "setup-failure" {
+                app.activate_control(Control::Tab(EvidenceTab::Checks))
+                    .unwrap();
+            }
             let buffer = screen(app, width, height);
             let cells: Vec<_> = buffer.content.iter().enumerate().map(|(index, cell)| serde_json::json!({"x": index % width as usize, "y": index / width as usize, "symbol": cell.symbol(), "fg": format!("{:?}", cell.fg), "bg": format!("{:?}", cell.bg), "bold": cell.modifier.contains(ratatui::style::Modifier::BOLD)})).collect();
             std::fs::write(

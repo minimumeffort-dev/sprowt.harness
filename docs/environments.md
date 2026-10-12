@@ -86,7 +86,21 @@ Browser projects also need a real browser startup probe and the required Debian 
 | `capabilities` | Prove the runtime or browser actually starts | 1–12 commands |
 | `baseline` | Record tests before editing | Up to 12 commands |
 
-Each command needs `name`, `argv` and `timeout_seconds` (1–180). Begin `argv` with an absolute executable. Use project-relative file arguments; temporary task and worker paths are rejected.
+Each command needs `name`, `argv` and `timeout_seconds`. Setup supports **1–600 seconds**. Capability probes and baselines support **1–180 seconds**. Begin `argv` with an absolute executable. Use project-relative file arguments; temporary task and worker paths are rejected.
+
+For a large browser download, declare its budget explicitly in the recipe's `setup` array:
+
+```json
+{
+  "name": "Install pinned Chromium",
+  "argv": ["/usr/local/bin/mise", "exec", "node@22.16.0", "--", "npm", "exec", "--", "playwright", "install", "chromium"],
+  "timeout_seconds": 600
+}
+```
+
+Use the smallest measured budget that includes downloads and installation. **Pause** stops active setup; its saved result says preparation stopped. A longer setup budget does not extend baseline or completion checks.
+
+Existing plans keep their declared budgets. To change an accepted plan's setup, request edits with the failed command and new budget. Updating the project file alone does not override the accepted plan.
 
 Add `"resources": {"memory_gib": 8}` when your project explicitly needs that memory, for example for browser checks. The accepted plan recipe takes precedence over the source file. The harness does not infer memory needs from project type. Requests apply before source binding; an existing bound VM retains its allocation. See [resource admission and retained VMs](performance.md#vm-resource-budget).
 
@@ -99,7 +113,9 @@ Add `"resources": {"memory_gib": 8}` when your project explicitly needs that mem
 | Baseline tests | Save the failure and let the worker repair the starting source |
 | Source changed during preparation | Preserve the edits and pause; fix the recipe |
 
-Open **Task Details** for preparation results; **e** includes passed commands. On setup failure, **Revise repair plan** carries the recipe and evidence into planning. Blocked downloads still require [network approval](sandbox.md#downloads).
+Select **Implementation → 2 · Checks** to read saved setup failures before the task checks. **Inspect failure** opens the affected task. Press **e** for the complete preparation output, command, elapsed time and limit. The failure remains visible after restart. Preparation results never count as completion checks.
+
+On setup failure, **Revise repair plan** carries the recipe and evidence into planning. Blocked downloads still require [network approval](sandbox.md#downloads).
 
 Preparation evidence also reports copied bytes, dependency reuse and cache rejection. Results belong to that attempt's source and worker HOME.
 

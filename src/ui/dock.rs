@@ -150,7 +150,10 @@ pub(super) fn header(
         }
     }
     if let Some(error) = &dock.error {
-        let mut lines = wrap_line(Line::from(error.clone()).fg(Color::Red), width, 0);
+        let mut lines: Vec<_> = indented_text(error, width, 0)
+            .into_iter()
+            .map(|line| line.fg(Color::Red))
+            .collect();
         if lines.len() > 2 {
             lines[1] = Line::from(format!(
                 "{}…",

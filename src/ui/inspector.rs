@@ -189,10 +189,20 @@ pub(super) fn check_summary(app: &App, width: u16) -> Vec<Line<'static>> {
     }
     for id in app.task_ids() {
         if let Some(task) = app.inspect_task(id) {
+            let preparation = tasks::preparation_lines(app, id, width);
             if m.execution
                 .as_ref()
                 .is_some_and(|e| e.checks.iter().any(|c| c.task == Some(id)))
             {
+                if !preparation.is_empty() {
+                    lines.push(Line::default());
+                    lines.extend(wrap_line(
+                        Line::from(format!("{}. {}", task.number, task.task.title)).bold(),
+                        width,
+                        0,
+                    ));
+                    lines.extend(preparation);
+                }
                 continue;
             }
             lines.push(Line::default());
@@ -205,6 +215,11 @@ pub(super) fn check_summary(app: &App, width: u16) -> Vec<Line<'static>> {
                 width,
                 0,
             ));
+            if let Some(error) = task.error {
+                lines.extend(tasks::failure_lines(error, width));
+            }
+            lines.extend(preparation);
+            lines.push(Line::from(task.checks_label).fg(ACCENT).bold());
             if task.checks.is_empty() {
                 for expected in &task.task.checks {
                     lines.extend(wrap_line(
