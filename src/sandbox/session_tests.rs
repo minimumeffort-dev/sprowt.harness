@@ -182,8 +182,8 @@ fn shared_dispatcher_overlaps_isolated_checks_and_rejects_stale_receipts() {
             .collect::<Vec<_>>();
         controller.prepare_tasks(&ids, &flag)?;
         let vm = Arc::new(Mutex::new(controller));
-        let first = prepare_task(&vm, &contexts[0], &sources[0], false, &flag)?;
-        let mut second = prepare_task(&vm, &contexts[1], &sources[1], false, &flag)?;
+        let first = prepare_task(&vm, &contexts[0], &sources[0], &flag)?;
+        let mut second = prepare_task(&vm, &contexts[1], &sources[1], &flag)?;
         assert_ne!(first.home(), second.home());
         assert_ne!(first.cwd(), second.cwd());
         let stopped = AtomicBool::new(false);

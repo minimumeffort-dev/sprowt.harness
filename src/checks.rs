@@ -556,12 +556,12 @@ pub(crate) fn restore_scripts(
 pub(crate) mod tests {
     use super::*;
     mod observed;
-    pub(crate) use observed::save_observed_fixture;
     use crate::{
         plan::{Plan, Role},
         store::{CodeMod, test_support::TestData},
         tools::{Context, Dispatcher},
     };
+    pub(crate) use observed::save_observed_fixture;
 
     fn fixture() -> (TestData, Store, CodeMod, i64, String, PathBuf) {
         let data = TestData::new();
@@ -818,7 +818,7 @@ pub(crate) mod tests {
 
                 let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
                 vm.assign_task(id, worker, &flag)?;
-                vm.refresh_for_repair(id, &input.source, &flag)?;
+                vm.refresh_task(id, &input.source, &flag)?;
                 assert_eq!(fs::read(path(&root, id))?, saved);
                 assert!(vm.guest_exists(&format!("{}/check.py", folder(id)))?);
                 assert!(vm.guest_exists(&format!("/tasks/{id}/static/task-backup.mjs"))?);

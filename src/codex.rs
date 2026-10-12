@@ -831,12 +831,6 @@ fn serve(
                             .and_then(|s| s["plan"]["environment"].as_object())
                             .map(|v| serde_json::from_value(json!(v)))
                             .transpose()?;
-                        let repair = routing.as_ref().is_some_and(|state| {
-                            !state["repair"].is_null()
-                                || state["review_fix"] == true
-                                || state["runtime_recovery"] == true
-                                || state["check_repair"] == true
-                        });
                         let _ = outgoing.send(Event::Preparing("choosing task model".into()));
                         let chosen = match (&router, routing) {
                             (Some(Ok(router)), Some(state)) => router.route(state),
@@ -863,7 +857,7 @@ fn serve(
                         let _ = outgoing.send(Event::Preparing("preparing task worktree".into()));
                         stop_terminals(rpc, &thread)?;
                         let mut session = crate::sandbox::session::prepare_task(
-                            vm, &context, &source, repair, &cancelled,
+                            vm, &context, &source, &cancelled,
                         )?;
                         let preflight = match session.preflight(
                             environment.as_ref(),

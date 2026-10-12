@@ -36,7 +36,7 @@ fn live_preparation_network_requests_pause_commands_and_resume_scoped_attempts()
                 ("baseline", format!("baseline-{index}.example.org")),
             ] {
                 let mut session =
-                    crate::sandbox::session::prepare_task(&vm, &context, &attempt, false, &flag)?;
+                    crate::sandbox::session::prepare_task(&vm, &context, &attempt, &flag)?;
                 let error = session
                     .preflight(Some(&recipe), &flag, |_| {}, Timing::quiet())
                     .unwrap_err();
@@ -86,7 +86,7 @@ fn live_preparation_network_requests_pause_commands_and_resume_scoped_attempts()
                     .source;
             }
             let mut session =
-                crate::sandbox::session::prepare_task(&vm, &context, &attempt, false, &flag)?;
+                crate::sandbox::session::prepare_task(&vm, &context, &attempt, &flag)?;
             let summary = session.preflight(Some(&recipe), &flag, |_| {}, Timing::quiet())?;
             assert!(summary.contains("Baseline 0/1 passed"));
             assert_eq!(

@@ -90,21 +90,21 @@ impl Sandbox {
         self.save_tasks()
     }
 
-    pub fn refresh_for_repair(
+    pub fn refresh_task(
         &mut self,
         id: i64,
         source: &str,
         cancelled: &AtomicBool,
     ) -> io::Result<()> {
-        self.activate_task(id, cancelled)?;
-        self.restore_check_scripts(cancelled)?;
+        self.ensure_task(id, cancelled)?;
+        crate::checks::restore_scripts(self, id, crate::sandbox::next_transfer(), cancelled)?;
         if self
             .tasks
             .repair_sources
             .get(&id)
             .is_some_and(|saved| saved == source)
         {
-            return Ok(());
+            return self.activate_task(id, cancelled);
         }
         if self.tasks.integrated.contains(&id) {
             self.git(Some(id), &["reset", "--hard", "integration"], cancelled)?;
@@ -121,12 +121,16 @@ impl Sandbox {
             }
         }
         let combined = self.snapshot("/workspace", cancelled)?;
+        let drafts = self.root().join("task-drafts");
+        fs::create_dir_all(&drafts)?;
         fs::write(
-            self.root().join(format!("task-drafts/{id}-base.json")),
+            drafts.join(format!("{id}-base.json")),
             serde_json::to_vec(&combined)?,
         )?;
         self.tasks.integrated.remove(&id);
         self.tasks.repair_sources.insert(id, source.into());
+        self.tasks.active = Some(id);
+        self.tasks.cleaned = false;
         self.save_tasks()?;
         self.export(cancelled)?;
         Ok(())
@@ -282,9 +286,6 @@ impl Sandbox {
     }
 
     pub fn activate_task(&mut self, id: i64, cancelled: &AtomicBool) -> io::Result<()> {
-        if !self.tasks.round.contains(&id) {
-            return Err(io::Error::other("Task does not belong to this execution."));
-        }
         self.ensure_task(id, cancelled)?;
         let dir = self.root().join("task-drafts");
         fs::create_dir_all(&dir)?;
@@ -306,6 +307,9 @@ impl Sandbox {
     }
 
     fn ensure_task(&self, id: i64, cancelled: &AtomicBool) -> io::Result<()> {
+        if !self.tasks.round.contains(&id) {
+            return Err(io::Error::other("Task does not belong to this execution."));
+        }
         let path = folder(id);
         if self.guest_exists(&format!("{path}/.git"))? {
             return Ok(());

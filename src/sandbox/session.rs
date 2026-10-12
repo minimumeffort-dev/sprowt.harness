@@ -536,7 +536,6 @@ pub(crate) fn prepare_task(
     vm: &SharedVm,
     context: &crate::tools::Context,
     source: &str,
-    repair: bool,
     cancelled: &AtomicBool,
 ) -> io::Result<TaskSession> {
     let (database, mod_id) = context.execution_identity()?;
@@ -547,11 +546,7 @@ pub(crate) fn prepare_task(
     let (id, _) = crate::checks::authorize(&store, root, mod_id, context.worker_id(), source)?;
     {
         let gate = lock(vm, cancelled)?.environment.clone();
-        let _lease = if repair {
-            Some(gate.write(cancelled)?)
-        } else {
-            None
-        };
+        let _lease = gate.write(cancelled)?;
         let mut controller = lock(vm, cancelled)?;
         crate::checks::authorize(&store, root, mod_id, context.worker_id(), source)?;
         if controller.root.canonicalize()? != root.canonicalize()? {
@@ -560,13 +555,11 @@ pub(crate) fn prepare_task(
                 "Task preparation belongs to another VM.",
             ));
         }
+        controller.refresh_task(id, source, cancelled)?;
         if context.muse {
             controller.assign_muse_task(id, context.worker_id(), cancelled)?;
         } else {
             controller.assign_task(id, context.worker_id(), cancelled)?;
-        }
-        if repair {
-            controller.refresh_for_repair(id, source, cancelled)?;
         }
     }
     let mut session = TaskSession::capture(vm, id, context.worker_id(), source, cancelled)?;

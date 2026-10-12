@@ -1368,15 +1368,15 @@ mod tests {
                 )?;
                 assert_ne!(failed[0].exit_code, Some(0));
                 vm.assign_task(1, 101, &flag)?;
-                vm.refresh_for_repair(1, &source(1, 2), &flag)?;
+                vm.refresh_task(1, &source(1, 2), &flag)?;
                 assert_eq!(vm.run(&command("test \"$(cat ui.txt)\" = ui && test \"$(cat .venv/proof)\" = installed && printf fixed > runtime.txt && ! touch /tasks/2/denied"),&flag,30,8192)?.0,Some(0));
                 vm.export(&flag)?;
                 drop(vm);
                 let mut vm = Sandbox::prepare(&root, &flag, |_| {})?;
                 vm.assign_task(1, 101, &flag)?;
-                vm.refresh_for_repair(1, &source(1, 2), &flag)?;
+                vm.refresh_task(1, &source(1, 2), &flag)?;
                 // The same delivery and an explicit retry both preserve the saved fix.
-                vm.refresh_for_repair(1, &source(1, 3), &flag)?;
+                vm.refresh_task(1, &source(1, 3), &flag)?;
                 let fixed = check(
                     1,
                     "test \"$(cat runtime.txt)\" = fixed && test \"$(cat .venv/proof)\" = installed",
@@ -1388,7 +1388,7 @@ mod tests {
                     Some(0)
                 );
                 vm.assign_task(3, 101, &flag)?;
-                vm.refresh_for_repair(3, &source(3, 2), &flag)?;
+                vm.refresh_task(3, &source(3, 2), &flag)?;
                 let integration = check(
                     3,
                     "test \"$(cat runtime.txt)\" = fixed && test \"$(cat integration.txt)\" = diagnostics && test \"$(cat README.md)\" = documentation && test \"$(cat ui.txt)\" = ui",
@@ -1468,7 +1468,7 @@ mod tests {
                 vm.assign_task(2, 102, &flag)?;
                 assert_eq!(vm.run(&command("mkdir -p \"$XDG_CACHE_HOME\"; printf model-fixture > \"$XDG_CACHE_HOME/model\""), &flag, 30, 8192)?.0, Some(0));
                 let retry = crate::store::task_source(2, 2);
-                vm.refresh_for_repair(2, &retry, &flag)?;
+                vm.refresh_task(2, &retry, &flag)?;
                 assert_eq!(vm.run(&command("test \"$(cat \"$XDG_CACHE_HOME/model\")\" = model-fixture && test -x .venv/bin/check"), &flag, 30, 8192)?.0, Some(0));
                 let repeated = command("printf x >> \"$XDG_CACHE_HOME/runs\"; test -s source.txt");
                 let duplicate_checks = ["Smoke", "Review regression"].map(|name| Check {
@@ -1529,7 +1529,7 @@ mod tests {
                 assert!(results[0].failed() && !results[0].output.contains("panicked"));
                 vm.assign_task(1, 101, &flag)?;
                 let retry = crate::store::task_source(1, 2);
-                vm.refresh_for_repair(1, &retry, &flag)?;
+                vm.refresh_task(1, &retry, &flag)?;
                 assert_eq!(vm.run(&setup, &flag, 30, 8192)?.0, Some(0));
                 vm.verify_execution(&retry, &[check(1)], &flag)?;
                 let (after, results) = vm.verify_execution("final:test", &checks, &flag)?;
