@@ -68,13 +68,13 @@ fn read_state(root: &Path, snapshot: bool) -> io::Result<Snapshot> {
 pub(crate) fn source_snapshot(root: &Path, source: Snapshot) -> io::Result<Snapshot> {
     let mut files = source
         .into_iter()
-        .filter(|(path, _, _)| source_path(root, path) && !package_metadata(path))
+        .filter(|(path, _, _)| source_path(root, path) && !generated_metadata(path))
         .map(|(path, bytes, mode)| (path, (bytes, mode)))
         .collect::<BTreeMap<_, _>>();
     let before = root.join("before");
     if before.exists() {
         for path in walk(&before, true)? {
-            if package_metadata(&path)
+            if generated_metadata(&path)
                 && let Some(file) = read_file(&before, &path)?
             {
                 files.insert(path, (file.bytes, file.mode));
@@ -279,7 +279,7 @@ fn review_inner(root: &Path, snapshot: bool) -> io::Result<Review> {
     )?)?;
     let mut changes = Vec::new();
     for path in changed {
-        if !snapshot && package_metadata(&path) {
+        if !snapshot && generated_metadata(&path) {
             run_git(
                 root,
                 &[
@@ -356,27 +356,28 @@ pub(crate) fn excluded(path: &Path) -> bool {
 }
 
 fn generated(path: &Path) -> bool {
+    generated_metadata(path)
+        || path.components().any(|part| part.as_os_str() == "dist")
+        || path.file_name().is_some_and(|name| {
+            let name = name.to_string_lossy();
+            let name = ["-wal", "-shm", "-journal", ".wal"]
+                .iter()
+                .find_map(|suffix| name.strip_suffix(suffix))
+                .unwrap_or(&name);
+            [".db", ".sqlite", ".sqlite3", ".duckdb"]
+                .iter()
+                .any(|suffix| name.ends_with(suffix))
+        })
+}
+
+pub(crate) fn generated_metadata(path: &Path) -> bool {
     path.components().any(|part| {
         let name = part.as_os_str().to_string_lossy();
         matches!(
             name.as_ref(),
-            "dist" | ".pytest_cache" | ".mypy_cache" | ".ruff_cache"
+            ".pytest_cache" | ".mypy_cache" | ".ruff_cache"
         ) || name.ends_with(".egg-info")
-    }) || path.file_name().is_some_and(|name| {
-        let name = name.to_string_lossy();
-        let name = ["-wal", "-shm", "-journal", ".wal"]
-            .iter()
-            .find_map(|suffix| name.strip_suffix(suffix))
-            .unwrap_or(&name);
-        [".db", ".sqlite", ".sqlite3", ".duckdb"]
-            .iter()
-            .any(|suffix| name.ends_with(suffix))
     })
-}
-
-pub(crate) fn package_metadata(path: &Path) -> bool {
-    path.components()
-        .any(|part| part.as_os_str().to_string_lossy().ends_with(".egg-info"))
 }
 
 pub(crate) fn source_path(workspace: &Path, path: &Path) -> bool {
@@ -617,6 +618,7 @@ fn checked(output: &Output) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::store::test_support::TestData;
+    mod replay;
 
     fn project(data: &TestData) -> PathBuf {
         let project = data.0.join("project");
@@ -716,7 +718,11 @@ mod tests {
             "tracked metadata",
         )
         .unwrap();
-        for path in [".pytest_cache/v/cache/nodeids", ".mypy_cache/check.json", ".ruff_cache/check"] {
+        for path in [
+            ".pytest_cache/v/cache/nodeids",
+            ".mypy_cache/check.json",
+            ".ruff_cache/check",
+        ] {
             fs::create_dir_all(project.join(path).parent().unwrap()).unwrap();
             fs::write(project.join(path), "tracked cache").unwrap();
         }
@@ -763,7 +769,11 @@ mod tests {
             "regenerated metadata",
         )
         .unwrap();
-        for path in [".pytest_cache/v/cache/nodeids", ".mypy_cache/check.json", ".ruff_cache/check"] {
+        for path in [
+            ".pytest_cache/v/cache/nodeids",
+            ".mypy_cache/check.json",
+            ".ruff_cache/check",
+        ] {
             fs::write(root.join("work").join(path), "new runtime cache").unwrap();
         }
         assert_eq!(source_state(&root.join("work")).unwrap(), before);
@@ -772,8 +782,15 @@ mod tests {
         fs::write(root.join("work/a.txt"), "requested edit").unwrap();
         let review = review(&root).unwrap();
         assert_eq!(review.paths().collect::<Vec<_>>(), [Path::new("a.txt")]);
-        for path in [".pytest_cache/v/cache/nodeids", ".mypy_cache/check.json", ".ruff_cache/check"] {
-            assert_eq!(fs::read_to_string(project.join(path)).unwrap(), "tracked cache");
+        for path in [
+            ".pytest_cache/v/cache/nodeids",
+            ".mypy_cache/check.json",
+            ".ruff_cache/check",
+        ] {
+            assert_eq!(
+                fs::read_to_string(project.join(path)).unwrap(),
+                "tracked cache"
+            );
         }
         assert_eq!(
             fs::read_to_string(root.join("work/runtime.duckdb")).unwrap(),

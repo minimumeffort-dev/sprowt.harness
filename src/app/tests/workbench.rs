@@ -1,8 +1,10 @@
 use super::*;
+mod preparation;
 use crate::app::{
     controls::{Control, EvidenceTab},
     timeline::{Focus, Key},
 };
+use preparation::source_changed_app;
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 fn reviewed_app() -> (TestData, App) {
@@ -103,6 +105,7 @@ fn setup_failed_app() -> (TestData, App, PathBuf, i64) {
     );
     let receipt = crate::environment::Receipt {
         recipe,
+        source_changes: Vec::new(),
         error: Some(
             "Setup failed: Install browser runtime\nGuest command timed out after 180s.".into(),
         ),
@@ -188,28 +191,6 @@ fn workbench_persisted_setup_failure_is_visible_without_a_live_worker() {
         assert!(matches!(app.view, View::Task(task, 0) if task == id));
         assert_eq!(app.input.lines(), ["keep this draft"]);
     }
-}
-
-#[test]
-fn workbench_source_changing_preparation_recommends_correction_after_restart() {
-    let (data, app, root, id) = setup_failed_app();
-    let reason = "Environment preflight failed: Setup or baseline changed source. Edits are retained; correct the recipe before retrying.";
-    let mod_id = app.mods[0].id;
-    let project = app.project.clone();
-    app.store.0.execute("UPDATE task_runs SET summary=?2 WHERE id=?1", rusqlite::params![id, reason]).unwrap();
-    drop(app);
-    let mut app = App::load(project, false, data.store()).unwrap();
-    assert_eq!(app.state_summary().primary, Some(Action::ReviseRepair));
-    let dock = app.action_dock();
-    assert!(dock.actions.iter().any(|a| a.action == Action::ReviseRepair && a.label == "Revise setup recipe"));
-    assert!(dock.actions.iter().any(|a| a.action == Action::RetryTask(id)));
-    assert_eq!(app.input.lines(), ["keep this draft"]);
-    let before = app.store.execution(mod_id).unwrap().unwrap().tasks[0].source.clone();
-    key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
-    key(&mut app, KeyCode::Char('f'), KeyModifiers::NONE);
-    assert!(matches!(app.view, View::Task(task, 0) if task == id));
-    assert_eq!(app.store.execution(mod_id).unwrap().unwrap().tasks[0].source, before);
-    assert!(root.exists());
 }
 
 #[test]
@@ -410,6 +391,7 @@ fn export_workbench_buffers() {
         .clear();
     let (_idle_data, mut idle, _) = execution_app();
     let (_setup_data, mut setup, _, _) = setup_failed_app();
+    let (_source_data, mut source, _, _) = source_changed_app(false);
     let record = working.store.worker(working.mods[0].id).unwrap();
     let mut worker = Worker::start(
         &working.project,
@@ -434,6 +416,7 @@ fn export_workbench_buffers() {
         ("working", &mut working, Key::Build),
         ("idle", &mut idle, Key::Plan),
         ("setup-failure", &mut setup, Key::Build),
+        ("source-change", &mut source, Key::Build),
     ] {
         app.project = PathBuf::from("/example/project");
         for (suffix, width, height) in [("desktop", 180, 52), ("narrow", 80, 42), ("small", 36, 36)]
@@ -441,7 +424,7 @@ fn export_workbench_buffers() {
             screen(app, width, height);
             app.activate_control(Control::Stage(selected)).unwrap();
             app.timeline.focus = Focus::Inspector;
-            if name == "setup-failure" {
+            if matches!(name, "setup-failure" | "source-change") {
                 app.activate_control(Control::Tab(EvidenceTab::Checks))
                     .unwrap();
             }

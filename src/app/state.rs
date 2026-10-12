@@ -131,6 +131,18 @@ impl App {
                     },
                 ),
             )
+        } else if let Some(id) = self
+            .source_changing_task()
+            .filter(|_| !self.execution_busy())
+        {
+            let task = self.inspect_task(id).unwrap();
+            let mut summary = Summary::new(
+                NeedsYou,
+                format!("Task {} · setup recipe needs correction", task.number),
+                Some(ReviseRepair),
+            );
+            summary.error = task.error.map(str::to_owned);
+            summary
         } else if self.repair_stalled() && !self.execution_busy() {
             let mut s = Summary::new(
                 NeedsYou,

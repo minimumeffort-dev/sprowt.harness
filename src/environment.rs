@@ -7,6 +7,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs, io,
     os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::{Component, Path, PathBuf},
@@ -210,6 +211,8 @@ pub struct Receipt {
     pub recipe: Recipe,
     #[serde(default)]
     pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_changes: Vec<PathBuf>,
     pub environment: String,
     pub source: String,
     #[serde(default)]
@@ -232,6 +235,9 @@ pub fn load(root: &Path, id: i64) -> io::Result<Option<Receipt>> {
 }
 
 impl Receipt {
+    pub fn changed_source(&self) -> bool {
+        !self.source_changes.is_empty() || self.error.as_deref().is_some_and(source_change_failure)
+    }
     pub fn cache_summary(&self) -> String {
         let mut summary = self.cache.summary();
         if let Some(saved) = &self.cache_saved {
@@ -265,6 +271,26 @@ impl Receipt {
             self.cache_summary()
         )
     }
+}
+
+pub(crate) fn source_change_failure(reason: &str) -> bool {
+    reason
+        .strip_prefix("Environment preflight failed: ")
+        .unwrap_or(reason)
+        .starts_with("Setup or baseline changed source")
+}
+
+fn changed_paths(before: &Snapshot, after: &Snapshot) -> Vec<PathBuf> {
+    let before: BTreeMap<_, _> = before.iter().map(|(p, b, m)| (p, (b, m))).collect();
+    let after: BTreeMap<_, _> = after.iter().map(|(p, b, m)| (p, (b, m))).collect();
+    before
+        .keys()
+        .chain(after.keys())
+        .filter(|path| before.get(*path) != after.get(*path))
+        .map(|path| (*path).clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 trait Runner {
@@ -339,6 +365,7 @@ fn preflight(
     let mut receipt = Receipt {
         recipe: recipe.clone(),
         error: None,
+        source_changes: Vec::new(),
         environment: key.clone(),
         source: fingerprint.clone(),
         runtime_home: runner.home(),
@@ -437,9 +464,30 @@ fn preflight(
         let after = runner.snapshot(cancelled)?;
         if after != before {
             runner.preserve(&after, cancelled)?;
-            result = Err(io::Error::other(
-                "Setup or baseline changed source. Edits are retained; correct the recipe before retrying.",
-            ));
+            receipt.source_changes = changed_paths(&before, &after);
+            let mut paths = receipt
+                .source_changes
+                .iter()
+                .take(4)
+                .map(|path| {
+                    path.to_string_lossy()
+                        .escape_debug()
+                        .take(120)
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            if receipt.source_changes.len() > 4 {
+                paths.push_str(&format!(" (+{} more)", receipt.source_changes.len() - 4));
+            }
+            let original = result
+                .as_ref()
+                .err()
+                .map(|error| format!("\nOriginal preparation failure:\n{error}"))
+                .unwrap_or_default();
+            result = Err(io::Error::other(format!(
+                "Setup or baseline changed source: {paths}.\nEdits are retained. Revise the setup recipe before retrying.{original}"
+            )));
         }
     }
     if let Err(error) = &result {

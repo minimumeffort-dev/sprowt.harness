@@ -44,6 +44,20 @@ pub(super) fn visible_task_error(error: Option<&str>, user_paused: bool) -> Opti
 }
 
 impl App {
+    pub(crate) fn source_changing_task(&self) -> Option<i64> {
+        self.current_mod().filter(|m| !m.closed && !m.user_paused)?;
+        self.task_ids().into_iter().find(|id| {
+            self.inspect_task(*id).is_some_and(|task| {
+                task.error
+                    .is_some_and(crate::environment::source_change_failure)
+                    || task.error.is_some()
+                        && self.task_preparation(*id).is_some_and(|preparation| {
+                            preparation.failed() && preparation.receipt.changed_source()
+                        })
+            })
+        })
+    }
+
     pub fn task_preparation(&self, id: i64) -> Option<Preparation> {
         let execution = self.current_mod()?.execution.as_ref()?;
         let run = execution.tasks.iter().find(|run| run.id == id)?;
@@ -494,6 +508,9 @@ impl App {
             KeyCode::Down => self.view = view(scroll.saturating_add(1)),
             KeyCode::PageUp => self.view = view(scroll.saturating_sub(self.page_size)),
             KeyCode::PageDown => self.view = view(scroll.saturating_add(self.page_size)),
+            KeyCode::Char('g') if !history && key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_actions();
+            }
             KeyCode::Char('r')
                 if !history
                     && key.modifiers.contains(KeyModifiers::CONTROL)

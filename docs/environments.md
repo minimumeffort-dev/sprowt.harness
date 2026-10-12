@@ -111,11 +111,11 @@ Add `"resources": {"memory_gib": 8}` when your project explicitly needs that mem
 | System packages or setup | Pause before sending an editing turn |
 | Capability probes | Pause and retain the failed command and output |
 | Baseline tests | Save the failure and let the worker repair the starting source |
-| Source changed during preparation | Preserve the edits and pause; fix the recipe |
+| Source or lockfile changed during preparation | Preserve the edits, list changed paths and pause; choose **Revise setup recipe** |
 
 Select **Implementation → 2 · Checks** to read saved setup failures before the task checks. **Inspect failure** opens the affected task. Press **e** for the complete preparation output, command, elapsed time and limit. The failure remains visible after restart. Preparation results never count as completion checks.
 
-On setup failure, **Revise repair plan** carries the recipe and evidence into planning. Blocked downloads still require [network approval](sandbox.md#downloads).
+For commands that change source, choose **Ctrl+G → v · Revise setup recipe** from the workbench or task details. The correction includes the recipe, changed paths and evidence. Press **e** in task details for the complete path list and command output. An unchanged retry does not correct those commands. Transient download failures still offer retry; blocked downloads require [network approval](sandbox.md#downloads).
 
 Preparation evidence also reports copied bytes, dependency reuse and cache rejection. Results belong to that attempt's source and worker HOME.
 
@@ -160,6 +160,8 @@ Missing, corrupt or unsupported assets fall back to fresh setup. An interrupted 
 The cache retains up to **3 environments per codemod**, each at most **512 MiB / 100,000 entries**. Publication is serialized; restores create protected staged copies, then move them into private paths. A copy or publication has a 90-second budget. The next operation removes interrupted staging copies while preserving active copies and worker source. These limits may prevent reuse for large dependency trees; they do not prevent normal setup.
 
 Setup and baseline commands must leave source and lockfiles unchanged. Put generated dependencies and caches in their usual excluded locations. Commands retain normal worker permissions.
+
+Updates to `.pytest_cache`, `.mypy_cache` and `.ruff_cache` are generated test output. They do not count as source edits. If those caches were already tracked, Sprowt preserves their starting contents in checkpoints and PRs while tests can update their runtime copies. Tracked distribution assets, database fixtures, source and lockfiles remain protected.
 
 Private `environments/` receipts preserve commands, output, source fingerprints, worker HOME, cache decisions and errors across restart. Each attempt has its own file, including stopped or superseded attempts. The latest pointer updates only for the current task owner, attempt and VM identity. Receipt files use mode `0600`. New task IDs get their own preparation records. The cache stays inside the codemod VM; deleting that VM also removes its prepared assets.
 

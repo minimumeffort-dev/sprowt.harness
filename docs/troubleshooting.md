@@ -81,9 +81,11 @@ Read the saved failure in the dock or **Implementation → 2 · Checks**. Choose
 | Download progresses but reaches the setup limit | Request edits with an explicit longer setup budget, up to 600 seconds; existing plans keep their declared limit |
 | Setup succeeds, capability probe fails | Check the actual runtime/browser startup error; installation alone is insufficient |
 | Only baseline tests fail | The worker can proceed with that starting failure recorded |
-| Preparation changes source or a lockfile | Correct the recipe so setup leaves source unchanged |
+| Preparation changes source or a lockfile | Inspect the listed paths, then choose **Revise setup recipe**; remove source-writing commands from preparation |
 
 See [the recipe example and setup budgets](environments.md#recipe-fields). Keep the project recipe in sync with any accepted correction. Baselines and completion checks retain their own limits.
+
+Pytest, mypy and Ruff cache updates do not count as code changes, including caches accidentally tracked in Git. An older saved failure can still name a cache; after installing the corrected harness, retry that task to record a fresh preparation result. Real source changes remain paused for recipe correction.
 
 ## Checks fail or take too long
 

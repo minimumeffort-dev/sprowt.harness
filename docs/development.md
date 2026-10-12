@@ -58,7 +58,8 @@ Use the [supported provider versions](workers.md#supported-versions), sign in an
 | Muse helper reuse and corruption recovery (no inference) | `cargo test --locked muse_helpers_reuse_verified_content_and_recopy_corruption -- --ignored --nocapture` |
 | Retained v1 VM setup migration (no inference; local v1 image required) | `cargo test --locked retained_v1_vm_migrates_stable_helpers_and_keeps_source_and_runtime -- --ignored --nocapture` |
 | Commit and PR text (Codex only; no push) | `cargo test live_publication_writer -- --ignored --nocapture` |
-| Project preparation and setup reuse | `cargo test live_preflight_retains_evidence_and_reuses_only_proven_setup -- --ignored` |
+| Preparation reuse, tracked test caches and genuine source/lockfile changes (no inference) | `cargo test --locked live_preflight_retains_evidence_and_reuses_only_proven_setup -- --ignored --nocapture` |
+| Tracked generated metadata and parallel source integration (no inference) | `cargo test --locked tracked_generated_metadata_does_not_conflict_with_parallel_source_edits -- --ignored --nocapture` |
 | Prepared assets, private HOMEs and locked dependencies (no inference or downloads) | `cargo test --locked live_prepared_assets_are_private_and_locked_dependencies_reuse_only_exact_inputs -- --ignored --nocapture` |
 | Independent checks, private paths, package waits and stale receipt rejection (no inference or downloads; cached image required) | `cargo test --locked shared_dispatcher_overlaps_isolated_checks_and_rejects_stale_receipts -- --ignored --nocapture` |
 | Saved-check repair, peer source and fresh combined verification (no inference or downloads; cached image required) | `cargo test --locked requested_check_repair_preserves_combined_source_and_saved_scripts -- --ignored --nocapture` |

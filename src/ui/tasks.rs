@@ -91,6 +91,14 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
     let mut keys = vec![("↑↓", "scroll"), ("h", "task history")];
     let actions = app.action_dock();
     let retry_task = app.can_retry_task(id);
+    if app.source_changing_task() == Some(id)
+        && actions
+            .actions
+            .iter()
+            .any(|action| action.action == Action::ReviseRepair)
+    {
+        keys.push(("ctrl+g v", "revise setup recipe"));
+    }
     if retry_task {
         keys.push(("ctrl+r", "retry task"));
     }
@@ -399,6 +407,16 @@ pub(super) fn preparation_lines(app: &App, id: i64, width: u16) -> Vec<Line<'sta
     let receipt = preparation.receipt;
     if app.show_evidence {
         lines.extend(indented_text(&receipt.cache_summary(), width, 2));
+        if !receipt.source_changes.is_empty() {
+            lines.push(Line::from("Changed source paths").fg(Color::Red).bold());
+            for path in &receipt.source_changes {
+                lines.extend(indented_text(
+                    &path.to_string_lossy().escape_debug().to_string(),
+                    width,
+                    2,
+                ));
+            }
+        }
     }
     for (phase, results) in [
         ("Setup", &receipt.setup),
@@ -429,12 +447,13 @@ pub(super) fn preparation_lines(app: &App, id: i64, width: u16) -> Vec<Line<'sta
         );
     }
     if let Some(error) = &receipt.error
-        && !receipt
-            .setup
-            .iter()
-            .chain(&receipt.capabilities)
-            .chain(&receipt.baseline)
-            .any(|result| result.failed())
+        && (receipt.changed_source()
+            || !receipt
+                .setup
+                .iter()
+                .chain(&receipt.capabilities)
+                .chain(&receipt.baseline)
+                .any(|result| result.failed()))
     {
         lines.extend(
             indented_text(error, width, 2)

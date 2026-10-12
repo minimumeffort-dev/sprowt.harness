@@ -564,8 +564,8 @@ impl Sandbox {
             }
             let mut base: Snapshot = serde_json::from_slice(&fs::read(base)?)?;
             let mut draft: Snapshot = serde_json::from_slice(&fs::read(draft)?)?;
-            base.retain(|(path, _, _)| workspace::source_path(self.root(), path));
-            draft.retain(|(path, _, _)| workspace::source_path(self.root(), path));
+            base = workspace::source_snapshot(self.root(), base)?;
+            draft = workspace::source_snapshot(self.root(), draft)?;
             let base: BTreeMap<_, _> = base.into_iter().map(|(p, b, m)| (p, (b, m))).collect();
             let draft: BTreeMap<_, _> = draft.into_iter().map(|(p, b, m)| (p, (b, m))).collect();
             for path in base.keys().chain(draft.keys()).collect::<BTreeSet<_>>() {
@@ -648,7 +648,7 @@ impl Sandbox {
         let mut bytes = Vec::new();
         for (path, _, _) in source
             .iter()
-            .filter(|(p, _, _)| !workspace::package_metadata(p))
+            .filter(|(p, _, _)| !workspace::generated_metadata(p))
         {
             bytes.extend_from_slice(path.as_os_str().as_encoded_bytes());
             bytes.push(0);
@@ -668,10 +668,10 @@ impl Sandbox {
             )?;
             fs::remove_file(paths)?;
         }
-        // Installers rewrite tracked metadata; stage its baseline without changing runtime files.
+        // Freeze generated metadata in checkpoints without changing runtime files.
         for (path, bytes, mode) in source
             .iter()
-            .filter(|(p, _, _)| workspace::package_metadata(p))
+            .filter(|(p, _, _)| workspace::generated_metadata(p))
         {
             let saved = self.root().join("task-metadata");
             fs::write(&saved, bytes)?;

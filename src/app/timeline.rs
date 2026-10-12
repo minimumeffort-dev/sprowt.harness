@@ -323,6 +323,9 @@ impl App {
                 .detail
                 .extend(preparing.into_iter().map(str::to_owned));
             environment.inspect = Some(failed.map_or(View::Tasks(0), |id| View::Task(id, 0)));
+            environment.action = dock
+                .primary
+                .filter(|a| *a == Action::ReviseRepair && self.source_changing_task().is_some());
             items.push(environment);
         }
         items.push(build);
@@ -435,7 +438,11 @@ impl App {
             }
             item.action = match dock.primary {
                 Some(Action::RetryTask(id) | Action::FixCheck(id)) if id == run.id => dock.primary,
-                Some(Action::ReviseRepair) if run.status == "blocked" => dock.primary,
+                Some(Action::ReviseRepair)
+                    if run.status == "blocked" || self.source_changing_task() == Some(run.id) =>
+                {
+                    dock.primary
+                }
                 Some(Action::Network)
                     if self.pending_network().is_some_and(|a| a.task == run.id) =>
                 {
