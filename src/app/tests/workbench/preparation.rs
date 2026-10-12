@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn blocked_partial_review_terminal_caption_keeps_reason_and_fix_action() {
+    let (data, store, _) = crate::review::tests::partial::partial_fixture();
+    let mut app = App::load(data.0.join("project"), false, store).unwrap();
+    app.view = View::Findings(0);
+    let text = rows(&screen(&mut app, 160, 70)).join("\n");
+    assert!(
+        text.contains("Review incomplete") && text.contains("Reject empty names"),
+        "{text}"
+    );
+    assert!(
+        text.contains("required follow-up inspection could not finish")
+            && text.contains("fix issues"),
+        "{text}"
+    );
+    assert_eq!(app.action_dock().primary, Some(Action::FixIssues));
+    assert!(!app.engine.can_publish());
+}
+
+#[test]
 fn observed_task_check_receipt_reaches_terminal_evidence_without_completion() {
     let (data, mut store, m, root, _) = crate::network::tests::fixture();
     let run = &m.execution.as_ref().unwrap().tasks[0];

@@ -1,5 +1,6 @@
 use super::*;
 mod observed_checks;
+mod partial_review;
 use crate::{
     engine::api::{Command, Direction},
     store::test_support::TestData,
