@@ -1,7 +1,6 @@
 """Muse RPC adapter. Provider credentials exist only in the host process."""
 
 import base64
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,47 +14,11 @@ import threading
 import time
 import urllib.request
 
-from muse_transport import (BridgeFailure, Broker, CHECKSUM, MODEL, VERSION, FrameReader, Rpc, RpcError,
+from muse_transport import (BridgeFailure, Broker, MODEL, FrameReader, Rpc, RpcError,
                             command_id, failure, guest, host_login, private_json, read_account, settings)
+from muse_release import artifact, prepare
 
 OUTPUT_TOKENS = 32768
-
-
-def artifact(cache):
-    cache.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = cache / ("muse-" + VERSION)
-
-    def digest(file):
-        result = hashlib.sha256()
-        with file.open("rb") as source:
-            while chunk := source.read(1024 * 1024):
-                result.update(chunk)
-        return result.hexdigest()
-
-    if path.exists() and digest(path) == CHECKSUM:
-        return path
-    info = json.loads((Path.home() / ".local/bin/.muse-release-info.json").read_text())
-    if info.get("version") != VERSION or not info.get("manifest_url", "").startswith("https://lookaside.facebook.com/"):
-        raise BridgeFailure("Install the supported Muse account CLI: " + VERSION)
-    with urllib.request.urlopen(info["manifest_url"], timeout=30) as response:
-        manifest = json.load(response)
-    item = manifest["artifacts"]["aarch64_linux"]
-    if (manifest.get("version") != VERSION or item.get("checksum") != CHECKSUM
-            or not item.get("url", "").startswith("https://lookaside.facebook.com/")):
-        raise BridgeFailure("Muse release did not match the pinned Linux binary.")
-    next_path = path.with_suffix(".next-" + secrets.token_hex(8))
-    try:
-        with urllib.request.urlopen(item["url"], timeout=60) as source, next_path.open("xb") as output:
-            next_path.chmod(0o600)
-            while chunk := source.read(1024 * 1024):
-                output.write(chunk)
-        if digest(next_path) != CHECKSUM or next_path.stat().st_size != item["size"]:
-            raise BridgeFailure("Muse binary checksum mismatch.")
-        next_path.chmod(0o755)
-        next_path.replace(path)
-    finally:
-        next_path.unlink(missing_ok=True)
-    return path
 
 
 def cleanup_children(pid):
@@ -641,6 +604,8 @@ if __name__ == "__main__":
             print(json.dumps(read_account(Path(sys.argv[2]))), flush=True)
         elif sys.argv[1:2] == ["--artifact"]:
             print(artifact(Path(sys.argv[2])), flush=True)
+        elif sys.argv[1:2] == ["--prepare"]:
+            print(json.dumps({"available": prepare(Path(sys.argv[2]))}), flush=True)
         else:
             host()
     except Exception as error:

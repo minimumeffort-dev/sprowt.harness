@@ -313,6 +313,7 @@ chown -R 1000:1000 /tasks/1 /home/worker
         for filename in ("codex_vm_probe.py", "muse_vm_probe.py"):
             container("copy", str(Path(__file__).with_name(filename).resolve()), f"{name}:/opt/probe/{filename}")
         container("copy", str(Path(__file__).resolve().parents[1] / "src" / "muse_transport.py"), f"{name}:/opt/probe/muse_transport.py")
+        container("copy", str(Path(__file__).resolve().parents[1] / "src" / "muse_release.py"), f"{name}:/opt/probe/muse_release.py")
         token = root / "guest-broker-token"
         token.write_text(broker.capability)
         token.chmod(0o600)

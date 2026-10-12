@@ -31,12 +31,14 @@ pub fn detect() -> io::Result<bool> {
                 );
             output(command, Duration::from_secs(15))
         },
+        muse::prepare,
         muse::account_state,
     )
 }
 
 fn detect_with(
     mut probe: impl FnMut(&str, &[&str]) -> io::Result<Output>,
+    prepare: impl FnOnce() -> io::Result<bool>,
     account: impl FnOnce() -> io::Result<String>,
 ) -> io::Result<bool> {
     let version = probe("codex", &["--version"]).map_err(|_| {
@@ -75,41 +77,8 @@ fn detect_with(
             "Sign in first: codex -c 'cli_auth_credentials_store=\"file\"' login",
         ));
     }
-    let version = match probe("muse", &["--version"]) {
-        Ok(version) => version,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(_) => {
-            return Err(io::Error::other(
-                "Could not check Muse. Try starting the harness again.",
-            ));
-        }
-    };
-    if !version.status.success()
-        || String::from_utf8_lossy(&version.stdout).trim()
-            != format!(
-                "Muse Code {} ({})",
-                muse::VERSION.split('-').next().unwrap(),
-                muse::VERSION
-            )
-    {
-        let output = String::from_utf8_lossy(&version.stdout);
-        let installed = output
-            .trim()
-            .strip_prefix("Muse Code ")
-            .and_then(|text| text.rsplit_once('('))
-            .and_then(|(_, version)| version.strip_suffix(')'))
-            .filter(|version| {
-                !version.is_empty()
-                    && version.len() <= 64
-                    && version
-                        .chars()
-                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
-            })
-            .unwrap_or("unknown version");
-        return Err(io::Error::other(format!(
-            "Muse {installed} is installed; this harness supports {}. Update the harness source and reinstall, or use the supported Muse release.",
-            muse::VERSION
-        )));
+    if !prepare()? {
+        return Ok(false);
     }
     if account()? != "accountLogin" {
         return Err(io::Error::other(
@@ -163,90 +132,61 @@ mod tests {
         Ok(reply(match (name, args) {
             ("codex", ["--version"]) => "codex-cli 0.159.2\n",
             ("codex", _) => "Logged in using ChatGPT\n",
-            ("muse", _) => "Muse Code 1.4.4 (1.4.4-R5419.1)\n",
-            _ => unreachable!(),
+            _ => panic!("Discovery must not run the standalone Muse updater"),
         }))
     }
 
     #[test]
-    fn muse_version_mismatch_names_both_versions_and_keeps_the_vm_pin_in_sync() {
+    fn muse_pin_matches_the_managed_release() {
         assert!(
-            include_str!("muse_transport.py").contains(&format!("VERSION = \"{}\"", muse::VERSION))
+            include_str!("muse_release.py").contains(&format!("VERSION = \"{}\"", muse::VERSION))
         );
-        for version in ["1.4.3-R5018.1", "99.0.0-R9999.1"] {
-            let error = detect_with(
-                |name, args| {
-                    if name == "muse" {
-                        Ok(reply(&format!(
-                            "Muse Code {} ({version})",
-                            version.split('-').next().unwrap()
-                        )))
-                    } else {
-                        installed(name, args)
-                    }
-                },
-                || panic!("Unsupported Muse must not start"),
-            )
-            .unwrap_err()
-            .to_string();
-            assert!(error.contains(&format!("Muse {version} is installed")));
-            assert!(error.contains(&format!("supports {}", muse::VERSION)));
-        }
     }
 
     #[test]
-    fn accounts_are_detected_without_starting_workers_or_inference() {
-        assert!(detect_with(installed, || Ok("accountLogin".into())).unwrap());
+    fn accounts_are_detected_after_compatible_release_preparation() {
+        let prepared = std::cell::Cell::new(false);
+        assert!(
+            detect_with(
+                installed,
+                || {
+                    prepared.set(true);
+                    Ok(true)
+                },
+                || {
+                    assert!(prepared.get());
+                    Ok("accountLogin".into())
+                }
+            )
+            .unwrap()
+        );
         assert!(
             !detect_with(
-                |name, args| if name == "muse" {
-                    Err(io::ErrorKind::NotFound.into())
-                } else {
-                    installed(name, args)
-                },
-                || panic!("Missing Muse must not start an account process")
+                installed,
+                || Ok(false),
+                || { panic!("Missing Muse must not start an account process") }
             )
             .unwrap()
         );
     }
 
     #[test]
-    fn installed_agents_with_broken_login_or_version_are_not_silently_skipped() {
+    fn failed_preparation_and_accounts_are_not_silently_skipped() {
         for state in ["notLoggedIn", "apiKey"] {
             assert!(
-                detect_with(installed, || Ok(state.into()))
+                detect_with(installed, || Ok(true), || Ok(state.into()))
                     .unwrap_err()
                     .to_string()
                     .contains("muse login")
             );
         }
-        assert!(
-            detect_with(
-                |name, args| if name == "muse" {
-                    Ok(reply("muse incompatible"))
-                } else {
-                    installed(name, args)
-                },
-                || panic!("Unsupported Muse must not start")
-            )
-            .is_err()
-        );
-        let older = detect_with(
-            |name, args| {
-                if name == "muse" {
-                    Ok(reply("Muse Code 1.4.1 (1.4.1-R4503.1)\n"))
-                } else {
-                    installed(name, args)
-                }
-            },
-            || panic!("Unsupported Muse must not start"),
+        let error = detect_with(
+            installed,
+            || Err(io::Error::other("Muse download failed its checksum check")),
+            || panic!("Unverified Muse must not start"),
         )
         .unwrap_err();
-        assert!(
-            older
-                .to_string()
-                .contains("Update the harness source and reinstall")
-        );
+        assert_eq!(error.to_string(), "Muse download failed its checksum check");
         let error = detect_with(
             |name, args| {
                 if name == "codex" && args != ["--version"] {
@@ -255,6 +195,7 @@ mod tests {
                     installed(name, args)
                 }
             },
+            || panic!("Codex account required"),
             || panic!("Codex account required"),
         )
         .unwrap_err();

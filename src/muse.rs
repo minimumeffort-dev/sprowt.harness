@@ -22,13 +22,13 @@ use crate::{
 };
 
 pub const MODEL: &str = "muse-spark-1.3";
-pub const VERSION: &str = "1.4.4-R5419.1";
+pub const VERSION: &str = "1.4.6-R6000.1";
 static FILE: AtomicU64 = AtomicU64::new(0);
 
 fn helper() -> io::Result<std::path::PathBuf> {
     let dirs = ProjectDirs::from("", "", "sprowt-harness")
         .ok_or_else(|| io::Error::other("Cannot locate the Muse cache."))?;
-    let root = dirs.cache_dir().join("muse");
+    let root = dirs.cache_dir().join("muse").join(VERSION);
     fs::create_dir_all(&root)?;
     #[cfg(unix)]
     {
@@ -38,6 +38,7 @@ fn helper() -> io::Result<std::path::PathBuf> {
     for (name, content) in [
         ("bridge.py", include_str!("muse_bridge.py")),
         ("muse_transport.py", include_str!("muse_transport.py")),
+        ("muse_release.py", include_str!("muse_release.py")),
     ] {
         let target = root.join(name);
         if fs::read(&target).ok().as_deref() == Some(content.as_bytes()) {
@@ -57,20 +58,59 @@ fn helper() -> io::Result<std::path::PathBuf> {
 
 fn command(root: &std::path::Path) -> Command {
     let mut command = Command::new("python3");
-    command.arg(root.join("bridge.py")).env_clear().envs(
-        [
-            "PATH",
-            "HOME",
-            "USER",
-            "LOGNAME",
-            "LANG",
-            "TMPDIR",
-            "XDG_CONFIG_HOME",
-        ]
-        .iter()
-        .filter_map(|name| env::var_os(name).map(|value| (*name, value))),
-    );
     command
+        .arg(root.join("bridge.py"))
+        .env_clear()
+        .env("SPROWT_MUSE_CACHE", root)
+        .envs(
+            [
+                "PATH",
+                "HOME",
+                "USER",
+                "LOGNAME",
+                "LANG",
+                "TMPDIR",
+                "XDG_CONFIG_HOME",
+            ]
+            .iter()
+            .filter_map(|name| env::var_os(name).map(|value| (*name, value))),
+        );
+    command
+}
+
+pub fn prepare() -> io::Result<bool> {
+    let root = helper()?;
+    let installed = env::split_paths(&env::var_os("PATH").unwrap_or_default())
+        .any(|directory| directory.join("muse").is_file());
+    if !installed && !root.join(format!("muse-host-{VERSION}")).exists() {
+        return Ok(false);
+    }
+    eprintln!("Preparing tested Muse {VERSION} (first launch may download)…");
+    let mut command = command(&root);
+    command.arg("--prepare").arg(&root);
+    let output = crate::agents::output(command, Duration::from_secs(610)).map_err(|_| {
+        io::Error::other("Could not prepare Muse within 10 minutes. Ensure Python 3 is installed, check your connection and restart Sprowt; verified downloads are retained.")
+    })?;
+    if output.status.success()
+        && let Some(available) = serde_json::from_slice::<Value>(&output.stdout)
+            .ok()
+            .and_then(|value| value["available"].as_bool())
+    {
+        if available {
+            eprintln!("Muse {VERSION} ready.");
+        }
+        return Ok(available);
+    }
+    Err(preparation_error(&output.stdout))
+}
+
+fn preparation_error(stdout: &[u8]) -> io::Error {
+    let message = serde_json::from_slice::<Value>(stdout)
+        .ok()
+        .filter(|value| value["method"] == "bridge/failed")
+        .and_then(|value| value["params"]["message"].as_str().map(str::to_owned))
+        .unwrap_or_else(|| "Muse preparation failed. Check your connection and restart Sprowt; verified downloads are retained.".into());
+    io::Error::other(message)
 }
 
 pub fn account_state() -> io::Result<String> {
@@ -216,13 +256,11 @@ fn serve_connection(
     let preparing = timing.span(Phase::ProviderPreparation);
     let binary = root.join(format!("muse-{VERSION}"));
     // Verify the pinned artifact on every connection, even when cached.
-    let output = command(root)
-        .args(["--artifact", root.to_str().unwrap()])
-        .output()?;
+    let mut artifact = command(root);
+    artifact.args(["--artifact", root.to_str().unwrap()]);
+    let output = crate::agents::output(artifact, Duration::from_secs(610))?;
     if !output.status.success() || !binary.is_file() {
-        return Err(io::Error::other(format!(
-            "Muse setup failed. Install Muse {VERSION} and log in with your account."
-        )));
+        return Err(preparation_error(&output.stdout));
     }
     vm.lock().unwrap().prepare_muse(root, &binary, cancelled)?;
     preparing.finish();
@@ -471,6 +509,18 @@ fn turn_params(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_failures_preserve_recovery_and_hide_unstructured_output() {
+        let output = serde_json::to_vec(&json!({"method":"bridge/failed", "params":{"message":"Muse download failed its checksum or size check. Restart Sprowt to retry."}})).unwrap();
+        assert_eq!(
+            preparation_error(&output).to_string(),
+            "Muse download failed its checksum or size check. Restart Sprowt to retry."
+        );
+        let error = preparation_error(b"unstructured output with synthetic-secret").to_string();
+        assert!(error.contains("restart Sprowt"));
+        assert!(!error.contains("synthetic-secret"));
+    }
 
     #[test]
     fn every_muse_turn_includes_current_skills_and_preserves_accepted_instructions() {

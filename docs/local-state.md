@@ -94,7 +94,15 @@ On macOS, the main database is:
 
 </details>
 
-Apple Container manages VM disks separately. Temporary transfer archives are created inside the private workspace. Muse's verified binary/adapter cache is at `~/Library/Caches/sprowt-harness/muse/` and remains after codemod deletion.
+Apple Container manages VM disks separately. Temporary transfer archives are created inside the private workspace.
+
+Muse's owner-only cache is separate from source, login and saved work:
+
+```text
+~/Library/Caches/sprowt-harness/muse/
+```
+
+Each release has its own subdirectory containing the tested Mac and Linux executables, embedded adapters and a preparation lock. Downloads are verified before atomic replacement. Earlier release directories remain available to their matching harness versions. Removing this cache requires online preparation on the next Muse launch. Your standalone Muse installation and account settings stay in their original locations. See [automatic Muse setup](workers.md#automatic-muse-setup).
 
 ## What SQLite records
 

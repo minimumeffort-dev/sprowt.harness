@@ -4,31 +4,59 @@
 
 Codex handles planning and independent review. Codex and Muse can execute tasks in the codemod's Linux VM, with separate conversations, worktrees and runtime homes.
 
-[Versions](#supported-versions) · [Login](#login) · [Execution paths](#two-execution-paths-one-scheduler) · [Muse recovery](#muse-recovery)
+[Versions](#supported-versions) · [Automatic Muse setup](#automatic-muse-setup) · [Login](#login) · [Execution paths](#two-execution-paths-one-scheduler) · [Muse recovery](#muse-recovery)
 
 ## Supported versions
 
 | Component | Supported value | Source of the pin |
 | --- | --- | --- |
 | Codex CLI | **0.159.2** | [`src/sandbox.rs`](../src/sandbox.rs) |
-| Muse CLI, optional | **1.4.4-R5419.1** | [`src/muse.rs`](../src/muse.rs) |
+| Muse CLI, optional | **1.4.6-R6000.1**, managed by Sprowt | [`src/muse_release.py`](../src/muse_release.py) |
 | Host platform | Apple silicon, macOS 26+ | Apple Container backend |
 | Muse host adapter | Python 3 | Host stdio transport |
 
-CLI protocols affect isolation and recovery, so releases are pinned. Muse's matching Linux binary is also SHA-256 verified and privately cached. A Muse update needs a matching supported adapter and a harness reinstall.
+CLI protocols affect isolation and recovery, so releases are tested and pinned. Updating the harness can advance its Muse release; updates to your standalone Muse CLI do not change Sprowt's adapter or worker binaries.
 
 ## Automatic discovery
 
-Run `sprowt-harness` normally. Startup checks CLI versions and local account status.
+Run `sprowt-harness` normally. Startup checks Codex's version, prepares Sprowt's tested Muse release when available, and checks local account status.
 
 | Installed providers | Result |
 | --- | --- |
 | Supported, signed-in Codex | Required baseline |
-| Muse absent | Codex-only execution |
-| Supported, signed-in Muse present | Joins the pool automatically |
-| Installed provider incompatible or signed out | Startup stops with the installed/supported version or login action |
+| Muse absent, no managed copy | Codex-only execution |
+| Muse installed, including an older or newer release | Sprowt prepares its own tested release; joins the pool after login |
+| Verified managed Muse cached, standalone CLI absent | Reuses the managed release; requires a saved Muse account login |
+| Release cannot be prepared, or provider signed out | Startup stops with a download, verification or login action |
 
-Discovery does not start inference or a VM, copy credentials, or check remote access and usage limits. Saved tasks retain their provider; a saved Muse task needs Muse when resumed.
+Discovery does not start inference or a VM, copy credentials, or check provider access and usage limits. Release preparation can download public binaries. Saved tasks retain their provider; a saved Muse task needs Muse when resumed.
+
+## Automatic Muse setup
+
+Sign in once with your standalone Muse CLI, then start Sprowt:
+
+```sh
+muse login
+sprowt-harness
+```
+
+**Expected:** startup checks Muse, prepares the tested Mac and Linux binaries, then opens the terminal app. A verified installed Mac binary is copied into Sprowt's private cache; missing binaries are downloaded from Meta and checked against pinned sizes and SHA-256 hashes.
+
+```mermaid
+flowchart LR
+    start["Start Sprowt"] --> cache{"Verified tested binaries?"}
+    cache -->|Yes| account["Check local account"]
+    cache -->|No| prepare["Copy or download tested release"]
+    prepare --> verify["Verify and save atomically"]
+    verify --> account
+    account --> ready["Muse ready"]
+```
+
+Preparation has a **10-minute startup limit**. Completed files survive an interrupted download; the next launch reuses them and retries the missing file. Concurrent launches share a preparation lock.
+
+The cache works offline once both binaries are verified. Sprowt leaves your standalone Muse installation unchanged and never adopts an untested newer release automatically. A corrupt cache entry must be replaced with the exact tested artifact; it is not used as a fallback.
+
+**Next:** [Startup recovery](troubleshooting.md#worker-startup) · [Cache location](local-state.md#storage-layout)
 
 ## Login
 
@@ -44,7 +72,7 @@ For supported Muse, sign in on the Mac:
 muse login
 ```
 
-The host resolves that account login. No separate Meta API key is used, and the provider header stays in host memory. First use downloads the verified Linux binary. New VMs already include Python; older retained VMs receive it through signed package setup.
+The host resolves that account login. No separate Meta API key is used, and the provider header stays in host memory. Startup prepares the verified Linux binary. New VMs already include Python; older retained VMs receive it through signed package setup.
 
 Automatic login refresh is not implemented. After changing login or installed providers, restart the harness. See [startup troubleshooting](troubleshooting.md#worker-startup).
 

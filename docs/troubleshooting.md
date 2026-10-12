@@ -8,7 +8,7 @@ Start with the state in the dock. **Ctrl+T** opens its evidence; **Ctrl+G** list
 
 | Symptom | Start here |
 | --- | --- |
-| Startup asks for a different Muse or Codex version | [Worker startup](#worker-startup) |
+| Startup cannot prepare Muse, or asks for a different Codex version | [Worker startup](#worker-startup) |
 | Muse disconnected, returned no report or delivery is unknown | [Muse stopped](#muse-stopped) |
 | Setup or a capability probe fails before editing | [Project preparation](#project-preparation-fails) |
 | A check fails, times out or never finishes | [Checks](#checks-fail-or-take-too-long) |
@@ -21,7 +21,7 @@ Start with the state in the dock. **Ctrl+T** opens its evidence; **Ctrl+G** list
 
 ## Worker startup
 
-Check the [supported versions and login requirements](workers.md#supported-versions). Codex is required; Muse joins automatically if installed. An installed Muse with the wrong version or missing account login stops startup.
+Codex requires the [supported CLI version](workers.md#supported-versions). Sprowt manages its own tested Muse release, so your standalone Muse can be older or newer. Both providers need a local account login.
 
 In a host terminal, inspect installed versions:
 
@@ -30,9 +30,9 @@ codex --version
 sprowt-harness --version
 ```
 
-If Muse is installed, also run `muse --version`. Compare provider versions with the [supported versions table](workers.md#supported-versions); the harness version is a separate value.
+The standalone `muse --version` can differ from Sprowt's managed release. You do not need to downgrade it.
 
-1. Install the supported provider CLI version.
+1. Install the supported Codex CLI version.
 2. Sign in using the [login instructions](workers.md#login).
 3. If the adapter pin changed, reinstall the harness from the current repository:
 
@@ -43,6 +43,19 @@ If Muse is installed, also run `muse --version`. Compare provider versions with 
 4. Restart the harness from the same project.
 
 Reinstalling does not resume paused tasks or reset repair budgets. If Apple Container is unavailable, start its service using the [quickstart](quickstart.md#1-prepare-the-workers).
+
+### Muse preparation
+
+| Startup failure | Recovery |
+| --- | --- |
+| Download failed or reached the startup limit | Restore internet access, then launch again; completed verified files are reused |
+| Artifact verification failed | Retry online; Sprowt replaces only the invalid tested artifact |
+| Another launch is preparing Muse | Let that launch finish, then retry if the preparation limit expires |
+| Python unavailable | Install host Python 3, then restart |
+| Account not signed in | Run `muse login`, then restart |
+| Old harness rejects your standalone Muse version | Reinstall the current harness; managed release setup replaces the old exact-version requirement |
+
+Once both tested binaries are cached, startup can reuse them offline. Provider inference still requires connectivity. See [automatic Muse setup](workers.md#automatic-muse-setup).
 
 ## Muse stopped
 

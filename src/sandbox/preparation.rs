@@ -452,6 +452,7 @@ impl Sandbox {
             (binary.to_owned(), "muse"),
             (helper.join("bridge.py"), "bridge.py"),
             (helper.join("muse_transport.py"), "muse_transport.py"),
+            (helper.join("muse_release.py"), "muse_release.py"),
         ] {
             let expected = sha256(&path)?;
             let destination = format!("/opt/sprowt-muse/{name}");
@@ -742,6 +743,7 @@ mod tests {
         fs::create_dir_all(&helpers).unwrap();
         fs::write(helpers.join("bridge.py"), "print('bridge')\n").unwrap();
         fs::write(helpers.join("muse_transport.py"), "print('transport')\n").unwrap();
+        fs::write(helpers.join("muse_release.py"), "print('release')\n").unwrap();
         let binary = helpers.join("muse");
         fs::write(&binary, "#!/bin/sh\nprintf muse\n").unwrap();
         let flag = AtomicBool::new(false);

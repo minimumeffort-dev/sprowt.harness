@@ -29,7 +29,7 @@ Agents receive the same [pinned coding skills](docs/skills.md) on new and resume
 
 ## Run it
 
-Requires Apple silicon, macOS 26+, Rust, Apple Container and the supported Codex CLI. Muse is optional. Follow the [quickstart](docs/quickstart.md) for versions, login and first-time setup.
+Requires Apple silicon, macOS 26+, Rust, Apple Container and the supported Codex CLI. Muse is optional; Sprowt manages its tested release automatically. Follow the [quickstart](docs/quickstart.md) for login and first-time setup.
 
 From this repository:
 

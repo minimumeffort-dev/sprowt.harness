@@ -14,7 +14,7 @@ Install the harness, make a small change, and publish it after checks and review
 | A ChatGPT account login in Codex | Authenticate the host connection |
 | [GitHub CLI](https://cli.github.com/) | Publish a PR when ready |
 
-Check the [supported CLI versions](workers.md#supported-versions) before starting. Muse is optional: if it is absent, Codex handles execution. An installed but incompatible or signed-out Muse must be corrected before startup.
+Check the [supported CLI versions](workers.md#supported-versions) before starting. Muse is optional: without an installed or managed copy, Codex handles execution. Sprowt prepares its own tested Muse release automatically; a signed-out account still needs login.
 
 ## 1. Prepare the workers
 
@@ -36,13 +36,13 @@ container system start --enable-kernel-install
 <details>
 <summary>Add Muse to the worker pool</summary>
 
-Install the supported Muse CLI using its distribution instructions, then sign in:
+Install Muse using [Meta's distribution instructions](https://dev.meta.ai/docs/muse-code), then sign in:
 
 ```sh
 muse login
 ```
 
-Muse joins automatically. There is no `--muse` flag to enable it. The adapter also needs host `python3`. See [worker login](workers.md#login) and [Muse recovery](workers.md#muse-recovery).
+Muse joins automatically. There is no `--muse` flag to enable it. The adapter needs host `python3`; first startup can download the tested release. Your standalone CLI stays unchanged. See [automatic Muse setup](workers.md#automatic-muse-setup) and [Muse recovery](workers.md#muse-recovery).
 
 </details>
 

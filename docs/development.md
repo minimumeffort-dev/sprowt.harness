@@ -52,6 +52,7 @@ Use the [supported provider versions](workers.md#supported-versions), sign in an
 
 | Area | Focused command |
 | --- | --- |
+| Managed Muse preparation and local account discovery (no VM or model inference; can download release binaries) | `cargo test --locked installed_subscription_accounts_are_available -- --ignored --nocapture` |
 | Empty preparation, accepted source binding, explicit memory and retained allocation (no inference) | `cargo test --locked early_vm_is_empty_then_binds_accepted_source_and_preserves_bound_allocation -- --ignored --nocapture` |
 | Pinned skill delivery and read-only access (no inference) | `cargo test --locked pinned_skills_are_read_only_for_host_and_vm_agents -- --ignored --nocapture` |
 | Muse helper reuse and corruption recovery (no inference) | `cargo test --locked muse_helpers_reuse_verified_content_and_recopy_corruption -- --ignored --nocapture` |
@@ -112,6 +113,7 @@ Standalone compatibility probes live in [examples](../examples). They are separa
 | Worker orchestration | [`worker.rs`](../src/worker.rs), [`agents.rs`](../src/agents.rs) |
 | Startup ownership and measurements | [`app/preparation.rs`](../src/app/preparation.rs), [`codex/shared_vm.rs`](../src/codex/shared_vm.rs), [`diagnostics.rs`](../src/diagnostics.rs), [`diagnostics/timing.rs`](../src/diagnostics/timing.rs) |
 | Provider connections | [`codex.rs`](../src/codex.rs), [`muse.rs`](../src/muse.rs), [`muse_bridge.py`](../src/muse_bridge.py), [`muse_transport.py`](../src/muse_transport.py) |
+| Tested Muse releases, downloads and private binary cache | [`muse_release.py`](../src/muse_release.py) |
 | Pinned skill delivery | [`skills.rs`](../src/skills.rs), [`build.rs`](../build.rs), [`skills`](../skills/INDEX.md) |
 | Checks and recovery | [`checks.rs`](../src/checks.rs), [`execution.rs`](../src/execution.rs), [`repair.rs`](../src/repair.rs), [`conflict.rs`](../src/conflict.rs) |
 | Review and findings | [`review.rs`](../src/review.rs), [`review/ledger.rs`](../src/review/ledger.rs) |

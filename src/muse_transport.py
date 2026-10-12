@@ -20,12 +20,11 @@ import urllib.error
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from http.client import HTTPException
+from muse_release import VERSION, CHECKSUM, ReleaseError, native
 
 MODEL = "muse-spark-1.3"
 ORIGIN = "https://api.meta.ai"
-VERSION = "1.4.4-R5419.1"
-CHECKSUM = "bc1196793927baaf07535e9199d053ea3754b3bc658da1fec13d37f089cccd11"
-IMAGE = "sprowt-sandbox:0.159.2-v1"
+IMAGE = "sprowt-sandbox:0.159.2-v2"
 
 
 class BridgeFailure(RuntimeError):
@@ -38,6 +37,8 @@ class BridgeFailure(RuntimeError):
 def failure(error, stage):
     if isinstance(error, BridgeFailure):
         return error
+    if isinstance(error, ReleaseError):
+        return BridgeFailure(str(error), stage=stage)
     if isinstance(error, queue.Empty):
         reason = "response timed out"
     elif isinstance(error, RpcError):
@@ -186,6 +187,7 @@ class Rpc:
 
 
 def account_client(root, base, own_group=True):
+    binary = native()
     config = root / "config/muse"
     auth = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "muse/auth.json"
     private_json(config / "settings.json", settings(base))
@@ -194,7 +196,7 @@ def account_client(root, base, own_group=True):
            if key in os.environ}
     env.update(XDG_CONFIG_HOME=str(root / "config"), XDG_DATA_HOME=str(root / "data"),
                XDG_CACHE_HOME=str(root / "cache"), MUSE_NO_AUTO_UPDATE="1")
-    return Rpc(["muse", "serve", "--disable-shell", "--disable-write"], env, root, own_group)
+    return Rpc([str(binary), "serve", "--disable-shell", "--disable-write"], env, root, own_group)
 
 
 def read_account(root):

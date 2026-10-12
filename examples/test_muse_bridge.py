@@ -561,7 +561,7 @@ class ProtocolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {
             "HOME": directory, "PATH": "/usr/bin", "XDG_CONFIG_HOME": directory + "/native",
             "META_API_KEY": "synthetic-secret", "TYPESAFE_API_KEY": "synthetic-secret",
-        }, clear=True), patch("muse_transport.Rpc") as client:
+        }, clear=True), patch("muse_transport.Rpc") as client, patch("muse_transport.native", return_value=Path("/private/cache/muse-host-tested")):
             root = Path(directory) / "check"
             rpc = client.return_value
             rpc.call.side_effect = [{}, {"state": "accountLogin", "account": "private-account"}]
@@ -569,7 +569,7 @@ class ProtocolTests(unittest.TestCase):
             self.assertEqual([call.args[0] for call in rpc.call.call_args_list], ["initialize", "account/read"])
             rpc.close.assert_called_once()
             command, env, cwd, own_group = client.call_args.args
-            self.assertEqual(command, ["muse", "serve", "--disable-shell", "--disable-write"])
+            self.assertEqual(command, ["/private/cache/muse-host-tested", "serve", "--disable-shell", "--disable-write"])
             self.assertFalse(own_group)
             self.assertEqual(cwd, root)
             self.assertNotIn("META_API_KEY", env)
@@ -586,6 +586,16 @@ class ProtocolTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 muse_transport.read_account(Path("unused"))
             client.return_value.close.assert_called_once()
+
+    def test_account_discovery_does_not_execute_unverified_native_content(self):
+        from muse_release import ReleaseError
+        with patch("muse_transport.native", side_effect=ReleaseError("Muse download failed its checksum check.")), \
+                patch("muse_transport.Rpc") as client:
+            with self.assertRaisesRegex(ReleaseError, "checksum check"):
+                muse_transport.read_account(Path("unused"))
+            client.assert_not_called()
+        self.assertEqual(muse_transport.failure(ReleaseError("Muse download failed its checksum check."), "release").details,
+                         {"message": "Muse download failed its checksum check.", "stage": "release"})
 
     def test_reports_and_commentary_keep_distinct_roles(self):
         commentary = normalize({"method": "item/completed", "params": {"item": {

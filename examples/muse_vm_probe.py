@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Disposable Muse credential-broker experiment. Never logs credentials."""
 
-import hashlib
 import json
+import os
 from pathlib import Path
 import queue
 import secrets
@@ -11,12 +11,12 @@ import sys
 import tempfile
 import threading
 import time
-import urllib.request
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from muse_transport import (Broker, CHECKSUM, IMAGE, MODEL, VERSION, NoRedirect, Rpc,
+from muse_transport import (Broker, IMAGE, MODEL, NoRedirect, Rpc,
                             command_id, guest, host_login, private_json, settings)
+from muse_release import ARTIFACTS, artifact as managed_artifact, verified
 
 
 def container(*args, input=None):
@@ -32,35 +32,10 @@ def container(*args, input=None):
 def artifact(root):
     if len(sys.argv) == 3 and sys.argv[1] == "--binary":
         path = Path(sys.argv[2]).resolve()
-        with path.open("rb") as source:
-            digest = hashlib.file_digest(source, "sha256").hexdigest()
-        if digest != CHECKSUM:
+        if not verified(path, ARTIFACTS["aarch64_linux"]):
             raise RuntimeError("Supplied Linux binary checksum mismatch.")
         return path
-    info = json.loads((Path.home() / ".local/bin/.muse-release-info.json").read_text())
-    if info.get("version") != VERSION:
-        raise RuntimeError("This probe requires installed Muse " + VERSION + ".")
-    manifest_url = info["manifest_url"]
-    if not manifest_url.startswith("https://lookaside.facebook.com/"):
-        raise RuntimeError("Unrecognized Muse release origin.")
-    with urllib.request.urlopen(manifest_url, timeout=30) as response:
-        manifest = json.load(response)
-    item = manifest["artifacts"]["aarch64_linux"]
-    if manifest.get("version") != VERSION or item.get("checksum") != CHECKSUM:
-        raise RuntimeError("Linux release manifest does not match the pinned binary.")
-    if not item["url"].startswith("https://lookaside.facebook.com/"):
-        raise RuntimeError("Unrecognized Muse artifact origin.")
-    digest = hashlib.sha256()
-    path = root / "muse"
-    print("Downloading the pinned Linux CLI; no account credential is sent.", flush=True)
-    with urllib.request.urlopen(item["url"], timeout=60) as response, path.open("wb") as output:
-        while chunk := response.read(1024 * 1024):
-            digest.update(chunk)
-            output.write(chunk)
-    if digest.hexdigest() != CHECKSUM or path.stat().st_size != item["size"]:
-        raise RuntimeError("Linux binary checksum or size mismatch.")
-    path.chmod(0o755)
-    return path
+    return managed_artifact(root)
 
 
 def boundary(directory="/opt/muse"):
@@ -142,6 +117,7 @@ chown -R 1000:1000 /tasks/1 /home/worker
         container("exec", name, "chmod", "755", "/opt/muse/muse")
         container("copy", str(Path(__file__).resolve()), f"{name}:/opt/muse/probe.py")
         container("copy", str(Path(__file__).resolve().parents[1] / "src/muse_transport.py"), f"{name}:/opt/muse/muse_transport.py")
+        container("copy", str(Path(__file__).resolve().parents[1] / "src/muse_release.py"), f"{name}:/opt/muse/muse_release.py")
         auth = root / "guest-auth.json"
         private_json(auth, {"schema_version": 1, "providers": {"meta": {"api_key": broker.capability}}})
         container("copy", str(auth), f"{name}:/home/worker/.config/muse/auth.json")
@@ -225,6 +201,7 @@ def main():
     with tempfile.TemporaryDirectory(prefix="sprowt-muse-vm-") as directory:
         root = Path(directory)
         root.chmod(0o700)
+        os.environ["SPROWT_MUSE_CACHE"] = str(root / "release")
         broker = Broker(host_login(root))
         vm_probe(root, broker, artifact(root))
 
