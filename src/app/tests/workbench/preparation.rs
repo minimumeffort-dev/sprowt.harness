@@ -1,5 +1,21 @@
 use super::*;
 
+#[test]
+fn observed_task_check_receipt_reaches_terminal_evidence_without_completion() {
+    let (data, mut store, m, root, _) = crate::network::tests::fixture();
+    let run = &m.execution.as_ref().unwrap().tasks[0];
+    let id = run.id;
+    crate::checks::tests::save_observed_fixture(&root, &run.source);
+    store.finish_task(m.id, &run.source, "blocked", "Dependency is still blocked", &[]).unwrap();
+    let mut app = App::load(data.0.join("project"), false, store).unwrap();
+    app.view = View::Task(id, 0);
+    let text = rows(&screen(&mut app, 160, 70)).join("\n");
+    assert!(text.contains("Observed task checks") && text.contains("2 passed") && text.contains("1 failed"), "{text}");
+    assert!(text.contains("Observed command 2: exit 1") && text.contains("Dependency is still blocked"), "{text}");
+    assert_eq!(app.inspect_task(id).unwrap().state, "Blocked");
+    assert!(app.engine.mods[0].execution.as_ref().unwrap().tasks[0].checks.is_empty());
+}
+
 pub(super) fn setup_failed_app() -> (TestData, App, PathBuf, i64) {
     let (data, mut app, root) = execution_app();
     let m = &app.engine.mods[0];

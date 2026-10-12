@@ -552,8 +552,10 @@ pub(crate) fn restore_scripts(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    mod observed;
+    pub(crate) use observed::save_observed_fixture;
     use crate::{
         plan::{Plan, Role},
         store::{CodeMod, test_support::TestData},

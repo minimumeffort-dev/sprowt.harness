@@ -420,6 +420,26 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     #expect(earlier.results.first?.kind.caption == "Previous failed checks")
 }
 
+@Test func observedTaskCheckEvidenceKeepsBlockedTaskIncomplete() throws {
+    let snapshot = try decodeSnapshot { root in
+        var mod = root["active_mod"] as! [String: Any]
+        var plan = mod["plan"] as! [String: Any]
+        var tasks = plan["tasks"] as! [[String: Any]]
+        tasks[0]["completed"] = false
+        tasks[0]["error"] = "Dependency is still blocked"
+        tasks[0]["checks_label"] = "Observed task checks"
+        tasks[0]["results"] = [["id": "observed:0", "task_id": "implement_cli", "kind": "observed_check", "label": "Observed failure", "status": "failed", "output": "Observed command: exit 1"]]
+        plan["tasks"] = tasks
+        mod["plan"] = plan
+        root["active_mod"] = mod
+    }
+    let task = try #require(snapshot.activeMod?.plan?.tasks.first)
+    #expect(!task.completed)
+    #expect(task.hasCurrentFailure)
+    #expect(task.results.first?.kind.caption == "Observed task checks")
+    #expect(task.results.first?.output == "Observed command: exit 1")
+}
+
 @Test func packagedFontResourcesResolveInsideTheAppWithoutBuildFallback() throws {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
