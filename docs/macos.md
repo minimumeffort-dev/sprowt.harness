@@ -15,7 +15,7 @@ From the harness repository:
 open target/macos/Sprowt.app
 ```
 
-**Expected:** Sprowt opens a native window. Choose a project folder to load its codemods. The build includes the Rust executable inside the app, so the interface and engine come from the same checkout.
+**Expected:** Sprowt opens a native window with its yellow seedling icon. Choose a project folder to load its codemods. The build includes the Rust executable inside the app, so the interface and engine come from the same checkout.
 
 The matching terminal executable is `target/release/sprowt-harness`. To update a separately installed CLI, run `cargo install --path . --locked --force` from this checkout as well.
 
@@ -25,17 +25,15 @@ The bundle is signed locally for development. It is not a notarized distribution
 
 Choose a codemod in the sidebar to open its execution workspace. **Overview** shows the plan's numbered tasks, outcomes and dependencies. **Conversation** shows messages and questions that need your answer.
 
-![Native execution workspace with task outcomes, a selected check result and the composer.](assets/macos-workspace.jpg)
-
-*Native app with saved sample tasks and results. No workers are running in this example.*
-
 Use **Plan**, **Build**, **Checks** and **Review** to inspect the saved work. Select a task or a connected worker to read its current attempt, latest update and check output beside the main view. The **Progress**, **Changes**, **Checks** and **Activity** tabs switch the side pane's evidence. Hide the pane when you want more room.
 
 In **Changes**, choose the offered inspection action to read the actual diff. Choose **Done** to finish an inspection before sending instructions or changing codemods. Opening evidence never starts a worker.
 
 The header button shows Rust's recommended action; **More** holds the other available actions. A partial review with confirmed findings offers **Fix review issues**, while publication waits for a complete, clean review. See [review and repairs](review.md).
 
-Starting a new codemod starts the same planning and execution flow as the terminal app. Setup, network access, publication, closing and deletion retain their explicit confirmation steps.
+Choose **New codemod** or press **⌘N** to describe the change in the compact creation editor. **Create codemod** or **⌘Return** starts the same planning and execution flow as the terminal app. The planner supplies a short title while the complete request stays in the conversation. Setup, network access, publication, closing and deletion retain their explicit confirmation steps.
+
+The sidebar's project menu contains **Open project…** and the switch between active and closed codemods. **⌘O** opens a project folder directly. Each codemod has a diamond glyph, status and agent count when workers exist.
 
 Use the composer to answer a question or queue an instruction. Expand the attached queue to edit, reorder, remove or steer pending instructions. Save an edit before choosing **Steer**. These actions preserve the composer draft. Removing the last queued instruction closes the queue and returns focus to the composer. Steering without connected workers saves instructions as waiting for workers; it does not claim delivery.
 

@@ -619,13 +619,14 @@ pub(crate) mod tests {
         let mut store = data.store();
         let project_id = store.load_project(&project).unwrap().id;
         let mut m = store.create_mod(project_id,"Greet a supplied name with hello NAME and reject empty names with a nonzero exit. Keep the usage documentation accurate.").unwrap();
-        let plan = Plan::parse(&json!({"summary":"Greeting", "tasks":[
+        let plan = Plan::parse_generated(&json!({"title":"Greet a supplied name","summary":"Greeting", "tasks":[
             {"id":"runtime","title":"Greeting","outcome":"Named greetings work and empty input fails","files":["greet.sh","tests"],"depends_on":[],"worker":"codex","checks":["A supplied name prints hello NAME."]},
             {"id":"docs","title":"Usage","outcome":"Document greeting behavior","files":["README.md"],"depends_on":["runtime"],"worker":"codex","checks":["Usage describes empty input rejection."]}
         ]}).to_string()).unwrap();
         store
             .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
             .unwrap();
+        m.name = plan.title.clone().unwrap();
         let root = store.workspace_path(m.id).unwrap();
         workspace::create(&project, &root).unwrap();
         store.create_execution(m.id, &root, &plan).unwrap();

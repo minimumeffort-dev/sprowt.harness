@@ -22,6 +22,8 @@ Wide terminals show stages and evidence side by side. Smaller terminals show one
 
 Environment appears when the plan includes a preparation recipe. Its summary lists setup and checks; task details contain the observed preparation receipts.
 
+The header's **◇** selector opens codemods with **Ctrl+P**. The planner supplies each new codemod's short title; its complete request stays in the conversation.
+
 The header's local-save status is separate from checks, review and GitHub publication. **Work saved locally** does not mean the code has passed checks or reached GitHub.
 
 ## Read the evidence

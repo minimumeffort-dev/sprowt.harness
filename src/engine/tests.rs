@@ -357,9 +357,10 @@ fn ownership_rejects_duplicate_controllers_and_releases_on_exit() {
 fn desktop_contract_matches_the_native_fixture() {
     let (_data, mut engine, first, _) = session();
     engine.project = PathBuf::from("/example/project");
-    let plan = crate::plan::Plan::parse(r#"{"summary":"Share the engine with native controls","tasks":[{"id":"core","title":"Extract the engine","outcome":"Both clients use the same lifecycle rules","files":["src/engine.rs"],"depends_on":[],"worker":"codex","checks":["CLI regression suite passes"]},{"id":"native","title":"Add native controls","outcome":"Open a project and manage codemods","files":["macos/Sources"],"depends_on":["core"],"worker":"codex","checks":["Draft survives reopening"]}]}"#).unwrap();
+    let plan = crate::plan::Plan::parse_generated(r#"{"title":"Add native controls","summary":"Share the engine with native controls","tasks":[{"id":"core","title":"Extract the engine","outcome":"Both clients use the same lifecycle rules","files":["src/engine.rs"],"depends_on":[],"worker":"codex","checks":["CLI regression suite passes"]},{"id":"native","title":"Add native controls","outcome":"Open a project and manage codemods","files":["macos/Sources"],"depends_on":["core"],"worker":"codex","checks":["Draft survives reopening"]}]}"#).unwrap();
     let source = engine.mods[0].planning.as_ref().unwrap().source.clone();
     engine.store.save_plan(first, &source, &plan).unwrap();
+    engine.mods[0].name = plan.title.clone().unwrap();
     engine.mods[0].planning = engine.store.planning(first).unwrap();
     engine
         .command(Command::Submit {

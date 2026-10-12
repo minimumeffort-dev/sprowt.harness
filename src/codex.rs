@@ -1224,7 +1224,7 @@ mod tests {
         client.shutdown();
         assert!(completed, "Planner turn timed out");
         let text = final_plan.unwrap();
-        let plan = Plan::parse(&text).unwrap();
+        let plan = Plan::parse_generated(&text).unwrap();
         assert!(
             plan.tasks
                 .iter()

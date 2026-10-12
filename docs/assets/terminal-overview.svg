@@ -1,7 +1,7 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="2020" height="1340" viewBox="0 0 2020 1340" role="img" aria-labelledby="title desc">
 <title id="title">Sprowt Evidence Workbench</title>
-<desc id="desc">Rendered Ratatui terminal with sample tasks and results. Stage navigation on the left, selected evidence on the right, and contextual actions beside the composer.</desc>
-<rect width="100%" height="100%" fill="#252a32"/>
+<desc id="desc">Rendered Ratatui terminal with sample tasks and results. A diamond identifies the planner-generated codemod title. Stage navigation on the left, selected evidence on the right, and contextual actions beside the composer.</desc>
+<rect width="2020" height="1340" fill="#252a32"/>
 <g font-family="Menlo, monospace" font-size="18">
 <text x="75" y="64" fill="#bed79d" xml:space="preserve" textLength="11" lengthAdjust="spacingAndGlyphs">▄</text>
 <text x="86" y="64" fill="#509e68" xml:space="preserve" textLength="22" lengthAdjust="spacingAndGlyphs">▄▀</text>
@@ -26,16 +26,13 @@
 <text x="75" y="139" fill="#6a9558" xml:space="preserve" textLength="22" lengthAdjust="spacingAndGlyphs">▀▀</text>
 <rect x="97" y="120" width="11" height="25" fill="#6a9558"/>
 <text x="97" y="139" fill="#9dbe79" xml:space="preserve" textLength="11" lengthAdjust="spacingAndGlyphs">▀</text>
-<text x="42" y="189" fill="#a1aaa0" xml:space="preserve" textLength="121" lengthAdjust="spacingAndGlyphs">&lt;codemod/&gt; </text>
-<rect x="163" y="170" width="11" height="25" fill="#333b32"/>
-<rect x="174" y="170" width="22" height="25" fill="#333b32"/>
-<text x="174" y="189" fill="#b4c367" xml:space="preserve" textLength="22" lengthAdjust="spacingAndGlyphs">◇ </text>
-<rect x="196" y="170" width="440" height="25" fill="#333b32"/>
-<text x="196" y="189" fill="#f4f4ef" xml:space="preserve" textLength="440" lengthAdjust="spacingAndGlyphs">Greet a supplied name with hello NAME a…</text>
-<rect x="636" y="170" width="44" height="25" fill="#333b32"/>
-<text x="636" y="189" fill="#b4c367" xml:space="preserve" textLength="44" lengthAdjust="spacingAndGlyphs"> ▾  </text>
-<rect x="680" y="170" width="77" height="25" fill="#333b32"/>
-<text x="680" y="189" fill="#a1aaa0" xml:space="preserve" textLength="77" lengthAdjust="spacingAndGlyphs">ctrl+p </text>
+<text x="42" y="189" fill="#b4c367" xml:space="preserve" textLength="33" lengthAdjust="spacingAndGlyphs">◇  </text>
+<rect x="75" y="170" width="473" height="25" fill="#333b32"/>
+<text x="75" y="189" fill="#f4f4ef" xml:space="preserve" textLength="473" lengthAdjust="spacingAndGlyphs"> Greet a supplied name                     </text>
+<rect x="548" y="170" width="44" height="25" fill="#333b32"/>
+<text x="548" y="189" fill="#b4c367" xml:space="preserve" textLength="44" lengthAdjust="spacingAndGlyphs"> ▾  </text>
+<rect x="592" y="170" width="77" height="25" fill="#333b32"/>
+<text x="592" y="189" fill="#a1aaa0" xml:space="preserve" textLength="77" lengthAdjust="spacingAndGlyphs">ctrl+p </text>
 <text x="42" y="239" fill="#b4c367" xml:space="preserve" textLength="473" lengthAdjust="spacingAndGlyphs" font-weight="700">Timeline                                   </text>
 <text x="526" y="239" fill="#59634f" xml:space="preserve" textLength="11" lengthAdjust="spacingAndGlyphs">│</text>
 <text x="548" y="239" fill="#b4c367" xml:space="preserve" textLength="1199" lengthAdjust="spacingAndGlyphs" font-weight="700">▸ Review / evidence                                                                                          </text>

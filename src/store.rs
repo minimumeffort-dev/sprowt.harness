@@ -474,13 +474,16 @@ impl Store {
         name: &str,
         planned: bool,
     ) -> Result<CodeMod> {
-        let title = name
-            .lines()
-            .next()
-            .unwrap_or(name)
-            .chars()
-            .take(80)
-            .collect::<String>();
+        let title = if planned {
+            "New codemod".to_owned()
+        } else {
+            name.lines()
+                .next()
+                .unwrap_or(name)
+                .chars()
+                .take(80)
+                .collect()
+        };
         let transaction = self.0.transaction()?;
         transaction.execute(
             "INSERT INTO code_mods (project_id, name, description) VALUES (?1, ?2, ?3)",
@@ -1267,6 +1270,12 @@ impl Store {
         )?;
         if changed != 1 {
             return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        if let Some(title) = &plan.title {
+            transaction.execute(
+                "UPDATE code_mods SET name=?2 WHERE id=?1",
+                params![mod_id, title],
+            )?;
         }
         let message = Message {
             source: None,
@@ -2242,7 +2251,7 @@ mod tests {
         let code_mod = store
             .create_mod(project.id, "Add greeting\nKeep output concise")
             .unwrap();
-        assert_eq!(code_mod.name, "Add greeting");
+        assert_eq!(code_mod.name, "New codemod");
         let planner = store.worker_for(code_mod.id, Role::Planner).unwrap();
         let executor = store.worker(code_mod.id).unwrap();
         assert_ne!(planner.id, executor.id);
@@ -2255,7 +2264,7 @@ mod tests {
             .planning_model(code_mod.id, &Selection::planner())
             .unwrap();
         let plan = Plan::parse(
-            &json!({"summary":"Greeting","tasks":[{
+            &json!({"title":"Add greeting flag","summary":"Greeting","tasks":[{
             "id":"1","title":"Greeting","outcome":"Show greeting","files":["src/main.rs"],
             "depends_on":[],"worker":"codex","checks":["Run greeting test"]}]})
             .to_string(),
@@ -2266,16 +2275,23 @@ mod tests {
         let planning = store.planning(code_mod.id).unwrap().unwrap();
         assert_eq!(planning.status, "running");
         assert!(planning.plan.is_none());
+        assert_eq!(
+            store.load_project(project_path).unwrap().mods[0].name,
+            "New codemod"
+        );
         store.0.execute_batch("DROP TRIGGER reject_plan").unwrap();
         store.save_plan(code_mod.id, &input.source, &plan).unwrap();
+        let mut stale = plan.clone();
+        stale.title = Some("Wrong stale title".into());
         assert!(
             store
-                .save_plan(code_mod.id, "wrong request", &plan)
+                .save_plan(code_mod.id, "wrong request", &stale)
                 .is_err()
         );
         drop(store);
         let mut store = data.store();
         let state = store.load_project(project_path).unwrap();
+        assert_eq!(state.mods[0].name, "Add greeting flag");
         assert_eq!(
             state.mods[0].description,
             "Add greeting\nKeep output concise"
@@ -2308,6 +2324,41 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[test]
+    fn historical_plans_load_without_titles_or_renaming_saved_work() {
+        let data = TestData::new();
+        let mut store = data.store();
+        let path = Path::new("/historical-project");
+        let project = store.load_project(path).unwrap();
+        let code_mod = store
+            .legacy_mod(project.id, "Historical title\nKeep all request text")
+            .unwrap();
+        let body = r#"{"summary":"Greeting","tasks":[{"id":"one","title":"Greeting","outcome":"Print hello","files":["hello.py"],"depends_on":[],"worker":"codex","checks":["prints hello"]}]}"#;
+        store
+            .0
+            .execute(
+                "INSERT INTO plans(mod_id,source,status,body) VALUES (?1,'legacy-plan','ready',?2)",
+                params![code_mod.id, body],
+            )
+            .unwrap();
+        drop(store);
+        let saved = data.store().load_project(path).unwrap();
+        assert_eq!(saved.mods[0].name, "Historical title");
+        assert_eq!(
+            saved.mods[0].description,
+            "Historical title\nKeep all request text"
+        );
+        let plan = saved.mods[0]
+            .planning
+            .as_ref()
+            .unwrap()
+            .plan
+            .as_ref()
+            .unwrap();
+        assert!(plan.title.is_none());
+        assert_eq!(plan.summary, "Greeting");
     }
 
     fn history(store: &Store, mod_id: i64, body: &str) {

@@ -41,52 +41,8 @@ struct ContentView: View {
         }
         .font(Theme.font()).foregroundStyle(Theme.ink).tint(Theme.ink)
         .background(Theme.paper)
-        .toolbar {
-            ToolbarItem(placement: .principal) {
-                HStack(spacing: 9) {
-                    Text("sprowt").font(Theme.font(14, weight: .bold))
-                    if let project = session.snapshot?.project {
-                        Image(systemName: "folder").font(.system(size: 11)).foregroundStyle(Theme.muted)
-                        Text(URL(fileURLWithPath: project).lastPathComponent)
-                            .font(Theme.font(11)).foregroundStyle(Theme.muted).help(project)
-                    }
-                }
-            }
-        }
         .sheet(item: Binding(get: { session.dialog.flatMap { $0.isInspection ? nil : $0 } }, set: { _ in })) { dialog in
             EngineDialogView(session: session, dialog: dialog).interactiveDismissDisabled()
         }
-    }
-}
-
-private struct NewCodemodView: View {
-    @Bindable var session: Session
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            HStack {
-                Text("What would you like to change?").font(Theme.font(22, weight: .semibold))
-                Spacer()
-                if session.active != nil {
-                    GlyphButton(symbol: "xmark", label: "Return to codemod") { session.showingNew = false }
-                }
-            }
-            TextEditor(text: $session.newDescription)
-                .font(Theme.font(14)).padding(10)
-                .scrollContentBackground(.hidden).background(Theme.paper)
-                .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.line))
-                .frame(minHeight: 140, maxHeight: 220).focused($focused)
-                .accessibilityLabel("Describe the codemod")
-            HStack {
-                Text("Describe the outcome.").font(Theme.font(12)).foregroundStyle(Theme.muted)
-                Spacer()
-                Button("Create codemod") { session.create() }
-                    .buttonStyle(WorkspaceButtonStyle(prominent: true)).keyboardShortcut(.return, modifiers: .command)
-                    .disabled(!session.interactive || session.busy || session.newDescription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                Text("⌘↩").font(Theme.font(11)).foregroundStyle(Theme.muted)
-            }
-            Spacer()
-        }.padding(Theme.inset).onAppear { focused = true }
     }
 }

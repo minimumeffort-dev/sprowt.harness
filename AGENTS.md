@@ -69,7 +69,7 @@
 - Label empty codemod lists clearly. Keep repeated runtime and isolation guidance in the docs, not the conversation.
 - Place necessary guidance beside the control it explains; avoid disconnected text floating in the layout.
 - Use purposeful terminal glyphs for controls and keyboard hints, with clear labels and no emoji rendering.
-- Write “codemod” as one word. Use `<codemod/>` as the section label and a glyph beside each mod name. Add agent status and counts when agents exist.
+- Write “codemod” as one word. Use a purposeful icon or `◇` glyph for codemods instead of `<codemod/>`. Add agent status and counts when agents exist.
 - Keep conversations left aligned, with one blank row between messages. Do not indent the transcript or composer to match the pet or header.
 - Mark user messages with a visible `>` prefix and a subtle background. Label agent messages with their provider and role.
 - Show plans as numbered tasks with short outcomes and dependencies. Put file scopes, checks and model information behind one details toggle.

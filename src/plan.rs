@@ -26,6 +26,8 @@ impl Role {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Plan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
     #[serde(default)]
     pub environment: Option<crate::environment::Recipe>,
     pub summary: String,
@@ -93,7 +95,25 @@ impl Plan {
         Ok(plan)
     }
 
+    pub fn parse_generated(text: &str) -> Result<Self, String> {
+        let plan = Self::parse(text)?;
+        if plan.title.is_none() {
+            return Err("A generated plan needs a short codemod title.".into());
+        }
+        Ok(plan)
+    }
+
     pub fn validate(&self) -> Result<(), String> {
+        if self.title.as_ref().is_some_and(|title| {
+            title.is_empty()
+                || title.trim() != title
+                || title.chars().count() > 80
+                || title
+                    .chars()
+                    .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+        }) {
+            return Err("A codemod title must be 1–80 characters on one line, without surrounding whitespace or control characters.".into());
+        }
         if let Some(recipe) = &self.environment {
             recipe.validate()?;
         }
@@ -281,7 +301,7 @@ impl Plan {
 pub fn schema(muse: bool) -> Value {
     let strings = json!({"type":"array", "items":{"type":"string"}});
     json!({"type":"object", "additionalProperties":false,
-        "properties":{"environment":crate::environment::schema(),"summary":{"type":"string"}, "contracts":strings, "assumptions":strings, "non_goals":strings, "tasks":{"type":"array", "items":{
+        "properties":{"title":{"type":"string","minLength":1,"maxLength":80},"environment":crate::environment::schema(),"summary":{"type":"string"}, "contracts":strings, "assumptions":strings, "non_goals":strings, "tasks":{"type":"array", "items":{
             "type":"object", "additionalProperties":false,
             "properties":{"id":{"type":"string"}, "title":{"type":"string"},
                 "outcome":{"type":"string"}, "files":strings, "depends_on":strings,
@@ -290,7 +310,7 @@ pub fn schema(muse: bool) -> Value {
                 "worker":{"type":"string", "enum":if muse { vec!["auto", "codex", "muse"] } else { vec!["auto", "codex"] }},
                 "provider_reason":{"type":"string"}, "checks":strings},
             "required":["id","title","outcome","files","depends_on","coordination","worker","provider_reason","checks"]}}},
-        "required":["environment","summary","contracts","assumptions","non_goals","tasks"]})
+        "required":["title","environment","summary","contracts","assumptions","non_goals","tasks"]})
 }
 
 pub fn instructions(role: Role, description: &str, plan: Option<&Plan>, writable: bool) -> String {
@@ -306,7 +326,7 @@ pub fn instructions(role: Role, description: &str, plan: Option<&Plan>, writable
     };
     match role {
         Role::Planner => format!(
-            "{boundary} Your role is planner. Inspect relevant source, manifests, docs, tests and project rules before planning. The user describes an outcome; infer task decomposition, useful concurrency and coordination yourself. Produce a concise task plan matching the output schema. Define shared contracts (interfaces, data shapes and error behavior) before dividing work. Record only material assumptions and explicit non-goals; use empty arrays when unnecessary. Give tasks short outcomes, exact project-relative file or directory paths (no globs), dependencies and 1–3 brief completion checks. Use worker auto and an empty provider_reason by default. Rust assigns ready tasks among available providers. Backend, interface, tests, demanding implementation and integration are eligible for either provider; task complexity alone is not a provider capability. Choose a specific provider only when a concrete required tool or capability makes the other unsuitable, and give that brief reason in provider_reason. Do not infer provider strengths from their names. Up to two independent tasks run in parallel. Separate tasks with disjoint ownership can build against a defined contract concurrently; consuming another task's interface alone does not require a dependency. Check those components independently first (using a stub if needed), then verify the real integration in a task depending on both. Add dependencies for genuine implementation prerequisites or shared files. Do not split small tasks just to use both workers. For repairs, keep reproduction and the production fix in one owned task when the reproduction cannot pass until that fix exists. A diagnosis-only task may check that it has reproduced the failure, but must not require the downstream fix to pass its own completion checks. Put whole-project green checks after repair, never before its required owner. Each task's coordination lists relevant peer task IDs and the interface, shared assumption or handoff they need to discuss; links are bidirectional and do not delay scheduling. Use an empty array for unrelated work. State concrete topics, not instructions to send ceremonial messages or ask invented questions. Include only requested work. Keep the plan small. Supply an environment recipe based on inspected manifests: portable setup commands with pinned runtime versions, capability probes (including browser/service/network needs when relevant), baseline commands that exist before edits, and relevant input paths. Reuse .sprowt/environment.json when present. Commands run inside the Linux VM task folder with a fresh environment; use absolute system executables or /usr/local/bin/mise exec with pinned versions, never temporary /tasks or worker HOME paths. Declare required Debian libraries in system_packages (package names only); installation uses the existing signed-repository installer. Use reusable_paths=[] by default. Opt in to [\"node_modules\"] only for deterministic locked setup with a pinned runtime, package.json/package-lock.json and every install script or other setup input declared in inputs; never snapshot secrets, task-specific paths or undeclared source dependencies. Only request resources.memory_gib: 8 for an explicit user or saved-recipe requirement; otherwise use resources null. Declare exact origin and redirect hosts in each preparation command network_domains (use [] for local commands); the controller requests missing access before launching the command. Use proxy-aware download clients that honor HTTP_PROXY/HTTPS_PROXY, such as curl or an explicitly configured Undici proxy dispatcher. Node 22.16 built-in fetch does not automatically use those proxy variables; declaring or approving a hostname does not correct that client. Do not bypass managed networking or add retry loops for denied access. Setup must not change source or lockfiles. Set explicit setup timeout_seconds from 1–600; reserve longer budgets for measured large runtime or browser downloads and allow cleanup headroom, rather than using the maximum for every command. Capability probes and baselines stay within 1–180 seconds. Capability failures stop dispatch; baseline test failures are retained as starting evidence and do not satisfy final checks. Use null only when no project setup is needed. Do not implement it. Codemod: {description}"
+            "{boundary} Your role is planner. Inspect relevant source, manifests, docs, tests and project rules before planning. The user describes an outcome; infer task decomposition, useful concurrency and coordination yourself. Produce a concise task plan matching the output schema. Generate a specific codemod title of about 3–7 words describing the change, with at most 80 characters on one line. Do not copy the whole request or use the plan summary as its title. Define shared contracts (interfaces, data shapes and error behavior) before dividing work. Record only material assumptions and explicit non-goals; use empty arrays when unnecessary. Give tasks short outcomes, exact project-relative file or directory paths (no globs), dependencies and 1–3 brief completion checks. Use worker auto and an empty provider_reason by default. Rust assigns ready tasks among available providers. Backend, interface, tests, demanding implementation and integration are eligible for either provider; task complexity alone is not a provider capability. Choose a specific provider only when a concrete required tool or capability makes the other unsuitable, and give that brief reason in provider_reason. Do not infer provider strengths from their names. Up to two independent tasks run in parallel. Separate tasks with disjoint ownership can build against a defined contract concurrently; consuming another task's interface alone does not require a dependency. Check those components independently first (using a stub if needed), then verify the real integration in a task depending on both. Add dependencies for genuine implementation prerequisites or shared files. Do not split small tasks just to use both workers. For repairs, keep reproduction and the production fix in one owned task when the reproduction cannot pass until that fix exists. A diagnosis-only task may check that it has reproduced the failure, but must not require the downstream fix to pass its own completion checks. Put whole-project green checks after repair, never before its required owner. Each task's coordination lists relevant peer task IDs and the interface, shared assumption or handoff they need to discuss; links are bidirectional and do not delay scheduling. Use an empty array for unrelated work. State concrete topics, not instructions to send ceremonial messages or ask invented questions. Include only requested work. Keep the plan small. Supply an environment recipe based on inspected manifests: portable setup commands with pinned runtime versions, capability probes (including browser/service/network needs when relevant), baseline commands that exist before edits, and relevant input paths. Reuse .sprowt/environment.json when present. Commands run inside the Linux VM task folder with a fresh environment; use absolute system executables or /usr/local/bin/mise exec with pinned versions, never temporary /tasks or worker HOME paths. Declare required Debian libraries in system_packages (package names only); installation uses the existing signed-repository installer. Use reusable_paths=[] by default. Opt in to [\"node_modules\"] only for deterministic locked setup with a pinned runtime, package.json/package-lock.json and every install script or other setup input declared in inputs; never snapshot secrets, task-specific paths or undeclared source dependencies. Only request resources.memory_gib: 8 for an explicit user or saved-recipe requirement; otherwise use resources null. Declare exact origin and redirect hosts in each preparation command network_domains (use [] for local commands); the controller requests missing access before launching the command. Use proxy-aware download clients that honor HTTP_PROXY/HTTPS_PROXY, such as curl or an explicitly configured Undici proxy dispatcher. Node 22.16 built-in fetch does not automatically use those proxy variables; declaring or approving a hostname does not correct that client. Do not bypass managed networking or add retry loops for denied access. Setup must not change source or lockfiles. Set explicit setup timeout_seconds from 1–600; reserve longer budgets for measured large runtime or browser downloads and allow cleanup headroom, rather than using the maximum for every command. Capability probes and baselines stay within 1–180 seconds. Capability failures stop dispatch; baseline test failures are retained as starting evidence and do not satisfy final checks. Use null only when no project setup is needed. Do not implement it. Codemod: {description}"
         ),
         Role::Reviewer => unreachable!(),
         Role::Executor => format!(
@@ -337,6 +357,48 @@ mod tests {
             }],
             ..Plan::default()
         }
+    }
+
+    #[test]
+    fn generated_plans_require_short_titles_but_legacy_plans_still_load() {
+        let mut value = serde_json::to_value(plan()).unwrap();
+        let legacy = value.to_string();
+        assert!(Plan::parse(&legacy).unwrap().title.is_none());
+        assert_eq!(
+            Plan::parse_generated(&legacy).unwrap_err(),
+            "A generated plan needs a short codemod title."
+        );
+        for title in [
+            "",
+            " ",
+            " Add chart",
+            "Add chart ",
+            "Add\nchart",
+            "Add\tchart",
+            "Add\u{1b}chart",
+            "Add\u{2028}chart",
+        ] {
+            value["title"] = json!(title);
+            assert!(
+                Plan::parse_generated(&value.to_string()).is_err(),
+                "{title:?}"
+            );
+        }
+        value["title"] = json!("界".repeat(80));
+        assert_eq!(
+            Plan::parse_generated(&value.to_string()).unwrap().title,
+            Some("界".repeat(80))
+        );
+        value["title"] = json!("界".repeat(81));
+        assert!(Plan::parse_generated(&value.to_string()).is_err());
+        value["title"] = json!("Add performance chart");
+        assert_eq!(
+            Plan::parse_generated(&value.to_string())
+                .unwrap()
+                .title
+                .as_deref(),
+            Some("Add performance chart")
+        );
     }
 
     #[test]

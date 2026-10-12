@@ -642,8 +642,8 @@ fn draw_mod_selector(
     open: bool,
 ) -> Rect {
     let [label, selector, status] = Layout::horizontal([
-        Constraint::Length(11),
-        Constraint::Length(area.width.saturating_sub(11).min(54)),
+        Constraint::Length(3),
+        Constraint::Length(area.width.saturating_sub(3).min(54)),
         Constraint::Min(0),
     ])
     .areas(area);
@@ -660,21 +660,19 @@ fn draw_mod_selector(
         };
         frame.render_widget(Line::from(label).fg(ACCENT), status);
     }
-    frame.render_widget(Line::from("<codemod/>").fg(KEY_HINT), label);
+    frame.render_widget(Line::from(MOD_GLYPH).fg(ACCENT), label);
     frame.render_widget(
         Block::new()
             .fg(Color::White)
             .bg(if open { SELECTED } else { CONTROL }),
         selector,
     );
-    let [_, icon, title, shortcut] = Layout::horizontal([
+    let [_, title, shortcut] = Layout::horizontal([
         Constraint::Length(1),
-        Constraint::Length(2),
         Constraint::Min(1),
         Constraint::Length(11),
     ])
     .areas(selector);
-    frame.render_widget(Line::from(MOD_GLYPH).fg(ACCENT), icon);
     frame.render_widget(Line::from(fit_name(name, title.width)), title);
     frame.render_widget(
         Line::from(vec![

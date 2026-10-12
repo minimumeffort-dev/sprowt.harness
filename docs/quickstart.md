@@ -86,7 +86,7 @@ Use the existing package version and test the output.
 Keep the default command behavior unchanged.
 ```
 
-Press **Ctrl+J** for a newline and **Enter** to submit. The first line becomes the codemod title.
+Press **Ctrl+J** for a newline and **Enter** to submit. The codemod appears as **New codemod** until the planner generates its short title. Your complete request stays in the conversation. See [codemods and messages](codemods.md#create-and-manage-work).
 
 **Expected:** a numbered plan appears and execution starts automatically. The timeline follows tasks, combined checks and review. You do not need to choose worker counts or assign providers.
 

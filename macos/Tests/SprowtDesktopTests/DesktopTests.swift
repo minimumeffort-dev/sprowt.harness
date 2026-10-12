@@ -237,6 +237,41 @@ private let snapshotJSON = #"""
     #expect(session.connection == .disconnected)
 }
 
+@Test @MainActor func projectMenuViewsSeparateClosedWorkAndNewCreationKeepsBothDrafts() async throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let executable = directory.appendingPathComponent("engine")
+    var snapshot = try #require(JSONSerialization.jsonObject(with: Data(snapshotJSON.utf8)) as? [String: Any])
+    snapshot["mods"] = [
+        ["id": 1, "name": "Active change", "closed": false, "status": "Planning", "workers": []],
+        ["id": 2, "name": "Saved change", "closed": true, "status": "Closed", "workers": []]
+    ]
+    let envelope: [String: Any] = ["protocol_version": 1, "request_id": NSNull(), "error": NSNull(), "snapshot": snapshot]
+    try JSONSerialization.data(withJSONObject: envelope).write(to: URL(fileURLWithPath: executable.path + ".json"))
+    try installExecutable("""
+    #!/bin/sh
+    cat "$0.json"
+    printf '\\n'
+    while IFS= read -r request; do :; done
+    """, at: executable)
+    let session = Session()
+    defer { session.close {} }
+    session.start(project: directory, executable: executable)
+    try await waitUntil { session.editable }
+    session.newDescription = "Keep my unsent request"
+    #expect(session.visibleMods.map(\.id) == [1])
+    session.showClosed = true
+    #expect(session.visibleMods.map(\.id) == [2])
+    #expect(session.draft == "Saved draft")
+    session.beginCreation()
+    #expect(session.showingNew)
+    #expect(!session.showClosed)
+    #expect(session.visibleMods.map(\.id) == [1])
+    #expect(session.newDescription == "Keep my unsent request")
+    #expect(session.draft == "Saved draft")
+    await withCheckedContinuation { continuation in session.close { continuation.resume() } }
+}
+
 private func temporaryDirectory() throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("sprowt-desktop-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)

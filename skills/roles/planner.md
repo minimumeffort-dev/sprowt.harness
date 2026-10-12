@@ -10,4 +10,4 @@ Read these pinned files before planning. The bundle root is `{{SKILLS_ROOT}}`.
 
 Inspect the existing implementation first. Name the data model, responsibilities and boundaries before splitting work. Give each task a coherent outcome, ownership and evidence that can pass independently. Separate concurrent writes before adding serialization. Keep reproducing and fixing a defect together when the reproduction can pass only after the fix. Place integrated verification after its implementation dependencies.
 
-Consult `{{SKILLS_ROOT}}/INDEX.md` for relevant design or migration guidance. Return the controller's plan schema. Do not implement or start nested agents, setup flows or publication.
+Consult `{{SKILLS_ROOT}}/INDEX.md` for relevant design or migration guidance. Return the controller's plan schema. Include a specific codemod title of about 3–7 words, with at most 80 characters on one line. Preserve the full request separately; do not copy it into the title. Do not implement or start nested agents, setup flows or publication.

@@ -2063,11 +2063,12 @@ mod tests {
                     .enqueue(id, &format!("Instruction {i}"))
                     .unwrap(),
             );
-            let code_mod = app
+            let mut code_mod = app
                 .engine
                 .store
                 .create_mod(app.engine.project_id, &format!("Codemod {i}"))
                 .unwrap();
+            code_mod.name = format!("Codemod {i}");
             app.engine.mods.push(code_mod);
         }
         let queue = queued(&app)
@@ -2349,6 +2350,8 @@ mod tests {
                 assert!(item.action.shortcut().is_some() || item.action.menu_shortcut().is_some());
                 let line = rendered
                     .iter()
+                    .skip(app.scroll.content.y as usize)
+                    .take(app.scroll.content.height as usize)
                     .find(|line| line.contains(&item.label))
                     .unwrap();
                 let start = line.find(&item.label).unwrap();
@@ -4683,7 +4686,7 @@ mod tests {
         let mut store = data.store();
         let project_id = store.load_project(&project).unwrap().id;
         let code_mod = store.create_mod(project_id, "Build greeting").unwrap();
-        let plan = crate::plan::Plan::parse(r#"{"summary":"Greeting","tasks":[{"id":"one","title":"Greeting","outcome":"Print hello","files":["hello.sh"],"depends_on":[],"worker":"codex","checks":["prints hello"]}]}"#).unwrap();
+        let plan = crate::plan::Plan::parse_generated(r#"{"title":"Build greeting command","summary":"Greeting","tasks":[{"id":"one","title":"Greeting","outcome":"Print hello","files":["hello.sh"],"depends_on":[],"worker":"codex","checks":["prints hello"]}]}"#).unwrap();
         store
             .save_plan(
                 code_mod.id,
@@ -7010,7 +7013,7 @@ mod tests {
         paste(&mut app, "Add greeting flag\nKeep the default greeting");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let code_mod = app.current_mod().unwrap();
-        assert_eq!(code_mod.name, "Add greeting flag");
+        assert_eq!(code_mod.name, "New codemod");
         assert_eq!(code_mod.messages[0].body, code_mod.description);
         assert!(code_mod.queue.is_empty());
         assert_eq!(code_mod.planning.as_ref().unwrap().status, "pending");
@@ -7053,7 +7056,7 @@ mod tests {
         drop(app);
 
         let reopened = App::load(project, false, data.store()).unwrap();
-        assert_eq!(reopened.current_mod().unwrap().name, "feature A");
+        assert_eq!(reopened.current_mod().unwrap().description, "feature A");
         assert_eq!(reopened.input.lines(), ["draft A", "second line"]);
         assert_eq!(reopened.mods[1].queue[0].body, "message B");
         assert_eq!(reopened.mods[1].draft, "draft B");
@@ -7215,7 +7218,7 @@ mod tests {
         key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(matches!(app.engine.view, View::Chat));
-        assert_eq!(app.current_mod().unwrap().name, "a");
+        assert_eq!(app.current_mod().unwrap().description, "a");
         assert_eq!(app.input.lines(), ["draft a"]);
         drop(app);
         let mut app = App::load(project.clone(), false, data.store()).unwrap();
@@ -7231,7 +7234,7 @@ mod tests {
         key(&mut app, KeyCode::Up, KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
-        assert_eq!(app.current_mod().unwrap().name, "c");
+        assert_eq!(app.current_mod().unwrap().description, "c");
         assert_eq!(app.input.lines(), ["draft c"]);
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);

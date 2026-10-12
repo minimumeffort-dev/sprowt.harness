@@ -40,6 +40,7 @@ pub struct Worker {
     client: Option<Client>,
     thread_id: Option<String>,
     final_plan: Option<String>,
+    plan_source: Option<String>,
     turn: Option<String>,
     pending: Option<Submission>,
     recovery: Option<String>,
@@ -151,6 +152,7 @@ impl Worker {
             client,
             thread_id: record.thread_id,
             final_plan: None,
+            plan_source: None,
             turn: None,
             pending: None,
             recovery: record.pending,
@@ -611,6 +613,10 @@ impl Worker {
                             });
                         if self.role == Role::Planner {
                             self.final_plan = None;
+                            if current_plan {
+                                self.plan_source =
+                                    code_mod.planning.as_ref().map(|p| p.source.clone());
+                            }
                         }
                         if let Some(items) = turn["items"].as_array() {
                             for item in items {
@@ -685,6 +691,7 @@ impl Worker {
                 self.report_input(&source);
                 if self.role == Role::Planner && source.starts_with("00000003-") {
                     self.final_plan = None;
+                    self.plan_source = Some(source.clone());
                 }
                 if source.starts_with("00000004-") {
                     self.task_source = Some(source.clone());
@@ -1356,15 +1363,25 @@ impl Worker {
     }
 
     fn complete_plan(&mut self, store: &mut Store, code_mod: &mut CodeMod) -> rusqlite::Result<()> {
+        let Some(source) = self.plan_source.as_ref().filter(|source| {
+            code_mod
+                .planning
+                .as_ref()
+                .is_some_and(|planning| &planning.source == *source)
+        }) else {
+            self.enabled = false;
+            self.status = Status::Complete;
+            return Ok(());
+        };
         let plan = self
             .final_plan
             .as_deref()
             .ok_or_else(|| "Codex returned no plan.".to_owned())
-            .and_then(Plan::parse);
+            .and_then(Plan::parse_generated);
         match plan {
             Ok(plan) => {
-                let source = code_mod.planning.as_ref().unwrap().source.clone();
-                let message = store.save_plan(self.mod_id, &source, &plan)?;
+                let message = store.save_plan(self.mod_id, source, &plan)?;
+                code_mod.name = plan.title.unwrap();
                 remember_message(code_mod, message);
                 code_mod.planning = store.planning(self.mod_id)?;
                 self.status = Status::Complete;
@@ -2110,7 +2127,7 @@ mod tests {
     }
 
     fn final_plan() -> Value {
-        json!({"summary":"Add greeting", "tasks":[{"id":"1","title":"Greeting flag",
+        json!({"title":"Add greeting flag","summary":"Add greeting", "tasks":[{"id":"1","title":"Greeting flag",
             "outcome":"Print the requested greeting", "files":["src/main.rs"],
             "depends_on":[],"worker":"codex","checks":["Run greeting flag test"]}]})
     }
@@ -4208,6 +4225,9 @@ mod tests {
         worker.receive(Event::Notification(json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}})),&mut store,&mut code_mod).unwrap();
         assert!(worker.status == Status::Complete);
         assert!(!worker.enabled);
+        assert_eq!(code_mod.name, "Add greeting flag");
+        assert_eq!(code_mod.description, "Add a greeting flag");
+        assert_eq!(code_mod.messages[0].body, "Add a greeting flag");
         assert_eq!(code_mod.messages.len(), 2);
         assert!(code_mod.messages[1].body.starts_with("plan ·"));
         assert_eq!(code_mod.queue.len(), 1);
@@ -4240,6 +4260,42 @@ mod tests {
         );
         assert!(!worker.enabled);
         assert_eq!(code_mod.messages.len(), 1);
+    }
+
+    #[test]
+    fn planner_output_without_a_title_fails_without_replacing_the_request() {
+        let (_data, mut store, mut code_mod, mut worker) = planner();
+        accept(&mut worker, &mut store, &mut code_mod);
+        let mut output = final_plan();
+        output.as_object_mut().unwrap().remove("title");
+        worker.final_plan = Some(output.to_string());
+        worker.complete_plan(&mut store, &mut code_mod).unwrap();
+        assert!(worker.status == Status::Failed);
+        assert_eq!(code_mod.name, "New codemod");
+        assert_eq!(code_mod.messages[0].body, "Add a greeting flag");
+        assert_eq!(code_mod.planning.as_ref().unwrap().status, "failed");
+        assert!(code_mod.planning.as_ref().unwrap().plan.is_none());
+    }
+
+    #[test]
+    fn obsolete_planner_turn_cannot_rename_or_fail_a_replacement_plan() {
+        for output in [final_plan().to_string(), "invalid JSON".into()] {
+            let (_data, mut store, mut code_mod, mut worker) = planner();
+            accept(&mut worker, &mut store, &mut code_mod);
+            store.restart_plan(code_mod.id).unwrap();
+            code_mod.planning = store.planning(code_mod.id).unwrap();
+            worker.final_plan = Some(output);
+            worker.complete_plan(&mut store, &mut code_mod).unwrap();
+            assert!(worker.status == Status::Complete && !worker.enabled);
+            assert_eq!(code_mod.name, "New codemod");
+            assert_eq!(code_mod.planning.as_ref().unwrap().status, "pending");
+            assert!(code_mod.planning.as_ref().unwrap().plan.is_none());
+            assert_eq!(code_mod.messages.len(), 1);
+            assert_eq!(
+                store.planner_input(code_mod.id).unwrap().unwrap().source,
+                code_mod.planning.as_ref().unwrap().source
+            );
+        }
     }
 
     #[test]

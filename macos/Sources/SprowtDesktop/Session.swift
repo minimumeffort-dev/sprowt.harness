@@ -44,7 +44,7 @@ final class Session {
         !pending.contains(where: { $0.request.command.type == "select_mod" })
     }
     var draft: String { active.map { drafts.text(for: $0.id, fallback: $0.draft) } ?? "" }
-    var visibleMods: [CodemodSummary] { snapshot?.mods.filter { showClosed || !$0.closed } ?? [] }
+    var visibleMods: [CodemodSummary] { snapshot?.mods.filter { $0.closed == showClosed } ?? [] }
 
     func start(project: URL, dataDirectory: String? = nil, executable: URL? = nil) {
         let generation = UUID()
@@ -116,6 +116,7 @@ final class Session {
 
     func beginCreation() {
         guard canBeginCreation else { return }
+        showClosed = false
         showingNew = true
     }
 

@@ -17,7 +17,9 @@ Open **Ctrl+P** to select a codemod.
 | Reopen | Tab to closed codemods, select one, press `r` | Restores source; unfinished work waits for resume |
 | Delete | Select a codemod, press `d`, confirm | Removes local records and unpublished work; an existing PR stays |
 
-The first line of the description becomes the title. **Ctrl+J** adds a newline. **Esc** cancels creation, or quits when there is no codemod.
+The planner generates a short title from your request in the same planning turn. Until the plan is ready, the codemod appears as **New codemod**. The full request stays in its conversation. Existing saved names stay unchanged until you request a new plan.
+
+**Ctrl+J** adds a newline. **Esc** cancels creation, or quits when there is no codemod.
 
 See [Git workflow](git-workflow.md) for starting files, publication and checkpoint recovery. After a PR is merged or closed, create a new codemod from the updated project.
 
