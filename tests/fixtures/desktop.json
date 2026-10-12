@@ -5,14 +5,14 @@
   "snapshot": {
     "actions": [
       {
-        "id": "retry",
-        "label": "Retry work",
-        "task_id": null
-      },
-      {
         "id": "retry_task",
         "label": "Retry task 2",
         "task_id": 2
+      },
+      {
+        "id": "retry",
+        "label": "Retry work",
+        "task_id": null
       },
       {
         "id": "update",

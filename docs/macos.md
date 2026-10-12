@@ -33,7 +33,9 @@ Use **Plan**, **Build**, **Checks** and **Review** to inspect the saved work. Se
 
 In **Changes**, choose the offered inspection action to read the actual diff. Choose **Done** to finish an inspection before sending instructions or changing codemods. Opening evidence never starts a worker.
 
-The available actions come from Rust and change with the current workflow state. Starting a new codemod starts the same planning and execution flow as the terminal app. Setup, network access, publication, closing and deletion retain their explicit confirmation steps.
+The header button shows Rust's recommended action; **More** holds the other available actions. A partial review with confirmed findings offers **Fix review issues**, while publication waits for a complete, clean review. See [review and repairs](review.md).
+
+Starting a new codemod starts the same planning and execution flow as the terminal app. Setup, network access, publication, closing and deletion retain their explicit confirmation steps.
 
 Use the composer to answer a question or queue an instruction. Expand the attached queue to edit, reorder, remove or steer pending instructions. Save an edit before choosing **Steer**. These actions preserve the composer draft. Removing the last queued instruction closes the queue and returns focus to the composer. Steering without connected workers saves instructions as waiting for workers; it does not claim delivery.
 

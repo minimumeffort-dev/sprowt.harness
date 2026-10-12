@@ -175,7 +175,7 @@ pub fn reconcile(
             format!("{}\n{}", assessment.reason, assessment.evidence),
         );
     }
-    if issues.iter().any(|i| i.open() && !seen.contains(&i.id)) {
+    if report.status != "blocked" && issues.iter().any(|i| i.open() && !seen.contains(&i.id)) {
         return Err("Review omitted an unresolved finding. Reassess every open ID; omission is not resolution.".into());
     }
     if report.status == "clean" && issues.iter().any(Issue::open) {

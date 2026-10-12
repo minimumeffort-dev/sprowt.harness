@@ -19,6 +19,7 @@ private let snapshotJSON = #"""
     #expect(response.snapshot.activeMod?.plan?.tasks.last?.latest?.body == "Native controls are ready; draft persistence needs repair.")
     #expect(response.snapshot.activeMod?.plan?.tasks.last?.results.first?.kind == .finalCheck)
     #expect(response.snapshot.activeMod?.draft == "Do not lose this draft")
+    #expect(response.snapshot.actions.first?.id == "retry_task")
     #expect(response.snapshot.dialog?.kind == "delete")
     #expect(response.snapshot.dialog?.confirmLabel == "Delete codemod")
 }

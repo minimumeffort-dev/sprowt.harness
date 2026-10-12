@@ -350,7 +350,9 @@ impl Engine {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let dock = self.action_dock();
+        let mut dock = self.action_dock();
+        dock.actions
+            .sort_by_key(|item| Some(item.action) != dock.primary);
         let phase = self.state_summary().phase;
         Snapshot {
             project: self.project.display().to_string(),
@@ -630,7 +632,16 @@ impl Engine {
                     .as_ref()
                     .map(|r| r.summary.clone())
                     .unwrap_or_else(|| review.progress());
-                Dialog::new("findings", "Review findings", body, None)
+                Dialog::new(
+                    "findings",
+                    if review.partial() {
+                        review.label()
+                    } else {
+                        "Review findings".into()
+                    },
+                    body,
+                    None,
+                )
             }
             View::Publish => {
                 let draft = self.publication.as_ref()?;

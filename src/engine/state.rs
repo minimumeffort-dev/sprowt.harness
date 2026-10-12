@@ -295,20 +295,28 @@ impl Engine {
             s.error =
                 execution.and_then(|e| e.checks.iter().find(|c| c.failed()).map(|c| c.brief()));
             s
-        } else if let Some(r) = review.filter(|r| r.status == "findings") {
+        } else if let Some(r) = review.filter(|r| r.status == "findings" || r.partial()) {
             let count = if r.issues.is_empty() {
                 r.report.as_ref().map_or(0, |r| r.findings.len())
             } else {
                 r.issues.iter().filter(|i| i.open()).count()
             };
-            Summary::new(
+            let mut summary = Summary::new(
                 NeedsYou,
-                format!(
-                    "Review · {count} open issue{}",
-                    if count == 1 { "" } else { "s" }
-                ),
+                if r.partial() {
+                    r.label()
+                } else {
+                    format!(
+                        "Review · {count} open issue{}",
+                        if count == 1 { "" } else { "s" }
+                    )
+                },
                 Some(if r.repairable() { FixIssues } else { Review }),
-            )
+            );
+            if r.partial() {
+                summary.error = r.report.as_ref().map(|report| report.summary.clone());
+            }
+            summary
         } else if review.is_some_and(|r| matches!(r.status.as_str(), "paused" | "blocked")) {
             Summary::new(NeedsYou, "Review needs attention", Some(Review))
         } else if self.worker_error().is_some() {
