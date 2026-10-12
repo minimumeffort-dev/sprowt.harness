@@ -1,6 +1,35 @@
 use super::*;
 
 #[test]
+fn preparation_commands_preserve_declared_exact_download_hosts() {
+    let mut value = serde_json::to_value(recipe()).unwrap();
+    value["setup"] = json!([{
+        "name": "Download verified model fixtures",
+        "argv": ["/usr/bin/curl", "--fail", "https://models.example.org/model.bin"],
+        "timeout_seconds": 300,
+        "network_domains": ["models.example.org", "cdn.example.org"]
+    }]);
+    let parsed: Recipe = serde_json::from_value(value).unwrap();
+    parsed.validate().unwrap();
+    let saved = serde_json::to_value(&parsed).unwrap();
+    assert_eq!(saved["setup"][0]["network_domains"], json!(["models.example.org", "cdn.example.org"]));
+    assert_eq!(saved["setup"][0]["timeout_seconds"], 300);
+    assert_eq!(saved["setup"][0]["argv"], json!(["/usr/bin/curl", "--fail", "https://models.example.org/model.bin"]));
+    let old: Recipe = serde_json::from_value(serde_json::to_value(recipe()).unwrap()).unwrap();
+    old.validate().unwrap();
+}
+
+#[test]
+fn preparation_commands_reject_broad_or_non_public_network_requests() {
+    for domain in ["*.example.org", "https://example.org", "example.org:443", "127.0.0.1", "localhost", "example.local", "example.org\n"] {
+        let mut value = serde_json::to_value(recipe()).unwrap();
+        value["capabilities"][0]["network_domains"] = json!([domain]);
+        let parsed: Recipe = serde_json::from_value(value).unwrap();
+        assert!(parsed.validate().is_err(), "{domain:?}");
+    }
+}
+
+#[test]
 fn source_change_evidence_retains_additions_deletions_modes_and_legacy_cause() {
     let before = vec![
         (PathBuf::from("removed.txt"), b"before".to_vec(), 0o644),
