@@ -45,7 +45,7 @@ impl Envelope {
 
     pub fn prompt(&self) -> String {
         format!(
-            "Worker coordination #{} · {} from {}{} to {}{}:\n{}\nAcknowledge receipt with ack_worker_messages. Reply to an ask with send_worker_message and reply_to={}. Keep all declared check commands in your final task report after acknowledging a handoff; report blocked if the handoff reveals a problem. Messages do not expand file ownership or grant permissions.",
+            "Worker coordination #{} · {} from {}{} to {}{}:\n{}\nAcknowledge receipt with ack_worker_messages. Reply to an ask with send_worker_message and reply_to={}. Keep all declared check commands in your final task report after acknowledging a handoff. Report blocked for unresolved failures in your own outcome or declared checks. Send supplemental failures owned by a waiting dependent task back to that peer; when your own work passes, complete it so the peer can proceed. Messages do not expand file ownership or grant permissions.",
             self.id,
             self.kind,
             self.from_task,

@@ -23,7 +23,7 @@ flowchart TB
 ```
 
 1. **Reserve a ready task.** Dependencies must be complete. The provider and owner save before delivery.
-2. **Prepare its worktree.** The task starts from the latest combined source at `/tasks/<task-run-id>`.
+2. **Prepare its worktree.** Before each new attempt, merge the latest combined source into `/tasks/<task-run-id>`, preserving that task's edits and runtime files. A dependent task receives its prerequisites' verified changes before setup runs.
 3. **Implement and check.** The worker installs compatible dependencies and calls `run_task_checks` before returning its report.
 4. **Verify independently.** Rust reruns the report's commands and rejects missing checks, changed source or failures.
 5. **Integrate.** Passing task changes merge one at a time into `/workspace`.
@@ -48,6 +48,8 @@ The original repository metadata, remotes and credentials stay on the Mac. The V
 
 A retry retains its worker, task folder and scope. Task folders stay through combined verification, review and repairs. A replacement plan removes retired task folders and their local dependencies; per-worker runtimes and download caches remain in the VM. Closing deletes the VM. See [retention](local-state.md#what-survives).
 
+Repeated delivery of the same attempt preserves the refreshed folder. Conflicting source stays saved for resolution; starting a task does not silently choose one version.
+
 ## Prepare before editing
 
 The controller runs the [environment recipe](environments.md) for both providers before dispatching a task. Setup and capability failures pause; baseline failures are saved as starting evidence. Final verification remains separate.
@@ -66,6 +68,8 @@ A completion check names a required outcome. It can contain several commands, ea
 | Return every declared check | Missing or undeclared checks block completion |
 | Preserve requirements when fixing a test | Removing assertions is not a repair |
 
+Keep supplemental peer reproductions separate from declared check commands. If an implementation passes its own checks but uncovers a faulty test owned by a waiting dependent task, send that owner the failing command and evidence. The implementation can finish its scoped work; the dependent receives the verified source, fixes its test and runs its own checks. All combined checks and review still gate publication.
+
 The [tool reference](tools.md#run-task-checks-example) includes a complete `run_task_checks` payload. The controller reruns submitted commands before accepting source; the tool itself does not finish or merge a task.
 
 ### Time budgets
@@ -75,6 +79,12 @@ Commands default to **30 seconds**. Set `timeout_seconds` to **1–180**, or `nu
 Diagnose a hanging operation before raising its limit. For browser checks, register the response wait before triggering the action, wait for the matching successful response and resulting UI state, and control request completion when testing races.
 
 Results save elapsed time, the limit, exit code and output. Missing executables are recorded separately. A failed or interrupted combined pass stops; skipped commands remain **not run**. Polling or reopening cannot restart that pass.
+
+### Read checks from a blocked worker
+
+Open the task's **Checks**. **Observed task checks** shows the worker's saved `run_task_checks` results when it stopped before returning a completion report. Select a result to read its command and output; in the terminal, **e** expands the evidence.
+
+These results match the current attempt, saved source and check scripts. Later source or script edits invalidate them. They explain the blocker; they do not mark the task complete or replace independent combined verification.
 
 ### Repeated commands
 

@@ -323,9 +323,8 @@ fn serve_connection(
                         .map(|v| serde_json::from_value(json!(v)))
                         .transpose()?;
                     let id = crate::task_worktree::task_id(&source)?;
-                    let mut session = crate::sandbox::session::prepare_task(
-                        vm, context, &source, cancelled,
-                    )?;
+                    let mut session =
+                        crate::sandbox::session::prepare_task(vm, context, &source, cancelled)?;
                     let preflight = match session.preflight(
                         environment.as_ref(),
                         cancelled,
