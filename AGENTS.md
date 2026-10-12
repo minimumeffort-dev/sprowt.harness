@@ -48,13 +48,17 @@
 
 ## Finish each batch
 
+- Start every feature batch from the latest `origin/main`. Fetch before starting, and fetch again before pushing. Rebase or merge intervening changes, resolve conflicts and verify the combined result before publishing.
+- When other chats share a checkout, use a separate worktree from the latest `origin/main`. Preserve their uncommitted work; never reset, stash, commit or overwrite another chat's changes.
 - After implementing and verifying an approved batch, commit its changes and push to `main`. Include documentation changes.
+- After each push, start the next batch from the updated `origin/main`. Use ordinary pushes; never force-push `main`.
 - Committing and pushing are part of finishing the batch; no separate approval is needed.
 
 ## Keep both interfaces in sync
 
 - Put workflow rules, permissions and persistence in the shared Rust engine. Terminal and SwiftUI code handle presentation and input.
-- When a feature changes available commands or visible state, update both interfaces in the same batch. Keep the desktop protocol and its Rust/Swift contract checks current.
+- Every new feature must work in both the terminal and the macOS app in the same batch. Keep behavior and available actions consistent, while using each interface's native presentation. Keep the desktop protocol and its Rust/Swift contract checks current.
+- Verify the user-facing flow in both interfaces before completing a feature. A feature available in only one interface is unfinished.
 - Build the native bundle from the same checkout as its Rust executable. Run the Rust and Swift checks before completing a change to their shared boundary.
 
 ## Keep the UX focused
