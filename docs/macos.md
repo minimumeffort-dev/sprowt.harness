@@ -47,6 +47,8 @@ The **Sprowt** menu at the top of the sidebar contains **Open project…** and t
 
 Use the title bar's sidebar button or the sidebar command in **View** to hide or show the sidebar. **⌃⌘S** works while the sidebar is hidden. Your codemod selection and composer drafts stay in place.
 
+Use the title bar's **Back** and **Forward** arrows, **View → Back / Forward**, or **⌘[** and **⌘]** to revisit codemods and unfinished creation. [Navigation history](codemods.md#create-and-manage-work) lasts for the current project session. Finish or dismiss an open inspection or confirmation before navigating.
+
 Use the composer to answer a question or queue an instruction. Expand the attached queue to edit, reorder, remove or steer pending instructions. Save an edit before choosing **Steer**. These actions preserve the composer draft. Removing the last queued instruction closes the queue and returns focus to the composer. Steering without connected workers saves instructions as waiting for workers; it does not claim delivery.
 
 The app is a macOS interface; workers still build and check source in Linux. See [execution boundaries](architecture.md#boundaries-today).
@@ -62,6 +64,7 @@ Both interfaces use the same plans, task inspection, check results and action ru
 | Checks, Changes and Activity panes | **1–4** in the workbench; full results in Details |
 | Attached queue | **Ctrl+Q · Queue** |
 | Contextual actions | Action dock or **Ctrl+G · More** |
+| Back / Forward or **⌘[ / ⌘]** | Header arrows or **Alt+← / Alt+→** |
 | Creation editor's Format menu | **F2 · Format** in the new codemod composer |
 | Dictate | Host terminal's dictation or paste, when supported |
 
@@ -81,7 +84,7 @@ Run the native tests from the harness repository:
 swift test --package-path macos
 ```
 
-The native app communicates with its bundled engine over local stdin/stdout. Typed commands carry a request ID; responses contain the protocol version, an acknowledgement or error, and the current snapshot. Swift owns rendering and editing focus. Rust owns scheduling, permissions, persistence and workflow transitions.
+The native app communicates with its bundled engine over local stdin/stdout. Typed commands carry a request ID; responses contain the protocol version, an acknowledgement or error, and the current snapshot. The snapshot includes the navigation destination and available directions. Swift owns rendering and editing focus. Rust owns navigation history, scheduling, permissions, persistence and workflow transitions.
 
 The light theme uses Minimum Effort's Manrope font, warm neutral backgrounds and yellow action accents. Manrope is bundled under the SIL Open Font License; the app does not fetch fonts at runtime. Its [source](../macos/Sources/SprowtDesktop/Resources/Manrope/SOURCE.txt) and [license](../macos/Sources/SprowtDesktop/Resources/Manrope/OFL.txt) are included with the bundle.
 

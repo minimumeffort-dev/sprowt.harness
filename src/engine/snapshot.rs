@@ -5,6 +5,7 @@ use serde::Serialize;
 #[derive(Serialize)]
 pub struct Snapshot {
     pub project: String,
+    pub navigation: super::NavigationSnapshot,
     pub mods: Vec<ModSummary>,
     pub active_mod: Option<ModDetail>,
     pub status: String,
@@ -356,6 +357,7 @@ impl Engine {
         let phase = self.state_summary().phase;
         Snapshot {
             project: self.project.display().to_string(),
+            navigation: self.navigation_snapshot(),
             mods: self
                 .mods
                 .iter()
@@ -363,7 +365,9 @@ impl Engine {
                     id: m.id,
                     name: m.name.clone(),
                     closed: m.closed,
-                    status: if self.current_mod().is_some_and(|active| active.id == m.id) {
+                    status: if self.navigation.current() != super::Destination::NewCodemod
+                        && self.current_mod().is_some_and(|active| active.id == m.id)
+                    {
                         dock.status.clone()
                     } else if m.closed {
                         "Closed · work saved".into()

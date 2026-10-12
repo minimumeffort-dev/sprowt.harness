@@ -49,6 +49,8 @@ pub enum Control {
     Finding(u32),
     Evidence,
     Back,
+    NavigateBack,
+    NavigateForward,
     Expand,
 }
 
@@ -162,6 +164,12 @@ impl App {
                 }
             }
             Control::Evidence => self.show_evidence = !self.show_evidence,
+            Control::NavigateBack => {
+                self.with_engine(|engine| engine.navigate(true))?;
+            }
+            Control::NavigateForward => {
+                self.with_engine(|engine| engine.navigate(false))?;
+            }
             Control::Back => self.timeline.focus = Focus::Timeline,
             Control::Expand => {
                 self.timeline.focus = Focus::Timeline;

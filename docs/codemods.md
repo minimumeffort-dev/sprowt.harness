@@ -8,6 +8,8 @@ A codemod is one goal in one project. It keeps its own plan, conversation, queue
 
 Open **Ctrl+P** to select a codemod.
 
+Use **Alt+←** and **Alt+→** to revisit codemods or an unfinished creation draft in the current session. The [macOS app](macos.md#work-on-a-project) provides **Back** and **Forward** with **⌘[** and **⌘]**. Both preserve instruction drafts and the unsent creation description. Choosing another destination after going back replaces the forward path. Closed codemods remain readable; deleted codemods leave the history. Opening a project starts fresh navigation history.
+
 | Action | How | Result |
 | --- | --- | --- |
 | Create | Choose **New codemod**, describe it, press Enter | Planning and execution start after any required Git confirmation |

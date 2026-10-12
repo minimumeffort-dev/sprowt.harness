@@ -230,6 +230,14 @@
         "workers": []
       }
     ],
+    "navigation": {
+      "can_go_back": false,
+      "can_go_forward": false,
+      "destination": {
+        "kind": "codemod",
+        "mod_id": 1
+      }
+    },
     "phase": "needs_you",
     "project": "/example/project",
     "status": "Task 2 needs attention"

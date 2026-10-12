@@ -2,6 +2,7 @@ mod dock;
 mod findings;
 mod formatting;
 mod inspector;
+mod navigation;
 mod tasks;
 mod timeline;
 mod workbench;
@@ -176,11 +177,21 @@ pub fn draw(
         })
         .unwrap_or_else(|| app.project.display().to_string());
     frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(vec!["sprowt".fg(ACCENT).bold(), " harness".bold()]),
-            Line::from(fit_name(&project, heading.width)).fg(MUTED),
-        ]),
+        Line::from(vec!["sprowt".fg(ACCENT).bold(), " harness".bold()]),
         heading,
+    );
+    let project_area = navigation::draw(
+        frame,
+        app,
+        Rect {
+            y: heading.y + 1,
+            height: 1,
+            ..heading
+        },
+    );
+    frame.render_widget(
+        Line::from(fit_name(&project, project_area.width)).fg(MUTED),
+        project_area,
     );
     let status = app.local_status();
     let width = Line::from(status.clone()).width() as u16;

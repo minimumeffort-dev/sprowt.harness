@@ -24,6 +24,8 @@ Environment appears when the plan includes a preparation recipe. Its summary lis
 
 The header's **◇** selector opens codemods with **Ctrl+P**. The planner supplies each new codemod's short title; its complete request stays in the conversation.
 
+The header shows **‹ Back Alt←** and **› Forward Alt→** when a destination is available. Click an arrow or use its shortcut to revisit a codemod or unsent creation. At narrow widths, the controls show the glyph and shortcut. [Navigation history](codemods.md#create-and-manage-work) preserves both drafts and resets when you open a project. Finish an open dialog or inspection before navigating.
+
 The header's local-save status is separate from checks, review and GitHub publication. **Work saved locally** does not mean the code has passed checks or reached GitHub.
 
 ## Read the evidence
@@ -177,6 +179,7 @@ Shortcuts are contextual. **Ctrl+G · More** lists actions available in the curr
 | Ctrl+Q | Manage pending instructions |
 | Ctrl+N | Decide a pending network request |
 | Ctrl+P | Switch or manage codemods |
+| Alt+← / Alt+→ | Back / forward through codemods and creation |
 | Ctrl+U | Sync project and check target updates |
 | Page Up / Down | Scroll the focused view |
 | Esc | Back; from the composer, quit |

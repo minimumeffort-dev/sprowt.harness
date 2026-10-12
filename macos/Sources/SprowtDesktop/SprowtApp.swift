@@ -5,12 +5,13 @@ import SwiftUI
 struct SprowtApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @State private var session = Session()
+    @State private var sidebarVisible = true
 
     init() { Theme.registerFonts() }
 
     var body: some Scene {
         Window("Sprowt", id: "main") {
-            ContentView(session: session)
+            ContentView(session: session, sidebarVisible: $sidebarVisible)
                 .frame(minWidth: 900, minHeight: 650)
                 .preferredColorScheme(.light)
                 .task {
@@ -28,7 +29,16 @@ struct SprowtApp: App {
         .defaultSize(width: 1280, height: 860)
         .windowToolbarStyle(.unifiedCompact(showsTitle: false))
         .commands {
-            SidebarCommands()
+            CommandGroup(replacing: .sidebar) {
+                Button(sidebarVisible ? "Hide Sidebar" : "Show Sidebar") { sidebarVisible.toggle() }
+                    .keyboardShortcut("s", modifiers: [.control, .command])
+            }
+            CommandGroup(after: .sidebar) {
+                Button("Back") { session.navigate(back: true) }
+                    .keyboardShortcut("[").disabled(!session.canGoBack)
+                Button("Forward") { session.navigate(back: false) }
+                    .keyboardShortcut("]").disabled(!session.canGoForward)
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New codemod") { session.beginCreation() }
                     .keyboardShortcut("n")

@@ -417,7 +417,7 @@ impl Engine {
         if !self.mods.is_empty() {
             dock.actions.push(ActionItem::new(Mods, "Switch codemod"));
         }
-        if !new_mod {
+        if !new_mod && self.can_begin_creation() {
             dock.actions.push(ActionItem::new(NewMod, "New codemod"));
         }
         // Keep a stable category order as state changes. Enter remains bound to its action.
@@ -565,8 +565,7 @@ impl Engine {
             }
             Action::Mods => self.view = View::Mods(0),
             Action::NewMod => {
-                self.view = View::NewMod;
-                self.composer.clear();
+                self.begin_creation()?;
             }
             Action::Close | Action::Delete => {
                 if let Some(index) = self.active {
@@ -578,6 +577,17 @@ impl Engine {
                     };
                 }
             }
+        }
+        if self.navigation.current() == super::Destination::NewCodemod
+            && self.current_mod().is_some()
+            && matches!(
+                self.view,
+                View::Failure(_) | View::Sync(_) | View::Findings(_) | View::Task(_, _)
+            )
+        {
+            self.visit_selected();
+            self.action_origin = Some(View::Chat);
+            self.composer = self.current_mod().unwrap().draft.clone();
         }
         Ok(())
     }

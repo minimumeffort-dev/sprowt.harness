@@ -397,8 +397,10 @@ impl Engine {
                                 "Working files changed since verification. Ctrl+R rechecks.".into(),
                             );
                         }
+                        self.visit_selected();
                         self.review = Some(review);
                         self.view = View::Review(0);
+                        self.restore_input();
                         if std::mem::take(&mut self.publish_after_review) && self.can_publish() {
                             self.open_publication()?;
                         }
@@ -427,6 +429,7 @@ impl Engine {
                     self.mods[index].execution = self.store.execution(id)?;
                     if self.current_mod().is_some_and(|m| m.id == id) {
                         self.active = self.mods.iter().position(|m| Some(m.id) == selected);
+                        self.visit_selected();
                         self.view = if self.active.is_some() {
                             View::Chat
                         } else {
@@ -439,11 +442,13 @@ impl Engine {
                     let was_active = self.current_mod().is_some_and(|m| m.id == id);
                     let selected = self.store.delete_mod(self.project_id, id)?;
                     self.mods.remove(index);
+                    self.navigation.forget(id);
                     self.git_errors.remove(id);
                     self.git_states.remove(&id);
                     self.target_errors.remove(&id);
                     self.active = self.mods.iter().position(|m| Some(m.id) == selected);
                     if was_active {
+                        self.visit_selected();
                         self.view = if self.active.is_some() {
                             View::Chat
                         } else {

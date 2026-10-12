@@ -15,7 +15,7 @@ final class Session {
     private(set) var connection = Connection.disconnected
     private(set) var error: String?
     var newDescription = ""
-    var showingNew = false
+    var showingNew: Bool { snapshot?.navigation.destination == .newCodemod }
     var showClosed = false
     var workspace = WorkspaceSelection()
     private(set) var drafts = Drafts()
@@ -39,10 +39,15 @@ final class Session {
         pending.contains { $0.request.command.type != "set_draft" }
     }
     var canBeginCreation: Bool { interactive && !busy }
-    var canCompose: Bool {
-        interactive && active?.closed == false && current?.request.command.type != "select_mod" &&
-        !pending.contains(where: { $0.request.command.type == "select_mod" })
+    private var changingDestination: Bool {
+        ([current].compactMap { $0 } + pending).contains {
+            ["select_mod", "begin_creation", "go_back", "go_forward"].contains($0.request.command.type)
+        }
     }
+    var canCompose: Bool { interactive && !showingNew && active?.closed == false && !changingDestination }
+    var canGoBack: Bool { interactive && !busy && snapshot?.navigation.canGoBack == true }
+    var canGoForward: Bool { interactive && !busy && snapshot?.navigation.canGoForward == true }
+
     var draft: String { active.map { drafts.text(for: $0.id, fallback: $0.draft) } ?? "" }
     var visibleMods: [CodemodSummary] { snapshot?.mods.filter { $0.closed == showClosed } ?? [] }
 
@@ -83,7 +88,6 @@ final class Session {
             guard let self else { return }
             self.snapshot = nil
             self.drafts = Drafts()
-            self.showingNew = false
             self.start(project: folder, dataDirectory: self.dataDirectory)
         }
     }
@@ -117,12 +121,17 @@ final class Session {
     func beginCreation() {
         guard canBeginCreation else { return }
         showClosed = false
-        showingNew = true
+        enqueue(Command(type: "begin_creation"))
     }
 
     func select(_ id: Int64) {
-        showingNew = false
+        guard interactive && !busy else { return }
         enqueue(Command(type: "select_mod", modId: id))
+    }
+
+    func navigate(back: Bool) {
+        guard back ? canGoBack : canGoForward else { return }
+        enqueue(Command(type: back ? "go_back" : "go_forward"))
     }
 
     func perform(_ action: EngineAction) {
@@ -200,7 +209,9 @@ final class Session {
         }
         if connection == .starting { connection = .ready }
         var restored: Pending?
+        var navigated = false
         if let request = current, response.requestId == request.request.id {
+            navigated = response.error == nil && ["go_back", "go_forward", "select_mod"].contains(request.request.command.type)
             if response.error == nil, let revision = request.draftRevision, let id = request.request.command.modId {
                 drafts.acknowledge(id: id, revision: revision)
             }
@@ -217,10 +228,9 @@ final class Session {
         } else if let message = response.error { error = message }
         snapshot = response.snapshot
         workspace.reconcile(response.snapshot)
-        if response.snapshot.dialog?.isInspection == true { showingNew = false }
+        if navigated { showClosed = active?.closed == true && !showingNew }
         if let creation, let active, active.id != creation.previousMod, response.snapshot.dialog == nil {
             if newDescription == creation.description { newDescription = "" }
-            showingNew = false
             self.creation = nil
         }
         if let active { drafts.receive(id: active.id, text: active.draft) }

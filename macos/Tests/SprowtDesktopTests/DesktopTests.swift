@@ -4,7 +4,7 @@ import Testing
 @testable import SprowtDesktop
 
 private let snapshotJSON = #"""
-{"project":"/tmp/project","phase":"building","mods":[{"id":1,"name":"Example","closed":false,"status":"Building","workers":[]}],"active_mod":{"id":1,"name":"Example","description":"Change the CLI","closed":false,"user_paused":false,"draft":"Saved draft","messages":[{"role":"user","body":"Change the CLI","model":null,"effort":null},{"role":"planner","body":"Ready","model":"codex","effort":"high"}],"history":[],"queue":[{"id":7,"body":"Keep tests"}],"steering":["Preserve the interface"],"plan":{"status":"ready","summary":"One task","tasks":[{"id":"implement_cli","title":"Change command","outcome":"CLI works","depends_on":["design"],"status":"pending","detail":"Ready","files":["src/main.rs"],"checks":["cargo test"],"run_id":12,"identity":"codex executor","source":"task:12:attempt:1","error":null,"latest":null,"results":[],"checks_label":"Checks","completed":false,"preparation":null,"actions":[]}]},"checks":[{"id":"task:12:check:0","task_id":"implement_cli","kind":"check","label":"cargo test","status":"passed","output":"3 passed"}],"findings":[{"id":"F1","title":"Handle EOF","detail":"Keep draft","status":"open"}],"workers":["codex executor running"],"worker_details":[{"id":4,"provider":"codex","identity":"codex executor","role":"executor","task_id":"implement_cli","state":"running","activity":"Running cargo test"}]},"status":"Ready","detail":"Run plan","evidence":"3 checks","error":null,"actions":[{"id":"retry_task","label":"Retry task","task_id":12}],"dialog":null}
+{"project":"/tmp/project","navigation":{"destination":{"kind":"codemod","mod_id":1},"can_go_back":false,"can_go_forward":false},"phase":"building","mods":[{"id":1,"name":"Example","closed":false,"status":"Building","workers":[]}],"active_mod":{"id":1,"name":"Example","description":"Change the CLI","closed":false,"user_paused":false,"draft":"Saved draft","messages":[{"role":"user","body":"Change the CLI","model":null,"effort":null},{"role":"planner","body":"Ready","model":"codex","effort":"high"}],"history":[],"queue":[{"id":7,"body":"Keep tests"}],"steering":["Preserve the interface"],"plan":{"status":"ready","summary":"One task","tasks":[{"id":"implement_cli","title":"Change command","outcome":"CLI works","depends_on":["design"],"status":"pending","detail":"Ready","files":["src/main.rs"],"checks":["cargo test"],"run_id":12,"identity":"codex executor","source":"task:12:attempt:1","error":null,"latest":null,"results":[],"checks_label":"Checks","completed":false,"preparation":null,"actions":[]}]},"checks":[{"id":"task:12:check:0","task_id":"implement_cli","kind":"check","label":"cargo test","status":"passed","output":"3 passed"}],"findings":[{"id":"F1","title":"Handle EOF","detail":"Keep draft","status":"open"}],"workers":["codex executor running"],"worker_details":[{"id":4,"provider":"codex","identity":"codex executor","role":"executor","task_id":"implement_cli","state":"running","activity":"Running cargo test"}]},"status":"Ready","detail":"Run plan","evidence":"3 checks","error":null,"actions":[{"id":"retry_task","label":"Retry task","task_id":12}],"dialog":null}
 """#
 
 @Test func decodesGoldenFixtureProducedByRust() throws {
@@ -22,6 +22,104 @@ private let snapshotJSON = #"""
     #expect(response.snapshot.actions.first?.id == "retry_task")
     #expect(response.snapshot.dialog?.kind == "delete")
     #expect(response.snapshot.dialog?.confirmLabel == "Delete codemod")
+    #expect(response.snapshot.navigation.destination == .codemod(1))
+    #expect(!response.snapshot.navigation.canGoBack)
+}
+
+@Test @MainActor func navigationAcknowledgementsKeepDraftsFiltersAndBusyGuardsTogether() async throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let executable = directory.appendingPathComponent("engine")
+    try Data(snapshotJSON.utf8).write(to: URL(fileURLWithPath: executable.path + ".json"))
+    try installExecutable(#"""
+    #!/usr/bin/python3
+    import copy, json, os, sys, time
+    with open(sys.argv[0] + '.json') as f: snapshot = json.load(f)
+    first = copy.deepcopy(snapshot['active_mod'])
+    second = copy.deepcopy(first)
+    second.update(id=2, closed=True, draft='Saved closed draft')
+    details = {1:first, 2:second}
+    history = [dict(kind='codemod', mod_id=1)]
+    cursor = 0
+    def respond(request_id=None, error=None):
+        snapshot['navigation'] = dict(destination=history[cursor], can_go_back=cursor > 0, can_go_forward=cursor + 1 < len(history))
+        if history[cursor]['kind'] == 'codemod': snapshot['active_mod'] = details[history[cursor]['mod_id']]
+        print(json.dumps(dict(protocol_version=1, request_id=request_id, error=error, snapshot=snapshot)), flush=True)
+    respond()
+    for line in sys.stdin:
+        request = json.loads(line)
+        command = request['command']
+        kind = command['type']
+        with open(sys.argv[0] + '.commands', 'a') as f: f.write(json.dumps(command) + '\n')
+        error = None
+        if kind == 'set_draft':
+            open(sys.argv[0] + '.draft_entered', 'w').close()
+            while not os.path.exists(sys.argv[0] + '.draft_release'): time.sleep(0.01)
+            details[command['mod_id']]['draft'] = command['text']
+        elif kind in ['begin_creation', 'select_mod']:
+            destination = dict(kind='new_codemod') if kind == 'begin_creation' else dict(kind='codemod', mod_id=command['mod_id'])
+            if destination != history[cursor]:
+                history = history[:cursor+1] + [destination]
+                cursor += 1
+        elif kind in ['go_back', 'go_forward']:
+            if os.path.exists(sys.argv[0] + '.reject'): error = 'Navigation rejected'
+            else:
+                open(sys.argv[0] + '.nav_entered', 'w').close()
+                while not os.path.exists(sys.argv[0] + '.nav_release'): time.sleep(0.01)
+                cursor += -1 if kind == 'go_back' else 1
+        respond(request['id'], error)
+    """#, at: executable)
+    let session = Session()
+    defer { session.close {} }
+    session.start(project: directory, executable: executable)
+    try await waitUntil { session.canCompose }
+    session.editDraft("Keep first draft")
+    try await waitUntil { FileManager.default.fileExists(atPath: executable.path + ".draft_entered") }
+    session.newDescription = "Unsent **creation**"
+    session.beginCreation()
+    #expect(session.busy)
+    #expect(!session.canCompose && !session.canBeginCreation)
+    session.editDraft("Must not reach the old codemod")
+    session.select(2)
+    try Data().write(to: URL(fileURLWithPath: executable.path + ".draft_release"))
+    try await waitUntil { session.showingNew && !session.busy }
+    #expect(session.draft == "Keep first draft")
+    session.navigate(back: true)
+    try await waitUntil { FileManager.default.fileExists(atPath: executable.path + ".nav_entered") }
+    #expect(!session.canGoBack && !session.canGoForward && !session.canCompose)
+    session.editDraft("Must not reach the destination")
+    try Data().write(to: URL(fileURLWithPath: executable.path + ".nav_release"))
+    try await waitUntil { !session.showingNew && !session.busy }
+    #expect(session.draft == "Keep first draft")
+    #expect(session.canGoForward)
+    session.navigate(back: false)
+    try await waitUntil { session.showingNew && !session.busy }
+    #expect(session.newDescription == "Unsent **creation**")
+    session.select(2)
+    try await waitUntil { session.active?.id == 2 && !session.busy }
+    #expect(session.showClosed && !session.canCompose)
+    #expect(session.draft == "Saved closed draft")
+    session.navigate(back: true)
+    try await waitUntil { session.showingNew && !session.busy }
+    #expect(!session.showClosed)
+    session.navigate(back: true)
+    try await waitUntil { !session.showingNew && session.active?.id == 1 && !session.busy }
+    #expect(!session.showClosed)
+    #expect(session.draft == "Keep first draft")
+    session.navigate(back: false)
+    try await waitUntil { session.showingNew && !session.busy }
+    session.navigate(back: false)
+    try await waitUntil { session.active?.id == 2 && !session.busy }
+    #expect(session.showClosed)
+    try Data().write(to: URL(fileURLWithPath: executable.path + ".reject"))
+    session.navigate(back: true)
+    try await waitUntil { session.error == "Navigation rejected" && !session.busy }
+    #expect(session.active?.id == 2 && session.showClosed)
+    #expect(!session.showingNew)
+    #expect(session.newDescription == "Unsent **creation**")
+    let commands = try String(contentsOfFile: executable.path + ".commands", encoding: .utf8)
+    #expect(!commands.contains("Must not reach"))
+    #expect(commands.components(separatedBy: "\n").filter { $0.contains("select_mod") }.count == 1)
 }
 
 @Test func decodesRustProtocolAndEncodesCommands() throws {
@@ -176,10 +274,12 @@ private let snapshotJSON = #"""
     import json, os, sys, time
     with open(sys.argv[0] + '.json') as f: snapshot = json.load(f)
     def respond(request_id=None, error=None):
+        if snapshot.get('dialog') and snapshot['dialog']['kind'] in ['diff', 'failure', 'findings', 'sync_details']: snapshot['navigation']['destination'] = dict(kind='codemod', mod_id=snapshot['active_mod']['id'])
         print(json.dumps(dict(protocol_version=1, request_id=request_id, error=error, snapshot=snapshot)), flush=True)
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         command = request['command']
         kind = command['type']
         error = None
@@ -194,6 +294,7 @@ private let snapshotJSON = #"""
         elif kind == 'confirm':
             snapshot['dialog'] = None
             snapshot['active_mod']['id'] = 2
+            snapshot['navigation']['destination'] = dict(kind='codemod', mod_id=2)
             snapshot['active_mod']['draft'] = ''
         respond(request['id'], error)
     print('checkpoint complete', file=sys.stderr)
@@ -218,7 +319,8 @@ private let snapshotJSON = #"""
     try await waitUntil { session.active?.draft == "Typed while waiting" }
     #expect(session.draft == "Typed while waiting")
     session.newDescription = "Create this codemod"
-    session.showingNew = true
+    session.beginCreation()
+    try await waitUntil { session.showingNew }
     session.create()
     try await waitUntil { session.snapshot?.dialog?.kind == "project_setup" }
     #expect(session.newDescription == "Create this codemod")
@@ -246,13 +348,18 @@ private let snapshotJSON = #"""
         ["id": 1, "name": "Active change", "closed": false, "status": "Planning", "workers": []],
         ["id": 2, "name": "Saved change", "closed": true, "status": "Closed", "workers": []]
     ]
-    let envelope: [String: Any] = ["protocol_version": 1, "request_id": NSNull(), "error": NSNull(), "snapshot": snapshot]
-    try JSONSerialization.data(withJSONObject: envelope).write(to: URL(fileURLWithPath: executable.path + ".json"))
+    try JSONSerialization.data(withJSONObject: snapshot).write(to: URL(fileURLWithPath: executable.path + ".json"))
     try installExecutable("""
-    #!/bin/sh
-    cat "$0.json"
-    printf '\\n'
-    while IFS= read -r request; do :; done
+    #!/usr/bin/python3
+    import json, sys
+    with open(sys.argv[0] + '.json') as f: snapshot = json.load(f)
+    def respond(request_id=None):
+        print(json.dumps(dict(protocol_version=1, request_id=request_id, error=None, snapshot=snapshot)), flush=True)
+    respond()
+    for line in sys.stdin:
+        request = json.loads(line)
+        if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
+        respond(request['id'])
     """, at: executable)
     let session = Session()
     defer { session.close {} }
@@ -264,6 +371,7 @@ private let snapshotJSON = #"""
     #expect(session.visibleMods.map(\.id) == [2])
     #expect(session.draft == "Saved draft")
     session.beginCreation()
+    try await waitUntil { session.showingNew }
     #expect(session.showingNew)
     #expect(!session.showClosed)
     #expect(session.visibleMods.map(\.id) == [1])
@@ -385,10 +493,12 @@ private func installExecutable(_ source: String, at url: URL) throws {
     import json, sys
     with open(sys.argv[0] + '.json') as f: snapshot = json.load(f)
     def respond(request_id=None):
+        if snapshot.get('dialog') and snapshot['dialog']['kind'] in ['diff', 'failure', 'findings', 'sync_details']: snapshot['navigation']['destination'] = dict(kind='codemod', mod_id=snapshot['active_mod']['id'])
         print(json.dumps(dict(protocol_version=1, request_id=request_id, error=None, snapshot=snapshot)), flush=True)
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         if request['command']['type'] == 'cancel': snapshot['dialog'] = None
         respond(request['id'])
     """#, at: executable)
@@ -413,6 +523,7 @@ private func installExecutable(_ source: String, at url: URL) throws {
     #expect(session.canCompose)
     #expect(session.draft == "Saved draft")
     session.beginCreation()
+    try await waitUntil { session.showingNew }
     #expect(session.showingNew)
 }
 
@@ -509,10 +620,12 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     import json, os, sys, time
     with open(sys.argv[0] + '.json') as f: snapshot = json.load(f)
     def respond(request_id=None):
+        if snapshot.get('dialog') and snapshot['dialog']['kind'] in ['diff', 'failure', 'findings', 'sync_details']: snapshot['navigation']['destination'] = dict(kind='codemod', mod_id=snapshot['active_mod']['id'])
         print(json.dumps(dict(protocol_version=1, request_id=request_id, error=None, snapshot=snapshot)), flush=True)
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         if request['command']['type'] == 'action':
             open(sys.argv[0] + '.entered', 'w').close()
             while not os.path.exists(sys.argv[0] + '.release'): time.sleep(0.01)
@@ -539,6 +652,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     session.enqueue(Command(type: "cancel"))
     try await waitUntil { session.interactive }
     session.beginCreation()
+    try await waitUntil { session.showingNew }
     #expect(session.showingNew)
     #expect(session.draft == "Saved draft")
     #expect(session.newDescription == "Keep this unfinished description")
@@ -554,10 +668,12 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     import json, os, sys, time
     with open(sys.argv[0] + '.json') as f: snapshot = json.load(f)
     def respond(request_id=None):
+        if snapshot.get('dialog') and snapshot['dialog']['kind'] in ['diff', 'failure', 'findings', 'sync_details']: snapshot['navigation']['destination'] = dict(kind='codemod', mod_id=snapshot['active_mod']['id'])
         print(json.dumps(dict(protocol_version=1, request_id=request_id, error=None, snapshot=snapshot)), flush=True)
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         if request['command']['type'] == 'set_draft':
             open(sys.argv[0] + '.entered', 'w').close()
             while not os.path.exists(sys.argv[0] + '.release'): time.sleep(0.01)
@@ -592,6 +708,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     session.enqueue(Command(type: "cancel"))
     try await waitUntil { session.canBeginCreation }
     session.beginCreation()
+    try await waitUntil { session.showingNew }
     #expect(session.showingNew)
     #expect(session.draft == "A newer draft while inspection waits")
     #expect(session.newDescription == "Keep this unfinished description")
@@ -604,22 +721,27 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     try Data(snapshotJSON.utf8).write(to: URL(fileURLWithPath: executable.path + ".json"))
     try installExecutable(#"""
     #!/usr/bin/python3
-    import json, os, sys, time
+    import json, os, sys, time, threading
     with open(sys.argv[0] + '.json') as f: snapshot = json.load(f)
     def respond(request_id=None):
+        if snapshot.get('dialog') and snapshot['dialog']['kind'] in ['diff', 'failure', 'findings', 'sync_details']: snapshot['navigation']['destination'] = dict(kind='codemod', mod_id=snapshot['active_mod']['id'])
         print(json.dumps(dict(protocol_version=1, request_id=request_id, error=None, snapshot=snapshot)), flush=True)
+    def finish_inspection():
+        while not os.path.exists(sys.argv[0] + '.release'): time.sleep(0.01)
+        snapshot['dialog'] = dict(kind='diff', title='Review changes', body='Actual patch', confirm_label=None, request_id=None, domains=[], repository_slug=None, repository_create=False)
+        snapshot['navigation']['destination'] = dict(kind='codemod', mod_id=snapshot['active_mod']['id'])
+        respond()
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         kind = request['command']['type']
         if kind == 'set_draft': snapshot['active_mod']['draft'] = request['command']['text']
         elif kind == 'action':
             snapshot['phase'] = 'git'
             snapshot['status'] = 'loading changes'
             respond(request['id'])
-            while not os.path.exists(sys.argv[0] + '.release'): time.sleep(0.01)
-            snapshot['dialog'] = dict(kind='diff', title='Review changes', body='Actual patch', confirm_label=None, request_id=None, domains=[], repository_slug=None, repository_create=False)
-            respond()
+            threading.Thread(target=finish_inspection).start()
             continue
         elif kind == 'cancel': snapshot['dialog'] = None
         respond(request['id'])
@@ -634,6 +756,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     try await waitUntil { session.snapshot?.status == "loading changes" && !session.busy }
     #expect(session.canBeginCreation)
     session.beginCreation()
+    try await waitUntil { session.showingNew }
     session.newDescription = "New description typed during loading"
     #expect(session.showingNew)
     try Data().write(to: URL(fileURLWithPath: executable.path + ".release"))
@@ -644,7 +767,9 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     #expect(session.newDescription == "New description typed during loading")
     session.enqueue(Command(type: "cancel"))
     try await waitUntil { session.canBeginCreation }
+    #expect(!session.showingNew)
     session.beginCreation()
+    try await waitUntil { session.showingNew }
     #expect(session.showingNew)
     #expect(session.draft == "Keep the composer draft")
     #expect(session.newDescription == "New description typed during loading")

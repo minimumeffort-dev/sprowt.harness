@@ -2,12 +2,17 @@ import SwiftUI
 
 struct ContentView: View {
     @Bindable var session: Session
+    @Binding var sidebarVisible: Bool
 
     var body: some View {
-        NavigationSplitView {
+        HSplitView {
+            // Keep both panes mounted to preserve native editor focus and undo.
             SidebarView(session: session)
-                .navigationSplitViewColumnWidth(min: 190, ideal: 220, max: 240)
-        } detail: {
+                .frame(minWidth: sidebarVisible ? 190 : 0,
+                       idealWidth: sidebarVisible ? 220 : 0,
+                       maxWidth: sidebarVisible ? 240 : 0)
+                .clipped().allowsHitTesting(sidebarVisible).disabled(!sidebarVisible)
+                .accessibilityHidden(!sidebarVisible)
             VStack(spacing: 0) {
                 if let error = session.error ?? session.snapshot?.error {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -41,7 +46,17 @@ struct ContentView: View {
                 }
             }.frame(minWidth: 650, maxWidth: .infinity, maxHeight: .infinity).background(Theme.paper)
         }
-        .navigationSplitViewStyle(.balanced)
+        .toolbar {
+            ToolbarItemGroup(placement: .navigation) {
+                Button { session.navigate(back: true) } label: { Image(systemName: "chevron.left") }
+                    .disabled(!session.canGoBack).help("Back (⌘[)").accessibilityLabel("Back")
+                Button { session.navigate(back: false) } label: { Image(systemName: "chevron.right") }
+                    .disabled(!session.canGoForward).help("Forward (⌘])").accessibilityLabel("Forward")
+                Button { sidebarVisible.toggle() } label: {
+                    Image(systemName: "sidebar.left")
+                }.help("Toggle sidebar (⌃⌘S)").accessibilityLabel("Toggle sidebar")
+            }
+        }
         .toolbarBackground(Theme.sidebar, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
         .font(Theme.font()).foregroundStyle(Theme.ink).tint(Theme.ink)

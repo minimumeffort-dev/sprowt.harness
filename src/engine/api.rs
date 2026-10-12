@@ -13,6 +13,9 @@ pub struct Request {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Snapshot {},
+    BeginCreation {},
+    GoBack {},
+    GoForward {},
     SelectMod {
         mod_id: i64,
     },
@@ -150,7 +153,15 @@ impl Engine {
     pub fn command(&mut self, command: Command) -> Result<(), String> {
         match command {
             Command::Snapshot {} | Command::Shutdown {} => Ok(()),
-            Command::Cancel {} => self.cancel_dialog().map_err(|e| e.to_string()),
+            Command::Cancel {} => {
+                if self.dialog().is_none() {
+                    return Err("This dialog is no longer available.".into());
+                }
+                self.cancel_dialog().map_err(|e| e.to_string())
+            }
+            Command::BeginCreation {} => self.begin_creation().map_err(|e| e.to_string()),
+            Command::GoBack {} => self.navigate(true).map_err(|e| e.to_string()),
+            Command::GoForward {} => self.navigate(false).map_err(|e| e.to_string()),
             Command::SelectMod { mod_id } => {
                 self.require_no_confirmation()?;
                 let index = self
@@ -165,7 +176,7 @@ impl Engine {
                 if description.trim().is_empty() {
                     return Err("Describe the codemod first.".into());
                 }
-                self.view = View::NewMod;
+                self.begin_creation().map_err(|e| e.to_string())?;
                 self.composer = description;
                 self.create_mod().map_err(|e| e.to_string())
             }

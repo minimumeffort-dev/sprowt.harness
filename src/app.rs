@@ -97,7 +97,7 @@ impl App {
         };
         self.input.insert_str(&self.engine.composer);
     }
-    fn sync_editor(&mut self, before: u64, previous_view: View) {
+    fn sync_editor(&mut self, before: u64, previous_view: View, changed_destination: bool) {
         let changed_editor = previous_view != self.engine.view
             && (matches!(
                 self.engine.view,
@@ -110,7 +110,10 @@ impl App {
                         | View::ConfirmRepository(_)
                         | View::EditQueue(_)
                 ));
-        if changed_editor || self.input.lines().join("\n") != self.engine.composer {
+        if changed_destination
+            || changed_editor
+            || self.input.lines().join("\n") != self.engine.composer
+        {
             self.reset_editor();
         }
         if before != self.engine.celebrations {
@@ -121,6 +124,7 @@ impl App {
         self.engine.composer = self.input.lines().join("\n");
         let before = self.engine.celebrations;
         let previous_view = self.engine.view;
+        let previous_destination = self.engine.navigation.current();
         let context = self.composer_context();
         let result = operation(&mut self.engine);
         if context != self.composer_context() {
@@ -138,7 +142,11 @@ impl App {
             })
             .unwrap_or_default();
         self.queue_selection.retain(|id| queued.contains(id));
-        self.sync_editor(before, previous_view);
+        self.sync_editor(
+            before,
+            previous_view,
+            previous_destination != self.engine.navigation.current(),
+        );
         result
     }
     fn restore_input(&mut self) {
@@ -344,6 +352,16 @@ impl App {
                 | View::ConfirmRepository(_) => {}
             },
             Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if key.modifiers == KeyModifiers::ALT
+                    && matches!(key.code, KeyCode::Left | KeyCode::Right)
+                {
+                    if key.kind == KeyEventKind::Press
+                        && matches!(self.engine.view, View::Chat | View::NewMod)
+                    {
+                        self.with_engine(|engine| engine.navigate(key.code == KeyCode::Left))?;
+                    }
+                    return Ok(());
+                }
                 let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
                 if ctrl && key.code == KeyCode::Char('c') {
                     self.quit = true;
@@ -579,8 +597,8 @@ impl App {
                         KeyCode::Char('p') if ctrl => self.engine.view = View::Mods(0),
                         KeyCode::Esc => {
                             if self.engine.active.is_some() {
-                                self.engine.view = View::Chat;
-                                self.restore_input();
+                                let index = self.engine.active.unwrap();
+                                self.with_engine(|engine| engine.select_mod(index))?;
                             } else {
                                 self.quit = true;
                             }
@@ -641,15 +659,10 @@ impl App {
                 self.engine.view = View::Mods(0);
             }
             KeyCode::Esc => {
-                self.engine.view = if self.engine.active.is_some() {
-                    View::Chat
-                } else {
-                    View::NewMod
-                };
-                self.restore_input();
+                self.with_engine(Engine::dismiss_picker)?;
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.engine.view = View::Chat
+                self.with_engine(Engine::dismiss_picker)?;
             }
             KeyCode::Char('d') if key.modifiers.is_empty() && selected.is_some() => {
                 self.engine.view = View::DeleteMod(selected.unwrap());
@@ -666,8 +679,7 @@ impl App {
                 self.reopen_mod(selected.unwrap());
             }
             KeyCode::Enter if index == count => {
-                self.engine.view = View::NewMod;
-                self.input = ui::name_input();
+                self.with_engine(Engine::begin_creation)?;
             }
             KeyCode::Enter => {
                 let index = selected.unwrap();
@@ -855,6 +867,7 @@ impl App {
 mod tests {
     mod formatting;
     mod git_errors;
+    mod navigation;
     mod workbench;
     use super::*;
     use crate::store::test_support::TestData;

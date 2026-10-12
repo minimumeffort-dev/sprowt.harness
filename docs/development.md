@@ -23,6 +23,15 @@ The default Rust suite omits live tests marked `ignored`. The Python suite exerc
 
 The creation editor tests exercise Markdown source preservation, Unicode selection, native formatting and undo, slash menu cancellation, list and heading editing, marked text, and the unchanged description command. Terminal tests exercise the same formatting actions through keyboard and click controls, including literal paths, multiline paste and menu rendering. Automated tests do not record audio. Verify the native Dictate control and Edit menu's system action in a disposable app session without treating action dispatch as proof of speech recognition.
 
+Navigation checks exercise engine commands, terminal keys and clicks, and native request acknowledgements. They cover both drafts, forward-path replacement, closed and deleted destinations, dialogs, and delayed inspections. To export the actual terminal navigation buffers at 40, 80 and 160 columns:
+
+```sh
+SPROWT_UI_CAPTURE_DIR=/tmp/sprowt-navigation-captures \
+  cargo test --locked terminal_navigation_controls_render_and_click
+```
+
+**Expected:** the directory contains text and JSON cell buffers with working Back and Forward controls. Native verification also checks title-bar arrows and keyboard commands with the sidebar hidden.
+
 For native interface changes, [build the macOS bundle](macos.md#build-and-open) and exercise the changed flow in the app. The Rust and Swift protocol checks must agree before a shared boundary change is complete.
 
 To inspect CLI help without starting the interactive app:

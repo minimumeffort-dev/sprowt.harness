@@ -6,9 +6,11 @@ fn invalid(message: &str) -> rusqlite::Error {
 
 impl Engine {
     pub(crate) fn select_mod(&mut self, index: usize) -> Result<()> {
+        self.save_before_selection()?;
         self.store
             .select_mod(self.project_id, self.mods[index].id)?;
         self.active = Some(index);
+        self.visit_selected();
         self.notice = None;
         self.view = View::Chat;
         self.restore_input();

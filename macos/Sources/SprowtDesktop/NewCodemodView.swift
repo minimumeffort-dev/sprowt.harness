@@ -69,7 +69,7 @@ struct NewCodemodView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .overlay(alignment: .topTrailing) {
             if session.active != nil {
-                GlyphButton(symbol: "xmark", label: "Return to codemod") { session.showingNew = false }
+                GlyphButton(symbol: "xmark", label: "Return to codemod") { if let id = session.active?.id { session.select(id) } }
                     .padding(Theme.inset)
             }
         }

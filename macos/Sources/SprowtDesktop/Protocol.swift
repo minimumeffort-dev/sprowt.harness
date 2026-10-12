@@ -31,6 +31,7 @@ enum ProtocolError: LocalizedError {
 
 struct Snapshot: Decodable, Sendable {
     let project: String
+    let navigation: NavigationState
     let phase: WorkflowPhase
     let mods: [CodemodSummary]
     let activeMod: CodemodDetail?
@@ -40,6 +41,27 @@ struct Snapshot: Decodable, Sendable {
     let error: String?
     let actions: [EngineAction]
     let dialog: EngineDialog?
+}
+
+enum NavigationDestination: Decodable, Equatable, Sendable {
+    case codemod(Int64), newCodemod
+
+    private enum CodingKeys: String, CodingKey { case kind, modId }
+    private enum Kind: String, Decodable { case codemod, newCodemod = "new_codemod" }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        switch try values.decode(Kind.self, forKey: .kind) {
+        case .codemod: self = .codemod(try values.decode(Int64.self, forKey: .modId))
+        case .newCodemod: self = .newCodemod
+        }
+    }
+}
+
+struct NavigationState: Decodable, Sendable {
+    let destination: NavigationDestination
+    let canGoBack: Bool
+    let canGoForward: Bool
 }
 
 struct CodemodSummary: Decodable, Identifiable, Sendable {

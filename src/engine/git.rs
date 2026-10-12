@@ -70,6 +70,8 @@ impl Engine {
         }
         self.mods.push(code_mod);
         self.active = Some(self.mods.len() - 1);
+        self.visit_selected();
+        self.creation_draft.clear();
         self.notice = None;
 
         self.view = View::Chat;
@@ -334,6 +336,7 @@ impl Engine {
         };
         if delete {
             self.mods.remove(index);
+            self.navigation.forget(mod_id);
         } else {
             self.mods[index].closed = true;
         }
@@ -352,6 +355,7 @@ impl Engine {
             ));
         }
 
+        self.visit_selected();
         self.view = if self.active.is_some() {
             View::Chat
         } else {
@@ -379,11 +383,18 @@ impl Engine {
                 Some("This older codemod has no saved branch. Start a new codemod.".into());
             return;
         }
+        if (self.active != Some(index) || self.view == View::NewMod)
+            && let Err(error) = self.save_before_selection()
+        {
+            self.notice = Some(error.to_string());
+            return;
+        }
         if let Err(error) = self.store.select_mod(self.project_id, self.mods[index].id) {
             self.notice = Some(error.to_string());
             return;
         }
         self.active = Some(index);
+        self.visit_selected();
         self.git_jobs.insert(
             self.mods[index].id,
             Job::start("reopening codemod", move |cancelled| {

@@ -19,6 +19,7 @@ pub mod api;
 mod git;
 mod git_errors;
 mod interaction;
+mod navigation;
 mod ownership;
 mod poll;
 pub(crate) mod preparation;
@@ -29,6 +30,7 @@ mod sync;
 mod tasks;
 mod workers;
 pub use actions::{Action, ActionDock, ActionItem, Tone};
+pub use navigation::{Destination, NavigationSnapshot};
 pub use tasks::CheckOrigin;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -93,6 +95,8 @@ pub struct Engine {
     pub(crate) project_id: i64,
     pub(crate) active: Option<usize>,
     pub(crate) composer: String,
+    pub(crate) creation_draft: String,
+    pub(crate) navigation: navigation::Navigation,
     pub(crate) celebrations: u64,
     _ownership: Option<std::fs::File>,
 }
@@ -186,6 +190,13 @@ impl Engine {
         }
         let mut app = Self {
             composer: String::new(),
+            creation_draft: String::new(),
+            navigation: navigation::Navigation::new(active.map_or(
+                Destination::NewCodemod,
+                |index| Destination::Codemod {
+                    mod_id: state.mods[index].id,
+                },
+            )),
             _ownership: None,
             celebrations: 0,
             network_requests: Vec::new(),
@@ -266,6 +277,8 @@ impl Engine {
             self.current_mod()
                 .map(|m| m.draft.clone())
                 .unwrap_or_default()
+        } else if matches!(self.view, View::NewMod) {
+            self.creation_draft.clone()
         } else {
             String::new()
         };
