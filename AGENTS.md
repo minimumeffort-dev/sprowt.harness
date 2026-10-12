@@ -51,6 +51,7 @@
 - Start every feature batch from the latest `origin/main`. Fetch before starting, and fetch again before pushing. Rebase or merge intervening changes, resolve conflicts and verify the combined result before publishing.
 - When other chats share a checkout, use a separate worktree from the latest `origin/main`. Preserve their uncommitted work; never reset, stash, commit or overwrite another chat's changes.
 - After implementing and verifying an approved batch, commit its changes and push to `main`. Include documentation changes.
+- After every push to `main`, fetch and fast-forward the primary local `main` checkout to `origin/main`. Verify their commits match before reporting completion, so local app and CLI builds use the published code. If uncommitted changes or local commits block a safe fast-forward, preserve them and report the blocker.
 - After each push, start the next batch from the updated `origin/main`. Use ordinary pushes; never force-push `main`.
 - Committing and pushing are part of finishing the batch; no separate approval is needed.
 
