@@ -6,6 +6,9 @@ use crate::{
     tools::{Context, Dispatcher},
 };
 
+#[path = "session_handoff_tests.rs"]
+mod handoff;
+
 fn fixture() -> (
     TestData,
     Store,
