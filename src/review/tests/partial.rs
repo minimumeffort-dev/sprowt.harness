@@ -239,3 +239,56 @@ fn blocked_partial_review_cannot_bypass_no_progress_after_a_repair_pass() {
     assert!(!state.repairable() && !state.clear(&m));
     assert!(!store.review_fixes(&m).unwrap());
 }
+
+#[test]
+fn blocked_partial_review_repairs_only_findings_confirmed_on_its_version() {
+    let (_data, mut store, mut m) = partial_fixture();
+    let execution = m.execution.as_ref().unwrap();
+    fs::write(
+        execution.workspace.join("work/greet.sh"),
+        "#!/bin/sh\n[ -n \"${1-}\" ] || exit 1\nprintf 'hello %s\\n' \"$1\"\n",
+    )
+    .unwrap();
+    let fingerprint = workspace::review(&execution.workspace).unwrap().fingerprint;
+    store
+        .execution_checks(m.id, "review", &execution.checks, Some(&fingerprint))
+        .unwrap();
+    m.execution = store.execution(m.id).unwrap();
+    let source = start(&mut store, &mut m);
+    let mut partial = report();
+    partial["findings"][0]["owner"] = json!("docs");
+    partial["findings"][0]["file"] = json!("README.md");
+    partial["findings"][0]["title"] = json!("Describe the missing-input error");
+    store
+        .finish_review(&m, &source, &partial.to_string())
+        .unwrap();
+    m.agent_review = store.review_state(m.id).unwrap();
+    assert!(store.review_fixes(&m).unwrap());
+    let execution = store.execution(m.id).unwrap().unwrap();
+    assert_eq!(execution.tasks[0].status, "done");
+    assert_eq!(execution.tasks[1].status, "pending");
+    let issues = store.review_state(m.id).unwrap().unwrap().issues;
+    assert_eq!(issues[0].status, "confirmed");
+    assert_eq!(issues[0].attempts, 0);
+    assert_eq!(issues[1].status, "fixing");
+}
+
+#[test]
+fn blocked_partial_review_invalid_ledger_cannot_authorize_old_findings() {
+    let (_data, mut store, mut m) = partial_fixture();
+    let source = start(&mut store, &mut m);
+    let mut partial = report();
+    partial["findings"][0]["id"] = json!(999);
+    store
+        .finish_review(&m, &source, &partial.to_string())
+        .unwrap();
+    let state = store.review_state(m.id).unwrap().unwrap();
+    assert_eq!(state.status, "blocked");
+    assert_eq!(
+        state.report.as_ref().unwrap().summary,
+        "Review referenced an unknown finding ID."
+    );
+    assert!(!state.repairable());
+    assert!(!store.review_fixes(&m).unwrap());
+    assert!(store.execution(m.id).unwrap().unwrap().complete());
+}
