@@ -1,6 +1,40 @@
 use super::*;
 
 #[test]
+fn concurrent_preparation_requests_from_owned_sending_attempts_do_not_lock_database() {
+    let (data, store, m, root, workers) = fixture();
+    let database = PathBuf::from(store.0.path().unwrap());
+    let sources = m.execution.as_ref().unwrap().tasks.iter().map(|run| run.source.clone()).collect::<Vec<_>>();
+    drop(store);
+    let barrier = std::sync::Barrier::new(2);
+    let failures = std::thread::scope(|scope| {
+        let threads = workers.iter().enumerate().map(|(index, worker)| {
+            let database = &database;
+            let root = &root;
+            let source = &sources[index];
+            let barrier = &barrier;
+            scope.spawn(move || {
+                let store = Store::open(database).unwrap();
+                let policy = BTreeMap::new();
+                let mut failures = Vec::new();
+                for iteration in 0..128 {
+                    barrier.wait();
+                    let domain = format!("asset-{iteration}-{index}.example.org");
+                    let error = require_preparation(&store, root, m.id, *worker, source, request(&domain), &policy).unwrap_err();
+                    if error.kind() != io::ErrorKind::PermissionDenied {
+                        failures.push(format!("worker {worker}, iteration {iteration}: {error:?}"));
+                    }
+                }
+                failures
+            })
+        }).collect::<Vec<_>>();
+        threads.into_iter().flat_map(|thread| thread.join().unwrap()).collect::<Vec<_>>()
+    });
+    assert!(failures.is_empty(), "{} concurrent preparation requests failed: {}", failures.len(), failures.iter().take(4).cloned().collect::<Vec<_>>().join("\n"));
+    assert_eq!(data.store().network_requests(m.id).unwrap().len(), 256);
+}
+
+#[test]
 fn preparation_permission_pauses_sending_attempts_and_survives_restart() {
     for index in [0, 1] {
         let (data, mut store, m, root, workers) = fixture();
