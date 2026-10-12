@@ -292,3 +292,29 @@ fn blocked_partial_review_invalid_ledger_cannot_authorize_old_findings() {
     assert!(!store.review_fixes(&m).unwrap());
     assert!(store.execution(m.id).unwrap().unwrap().complete());
 }
+
+#[test]
+fn blocked_partial_review_mixed_invalid_ids_do_not_authorize_an_unaccepted_reassignment() {
+    let (_data, mut store, mut m) = partial_fixture();
+    let source = start(&mut store, &mut m);
+    let mut partial = report();
+    let mut reassigned = partial["findings"][0].clone();
+    reassigned["id"] = json!(1);
+    reassigned["owner"] = json!("docs");
+    reassigned["file"] = json!("README.md");
+    let mut unknown = partial["findings"][0].clone();
+    unknown["id"] = json!(999);
+    partial["findings"] = json!([reassigned, unknown]);
+    store
+        .finish_review(&m, &source, &partial.to_string())
+        .unwrap();
+    let state = store.review_state(m.id).unwrap().unwrap();
+    assert_eq!(state.issues[0].finding.owner, "runtime");
+    assert_eq!(
+        state.report.as_ref().unwrap().summary,
+        "Review referenced an unknown finding ID."
+    );
+    assert!(!state.repairable());
+    assert!(!store.review_fixes(&m).unwrap());
+    assert!(store.execution(m.id).unwrap().unwrap().complete());
+}
