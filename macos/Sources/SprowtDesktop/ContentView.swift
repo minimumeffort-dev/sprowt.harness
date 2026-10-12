@@ -8,8 +8,8 @@ struct ContentView: View {
             SidebarView(session: session).frame(minWidth: 190, idealWidth: 220, maxWidth: 240)
             VStack(spacing: 0) {
                 if let error = session.error ?? session.snapshot?.error {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle")
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Image(systemName: "exclamationmark.triangle").symbolBaseline(textSize: 12)
                         Text(error).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                         if session.connection == .disconnected {
                             Button("Open project…") { session.chooseProject() }

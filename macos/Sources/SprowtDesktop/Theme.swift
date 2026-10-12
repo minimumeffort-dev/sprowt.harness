@@ -1,3 +1,4 @@
+import AppKit
 import CoreText
 import SwiftUI
 
@@ -29,6 +30,15 @@ enum Theme {
             return main.url(forResource: "SprowtDesktop_SprowtDesktop", withExtension: "bundle").flatMap(Bundle.init(url:))
         }
         return .module
+    }
+}
+
+extension View {
+    func symbolBaseline(textSize: CGFloat) -> some View {
+        let capHeight = (NSFont(name: "Manrope", size: textSize) ?? NSFont.systemFont(ofSize: textSize)).capHeight
+        return alignmentGuide(.firstTextBaseline) { dimensions in
+            dimensions[VerticalAlignment.center] + capHeight / 2
+        }
     }
 }
 

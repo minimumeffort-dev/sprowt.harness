@@ -27,10 +27,10 @@ struct NewCodemodView: View {
                             .disabled(!session.interactive || session.busy)
                         Spacer()
                         Button { create() } label: {
-                            HStack(spacing: 10) {
+                            HStack(alignment: .firstTextBaseline, spacing: 10) {
                                 Text("Create codemod")
                                 Text("⌘↩").font(Theme.font(10)).foregroundStyle(Theme.muted)
-                                Image(systemName: "arrow.up").font(.system(size: 12))
+                                Image(systemName: "arrow.up").font(.system(size: 12)).symbolBaseline(textSize: 12)
                             }
                         }.buttonStyle(WorkspaceButtonStyle(prominent: true))
                             .keyboardShortcut(.return, modifiers: .command)

@@ -83,6 +83,12 @@ The native app communicates with its bundled engine over local stdin/stdout. Typ
 
 The light theme uses Minimum Effort's Manrope font, warm neutral backgrounds and yellow action accents. Manrope is bundled under the SIL Open Font License; the app does not fetch fonts at runtime. Its [source](../macos/Sources/SprowtDesktop/Resources/Manrope/SOURCE.txt) and [license](../macos/Sources/SprowtDesktop/Resources/Manrope/OFL.txt) are included with the bundle.
 
+Row icons align with the center of their label's first line, even when the label wraps.
+
+![Aligned icons in the sidebar and saved checks](assets/macos-icon-alignment.jpg)
+
+Example paused codemod with sample saved checks in a disposable project.
+
 For an isolated development session, replace both paths below with disposable directories:
 
 ```sh

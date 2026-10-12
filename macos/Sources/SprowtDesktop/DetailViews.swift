@@ -116,9 +116,10 @@ struct MessageView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if message.role != "user" {
-                HStack(spacing: 7) {
+                HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "leaf").font(.system(size: 12)).frame(width: 21, height: 21)
                         .background(Theme.gold.opacity(0.22), in: RoundedRectangle(cornerRadius: 5))
+                        .symbolBaseline(textSize: 11)
                     Text(message.role.replacingOccurrences(of: ":", with: " · "))
                         .font(Theme.font(11, weight: .medium)).foregroundStyle(Theme.muted)
                 }
@@ -143,9 +144,10 @@ struct ChecksView: View {
                         .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.ink).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
                 } label: {
-                    HStack(alignment: .top, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
                         Image(systemName: check.status == .passed ? "checkmark" : check.status == .failed ? "xmark.circle" : "minus.circle")
                             .font(.system(size: 11)).foregroundStyle(check.status == .passed ? Theme.green : check.status == .failed ? Theme.red : Theme.muted)
+                            .symbolBaseline(textSize: 12)
                         VStack(alignment: .leading, spacing: 4) {
                             Text(check.label).font(Theme.font(12)).foregroundStyle(Theme.ink)
                             Text(check.kind.caption).font(Theme.font(10)).foregroundStyle(Theme.muted)
@@ -170,8 +172,8 @@ struct FindingsView: View {
                     Text(finding.detail).font(Theme.font(12)).textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
                 } label: {
-                    HStack(alignment: .top, spacing: 7) {
-                        Image(systemName: "checkmark.bubble").font(.system(size: 11)).foregroundStyle(Theme.muted)
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Image(systemName: "checkmark.bubble").font(.system(size: 11)).foregroundStyle(Theme.muted).symbolBaseline(textSize: 12)
                         Text(finding.title).font(Theme.font(12))
                         Spacer(minLength: 8)
                         Text(finding.status).font(Theme.font(10)).foregroundStyle(Theme.muted)
