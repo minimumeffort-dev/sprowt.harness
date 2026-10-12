@@ -21,6 +21,7 @@ fn blocked_partial_review_native_status_and_actions_preserve_reason_and_findings
         1
     );
     let actions = snapshot["actions"].as_array().unwrap();
+    assert_eq!(actions[0]["id"], "fix_issues");
     assert!(actions.iter().any(|action| action["id"] == "fix_issues"));
     assert!(!actions.iter().any(|action| action["id"] == "publish"));
     engine
