@@ -189,6 +189,7 @@ extension EvidenceKind {
         case .check: "Task verification · before combined checks"
         case .finalCheck: "Combined version checks"
         case .previousCheck: "Previous failed checks"
+        case .observedCheck: "Observed task checks"
         case .preparationSetup: "Environment setup"
         case .preparationCapabilities: "Capability checks"
         case .preparationBaseline: "Starting-source baseline"

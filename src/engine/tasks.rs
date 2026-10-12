@@ -15,7 +15,7 @@ pub struct TaskInspection<'a> {
     pub note: String,
     pub error: Option<&'a str>,
     pub latest: Option<&'a Message>,
-    pub checks: Vec<&'a CheckResult>,
+    pub checks: Vec<CheckResult>,
     pub check_origin: CheckOrigin,
 }
 
@@ -24,6 +24,7 @@ pub enum CheckOrigin {
     Task,
     Final,
     Previous,
+    Observed,
 }
 
 impl CheckOrigin {
@@ -32,6 +33,7 @@ impl CheckOrigin {
             Self::Task => "Checks",
             Self::Final => "Final checks",
             Self::Previous => "Previous failed checks",
+            Self::Observed => "Observed task checks",
         }
     }
 }
@@ -280,10 +282,11 @@ impl Engine {
             .checks
             .iter()
             .filter(|check| check.task == Some(id))
+            .cloned()
             .collect();
         let mut check_origin = CheckOrigin::Final;
         if checks.is_empty() {
-            checks = run.checks.iter().collect();
+            checks = run.checks.clone();
             check_origin = CheckOrigin::Task;
         }
         let busy = worker.is_some_and(|w| w.busy());
@@ -410,8 +413,21 @@ impl Engine {
                 _ => ("Paused", run.summary.clone()),
             }
         };
+        if checks.is_empty()
+            && !busy
+            && matches!(
+                run.status.as_str(),
+                "blocked" | "paused" | "waiting" | "repair_paused"
+            )
+        {
+            checks = crate::checks::observed::results(&execution.workspace, run.id, &run.source)
+                .unwrap_or_default();
+            if !checks.is_empty() {
+                check_origin = CheckOrigin::Observed;
+            }
+        }
         if checks.is_empty() && !run.verification_feedback.is_empty() {
-            checks = run.verification_feedback.iter().collect();
+            checks = run.verification_feedback.clone();
             check_origin = CheckOrigin::Previous;
         }
         Some(TaskInspection {

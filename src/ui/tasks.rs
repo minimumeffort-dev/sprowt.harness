@@ -355,7 +355,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
                 .checks
                 .iter()
                 .find(|c| c.failed())
-                .is_some_and(|first| std::ptr::eq(*first, *check))
+                .is_some_and(|first| std::ptr::eq(first, check))
             {
                 lines.extend(command_lines(&check.command, width));
                 let output = if app.show_evidence {

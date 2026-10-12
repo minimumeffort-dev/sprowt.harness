@@ -16,6 +16,7 @@ use crate::{
 };
 
 pub const TOOL: &str = "run_task_checks";
+pub(crate) mod observed;
 
 // Reuse only within this call. Each task keeps its own cwd, HOME and permissions.
 pub fn unique_results(

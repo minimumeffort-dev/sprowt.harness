@@ -442,7 +442,7 @@ fn checks(app: &App, item: &Item, d: &mut Document, detailed: bool) {
             }
         } else {
             d.lines.extend(inspector::check_lines(
-                &task.checks,
+                &task.checks.iter().collect::<Vec<_>>(),
                 d.width,
                 app.show_evidence,
             ));

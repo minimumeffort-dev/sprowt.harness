@@ -94,7 +94,7 @@ pub struct Task {
 pub struct Check {
     id: String,
     task_id: Option<String>,
-    // check, final_check, previous_check, preparation_setup/capabilities/baseline.
+    // check, final_check, observed_check, previous_check, preparation phases.
     kind: &'static str,
     label: String,
     status: &'static str,
@@ -262,6 +262,12 @@ impl Engine {
                             )
                         })
                     }))
+                    .chain(execution.tasks.iter().flat_map(|run| {
+                        self.inspect_task(run.id)
+                            .filter(|task| task.check_origin == super::CheckOrigin::Observed)
+                            .map(|task| self.task_results(code_mod, &task))
+                            .unwrap_or_default()
+                    }))
             })
             .collect()
     }
@@ -283,10 +289,10 @@ impl Engine {
                 .map(|(index, result)| self.final_check(code_mod, index, result))
                 .collect();
         }
-        let kind = if task.check_origin == super::CheckOrigin::Previous {
-            "previous_check"
-        } else {
-            "check"
+        let kind = match task.check_origin {
+            super::CheckOrigin::Previous => "previous_check",
+            super::CheckOrigin::Observed => "observed_check",
+            _ => "check",
         };
         task.checks
             .iter()

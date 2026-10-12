@@ -230,17 +230,20 @@ pub(super) fn check_summary(app: &App, width: u16) -> Vec<Line<'static>> {
                 }
             } else {
                 lines.push(
-                    Line::from(
-                        if task.run.checks.is_empty() && !task.run.verification_feedback.is_empty()
-                        {
-                            "Previous failed checks"
-                        } else {
-                            "Task verification · before combined checks"
-                        },
-                    )
+                    Line::from(match task.check_origin {
+                        crate::engine::CheckOrigin::Previous => "Previous failed checks",
+                        crate::engine::CheckOrigin::Observed => {
+                            "Saved command results · task remains blocked"
+                        }
+                        _ => "Task verification · before combined checks",
+                    })
                     .fg(KEY_HINT),
                 );
-                lines.extend(check_lines(&task.checks, width, app.show_evidence));
+                lines.extend(check_lines(
+                    &task.checks.iter().collect::<Vec<_>>(),
+                    width,
+                    app.show_evidence,
+                ));
             }
         }
     }

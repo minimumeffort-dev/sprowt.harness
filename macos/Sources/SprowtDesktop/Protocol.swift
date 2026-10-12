@@ -88,6 +88,7 @@ enum EvidenceKind: String, Decodable, Sendable {
     case check
     case finalCheck = "final_check"
     case previousCheck = "previous_check"
+    case observedCheck = "observed_check"
     case preparationSetup = "preparation_setup"
     case preparationCapabilities = "preparation_capabilities"
     case preparationBaseline = "preparation_baseline"
