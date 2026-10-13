@@ -59,6 +59,53 @@ pub struct Draft {
     description: String,
     pub text: Text,
     pub evidence: String,
+    #[serde(default)]
+    pub template: Option<String>,
+}
+
+impl Draft {
+    // The template stays verbatim between the generated summary and the
+    // controller's verification evidence, so previews show the posted body.
+    pub fn body(&self) -> String {
+        match &self.template {
+            Some(template) => format!(
+                "{}\n\n{}\n\n## Verification\n\n{}\n",
+                self.text.summary,
+                template.trim(),
+                self.evidence
+            ),
+            None => format!(
+                "{}\n\n## Verification\n\n{}\n",
+                self.text.summary, self.evidence
+            ),
+        }
+    }
+}
+
+const TEMPLATE_PATHS: [&str; 6] = [
+    ".github/pull_request_template.md",
+    ".github/PULL_REQUEST_TEMPLATE.md",
+    "docs/pull_request_template.md",
+    "docs/PULL_REQUEST_TEMPLATE.md",
+    "pull_request_template.md",
+    "PULL_REQUEST_TEMPLATE.md",
+];
+
+pub fn template(root: &Path) -> io::Result<Option<String>> {
+    for path in TEMPLATE_PATHS {
+        match fs::read_to_string(root.join("work").join(path)) {
+            Ok(text) if text.trim().is_empty() => continue,
+            Ok(text) if text.chars().count() > 30_000 => {
+                return Err(io::Error::other(format!(
+                    "PR template {path} is too large to include in a PR body."
+                )));
+            }
+            Ok(text) => return Ok(Some(text)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(None)
 }
 
 pub fn load(root: &Path, description: &str) -> io::Result<Draft> {
@@ -76,6 +123,7 @@ pub fn load(root: &Path, description: &str) -> io::Result<Draft> {
         || draft.base != state.base
         || draft.published_head != state.published_head
         || draft.description != description
+        || draft.template != template(root)?
     {
         return Err(io::Error::other(
             "Publication text is outdated. Preview the PR again.",
@@ -156,6 +204,7 @@ fn prepare_with(
         description: description.into(),
         text,
         evidence: evidence.into(),
+        template: template(root)?,
     };
     let next = root.join("publication-next.json");
     fs::write(&next, serde_json::to_vec(&draft)?)?;
@@ -341,6 +390,59 @@ pub mod tests {
             fs::read_to_string(root.join("work/a.txt")).unwrap(),
             "Changed again\n"
         );
+    }
+
+    #[test]
+    fn repository_template_stays_verbatim_between_summary_and_verification() {
+        let (_data, repo, root, _) = git_mod::tests::fixture();
+        let flag = AtomicBool::new(false);
+        git_mod::prepare(&repo, &root, &flag).unwrap();
+        workspace::create(&git_mod::checkout(&root), &root).unwrap();
+        fs::write(root.join("work/a.txt"), "Hello there\n").unwrap();
+        // Without a template the posted body is unchanged from before.
+        let draft = prepare_with(
+            &root,
+            "Change greeting",
+            "1 passed",
+            &flag,
+            |_| Ok(sample()),
+        )
+        .unwrap();
+        assert_eq!(
+            draft.body(),
+            "Use the revised greeting and remove the obsolete text.\n\n## Verification\n\n1 passed\n"
+        );
+        fs::create_dir_all(root.join("work/.github")).unwrap();
+        fs::write(
+            root.join("work/.github/pull_request_template.md"),
+            "## Checklist\n\n- [ ] Tests pass\n<!-- keep this guidance -->\n",
+        )
+        .unwrap();
+        fs::write(
+            root.join("work/pull_request_template.md"),
+            "Root template must not win.\n",
+        )
+        .unwrap();
+        // The fingerprint changed with the new files, so the old draft is out.
+        assert!(load(&root, "Change greeting").is_err());
+        let draft = prepare_with(
+            &root,
+            "Change greeting",
+            "1 passed",
+            &flag,
+            |_| Ok(sample()),
+        )
+        .unwrap();
+        assert_eq!(
+            draft.body(),
+            "Use the revised greeting and remove the obsolete text.\n\n## Checklist\n\n- [ ] Tests pass\n<!-- keep this guidance -->\n\n## Verification\n\n1 passed\n"
+        );
+        fs::write(
+            root.join("work/.github/pull_request_template.md"),
+            "## Checklist\n\n- [ ] Something else\n",
+        )
+        .unwrap();
+        assert!(load(&root, "Change greeting").is_err());
     }
 
     #[test]

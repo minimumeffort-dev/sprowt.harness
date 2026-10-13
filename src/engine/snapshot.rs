@@ -681,11 +681,10 @@ impl Engine {
                     "publication",
                     "Publish pull request",
                     format!(
-                        "Commit: {}\n\n{}\n\n{}\n\n{}",
+                        "Commit: {}\n\n{}\n\n{}",
                         draft.text.commit_title,
                         draft.text.pr_title,
-                        draft.text.summary,
-                        draft.evidence
+                        draft.body()
                     ),
                     self.can_publish().then_some("Publish PR"),
                 )

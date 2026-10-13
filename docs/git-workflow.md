@@ -127,7 +127,7 @@ Restore saved operation receipts before accepting retries so a
 reconnected client receives the original task instead of a duplicate.
 ```
 
-The controller adds actual verification results below the generated summary.
+The controller adds actual verification results below the generated summary. If the project has a PR template — `.github/pull_request_template.md`, `docs/pull_request_template.md` or `pull_request_template.md`, plus the uppercase spellings — the posted body keeps it **verbatim** between the summary and the verification results, checklists and HTML guidance included. The publication preview shows that exact body. Complete the checklist on GitHub after publishing. Editing the template makes a saved preview outdated, like any source change. A template over 30,000 characters stops preview with an error instead of being truncated.
 
 | Situation | What happens |
 | --- | --- |
@@ -147,7 +147,7 @@ Publication combines unpublished checkpoints into one commit. Later publications
 
 </details>
 
-This design draws on [GitHub Copilot's diff-based commit suggestions](https://docs.github.com/en/copilot/responsible-use/chat) and [Devin's concise default PR summary](https://docs.devin.ai/integrations/pr-templates). Repository PR templates and custom publication instructions are not yet supported.
+This design draws on [GitHub Copilot's diff-based commit suggestions](https://docs.github.com/en/copilot/responsible-use/chat) and [Devin's concise default PR summary](https://docs.devin.ai/integrations/pr-templates). Choosing between multiple templates in a `PULL_REQUEST_TEMPLATE` directory and custom publication instructions are not yet supported.
 
 ## Read and fix PR feedback
 

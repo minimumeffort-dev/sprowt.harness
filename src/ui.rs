@@ -416,16 +416,7 @@ pub fn draw(
                 ]));
             }
             lines.push(Line::default());
-            lines.extend(
-                draft
-                    .text
-                    .summary
-                    .lines()
-                    .map(|line| Line::from(line.to_owned())),
-            );
-            lines.push(Line::default());
-            lines.push(Line::from("Verification").fg(ACCENT).bold());
-            lines.push(Line::from(draft.evidence.clone()));
+            lines.extend(draft.body().lines().map(|line| Line::from(line.to_owned())));
         } else {
             lines.push(Line::from(app.state_summary().evidence));
         }

@@ -1268,13 +1268,7 @@ pub fn publish(
         save(root, &state)?;
     }
     let body = root.join("pr-body.md");
-    fs::write(
-        &body,
-        format!(
-            "{}\n\n## Verification\n\n{}\n",
-            publication.text.summary, publication.evidence
-        ),
-    )?;
+    fs::write(&body, publication.body())?;
     private(&body)?;
     let title = &publication.text.pr_title;
     let pr = if let Some(url) = existing {
@@ -2295,6 +2289,25 @@ esac
         assert_eq!(
             fs::read_to_string(repo.join("a.txt")).unwrap(),
             "original\n"
+        );
+    }
+
+    #[test]
+    fn published_body_includes_the_repository_pr_template_verbatim() {
+        let (_data, repo, root, program) = fixture();
+        let flag = AtomicBool::new(false);
+        prepare(&repo, &root, &flag).unwrap();
+        edited(&root);
+        fs::create_dir_all(root.join("work/.github")).unwrap();
+        fs::write(
+            root.join("work/.github/pull_request_template.md"),
+            "## Checklist\n\n- [ ] Tests pass\n",
+        )
+        .unwrap();
+        publish(&root, "Greeting", false, &program, &flag).unwrap();
+        assert_eq!(
+            fs::read_to_string(root.join("pr-body.md")).unwrap(),
+            "Use the revised greeting and remove the obsolete text.\n\n## Checklist\n\n- [ ] Tests pass\n\n## Verification\n\nCombined checks: 1/1 passed.\n"
         );
     }
 
