@@ -17,6 +17,17 @@ pub struct Target {
     pub branch: String,
     pub head: String,
     pub pr_state: Option<String>,
+    pub pr_feedback: Vec<crate::pr_feedback::Feedback>,
+    pub pr_feedback_error: Option<String>,
+}
+
+impl Target {
+    pub fn actionable_feedback(&self) -> usize {
+        self.pr_feedback
+            .iter()
+            .filter(|item| item.actionable)
+            .count()
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -55,6 +66,8 @@ pub fn target(root: &Path, program: &Path, cancelled: &AtomicBool) -> io::Result
     if !git_mod::has_origin(&state.repo) {
         return Ok(None);
     }
+    let mut pr_feedback = Vec::new();
+    let mut pr_feedback_error = None;
     let pr_state = if let Some(pr) = &state.pr {
         let info: serde_json::Value = serde_json::from_str(&git_mod::gh(
             root,
@@ -69,6 +82,13 @@ pub fn target(root: &Path, program: &Path, cancelled: &AtomicBool) -> io::Result
             .ok_or_else(|| io::Error::other("Cannot read the PR status."))?;
         if status == "OPEN" {
             git_mod::open_pr(root, &state, program, cancelled)?;
+            // Feedback is read-only evidence; failing to read it must not
+            // block target sync or publication, so keep the error visible
+            // instead of failing this check.
+            match crate::pr_feedback::fetch(root, &state, program, cancelled) {
+                Ok(items) => pr_feedback = items,
+                Err(error) => pr_feedback_error = Some(error.to_string()),
+            }
         }
         Some(status.to_owned())
     } else {
@@ -143,6 +163,8 @@ pub fn target(root: &Path, program: &Path, cancelled: &AtomicBool) -> io::Result
         branch,
         head,
         pr_state,
+        pr_feedback,
+        pr_feedback_error,
     }))
 }
 
@@ -685,6 +707,8 @@ pub(crate) mod tests {
             branch: "main".into(),
             head,
             pr_state: None,
+            pr_feedback: Vec::new(),
+            pr_feedback_error: None,
         };
         let plan = Plan {
             environment: None,

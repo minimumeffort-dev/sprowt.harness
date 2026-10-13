@@ -454,6 +454,22 @@ fn desktop_contract_matches_the_native_fixture() {
         }],
         ..Default::default()
     });
+    engine.targets.insert(
+        engine.mods[0].id,
+        crate::mod_sync::Target {
+            branch: "main".into(),
+            head: "target-head".into(),
+            pr_state: Some("OPEN".into()),
+            pr_feedback: vec![crate::pr_feedback::Feedback {
+                id: "thread:30".into(),
+                title: "src/engine.rs:42 · rev".into(),
+                detail: "This drops the draft.\nhttps://example.test/t30".into(),
+                status: "unresolved thread".into(),
+                actionable: true,
+            }],
+            pr_feedback_error: None,
+        },
+    );
     engine.view = View::DeleteMod(0);
     let actual = serde_json::to_value(engine.response(Some(7), None)).unwrap();
     assert_eq!(

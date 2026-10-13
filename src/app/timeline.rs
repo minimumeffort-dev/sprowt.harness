@@ -599,21 +599,49 @@ impl App {
                 || *a == Action::ReviseRepair && review.is_some_and(|r| r.halt.is_some())
         });
         items.push(reviewed);
+        let target = self.targets.get(&m.id);
+        let actionable = target.map_or(0, |t| t.actionable_feedback());
         let mut published = Item::new(
             Key::Publish,
-            if self.published() {
-                "PR published"
+            if self.published() && actionable > 0 {
+                format!(
+                    "PR published · {actionable} GitHub feedback item{}",
+                    if actionable == 1 { "" } else { "s" }
+                )
+            } else if self.published() {
+                "PR published".into()
             } else if self.git_state().is_some_and(|g| g.pr.is_some()) {
-                "PR open · update pending"
+                "PR open · update pending".into()
             } else if checked && review_state == Done {
-                "Ready to publish"
+                "Ready to publish".into()
             } else {
-                "Publish PR · after checks and review"
+                "Publish PR · after checks and review".into()
             },
-            if self.published() { Done } else { Waiting },
+            if actionable > 0 {
+                Attention
+            } else if self.published() {
+                Done
+            } else {
+                Waiting
+            },
         );
         if let Some(url) = self.git_state().and_then(|g| g.pr.clone()) {
             published.detail.push(url);
+        }
+        if let Some(target) = target {
+            if let Some(error) = &target.pr_feedback_error {
+                published
+                    .detail
+                    .push(format!("GitHub feedback unavailable · {error}"));
+            }
+            for item in &target.pr_feedback {
+                published
+                    .detail
+                    .push(format!("{} · {}", item.status, item.title));
+                if !item.detail.is_empty() {
+                    published.detail.push(item.detail.clone());
+                }
+            }
         }
         published.action = dock.primary.filter(|a| *a == Action::Publish);
         published.inspect = Some(View::History(0));

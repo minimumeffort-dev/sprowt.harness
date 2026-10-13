@@ -49,6 +49,8 @@ pub struct ModDetail {
     plan: Option<Plan>,
     checks: Vec<Check>,
     findings: Vec<Finding>,
+    pr_feedback: Vec<Finding>,
+    pr_feedback_error: Option<String>,
     workers: Vec<String>,
     worker_details: Vec<WorkerSummary>,
 }
@@ -506,6 +508,26 @@ impl Engine {
                         status: f.status.clone(),
                     })
                     .collect(),
+                pr_feedback: self
+                    .targets
+                    .get(&m.id)
+                    .map(|target| {
+                        target
+                            .pr_feedback
+                            .iter()
+                            .map(|item| Finding {
+                                id: item.id.clone(),
+                                title: item.title.clone(),
+                                detail: item.detail.clone(),
+                                status: item.status.clone(),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                pr_feedback_error: self
+                    .targets
+                    .get(&m.id)
+                    .and_then(|target| target.pr_feedback_error.clone()),
                 workers: self.worker_activity(),
                 worker_details: self.worker_summaries(m),
             }),

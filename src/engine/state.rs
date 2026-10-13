@@ -463,6 +463,23 @@ impl Engine {
             }
             state.evidence.push_str("PR open · update pending");
         }
+        if let Some(count) = target
+            .map(|t| t.actionable_feedback())
+            .filter(|count| *count > 0)
+        {
+            if !state.evidence.is_empty() {
+                state.evidence.push_str(" · ");
+            }
+            state.evidence.push_str(&format!(
+                "GitHub PR · {count} feedback item{} to review",
+                if count == 1 { "" } else { "s" }
+            ));
+        } else if target.is_some_and(|t| t.pr_feedback_error.is_some()) {
+            if !state.evidence.is_empty() {
+                state.evidence.push_str(" · ");
+            }
+            state.evidence.push_str("GitHub PR feedback unavailable");
+        }
         if state.phase == NeedsYou && state.error.is_none() {
             let error = self.worker_error();
             state.error = if failed.is_some() {

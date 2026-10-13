@@ -13,7 +13,7 @@ A local coding harness with terminal and native macOS interfaces that takes a so
 1. **Describe the outcome.** The planner reads your project and splits the work into tasks with file scopes, dependencies and checks.
 2. **Follow the work.** The controller prepares the environment and records baseline tests. Up to two executors work in parallel. Select a stage in the Evidence Workbench to read its summary, checks or activity.
 3. **Verify and review.** The harness reruns checks against the combined changes. A fresh reviewer examines that version. Findings have owners and explicit fix or investigation actions.
-4. **Publish when ready.** Passing checks and a clean current review unlock publication. A model writes a concise commit title and PR summary from the diff. Preview the text, confirm publication, then keep editing to update the PR.
+4. **Publish when ready.** Passing checks and a clean current review unlock publication. A model writes a concise commit title and PR summary from the diff. Preview the text, confirm publication, then keep editing to update the PR. Review comments and failing GitHub checks on the open PR appear beside the local evidence while the harness is open.
 
 ```mermaid
 flowchart LR

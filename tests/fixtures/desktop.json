@@ -168,6 +168,15 @@
           }
         ]
       },
+      "pr_feedback": [
+        {
+          "detail": "This drops the draft.\nhttps://example.test/t30",
+          "id": "thread:30",
+          "status": "unresolved thread",
+          "title": "src/engine.rs:42 · rev"
+        }
+      ],
+      "pr_feedback_error": null,
       "queue": [
         {
           "body": "Keep keyboard shortcuts",
@@ -203,7 +212,7 @@
       "title": "Delete codemod"
     },
     "error": "Preserve the native composer draft.",
-    "evidence": "Checks · 0 passed · 1 failed · 0 not run · Review outdated",
+    "evidence": "Checks · 0 passed · 1 failed · 0 not run · Review outdated · GitHub PR · 1 feedback item to review",
     "mods": [
       {
         "closed": false,

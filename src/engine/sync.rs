@@ -111,6 +111,8 @@ impl Engine {
                             branch: update.branch,
                             head: update.target,
                             pr_state: None,
+                            pr_feedback: Vec::new(),
+                            pr_feedback_error: None,
                         },
                     );
                 } else if !busy

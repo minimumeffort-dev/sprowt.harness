@@ -4,7 +4,7 @@
 
 Each codemod owns a branch and worktree. Workers build in Linux; Git credentials and publication stay on your Mac. You confirm every PR publication or update.
 
-[Starting files](#start-in-any-folder) · [Sync](#keep-the-project-current) · [Target updates](#when-another-codemod-merges) · [Publish](#publish-a-pr) · [Close and reopen](#close-reopen-or-delete)
+[Starting files](#start-in-any-folder) · [Sync](#keep-the-project-current) · [Target updates](#when-another-codemod-merges) · [Publish](#publish-a-pr) · [PR feedback](#read-pr-feedback) · [Close and reopen](#close-reopen-or-delete)
 
 ## Start in any folder
 
@@ -148,6 +148,18 @@ Publication combines unpublished checkpoints into one commit. Later publications
 </details>
 
 This design draws on [GitHub Copilot's diff-based commit suggestions](https://docs.github.com/en/copilot/responsible-use/chat) and [Devin's concise default PR summary](https://docs.devin.ai/integrations/pr-templates). Repository PR templates and custom publication instructions are not yet supported.
+
+## Read PR feedback
+
+While the harness is open, each target check also reads the open PR on your Mac, at most every 30 seconds. Nothing is sent back to GitHub.
+
+1. Open the published codemod.
+2. Select **Pull request** in the terminal, or **Review → GitHub PR feedback** in the macOS app.
+3. Read each item, then send an edit through the composer for anything you want fixed. The edit runs fresh checks and review, then updates the same PR.
+
+**Expected:** unresolved review threads, reviews, PR comments and checks that failed on the published commit are listed with their author or check name and a link. The dock counts unresolved threads, change requests, review comments and failed checks as feedback to review. Resolved threads, dismissed reviews and passing or still-running checks are omitted. Approvals and plain PR comments are listed but not counted.
+
+Feedback is evidence only. It does not block publication or sync, start repairs, reply to or resolve threads, or merge the PR. If GitHub cannot be read, the stage shows **GitHub feedback unavailable** with the error and target sync continues. Each read covers the newest 50 threads, reviews and comments, and the checks on the published commit.
 
 ## Close, reopen or delete
 

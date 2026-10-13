@@ -16,6 +16,7 @@ mod muse;
 mod network;
 mod packages;
 mod plan;
+mod pr_feedback;
 mod publication;
 mod repair;
 mod review;

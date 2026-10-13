@@ -51,6 +51,13 @@ struct OverviewView: View {
                 ChecksView(checks: mod.checks)
             case .review:
                 FindingsView(findings: mod.findings)
+                if !mod.prFeedback.isEmpty || mod.prFeedbackError != nil {
+                    Text("GitHub PR feedback").font(Theme.font(13, weight: .semibold)).padding(.top, 8)
+                    if let error = mod.prFeedbackError {
+                        Text("GitHub feedback unavailable · \(error)").font(Theme.font(12)).foregroundStyle(Theme.muted).textSelection(.enabled)
+                    }
+                    if !mod.prFeedback.isEmpty { FindingsView(findings: mod.prFeedback) }
+                }
                 if let action = session.snapshot?.actions.first(where: { $0.id == "review" || $0.id == "findings" }) {
                     Button(action.label) { session.perform(action) }
                         .buttonStyle(WorkspaceButtonStyle()).disabled(!session.interactive || session.busy)

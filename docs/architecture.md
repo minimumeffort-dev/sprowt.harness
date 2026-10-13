@@ -104,6 +104,6 @@ Changing source invalidates previous evidence. Saved results stay readable as hi
 - Planning is read-only on the host. Independent review is read-only in the VM, with network access disabled.
 - Downloads pass through an allowlist. Workers can request access; only you can approve it.
 - External MCP servers, runtime plugins, shared memory and repository indexing are not connected.
-- GitHub publication is supported; PR merging remains outside the harness.
+- GitHub publication is supported; PR merging remains outside the harness. Open-PR reviews, unresolved threads, comments and failing checks are polled read-only on the host with the target check and shown as evidence; replying, resolving and automatic repairs from feedback are not connected.
 
 **Next:** [How tasks are planned](planning.md) · [How checks establish completion](execution.md)

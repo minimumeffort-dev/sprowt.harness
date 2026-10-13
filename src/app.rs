@@ -2278,6 +2278,8 @@ mod tests {
                 branch: "main".into(),
                 head: "new-head".into(),
                 pr_state: Some("OPEN".into()),
+                pr_feedback: Vec::new(),
+                pr_feedback_error: None,
             },
         );
         app.engine.git_states.insert(id, state);
@@ -4745,6 +4747,73 @@ mod tests {
             .execution_checks(code_mod.id, "review", &checks, Some(&fingerprint))
             .unwrap();
         (data, App::load(project, false, store).unwrap(), root)
+    }
+
+    #[test]
+    fn timeline_publish_stage_shows_github_pr_feedback() {
+        let (_data, mut app, _root) = execution_app();
+        let id = app.engine.mods[0].id;
+        let fingerprint = app.engine.mods[0]
+            .execution
+            .as_ref()
+            .unwrap()
+            .fingerprint
+            .clone();
+        let mut git = git_mod::GitMod {
+            repo: app.engine.project.clone(),
+            branch: "sprowt/test".into(),
+            base: "base".into(),
+            base_branch: Some("main".into()),
+            phase: "published".into(),
+            fingerprint: None,
+            head: Some("head".into()),
+            pr: Some("https://github.com/fixture/project/pull/1".into()),
+            draft: false,
+            removing: false,
+            publishing: false,
+            closing: false,
+            discarding: false,
+            continuing: false,
+            published_head: Some("head".into()),
+            checkpoint: Some("head".into()),
+        };
+        git.fingerprint = fingerprint;
+        app.engine.git_states.insert(id, git);
+        app.engine.targets.insert(
+            id,
+            crate::mod_sync::Target {
+                branch: "main".into(),
+                head: "base".into(),
+                pr_state: Some("OPEN".into()),
+                pr_feedback: vec![crate::pr_feedback::Feedback {
+                    id: "check:unit tests".into(),
+                    title: "unit tests".into(),
+                    detail: "This GitHub check failed on the published commit.".into(),
+                    status: "check failed".into(),
+                    actionable: true,
+                }],
+                pr_feedback_error: None,
+            },
+        );
+        assert!(app.published());
+        let items = app.timeline_items();
+        let published = items
+            .iter()
+            .find(|item| item.key == timeline::Key::Publish)
+            .unwrap();
+        assert_eq!(published.title, "PR published · 1 GitHub feedback item");
+        assert!(published.state == timeline::State::Attention);
+        assert!(
+            published
+                .detail
+                .iter()
+                .any(|line| line == "check failed · unit tests")
+        );
+        assert!(
+            app.action_dock()
+                .evidence
+                .contains("GitHub PR · 1 feedback item to review")
+        );
     }
 
     #[test]

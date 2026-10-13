@@ -86,6 +86,8 @@ struct CodemodDetail: Decodable, Identifiable, Sendable {
     let plan: Plan?
     let checks: [Check]
     let findings: [Finding]
+    let prFeedback: [Finding]
+    let prFeedbackError: String?
     let workers: [String]
     let workerDetails: [WorkerSummary]
 }
