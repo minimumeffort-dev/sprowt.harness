@@ -466,6 +466,8 @@ fn desktop_contract_matches_the_native_fixture() {
                 detail: "This drops the draft.\nhttps://example.test/t30".into(),
                 status: "unresolved thread".into(),
                 actionable: true,
+                file: Some("src/engine.rs".into()),
+                line: Some(42),
             }],
             pr_feedback_error: None,
         },
@@ -497,6 +499,59 @@ fn desktop_contract_matches_the_native_fixture() {
     let expected: serde_json::Value =
         serde_json::from_slice(&std::fs::read(&fixture).unwrap()).unwrap();
     assert_eq!(actual, expected);
+}
+
+#[test]
+fn desktop_fix_pr_feedback_rejects_unknown_and_empty_selections() {
+    let (_data, mut engine, first, _) = session();
+    engine.targets.insert(
+        first,
+        crate::mod_sync::Target {
+            branch: "main".into(),
+            head: "target-head".into(),
+            pr_state: Some("OPEN".into()),
+            pr_feedback: vec![crate::pr_feedback::Feedback {
+                id: "thread:30".into(),
+                title: "src/engine.rs:42 · rev".into(),
+                detail: "This drops the draft.".into(),
+                status: "unresolved thread".into(),
+                actionable: true,
+                file: Some("src/engine.rs".into()),
+                line: Some(42),
+            }],
+            pr_feedback_error: None,
+        },
+    );
+    let snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    assert_eq!(
+        snapshot["active_mod"]["pr_feedback"][0]["imported"],
+        serde_json::json!(false)
+    );
+    let empty = engine
+        .command(Command::FixPrFeedback {
+            mod_id: first,
+            feedback_ids: vec![],
+        })
+        .unwrap_err();
+    assert_eq!(empty, "Select PR feedback first.");
+    // No clean review exists in this session, and unknown IDs never resolve
+    // against the displayed feedback, so neither selection imports anything.
+    for ids in [
+        vec!["thread:404".to_string()],
+        vec!["thread:30".to_string()],
+    ] {
+        let error = engine
+            .command(Command::FixPrFeedback {
+                mod_id: first,
+                feedback_ids: ids,
+            })
+            .unwrap_err();
+        assert!(
+            error.contains("no longer available to send to review"),
+            "{error}"
+        );
+    }
+    assert!(engine.mods[0].agent_review.is_none());
 }
 
 #[test]

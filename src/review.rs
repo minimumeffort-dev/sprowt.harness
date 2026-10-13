@@ -48,6 +48,20 @@ fn complete_review() -> bool {
     true
 }
 
+pub fn pr_feedback_marker(feedback_id: &str) -> String {
+    format!("GitHub PR feedback ({feedback_id})")
+}
+
+fn pr_feedback_imported(issues: &[Issue], feedback_id: &str) -> bool {
+    let marker = pr_feedback_marker(feedback_id);
+    issues.iter().any(|issue| {
+        issue
+            .history
+            .iter()
+            .any(|event| event.reason.contains(&marker))
+    })
+}
+
 pub fn regression_check(index: usize, finding: &Finding) -> String {
     format!(
         "Review regression {} · {}",
@@ -72,6 +86,10 @@ pub struct State {
 impl State {
     pub fn partial(&self) -> bool {
         self.status == "blocked" && self.report.as_ref().is_some_and(Report::partial)
+    }
+
+    pub fn pr_feedback_imported(&self, feedback_id: &str) -> bool {
+        pr_feedback_imported(&self.issues, feedback_id)
     }
 
     fn repair_issues(&self) -> impl Iterator<Item = &Issue> {
@@ -593,6 +611,124 @@ impl Store {
         tx.commit()?;
         Ok(true)
     }
+
+    // Selected GitHub feedback enters the ledger unconfirmed. The next fresh
+    // review must triage it before review_fixes can create any repair task.
+    pub fn import_pr_feedback(
+        &mut self,
+        code_mod: &CodeMod,
+        items: &[crate::pr_feedback::Feedback],
+    ) -> Result<usize> {
+        let Some(state) = self
+            .review_state(code_mod.id)?
+            .filter(|r| r.status == "clean" && r.current(code_mod))
+        else {
+            return Ok(0);
+        };
+        let execution = code_mod.execution.as_ref().unwrap();
+        if workspace::source_state(&execution.workspace.join("work"))
+            .and_then(|s| workspace::fingerprint(&s))
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?
+            != state.fingerprint
+        {
+            self.0.execute(
+                "UPDATE reviews SET status='stale' WHERE mod_id=?1 AND source=?2",
+                params![code_mod.id, state.source],
+            )?;
+            return Ok(0);
+        }
+        let Some(plan) = code_mod
+            .planning
+            .as_ref()
+            .and_then(|planning| planning.plan.as_ref())
+            .filter(|plan| !plan.tasks.is_empty())
+        else {
+            return Ok(0);
+        };
+        let mut issues = state.issues.clone();
+        let mut imported = 0;
+        for item in items {
+            if pr_feedback_imported(&issues, &item.id) {
+                continue;
+            }
+            let file = item.file.as_deref().filter(|file| {
+                !file.is_empty()
+                    && !file.contains(['\\', '*', '?', '[', ']'])
+                    && Path::new(file)
+                        .components()
+                        .all(|part| matches!(part, Component::Normal(_)))
+            });
+            // The reviewer reassigns the owner during triage; until then this
+            // placeholder owner never receives repair work.
+            let owner = file
+                .and_then(|file| {
+                    plan.tasks.iter().find(|task| {
+                        task.files
+                            .iter()
+                            .any(|scope| file == scope || file.starts_with(&format!("{scope}/")))
+                    })
+                })
+                .unwrap_or(&plan.tasks[0]);
+            let Some(file) = file
+                .map(str::to_owned)
+                .or_else(|| owner.files.first().cloned())
+                .filter(|file| !file.is_empty())
+            else {
+                continue;
+            };
+            let id = issues.iter().map(|issue| issue.id).max().unwrap_or(0) + 1;
+            let evidence = if item.detail.trim().is_empty() {
+                item.title.clone()
+            } else {
+                item.detail.trim().chars().take(8000).collect()
+            };
+            issues.push(Issue {
+                id,
+                finding: Finding {
+                    id: Some(id),
+                    triage: Some(ledger::Triage {
+                        kind: "investigate".into(),
+                        origin: "unknown".into(),
+                        reason: format!(
+                            "{} selected by the user; confirm or dismiss it with current evidence before any repair.",
+                            pr_feedback_marker(&item.id)
+                        ),
+                        acceptance: String::new(),
+                        reproduction: String::new(),
+                    }),
+                    owner: owner.id.clone(),
+                    file,
+                    line: item.line.filter(|line| *line > 0).unwrap_or(1),
+                    priority: if item.actionable { "P1" } else { "P2" }.into(),
+                    title: item.title.clone(),
+                    evidence,
+                    fix: "Triage this GitHub feedback in the fresh review; a confirmed defect gets an owner, acceptance criterion and regression before repair.".into(),
+                },
+                status: "investigate".into(),
+                attempts: 0,
+                regression: format!("Review regression {id} · {}", item.title),
+                history: vec![ledger::Event {
+                    fingerprint: state.fingerprint.clone(),
+                    status: "imported".into(),
+                    reason: format!(
+                        "Imported from {}; fresh triage is required before repair.",
+                        pr_feedback_marker(&item.id)
+                    ),
+                }],
+            });
+            imported += 1;
+        }
+        if imported == 0 {
+            return Ok(0);
+        }
+        let tx = self.0.transaction()?;
+        let changed = tx.execute("UPDATE reviews SET status='findings',issues=?3 WHERE mod_id=?1 AND source=?2 AND status='clean' AND NOT EXISTS(SELECT 1 FROM queued_messages WHERE mod_id=?1) AND NOT EXISTS(SELECT 1 FROM steering_requests WHERE mod_id=?1) AND EXISTS(SELECT 1 FROM plans p JOIN executions e ON p.mod_id=e.mod_id JOIN code_mods m ON m.id=p.mod_id WHERE p.mod_id=?1 AND m.closed=0 AND p.source=reviews.plan_source AND e.fingerprint=reviews.fingerprint AND e.status='review')", params![code_mod.id,state.source,serde_json::to_string(&issues).unwrap()])?;
+        if changed == 0 {
+            return Ok(0);
+        }
+        tx.commit()?;
+        Ok(imported)
+    }
 }
 
 #[cfg(test)]
@@ -797,6 +933,81 @@ pub(crate) mod tests {
         assert_eq!(
             ledger::reconcile(&issues, &mut report, "same", &[]).unwrap()[0].status,
             "dismissed"
+        );
+    }
+
+    #[test]
+    fn pr_feedback_imports_for_triage_then_repairs_through_review_fixes() {
+        let (_data, mut store, mut m, _plan) = fixture();
+        let source = start(&mut store, &mut m);
+        store
+            .finish_review(
+                &m,
+                &source,
+                r#"{"status":"clean","summary":"No issues found.","findings":[]}"#,
+            )
+            .unwrap();
+        m.agent_review = store.review_state(m.id).unwrap();
+        let feedback = crate::pr_feedback::Feedback {
+            id: "thread:99".into(),
+            title: "greet.sh:2 · rev".into(),
+            detail: "Empty names still print hello.\nhttps://example.test/t99".into(),
+            status: "unresolved thread".into(),
+            actionable: true,
+            file: Some("greet.sh".into()),
+            line: Some(2),
+        };
+        assert_eq!(
+            store
+                .import_pr_feedback(&m, std::slice::from_ref(&feedback))
+                .unwrap(),
+            1
+        );
+        // Re-importing the same displayed item does not duplicate the issue.
+        assert_eq!(
+            store
+                .import_pr_feedback(&m, std::slice::from_ref(&feedback))
+                .unwrap(),
+            0
+        );
+        m.agent_review = store.review_state(m.id).unwrap();
+        let state = m.agent_review.as_ref().unwrap();
+        assert_eq!(state.status, "findings");
+        assert_eq!(state.issues.len(), 1);
+        assert_eq!(state.issues[0].status, "investigate");
+        assert_eq!(state.issues[0].finding.owner, "runtime");
+        assert!(state.pr_feedback_imported("thread:99"));
+        // Untriaged external feedback cannot start repairs.
+        assert!(!store.review_fixes(&m).unwrap());
+        // The fresh reviewer confirms it under the imported ID.
+        let source = start(&mut store, &mut m);
+        let mut report: Value = serde_json::from_str(&finding()).unwrap();
+        report["findings"][0]["id"] = json!(1);
+        report["findings"][0]["title"] = json!("Reject empty names");
+        store
+            .finish_review(&m, &source, &report.to_string())
+            .unwrap();
+        m.agent_review = store.review_state(m.id).unwrap();
+        assert_eq!(
+            m.agent_review.as_ref().unwrap().issues[0].status,
+            "confirmed"
+        );
+        // The existing repair flow now creates the owner's repair task,
+        // carrying the originating GitHub evidence in the ledger history.
+        assert!(store.review_fixes(&m).unwrap());
+        let execution = store.execution(m.id).unwrap().unwrap();
+        let run = execution
+            .tasks
+            .iter()
+            .find(|run| run.task_id == "runtime")
+            .unwrap();
+        assert_eq!(run.status, "pending");
+        let state = store.review_state(m.id).unwrap().unwrap();
+        assert!(
+            state.issues[0]
+                .history
+                .iter()
+                .any(|event| event.reason.contains("GitHub PR feedback (thread:99)"))
         );
     }
 

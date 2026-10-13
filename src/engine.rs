@@ -47,6 +47,7 @@ pub enum View {
     EditQueue(usize),
     Review(u16),
     Findings(u16),
+    PrFeedback(usize),
     Checks(u16),
     History(u16),
     Tasks(usize),

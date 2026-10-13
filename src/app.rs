@@ -31,6 +31,7 @@ pub struct App {
     pub show_evidence: bool,
     pub focus_plan: bool,
     pub queue_selection: std::collections::BTreeSet<i64>,
+    pub pr_feedback_selection: std::collections::BTreeSet<String>,
     pub show_closed: bool,
     pub input: TextArea<'static>,
     pub formatting_menu: Option<formatting::Menu>,
@@ -72,6 +73,7 @@ impl App {
             show_evidence: false,
             focus_plan: false,
             queue_selection: std::collections::BTreeSet::new(),
+            pr_feedback_selection: std::collections::BTreeSet::new(),
             show_closed: false,
             engine,
             input: ui::input(),
@@ -142,6 +144,19 @@ impl App {
             })
             .unwrap_or_default();
         self.queue_selection.retain(|id| queued.contains(id));
+        let feedback = self
+            .current_mod()
+            .and_then(|m| self.engine.targets.get(&m.id))
+            .map(|target| {
+                target
+                    .pr_feedback
+                    .iter()
+                    .map(|item| item.id.clone())
+                    .collect::<std::collections::BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        self.pr_feedback_selection
+            .retain(|id| feedback.contains(id));
         self.sync_editor(
             before,
             previous_view,
@@ -339,6 +354,7 @@ impl App {
                 | View::DeleteMod(_)
                 | View::CloseMod(_)
                 | View::Queue(_)
+                | View::PrFeedback(_)
                 | View::Review(_)
                 | View::Checks(_)
                 | View::Findings(_)
@@ -462,6 +478,7 @@ impl App {
                         _ => {}
                     },
                     View::Queue(index) => self.queue_key(key, index)?,
+                    View::PrFeedback(index) => self.pr_feedback_key(key, index)?,
                     View::EditQueue(index) => self.edit_key(key, index)?,
                     View::Review(scroll) => match key.code {
                         KeyCode::Esc => {
@@ -785,6 +802,78 @@ impl App {
                 let id = code_mod.queue[index].id;
                 self.engine
                     .move_queued(id, key.code == KeyCode::Char('k'))?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn pr_feedback_key(&mut self, key: KeyEvent, index: usize) -> Result<()> {
+        if key.code == KeyCode::Esc {
+            self.engine.view = View::Chat;
+            self.pr_feedback_selection.clear();
+            return Ok(());
+        }
+        let Some(active) = self.engine.active else {
+            return Ok(());
+        };
+        let code_mod = &self.engine.mods[active];
+        let items: Vec<(String, bool)> = self
+            .engine
+            .targets
+            .get(&code_mod.id)
+            .map(|target| {
+                target
+                    .pr_feedback
+                    .iter()
+                    .map(|item| {
+                        (
+                            item.id.clone(),
+                            code_mod
+                                .agent_review
+                                .as_ref()
+                                .is_some_and(|r| r.pr_feedback_imported(&item.id)),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if items.is_empty() {
+            self.engine.view = View::Chat;
+            self.pr_feedback_selection.clear();
+            return Ok(());
+        }
+        let index = index.min(items.len() - 1);
+        match key.code {
+            KeyCode::Up => self.engine.view = View::PrFeedback(index.saturating_sub(1)),
+            KeyCode::Down => self.engine.view = View::PrFeedback((index + 1).min(items.len() - 1)),
+            KeyCode::Char(' ') if key.modifiers.is_empty() && !items[index].1 => {
+                let id = items[index].0.clone();
+                if !self.pr_feedback_selection.remove(&id) {
+                    self.pr_feedback_selection.insert(id);
+                }
+            }
+            KeyCode::Char('x') if key.modifiers.is_empty() => {
+                let ids: Vec<String> = if self.pr_feedback_selection.is_empty() {
+                    if items[index].1 {
+                        Vec::new()
+                    } else {
+                        vec![items[index].0.clone()]
+                    }
+                } else {
+                    self.pr_feedback_selection.iter().cloned().collect()
+                };
+                if ids.is_empty() {
+                    return Ok(());
+                }
+                if self.engine.fix_pr_feedback(&ids)? {
+                    self.pr_feedback_selection.clear();
+                } else {
+                    self.engine.notice = Some(
+                        "PR feedback needs a clean current review before it can be sent for triage."
+                            .into(),
+                    );
+                }
             }
             _ => {}
         }
@@ -4791,6 +4880,8 @@ mod tests {
                     detail: "This GitHub check failed on the published commit.".into(),
                     status: "check failed".into(),
                     actionable: true,
+                    file: None,
+                    line: None,
                 }],
                 pr_feedback_error: None,
             },
@@ -4814,6 +4905,28 @@ mod tests {
                 .evidence
                 .contains("GitHub PR · 1 feedback item to review")
         );
+        app.perform_action(Action::PrFeedback).unwrap();
+        assert!(matches!(app.engine.view, View::PrFeedback(0)));
+        let display = rows(&screen(&mut app, 100, 30)).join("\n");
+        assert!(display.contains("GitHub PR feedback (1)"));
+        assert!(display.contains("check failed · unit tests"));
+        assert!(display.contains("mark"));
+        key(&mut app, KeyCode::Char(' '), KeyModifiers::NONE);
+        assert!(app.pr_feedback_selection.contains("check:unit tests"));
+        // This fixture has no clean review to import into, so sending keeps
+        // the selection and explains the prerequisite instead of guessing.
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+        assert!(matches!(app.engine.view, View::PrFeedback(0)));
+        assert!(app.pr_feedback_selection.contains("check:unit tests"));
+        assert!(
+            app.engine
+                .notice
+                .as_deref()
+                .is_some_and(|notice| notice.contains("clean current review"))
+        );
+        key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
+        assert!(matches!(app.engine.view, View::Chat));
+        assert!(app.pr_feedback_selection.is_empty());
     }
 
     #[test]

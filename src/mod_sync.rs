@@ -21,15 +21,6 @@ pub struct Target {
     pub pr_feedback_error: Option<String>,
 }
 
-impl Target {
-    pub fn actionable_feedback(&self) -> usize {
-        self.pr_feedback
-            .iter()
-            .filter(|item| item.actionable)
-            .count()
-    }
-}
-
 #[derive(Deserialize, Serialize)]
 pub struct Update {
     pub branch: String,

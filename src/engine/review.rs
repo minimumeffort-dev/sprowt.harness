@@ -37,6 +37,49 @@ impl Engine {
         self.active.is_some_and(|index| self.review_ready(index))
     }
 
+    pub(crate) fn pr_feedback_actionable(&self, m: &CodeMod) -> usize {
+        self.targets.get(&m.id).map_or(0, |target| {
+            target
+                .pr_feedback
+                .iter()
+                .filter(|item| {
+                    item.actionable
+                        && !m
+                            .agent_review
+                            .as_ref()
+                            .is_some_and(|r| r.pr_feedback_imported(&item.id))
+                })
+                .count()
+        })
+    }
+
+    pub(crate) fn fix_pr_feedback(&mut self, ids: &[String]) -> Result<bool> {
+        let Some(index) = self.active else {
+            return Ok(false);
+        };
+        let id = self.mods[index].id;
+        let items: Vec<_> = self
+            .targets
+            .get(&id)
+            .map(|target| {
+                target
+                    .pr_feedback
+                    .iter()
+                    .filter(|item| ids.contains(&item.id))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
+        if items.is_empty() || self.store.import_pr_feedback(&self.mods[index], &items)? == 0 {
+            self.mods[index].agent_review = self.store.review_state(id)?;
+            return Ok(false);
+        }
+        self.mods[index].agent_review = self.store.review_state(id)?;
+        self.begin_agent_review(index)?;
+        self.view = View::Findings(0);
+        Ok(true)
+    }
+
     pub(crate) fn review_ready(&self, index: usize) -> bool {
         let m = &self.mods[index];
         !m.closed

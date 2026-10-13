@@ -53,6 +53,10 @@ pub enum Command {
         mod_id: i64,
         message_ids: Vec<i64>,
     },
+    FixPrFeedback {
+        mod_id: i64,
+        feedback_ids: Vec<String>,
+    },
     Confirm {
         mod_id: Option<i64>,
         kind: String,
@@ -261,6 +265,23 @@ impl Engine {
                 self.require_no_confirmation()?;
                 self.steer_queued(&message_ids, None)
                     .map_err(|e| e.to_string())
+            }
+            Command::FixPrFeedback {
+                mod_id,
+                feedback_ids,
+            } => {
+                self.require_mod(Some(mod_id))?;
+                self.require_no_confirmation()?;
+                if feedback_ids.is_empty() {
+                    return Err("Select PR feedback first.".into());
+                }
+                if !self
+                    .fix_pr_feedback(&feedback_ids)
+                    .map_err(|e| e.to_string())?
+                {
+                    return Err("That PR feedback is no longer available to send to review. It may already be in the review ledger, or the current review is not clean.".into());
+                }
+                Ok(())
             }
             Command::Confirm { mod_id, kind } => {
                 self.require_context(mod_id)?;

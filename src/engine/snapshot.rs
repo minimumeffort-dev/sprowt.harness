@@ -117,6 +117,7 @@ pub struct Finding {
     title: String,
     detail: String,
     status: String,
+    imported: bool,
 }
 #[derive(Serialize)]
 pub struct Dialog {
@@ -506,6 +507,7 @@ impl Engine {
                             f.finding.file, f.finding.line, f.finding.evidence, f.finding.fix
                         ),
                         status: f.status.clone(),
+                        imported: false,
                     })
                     .collect(),
                 pr_feedback: self
@@ -520,6 +522,10 @@ impl Engine {
                                 title: item.title.clone(),
                                 detail: item.detail.clone(),
                                 status: item.status.clone(),
+                                imported: m
+                                    .agent_review
+                                    .as_ref()
+                                    .is_some_and(|r| r.pr_feedback_imported(&item.id)),
                             })
                             .collect()
                     })

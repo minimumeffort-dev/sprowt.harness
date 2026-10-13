@@ -186,6 +186,7 @@ struct Finding: Decodable, Identifiable, Sendable {
     let title: String
     let detail: String
     let status: String
+    let imported: Bool
 }
 
 struct EngineAction: Decodable, Identifiable, Sendable {
@@ -216,6 +217,7 @@ struct Command: Encodable, Sendable {
     var taskId: Int64?
     var messageId: Int64?
     var messageIds: [Int64]?
+    var feedbackIds: [String]?
     var direction: String?
     var kind: String?
     var requestId: Int64?

@@ -20,6 +20,8 @@ A fresh reviewer inspects correctness and structural quality after combined chec
 
 The same fix action remains available after a PR has been published. New local work shows **PR open · update pending** until it passes checks and review and you confirm the update.
 
+[Selected GitHub PR feedback](git-workflow.md#read-and-fix-pr-feedback) enters this same ledger as **investigate** findings with origin **unknown**. The fresh reviewer must confirm, dismiss or keep investigating each one before any repair starts; confirmed items then follow the fix flow above.
+
 If required inspection cannot finish, both interfaces show **Review incomplete** with the reason and any known findings. Choose **Fix review issues** for defects confirmed in that partial report, or **Ctrl+E** to retry inspection. Uninspected finding IDs stay open without starting repairs, and publication waits for a complete, clean review.
 
 An unavailable optional browser rerun is reported as a limitation when source inspection is complete and independent checks cover that exact version. It never counts as a successful browser rerun.

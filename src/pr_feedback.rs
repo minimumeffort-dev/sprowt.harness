@@ -14,6 +14,8 @@ pub struct Feedback {
     pub detail: String,
     pub status: String,
     pub actionable: bool,
+    pub file: Option<String>,
+    pub line: Option<u32>,
 }
 
 // shortcut: newest 50 entries per collection, newest head commit only; add
@@ -137,6 +139,8 @@ pub fn parse(value: &Value) -> Vec<Feedback> {
             detail: detail(body, comment["url"].as_str()),
             status: "unresolved thread".into(),
             actionable: true,
+            file: (!path.is_empty()).then(|| path.to_owned()),
+            line: line.and_then(|line| u32::try_from(line).ok()),
         });
     }
     for (index, review) in nodes(pr, &["reviews", "nodes"]).into_iter().enumerate() {
@@ -160,6 +164,8 @@ pub fn parse(value: &Value) -> Vec<Feedback> {
             detail: detail(body, review["url"].as_str()),
             status: status.into(),
             actionable,
+            file: None,
+            line: None,
         });
     }
     for (index, comment) in nodes(pr, &["comments", "nodes"]).into_iter().enumerate() {
@@ -176,6 +182,8 @@ pub fn parse(value: &Value) -> Vec<Feedback> {
             detail: detail(body, comment["url"].as_str()),
             status: "PR comment".into(),
             actionable: false,
+            file: None,
+            line: None,
         });
     }
     let commits = nodes(pr, &["commits", "nodes"]);
@@ -216,6 +224,8 @@ pub fn parse(value: &Value) -> Vec<Feedback> {
                 detail: detail("This GitHub check failed on the published commit.", url),
                 status: "check failed".into(),
                 actionable: true,
+                file: None,
+                line: None,
             });
         }
     }

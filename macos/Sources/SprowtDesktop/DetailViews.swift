@@ -52,11 +52,7 @@ struct OverviewView: View {
             case .review:
                 FindingsView(findings: mod.findings)
                 if !mod.prFeedback.isEmpty || mod.prFeedbackError != nil {
-                    Text("GitHub PR feedback").font(Theme.font(13, weight: .semibold)).padding(.top, 8)
-                    if let error = mod.prFeedbackError {
-                        Text("GitHub feedback unavailable · \(error)").font(Theme.font(12)).foregroundStyle(Theme.muted).textSelection(.enabled)
-                    }
-                    if !mod.prFeedback.isEmpty { FindingsView(findings: mod.prFeedback) }
+                    PrFeedbackView(session: session, mod: mod)
                 }
                 if let action = session.snapshot?.actions.first(where: { $0.id == "review" || $0.id == "findings" }) {
                     Button(action.label) { session.perform(action) }
@@ -165,6 +161,51 @@ struct ChecksView: View {
                 }
                 WorkspaceDivider()
             }
+        }
+    }
+}
+
+struct PrFeedbackView: View {
+    @Bindable var session: Session
+    let mod: CodemodDetail
+    @State private var selected: Set<String> = []
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("GitHub PR feedback").font(Theme.font(13, weight: .semibold)).padding(.top, 8)
+            if let error = mod.prFeedbackError {
+                Text("GitHub feedback unavailable · \(error)").font(Theme.font(12)).foregroundStyle(Theme.muted).textSelection(.enabled)
+            }
+            ForEach(mod.prFeedback) { item in
+                HStack(alignment: .top, spacing: 8) {
+                    Toggle("", isOn: Binding(
+                        get: { selected.contains(item.id) },
+                        set: { on in if on { selected.insert(item.id) } else { selected.remove(item.id) } }
+                    )).toggleStyle(.checkbox).labelsHidden().disabled(item.imported || !session.interactive || session.busy)
+                    DisclosureGroup {
+                        Text(item.detail).font(Theme.font(12)).textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
+                    } label: {
+                        HStack(alignment: .firstTextBaseline, spacing: 7) {
+                            Text(item.title).font(Theme.font(12))
+                            Spacer(minLength: 8)
+                            Text(item.imported ? "in review · \(item.status)" : item.status)
+                                .font(Theme.font(10)).foregroundStyle(Theme.muted)
+                        }
+                    }
+                }
+                WorkspaceDivider()
+            }
+            Button("Send selected to review") {
+                let ids = mod.prFeedback.map(\.id).filter { selected.contains($0) }
+                session.enqueue(Command(type: "fix_pr_feedback", modId: mod.id, feedbackIds: ids))
+                selected.removeAll()
+            }.buttonStyle(WorkspaceButtonStyle())
+                .disabled(selected.isEmpty || !session.interactive || session.busy)
+                .help("Add the selected feedback to the review ledger; a fresh review triages it before any repair.")
+        }.onChange(of: mod.prFeedback.map(\.id)) { _, ids in
+            selected.formIntersection(Set(ids))
+            selected.subtract(mod.prFeedback.filter(\.imported).map(\.id))
         }
     }
 }

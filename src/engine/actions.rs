@@ -19,6 +19,7 @@ pub enum Action {
     Review,
     Findings,
     FixIssues,
+    PrFeedback,
     ReviseRepair,
     Publish,
     Update,
@@ -377,6 +378,17 @@ impl Engine {
                 dock.actions
                     .push(ActionItem::new(FixIssues, "Fix review issues"));
             }
+            if !busy
+                && !running
+                && self.git_activity().is_none()
+                && self
+                    .targets
+                    .get(&m.id)
+                    .is_some_and(|t| !t.pr_feedback.is_empty())
+            {
+                dock.actions
+                    .push(ActionItem::new(PrFeedback, "Fix PR feedback"));
+            }
             if !m.queue.is_empty() && !m.closed {
                 dock.actions.push(ActionItem::new(
                     Queue,
@@ -467,6 +479,7 @@ impl Engine {
                 }
             }
             Action::Findings => self.view = View::Findings(0),
+            Action::PrFeedback => self.view = View::PrFeedback(0),
             Action::ReviseRepair => {
                 if let Some(index) = self.active {
                     let setup_correction = self.source_changing_task().is_some();

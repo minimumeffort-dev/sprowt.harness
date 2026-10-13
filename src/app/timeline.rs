@@ -600,7 +600,7 @@ impl App {
         });
         items.push(reviewed);
         let target = self.targets.get(&m.id);
-        let actionable = target.map_or(0, |t| t.actionable_feedback());
+        let actionable = self.pr_feedback_actionable(m);
         let mut published = Item::new(
             Key::Publish,
             if self.published() && actionable > 0 {
@@ -635,9 +635,19 @@ impl App {
                     .push(format!("GitHub feedback unavailable · {error}"));
             }
             for item in &target.pr_feedback {
-                published
-                    .detail
-                    .push(format!("{} · {}", item.status, item.title));
+                let imported = m
+                    .agent_review
+                    .as_ref()
+                    .is_some_and(|r| r.pr_feedback_imported(&item.id));
+                published.detail.push(format!(
+                    "{} · {}",
+                    if imported {
+                        format!("in review · {}", item.status)
+                    } else {
+                        item.status.clone()
+                    },
+                    item.title
+                ));
                 if !item.detail.is_empty() {
                     published.detail.push(item.detail.clone());
                 }

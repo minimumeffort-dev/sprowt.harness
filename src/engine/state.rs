@@ -463,10 +463,8 @@ impl Engine {
             }
             state.evidence.push_str("PR open · update pending");
         }
-        if let Some(count) = target
-            .map(|t| t.actionable_feedback())
-            .filter(|count| *count > 0)
-        {
+        let count = self.pr_feedback_actionable(m);
+        if count > 0 {
             if !state.evidence.is_empty() {
                 state.evidence.push_str(" · ");
             }

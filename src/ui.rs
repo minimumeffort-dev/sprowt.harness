@@ -276,11 +276,13 @@ pub fn draw(
     }
     let dialog_area = Rect {
         y: mod_row.bottom() + gap,
-        width: area.width.min(if matches!(app.view, View::Queue(_)) {
-            area.width
-        } else {
-            DIALOG_WIDTH
-        }),
+        width: area.width.min(
+            if matches!(app.view, View::Queue(_) | View::PrFeedback(_)) {
+                area.width
+            } else {
+                DIALOG_WIDTH
+            },
+        ),
         height: area.bottom().saturating_sub(mod_row.bottom() + gap),
         ..area
     };
@@ -368,6 +370,8 @@ pub fn draw(
         draw_close_mod(frame, app, index, dialog_area);
     } else if let View::Queue(index) = app.view {
         draw_queue_editor(frame, app, index, dialog_area);
+    } else if let View::PrFeedback(index) = app.view {
+        draw_pr_feedback_editor(frame, app, index, dialog_area);
     } else if let View::Review(scroll) = app.view {
         draw_review(
             frame,
@@ -647,6 +651,72 @@ fn draw_queue_editor(frame: &mut Frame, app: &mut App, index: usize, area: Rect)
         List::new(queue_items(app, messages.width)).highlight_style(dialog_selection()),
         messages,
         &mut ListState::default().with_selected((count > 0).then_some(index)),
+    );
+}
+
+fn draw_pr_feedback_editor(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
+    let items: Vec<Line<'static>> = app
+        .current_mod()
+        .and_then(|code_mod| {
+            app.targets.get(&code_mod.id).map(|target| {
+                target
+                    .pr_feedback
+                    .iter()
+                    .map(|item| {
+                        let imported = code_mod
+                            .agent_review
+                            .as_ref()
+                            .is_some_and(|r| r.pr_feedback_imported(&item.id));
+                        let marker = if app.pr_feedback_selection.contains(&item.id) {
+                            "✓ "
+                        } else {
+                            "· "
+                        };
+                        Line::from(vec![
+                            marker.fg(ACCENT).bold(),
+                            fit_name(
+                                &format!(
+                                    "{} · {}{}",
+                                    item.status,
+                                    item.title,
+                                    if imported { " · in review" } else { "" }
+                                ),
+                                area.width.saturating_sub(2),
+                            )
+                            .into(),
+                        ])
+                    })
+                    .collect()
+            })
+        })
+        .unwrap_or_default();
+    let count = items.len();
+    if count == 0 {
+        app.view = View::Chat;
+        app.pr_feedback_selection.clear();
+        return;
+    }
+    let hints = [
+        ("↑↓", "focus"),
+        ("space", "mark"),
+        ("x", "send to review"),
+        ("esc", "back"),
+    ];
+    let title = if app.pr_feedback_selection.is_empty() {
+        format!("GitHub PR feedback ({count})")
+    } else {
+        format!(
+            "GitHub PR feedback ({count}) · {} selected",
+            app.pr_feedback_selection.len()
+        )
+    };
+    let (messages, _) = draw_dialog(frame, area, &title, count, false, &hints);
+    app.scroll.content = messages;
+    frame.render_stateful_widget(
+        List::new(items).highlight_style(dialog_selection()),
+        messages,
+        &mut ListState::default()
+            .with_selected((count > 0).then_some(index.min(count.saturating_sub(1)))),
     );
 }
 

@@ -58,6 +58,7 @@
         {
           "detail": "src/engine.rs:42\nReopening discarded the composer text.\nPersist the draft before switching sessions.",
           "id": "1",
+          "imported": false,
           "status": "confirmed",
           "title": "Keep the unsent draft"
         }
@@ -172,6 +173,7 @@
         {
           "detail": "This drops the draft.\nhttps://example.test/t30",
           "id": "thread:30",
+          "imported": false,
           "status": "unresolved thread",
           "title": "src/engine.rs:42 · rev"
         }
