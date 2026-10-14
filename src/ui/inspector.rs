@@ -250,12 +250,13 @@ pub(super) fn check_lines(
             ("·", KEY_HINT)
         };
         lines.extend(wrap_line(
-            Line::from(vec![
-                format!("  {glyph} ").fg(color).bold(),
-                Span::raw(name.to_owned()),
-            ]),
+            Line::from(
+                std::iter::once(format!("{glyph} ").fg(color).bold())
+                    .chain(rich_text::inline(name))
+                    .collect::<Vec<_>>(),
+            ),
             width,
-            4,
+            2,
         ));
         if group.len() > 1 {
             let status = if passed {
@@ -269,20 +270,16 @@ pub(super) fn check_lines(
                 )
             };
             lines.extend(wrap_line(
-                Line::from(format!("    {} commands · {}", group.len(), status)).fg(color),
+                Line::from(format!("{} commands · {}", group.len(), status)).fg(color),
                 width,
-                4,
+                0,
             ));
         }
         for check in group {
             if (check.failed() || evidence)
                 && let Some(timing) = check.timing()
             {
-                lines.extend(wrap_line(
-                    Line::from(format!("    {timing}")).fg(KEY_HINT),
-                    width,
-                    4,
-                ));
+                lines.extend(wrap_line(Line::from(timing).fg(KEY_HINT), width, 0));
             }
             if evidence {
                 lines.extend(command_lines(&check.command, width));
@@ -295,11 +292,7 @@ pub(super) fn check_lines(
                 String::new()
             };
             if !output.is_empty() {
-                lines.extend(
-                    indented_text(&output, width, 4)
-                        .into_iter()
-                        .map(|line| line.fg(if check.failed() { RED } else { KEY_HINT })),
-                );
+                lines.extend(rich_text::code(&output, width));
             }
         }
         lines.push(Line::default());

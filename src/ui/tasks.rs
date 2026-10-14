@@ -129,8 +129,23 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         return Vec::new();
     };
     let mut lines = wrap_line(Line::from(task.task.title.clone()).bold(), width, 0);
-    lines.extend(indented_text(&task.task.outcome, width, 0));
-    lines.extend(wrap_line(Line::from(task.identity).fg(KEY_HINT), width, 0));
+    lines.extend(rich_text::lines(&task.task.outcome, width));
+    if app.show_evidence {
+        lines.push(Line::default());
+        lines.push(Line::from("Worker").bold());
+        lines.extend(wrap_line(Line::from(task.identity).fg(KEY_HINT), width, 0));
+        lines.extend(wrap_line(
+            Line::from(format!("Source: {}", task.run.source)).fg(KEY_HINT),
+            width,
+            0,
+        ));
+        if !task.task.files.is_empty() {
+            lines.push(Line::default());
+            lines.push(Line::from("File scope").bold());
+            lines.extend(rich_text::code(&task.task.files.join("\n"), width));
+        }
+        lines.push(Line::default());
+    }
     lines.push(Line::from(Span::styled(
         format!(" {} ", task.state),
         state_style(task.state).bg(CONTROL).bold(),
@@ -143,13 +158,27 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         ));
     }
     lines.push(Line::default());
-    if !task.note.is_empty() {
-        lines.extend(indented_text(&task.note, width, 2));
+    let preparation = app.task_preparation(id);
+    let in_preparation = |text: &str| {
+        preparation.as_ref().is_some_and(|preparation| {
+            preparation.current
+                && preparation.receipt.error.as_deref().is_some_and(|error| {
+                    text.strip_prefix("Environment preflight failed: ")
+                        .unwrap_or(text)
+                        == error
+                })
+        })
+    };
+    if !task.note.is_empty()
+        && Some(task.note.as_str()) != task.error
+        && !in_preparation(&task.note)
+    {
+        lines.extend(rich_text::lines(&task.note, width));
         lines.push(Line::default());
     }
-    if let Some(error) = task.error.filter(|error| *error != task.note) {
+    if let Some(error) = task.error.filter(|error| !in_preparation(error)) {
         lines.extend(
-            indented_text(error, width, 2)
+            rich_text::code(error, width)
                 .into_iter()
                 .map(|line| line.fg(RED)),
         );
@@ -162,7 +191,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
             width,
             0,
         ));
-        lines.extend(indented_text(cause.advice(), width, 2));
+        lines.extend(rich_text::lines(cause.advice(), width));
         if let Some(m) = app.current_mod() {
             let repeats = m.diagnostics.repeats(task.run);
             if repeats > 1 {
@@ -229,11 +258,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         } else {
             check.evidence()
         };
-        lines.extend(
-            indented_text(&output, width, 2)
-                .into_iter()
-                .map(|line| line.fg(RED)),
-        );
+        lines.extend(rich_text::code(&output, width));
         lines.push(Line::default());
     }
     if let Some(latest) = task.latest {
@@ -262,7 +287,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         } else {
             &latest.body
         };
-        lines.extend(indented_text(body, width, 2));
+        lines.extend(rich_text::lines(body, width));
         lines.push(Line::default());
     } else if task.run.status == "done" && !task.run.summary.is_empty() {
         lines.extend(wrap_line(
@@ -276,7 +301,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
             width,
             0,
         ));
-        lines.extend(indented_text(&task.run.summary, width, 2));
+        lines.extend(rich_text::lines(&task.run.summary, width));
         lines.push(Line::default());
     }
     let passed = task
@@ -325,12 +350,13 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         };
         lines.push(Line::default());
         lines.extend(wrap_line(
-            Line::from(vec![
-                format!("  {marker} ").fg(color).bold(),
-                Span::raw(expected.clone()),
-            ]),
+            Line::from(
+                std::iter::once(format!("{marker} ").fg(color).bold())
+                    .chain(rich_text::inline(expected))
+                    .collect::<Vec<_>>(),
+            ),
             width,
-            4,
+            2,
         ));
         for check in checks
             .into_iter()
@@ -348,9 +374,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
                 } else {
                     check.evidence()
                 };
-                lines.extend(output.lines().map(|line| {
-                    Line::from(line.to_owned()).fg(if check.failed() { RED } else { KEY_HINT })
-                }));
+                lines.extend(rich_text::code(&output, width));
             }
         }
     }
@@ -367,6 +391,12 @@ pub(super) fn preparation_lines(app: &App, id: i64, width: u16) -> Vec<Line<'sta
         .any(|worker| worker.task_run_id() == Some(id));
     let color = if busy || stopped || !preparation.current {
         KEY_HINT
+    } else if app
+        .network_requests
+        .iter()
+        .any(|request| request.task == id && request.status == "pending")
+    {
+        AMBER
     } else if preparation.failed() {
         RED
     } else {
@@ -389,14 +419,22 @@ pub(super) fn preparation_lines(app: &App, id: i64, width: u16) -> Vec<Line<'sta
     ));
     let receipt = preparation.receipt;
     if app.show_evidence {
-        lines.extend(indented_text(&receipt.cache_summary(), width, 2));
+        lines.extend(wrap_line(
+            Line::from(format!("Source: {}", receipt.source)).fg(KEY_HINT),
+            width,
+            0,
+        ));
+        lines.extend(
+            indented_text(&receipt.cache_summary(), width, 0)
+                .into_iter()
+                .map(|line| line.fg(KEY_HINT)),
+        );
         if !receipt.source_changes.is_empty() {
             lines.push(Line::from("Changed source paths").fg(RED).bold());
             for path in &receipt.source_changes {
-                lines.extend(indented_text(
+                lines.extend(rich_text::code(
                     &path.to_string_lossy().escape_debug().to_string(),
                     width,
-                    2,
                 ));
             }
         }
@@ -414,9 +452,9 @@ pub(super) fn preparation_lines(app: &App, id: i64, width: u16) -> Vec<Line<'sta
             .filter(|result| result.exit_code == Some(0))
             .count();
         lines.extend(wrap_line(
-            Line::from(format!("  {phase} · {passed}/{} passed", results.len())).fg(KEY_HINT),
+            Line::from(format!("{phase} · {passed}/{} passed", results.len())).fg(KEY_HINT),
             width,
-            2,
+            0,
         ));
         let selected: Vec<_> = results
             .iter()
@@ -439,7 +477,7 @@ pub(super) fn preparation_lines(app: &App, id: i64, width: u16) -> Vec<Line<'sta
                 .any(|result| result.failed()))
     {
         lines.extend(
-            indented_text(error, width, 2)
+            rich_text::code(error, width)
                 .into_iter()
                 .map(|line| line.fg(color)),
         );

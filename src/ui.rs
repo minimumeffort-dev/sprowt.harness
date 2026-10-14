@@ -5,6 +5,7 @@ mod formatting;
 mod inspector;
 mod navigation;
 mod projects;
+mod rich_text;
 mod tasks;
 pub(crate) mod theme;
 mod workbench;
@@ -1401,40 +1402,7 @@ fn command_lines(argv: &[String], width: u16) -> Vec<Line<'static>> {
     let command = format!("$ {}", arguments.join(" "));
     let content =
         std::iter::once(command.as_str()).chain(blocks.iter().flat_map(|block| block.lines()));
-    let capacity = width.saturating_sub(9).max(1) as usize;
-    let mut lines = Vec::new();
-    for line in content {
-        let line = line.replace('\t', "    ");
-        let indent = line
-            .chars()
-            .take_while(|c| *c == ' ')
-            .count()
-            .min(capacity / 2);
-        let mut row = String::new();
-        let mut used = 0;
-        for glyph in Span::raw(&line).styled_graphemes(Style::new()) {
-            let size = Span::raw(glyph.symbol).width();
-            if used + size > capacity && !row.is_empty() {
-                if let Some(split) = row.rfind(' ').filter(|index| *index > indent) {
-                    let remainder = row[split + 1..].to_owned();
-                    lines.push(row[..split].to_owned());
-                    row = " ".repeat(indent) + &remainder;
-                    used = Span::raw(&row).width();
-                } else {
-                    lines.push(row);
-                    row = " ".repeat(indent);
-                    used = indent;
-                }
-            }
-            row.push_str(glyph.symbol);
-            used += size;
-        }
-        lines.push(row);
-    }
-    lines
-        .into_iter()
-        .map(|line| Line::from(vec!["       │ ".fg(BORDER), line.fg(KEY_HINT)]))
-        .collect()
+    rich_text::code(&content.collect::<Vec<_>>().join("\n"), width)
 }
 
 fn plan_lines(
@@ -1867,7 +1835,10 @@ fn conversation_blocks<'a>(
                 return None;
             }
             let user = message.role == "user";
-            let mut text = Text::from(message.body.as_str());
+            let mut text = Text::from(rich_text::lines(
+                &message.body,
+                width.saturating_sub(if user { 2 } else { 0 }),
+            ));
             if !user {
                 text.lines.insert(
                     0,
@@ -2011,7 +1982,7 @@ fn conversation_blocks<'a>(
             .fg(if question { ACCENT } else { KEY_HINT })
             .bold(),
         ];
-        lines.extend(message.body.lines().map(|line| Line::from(line.to_owned())));
+        lines.extend(rich_text::lines(&message.body, width));
         if question {
             let first = code_mod.question().unwrap().id;
             lines.push(

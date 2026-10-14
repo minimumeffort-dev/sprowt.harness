@@ -35,7 +35,8 @@ enum Theme {
     static let nsMuted = NSColor(muted)
     static let nsAccent = NSColor(accent)
     static let nsSelected = NSColor(selected)
-    static let nsCodeBackground = NSColor(Color(light: 0xe9eee6, dark: 0x242d27))
+    static let codeBackground = Color(light: 0xe9eee6, dark: 0x242d27)
+    static let nsCodeBackground = NSColor(codeBackground)
 
     static func font(_ size: CGFloat = 14, weight: Font.Weight = .regular) -> Font {
         .system(size: scaledSize(size), weight: weight)
@@ -125,9 +126,9 @@ struct SectionHeading: View {
     var detail = ""
     var body: some View {
         HStack {
-            Text(title).font(Theme.font(11, weight: .semibold))
+            Text(title).font(Theme.font(14, weight: .semibold)).foregroundStyle(Theme.ink)
             Spacer()
-            if !detail.isEmpty { Text(detail).font(Theme.font(11)) }
-        }.foregroundStyle(Theme.muted)
+            if !detail.isEmpty { Text(detail).font(Theme.font(12)).foregroundStyle(Theme.muted) }
+        }
     }
 }

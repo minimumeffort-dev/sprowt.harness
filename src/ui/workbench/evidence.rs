@@ -16,7 +16,7 @@ impl Document {
         }
     }
     fn text(&mut self, text: &str) {
-        self.lines.extend(indented_text(text, self.width, 0));
+        self.lines.extend(rich_text::lines(text, self.width));
     }
     fn gap(&mut self) {
         self.lines.push(Line::default());
@@ -82,11 +82,19 @@ fn conversation(app: &App, d: &mut Document) {
         .filter(|message| m.shows_conversation_message(message))
     {
         if message.role == "user" {
-            d.lines.extend(wrap_line(
-                Line::from(format!("> {}", message.body)).bg(USER_BACKGROUND),
-                d.width,
-                0,
-            ));
+            d.lines.extend(
+                rich_text::lines(&message.body, d.width.saturating_sub(2))
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, mut line)| {
+                        line.spans
+                            .insert(0, Span::raw(if index == 0 { "> " } else { "  " }));
+                        if line.style.bg.is_none() {
+                            line = line.bg(USER_BACKGROUND);
+                        }
+                        line
+                    }),
+            );
         } else {
             d.heading(&message.author());
             d.text(&message.body);
@@ -250,11 +258,15 @@ fn summary(app: &App, key: Key, d: &mut Document) {
     );
     if app.show_evidence {
         d.gap();
-        for file in &task.files {
-            d.text(file);
+        if !task.files.is_empty() {
+            d.heading("File scope");
+            d.lines
+                .extend(rich_text::code(&task.files.join("\n"), d.width));
+            d.gap();
         }
+        d.heading("Required checks");
         for check in &task.checks {
-            d.text(check);
+            d.text(&format!("- {check}"));
         }
     }
 }
@@ -512,8 +524,13 @@ fn changes(app: &App, item: Option<Key>, d: &mut Document) {
         d.heading("Planned file scope");
         d.muted("Scope from the plan; not a list of confirmed changes.");
         d.gap();
-        for path in paths {
-            d.text(&format!("  {path}"));
-        }
+        d.lines.extend(rich_text::code(
+            &paths
+                .into_iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join("\n"),
+            d.width,
+        ));
     }
 }

@@ -8,15 +8,7 @@ struct WorkspaceEvidenceView: View {
         guard case .worker(let id) = session.workspace.target else { return nil }
         return mod.workerDetails.first(where: { $0.id == id })
     }
-    private var selectedTask: PlanTask? {
-        let id: String?
-        switch session.workspace.target {
-        case .task(let task): id = task
-        case .worker: id = selectedWorker?.taskId
-        case nil: id = nil
-        }
-        return mod.plan?.tasks.first(where: { $0.id == id })
-    }
+    private var selectedTask: PlanTask? { mod.inspectedTask(session.workspace.target) }
     private var inspection: EngineDialog? { session.dialog.flatMap { $0.isInspection ? $0 : nil } }
 
     var body: some View {
@@ -29,8 +21,11 @@ struct WorkspaceEvidenceView: View {
             }
             if let inspection = currentInspection, selectedTab == inspection.workspaceTab {
                 Text(inspection.title).font(Theme.font(16, weight: .semibold))
-                Text(inspection.body).font(inspection.kind == "diff" ? .system(size: 11, design: .monospaced) : Theme.font(12))
-                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                if inspection.kind == "diff" {
+                    CodeText(text: inspection.body)
+                } else {
+                    MessageText(source: inspection.body)
+                }
             } else {
                 panel(selectedTab)
             }
@@ -102,7 +97,7 @@ struct WorkspaceEvidenceView: View {
         VStack(alignment: .leading, spacing: 18) {
             if !mod.timings.isEmpty {
                 DisclosureGroup("Recorded timings") {
-                    Text(mod.timings).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                    CodeText(text: mod.timings).padding(.top, 8)
                 }.font(Theme.font(11)).foregroundStyle(Theme.muted)
             }
             if let worker = selectedWorker {
@@ -130,9 +125,9 @@ private struct WorkerActivityView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("\(worker.provider.capitalized) · \(worker.role)", systemImage: "arrow.turn.down.right").font(Theme.font(12, weight: .medium))
-            if let taskTitle { Text(taskTitle).font(Theme.font(12)) }
+            if let taskTitle { Text(taskTitle).font(Theme.font(14)).foregroundStyle(Theme.ink) }
             Text(worker.state).font(Theme.font(11)).foregroundStyle(Theme.statusColor(worker.state))
-            if !worker.activity.isEmpty { Text(worker.activity).font(Theme.font(12)).foregroundStyle(Theme.muted).textSelection(.enabled) }
+            if !worker.activity.isEmpty { MessageText(source: worker.activity) }
             if showDetails {
                 DisclosureGroup("Worker details") {
                     Text(worker.identity).font(Theme.font(12)).textSelection(.enabled).padding(.top, 8)
@@ -147,29 +142,41 @@ struct TaskInspectorView: View {
     let task: PlanTask
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(task.title).font(Theme.font(16, weight: .semibold)).textSelection(.enabled)
+        VStack(alignment: .leading, spacing: 20) {
+            Text(task.title).font(Theme.font(18, weight: .semibold)).textSelection(.enabled)
             Label(task.status, systemImage: task.hasCurrentFailure ? "exclamationmark.circle" : task.completed ? "checkmark" : "circle")
-                .font(Theme.font(11)).foregroundStyle(task.hasCurrentFailure ? Theme.red : task.completed ? Theme.green : Theme.statusColor(task.status))
-            Text(task.outcome).font(Theme.font(12)).textSelection(.enabled)
-            if !task.detail.isEmpty { Text(task.detail).font(Theme.font(12)).textSelection(.enabled) }
-            if let error = task.error { Text(error).font(Theme.font(12)).foregroundStyle(Theme.red).textSelection(.enabled) }
+                .font(Theme.font(12)).foregroundStyle(task.hasCurrentFailure ? Theme.red : task.completed ? Theme.green : Theme.statusColor(task.status))
+            MessageText(source: task.outcome)
+            if !task.detail.isEmpty && task.detail != task.error { MessageText(source: task.detail) }
+            if let error = task.error, !task.preparationOwnsError { EvidenceNotice(text: error) }
             if let latest = task.latest { MessageView(message: latest) }
-            DisclosureGroup("Files, checks and worker") {
-                VStack(alignment: .leading, spacing: 10) {
-                    if !task.identity.isEmpty { Text(task.identity) }
-                    if let source = task.source { Text("Source: \(source)").font(.system(size: 11, design: .monospaced)) }
+            DisclosureGroup {
+                VStack(alignment: .leading, spacing: 18) {
+                    if !task.identity.isEmpty {
+                        Text(task.identity).font(Theme.font(13, weight: .medium)).foregroundStyle(Theme.muted)
+                    }
+                    if let source = task.source { SourceReference(source: source) }
                     if !task.files.isEmpty {
-                        Text("File scope").font(Theme.font(11, weight: .semibold)).foregroundStyle(Theme.muted)
-                        Text(task.files.joined(separator: "\n")).font(.system(size: 11, design: .monospaced))
+                        VStack(alignment: .leading, spacing: 10) {
+                            evidenceHeading("File scope", count: task.files.count == 1 ? "1 file" : "\(task.files.count) files")
+                            CodeText(text: task.files.joined(separator: "\n"))
+                        }
                     }
                     if !task.checks.isEmpty {
-                        Text("Required checks").font(Theme.font(11, weight: .semibold)).foregroundStyle(Theme.muted)
-                        Text(task.checks.joined(separator: "\n"))
+                        VStack(alignment: .leading, spacing: 12) {
+                            evidenceHeading("Required checks", count: task.checks.count == 1 ? "1 check" : "\(task.checks.count) checks")
+                            ForEach(Array(task.checks.enumerated()), id: \.offset) { _, check in
+                                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                                    Text("•").font(Theme.font(12)).foregroundStyle(Theme.muted)
+                                    MessageText(source: check)
+                                }
+                            }
+                        }
                     }
-                }.font(Theme.font(12)).textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 10)
-            }.font(Theme.font(11)).foregroundStyle(Theme.muted)
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16)
+            } label: {
+                Text("Files, checks and worker").font(Theme.font(14, weight: .semibold)).foregroundStyle(Theme.ink)
+            }
             if !task.results.isEmpty {
                 Button { session.workspace.show(.checks, target: .task(task.id)) } label: { Label("View check output", systemImage: "arrow.up.right") }
                     .buttonStyle(WorkspaceButtonStyle())
@@ -179,22 +186,48 @@ struct TaskInspectorView: View {
                 Button { session.perform(action) } label: { Label(action.label, systemImage: action.symbol) }
                     .buttonStyle(WorkspaceButtonStyle()).disabled(!session.interactive || session.busy)
             }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func evidenceHeading(_ title: String, count: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title).font(Theme.font(13, weight: .semibold)).foregroundStyle(Theme.ink)
+            Text(count).font(Theme.font(12)).foregroundStyle(Theme.muted)
         }
     }
 }
 
 private struct PreparationView: View {
     let preparation: PreparationEvidence?
+    @State private var expanded: Bool
+
+    init(preparation: PreparationEvidence?) {
+        self.preparation = preparation
+        _expanded = State(initialValue: preparation?.current == true && preparation?.error != nil)
+    }
+
     var body: some View {
         if let preparation {
-            DisclosureGroup(preparation.current ? "Environment preparation" : "Previous environment preparation") {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Source: \(preparation.source)").font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
-                    if preparation.stopped { Text("Preparation stopped.") }
-                    if let error = preparation.error { Text(error).foregroundStyle(Theme.red).textSelection(.enabled) }
-                    ChecksView(checks: preparation.results)
-                }.font(Theme.font(12)).padding(.top, 10)
-            }.font(Theme.font(11)).foregroundStyle(Theme.muted)
+            VStack(alignment: .leading, spacing: 16) {
+                WorkspaceDivider()
+                DisclosureGroup(isExpanded: $expanded) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        SourceReference(source: preparation.source)
+                        if preparation.stopped {
+                            Text("Preparation stopped.").font(Theme.font(14)).foregroundStyle(Theme.muted)
+                        }
+                        if let error = preparation.error {
+                            EvidenceNotice(text: error, color: error.hasPrefix("Network access pending:") ? Theme.amber : Theme.red)
+                        }
+                        ChecksView(checks: preparation.results)
+                    }.frame(maxWidth: .infinity, alignment: .leading).padding(.top, 16)
+                } label: {
+                    Text(preparation.current ? "Environment preparation" : "Previous environment preparation")
+                        .font(Theme.font(14, weight: .semibold)).foregroundStyle(Theme.ink)
+                }
+            }.frame(maxWidth: .infinity, alignment: .leading)
+                .onChange(of: preparation.error) { _, error in if preparation.current && error != nil { expanded = true } }
+                .onChange(of: preparation.current) { _, current in if current && preparation.error != nil { expanded = true } }
         }
     }
 }

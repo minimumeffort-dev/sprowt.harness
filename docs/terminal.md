@@ -95,6 +95,8 @@ Details opens Review when findings need attention, Checks after a combined failu
 
 Press **e** to expand commands, full preparation output, elapsed time and limits. Saved setup failures remain visible in the dock and Checks after restart. Choose **Inspect failure** to open the affected task. Worker narration and elapsed time do not prove progress.
 
+Evidence uses separate headings for files and required checks, with each check on its own bullet. Commands, paths and raw output have a shaded monospace treatment. Messages render headings, emphasis, lists and code while preserving unsupported Markdown literally. Pending network access is amber; failed checks are red. Repeated copies of the same current preparation failure are consolidated in task details; the full receipt and output remain available with **e**.
+
 Failed tasks include recovery guidance when the cause is known. Three attempts with identical saved failure evidence recommend **Revise repair plan**, carrying that history forward. New checks and review are still required.
 
 ### Inspect a task

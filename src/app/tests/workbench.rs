@@ -1,5 +1,6 @@
 use super::*;
 mod preparation;
+mod typography;
 use crate::app::{
     controls::{Control, WorkspaceView},
     workspace_navigation::{Focus, Key},
@@ -827,8 +828,8 @@ fn workspace_task_details_keep_readable_previous_findings_and_reports() {
     assert!(!text.contains("task complete") && !text.contains("0 failed"));
     let pane = app.workspace.inspector.area;
     assert!(
-        (pane.y..pane.bottom()).any(|y| buffer[(pane.x + 2, y)].symbol() == "✓"
-            && buffer[(pane.x + 2, y)].fg == Color::Rgb(162, 213, 180))
+        (pane.y..pane.bottom()).any(|y| buffer[(pane.x, y)].symbol() == "✓"
+            && buffer[(pane.x, y)].fg == Color::Rgb(162, 213, 180))
     );
     app.engine.view = View::Task(done_id, 0);
     let text = rows(&overview_screen(&mut app, 80, 46)).join("\n");

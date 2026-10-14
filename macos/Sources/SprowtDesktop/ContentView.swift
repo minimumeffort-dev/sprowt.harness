@@ -4,6 +4,14 @@ struct ContentView: View {
     @Bindable var session: Session
     @Binding var sidebarVisible: Bool
 
+    private var visibleError: String? {
+        if let error = session.error { return error }
+        guard let error = session.snapshot?.error else { return nil }
+        let inspected = session.active?.inspectedTask(session.workspace.target)
+        let showingTask = session.workspace.tab == .conversation && session.dialog?.isInspection != true
+        return showingTask && inspected?.error == error ? nil : error
+    }
+
     var body: some View {
         HStack(spacing: 0) {
             NavigationRail(session: session, sidebarVisible: $sidebarVisible)
@@ -16,10 +24,19 @@ struct ContentView: View {
                     .clipped().allowsHitTesting(sidebarVisible).disabled(!sidebarVisible)
                     .accessibilityHidden(!sidebarVisible)
                 VStack(spacing: 0) {
-                    if let error = session.error ?? session.snapshot?.error {
+                    if let error = visibleError {
                         HStack(alignment: .firstTextBaseline, spacing: 8) {
                             Image(systemName: "exclamationmark.triangle").symbolBaseline(textSize: 12)
-                            Text(error).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            if let newline = error.firstIndex(of: "\n") {
+                                DisclosureGroup {
+                                    CodeText(text: error).padding(.top, 8)
+                                } label: {
+                                    Text(String(error[..<newline])).textSelection(.enabled)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            } else {
+                                Text(error).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            }
                             if session.connection == .disconnected {
                                 Button("Open project…") { session.chooseProject() }
                             }

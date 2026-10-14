@@ -29,6 +29,10 @@ The main area switches between **Conversation**, **Changes**, **Checks**, **Find
 
 Select a plan task or an agent to inspect its current attempt, model, files and results. Use **Back to Conversation** or **Back to Agents** to return. Selecting a main tab shows that view for the whole codemod.
 
+Expand **Files, checks and worker** for the file scope and individual required checks. **Source reference** reveals the complete saved identifier. Preparation stays aligned with the task details; pending network access is amber, and failures are red. A current preparation failure opens its evidence automatically. The same failure is shown once in task details, with the full saved output available under each check.
+
+Messages distinguish headings, emphasis, lists, inline code and fenced code. Unsupported Markdown remains literal. Paths and saved command output use a monospace background; output preserves its original text and indentation.
+
 In **Changes**, choose the offered inspection action to read the actual diff. Keep typing, switch tabs or codemods, and choose **Done** when you finish the inspection. Starting a new codemod asks you to finish an inspection first, since it replaces the workspace. Opening evidence never starts a worker.
 
 The header button shows Rust's recommended action; **More** holds the other available actions. A partial review with confirmed findings offers **Fix review issues**, while publication waits for a complete, clean review. See [review and repairs](review.md).

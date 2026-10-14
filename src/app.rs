@@ -6197,6 +6197,7 @@ mod tests {
             );
             assert!(expanded.iter().any(|row| row.contains("More")));
             assert!(expanded.iter().any(|row| row.contains("│     response")));
+            assert!(expanded.iter().any(|row| row.contains("│     assert")));
             let start = expanded
                 .iter()
                 .position(|row| row.contains("   checks"))
@@ -6210,7 +6211,7 @@ mod tests {
                 .filter(|row| row.contains('│'))
                 .collect();
             assert!(code.len() >= 4);
-            assert!(code.iter().all(|row| row.find('│') == Some(9)), "{code:#?}");
+            assert!(code.iter().all(|row| row.find('│') == Some(2)), "{code:#?}");
             assert!(
                 code.iter()
                     .all(|row| row.trim_end().chars().count() <= width as usize - 2)
