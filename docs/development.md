@@ -43,6 +43,13 @@ SPROWT_APPEARANCE_BUFFERS=/tmp/sprowt-appearance-captures \
 
 Project navigation tests exercise the real engine commands, native draft bridge and terminal keys/clicks. They cover accordion expansion without navigation, cross-project draft restoration, retained worker sessions, background event/job/preparation progress, scoped network approvals, failed switches and cleanup of every runtime on exit. Shared protocol fixtures include project activity; terminal and native tests preserve the visible draft while background status changes.
 
+Worker settings tests cover catalog validation, model pins, configured counts, safe quota replacement, uncertain receipts, shared cooldowns, restart and legacy migration. Export the actual terminal dialog after key interactions:
+
+```sh
+SPROWT_WORKERS_PREVIEW=/tmp/sprowt-workers-captures \
+  cargo test --locked app::tests::worker_settings
+```
+
 For native interface changes, [build the macOS bundle](macos.md#build-and-open) and exercise the changed flow in the app. The Rust and Swift protocol checks must agree before a shared boundary change is complete.
 
 To inspect CLI help without starting the interactive app:
@@ -82,6 +89,8 @@ Use the [supported provider versions](workers.md#supported-versions), sign in an
 | Pinned skill delivery and read-only access (no inference) | `cargo test --locked pinned_skills_are_read_only_for_host_and_vm_agents -- --ignored --nocapture` |
 | Muse helper reuse and corruption recovery (no inference) | `cargo test --locked muse_helpers_reuse_verified_content_and_recopy_corruption -- --ignored --nocapture` |
 | Retained v1 VM setup migration (no inference; local v1 image required) | `cargo test --locked retained_v1_vm_migrates_stable_helpers_and_keeps_source_and_runtime -- --ignored --nocapture` |
+| Selected Muse planner, read-only VM and generated plan | `cargo test selected_muse_planner_reads_source_and_returns_a_plan -- --ignored --nocapture` |
+| Selected Muse reviewer, read-only VM and known defect | `cargo test selected_muse_reviewer_finds_defect_without_editing_source -- --ignored --nocapture` |
 | Commit and PR text (Codex only; no push) | `cargo test live_publication_writer -- --ignored --nocapture` |
 | Preparation download approvals, blocked baselines and both provider sessions (no inference or downloads) | `cargo test --locked live_preparation_network_requests_pause_commands_and_resume_scoped_attempts -- --ignored --nocapture` |
 | Preparation reuse, tracked test caches and genuine source/lockfile changes (no inference) | `cargo test --locked live_preflight_retains_evidence_and_reuses_only_proven_setup -- --ignored --nocapture` |

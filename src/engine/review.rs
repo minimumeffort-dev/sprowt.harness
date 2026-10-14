@@ -257,7 +257,19 @@ impl Engine {
         {
             self.auto_reviews.remove(&id);
         }
-        let record = self.store.worker_provider(id, Role::Reviewer, 0, "codex")?;
+        if self
+            .store
+            .quota_workers(id)?
+            .iter()
+            .any(|(_, r)| *r == Role::Reviewer)
+        {
+            self.auto_reviews.insert(id);
+            return self.maintain_worker_settings();
+        }
+        let Some(record) = self.store.role_worker(id, Role::Reviewer, self.muse)? else {
+            self.notice=Some("All selected worker providers are out of quota. Refresh models or choose another team.".into());
+            return Ok(());
+        };
         self.start_worker_record(index, Role::Reviewer, record)
     }
 

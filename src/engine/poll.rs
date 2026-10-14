@@ -87,6 +87,7 @@ impl Engine {
                     .unwrap_or_else(|| self.project.clone()),
             )?;
         }
+        self.maintain_worker_settings()?;
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()

@@ -8,6 +8,7 @@ mod projects;
 mod tasks;
 pub(crate) mod theme;
 mod workbench;
+mod worker_settings;
 
 use std::time::Duration;
 
@@ -87,6 +88,9 @@ pub fn draw(
     elapsed: Option<Duration>,
 ) -> Rect {
     let header = draw_contents(frame, app, pose, elapsed);
+    if app.worker_settings_editor.is_some() {
+        worker_settings::draw(frame, app);
+    }
     if let Some(selected) = app.appearance_picker {
         appearance::draw(frame, app, selected);
     }

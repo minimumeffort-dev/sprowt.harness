@@ -29,6 +29,7 @@ pub(crate) mod snapshot;
 pub(crate) mod state;
 mod sync;
 mod tasks;
+mod worker_settings;
 mod workers;
 pub mod workspace_view;
 pub use actions::{Action, ActionDock, ActionItem, Tone};
@@ -63,6 +64,7 @@ pub enum View {
 }
 
 pub struct Engine {
+    pub(crate) models: worker_settings::Models,
     pub(crate) appearance: crate::appearance::Appearance,
     pub(crate) network_requests: Vec<crate::network::Access>,
     pub(crate) muse: bool,
@@ -77,6 +79,7 @@ pub struct Engine {
     pub(crate) setup_root: Option<PathBuf>,
     pub(crate) workers: BTreeMap<i64, Worker>,
     pub(crate) preparations: preparation::Preparations,
+    pub(crate) worker_waits: BTreeSet<i64>,
     pub(crate) slot_waits: BTreeMap<(i64, String), Instant>,
     pub(crate) steer_target: Option<i64>,
     pub(crate) auto_plans: BTreeSet<i64>,
@@ -194,6 +197,7 @@ impl Engine {
             store.select_mod(state.id, state.mods[index].id)?;
         }
         let mut app = Self {
+            models: Default::default(),
             appearance: store.appearance()?,
             composer: String::new(),
             creation_draft: store.creation_draft(state.id)?,
@@ -225,6 +229,7 @@ impl Engine {
             setup_root: None,
             workers: BTreeMap::new(),
             preparations,
+            worker_waits: BTreeSet::new(),
             slot_waits: BTreeMap::new(),
             steer_target: None,
             auto_plans: BTreeSet::new(),

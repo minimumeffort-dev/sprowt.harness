@@ -199,6 +199,51 @@ class FailureTests(unittest.TestCase):
             self.assertIsNone(bridge.failure)
             self.assertEqual(replies[-1]["status"], status)
 
+    def test_selected_model_and_bounded_quota_details_reach_native_cli_without_credentials(self):
+        broker = Broker({"authorization": "Bearer synthetic-provider-secret"}, model="muse-wonder-full-1.0")
+        broker.opener = Mock()
+        body = json.dumps({"error": {"code": "usage_limit_reached", "quota": {"limitKind": "tierLimit", "resetsAtMs": 123456}}}).encode()
+        headers = {"retry-after": "60", "x-muse-ratelimit-reset": "123456", "set-cookie": "secret-cookie", "x-ratelimit-private": base64.b64encode(b"synthetic-provider-secret").decode()}
+        broker.opener.open.side_effect = urllib.error.HTTPError("unused", 429, "quota", headers, io.BytesIO(body))
+        request = {"method": "POST", "path": "/responses", "authorization": "Bearer " + broker.capability,
+                   "body": base64.b64encode(json.dumps({"model": "muse-wonder-full-1.0", "stream": True}).encode()).decode()}
+        replies = []
+        broker.forward(request, replies.append)
+        self.assertEqual(base64.b64decode(replies[-1]["chunk"]), body)
+        self.assertEqual(replies[0]["headers"], {"retry-after": "60", "x-muse-ratelimit-reset": "123456"})
+        self.assertNotIn("synthetic-provider-secret", json.dumps(replies))
+        request["body"] = base64.b64encode(json.dumps({"model": "muse-spark-1.3", "stream": True}).encode()).decode()
+        self.assertFalse(broker.allow(request))
+        for raw in [b"synthetic-provider-secret", b"x" * 8193]:
+            broker.opener.open.side_effect = urllib.error.HTTPError("unused", 429, "quota", {}, io.BytesIO(raw))
+            request["body"] = base64.b64encode(json.dumps({"model": "muse-wonder-full-1.0", "stream": True}).encode()).decode()
+            replies = []
+            broker.forward(request, replies.append)
+            self.assertFalse(any("chunk" in frame for frame in replies))
+
+    def test_quota_signal_is_preserved_only_when_native_turn_has_structured_quota(self):
+        for error, quota in [({"kind": "modelError", "message": "HTTP 429"}, False),
+                             ({"kind": "modelError", "quota": {"limitKind": "tierLimit", "resetsAtMs": 123456}}, True)]:
+            result = normalize({"method": "turn/completed", "params": {"turnId": "t1", "terminal": "failed", "error": error}})
+            self.assertEqual("quota" in result["params"]["turn"]["error"], quota)
+
+    def test_phase_less_reports_for_all_three_roles_are_final_answers(self):
+        for report in [{"summary": "Plan", "tasks": []},
+                       {"summary": "Executed", "status": "done", "checks": []},
+                       {"summary": "Reviewed", "status": "clean", "findings": []}]:
+            result = normalize({"method": "item/completed", "params": {"item": {"kind": "agentMessage", "text": json.dumps(report)}}})
+            self.assertEqual(result["params"]["item"]["phase"], "final_answer")
+        self.assertFalse(final_report('{"summary":"Checking source"}'))
+
+    def test_catalog_reads_optional_usage_without_starting_a_turn(self):
+        rpc = Mock()
+        rpc.call.side_effect = [{}, {"models": [{"modelId": "muse-wonder-1.0"}]}, {"usage": {"observedAtMs": 123456}}]
+        with patch("muse_transport.native", return_value="verified-muse"), patch("muse_transport.Rpc", return_value=rpc):
+            result = muse_transport.read_models()
+        self.assertEqual(result["usage"]["usage"]["observedAtMs"], 123456)
+        self.assertEqual([call.args[0] for call in rpc.call.call_args_list], ["initialize", "model/list", "usage/read"])
+        rpc.close.assert_called_once()
+
     def test_oversized_malformed_or_non_json_errors_stay_bounded(self):
         for body in (b"secret " * 1500, b"not json", b"[]", b'{"error":"private text"}'):
             error = urllib.error.HTTPError("unused", 400, "rejected", {}, io.BytesIO(body))

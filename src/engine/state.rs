@@ -208,6 +208,8 @@ impl Engine {
                     .or_else(|| t.checks.iter().find(|c| c.failed()).map(|c| c.brief()))
             });
             summary
+        } else if self.worker_waits.contains(&m.id) && running == 0 {
+            Summary::new(NeedsYou, "Workers unavailable", Some(Failure))
         } else if running > 0
             || self.auto_plans.contains(&m.id)
             || self.auto_runs.contains(&m.id)

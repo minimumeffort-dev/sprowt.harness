@@ -15,6 +15,8 @@ const CONFIDENCE_FLOOR: f64 = 0.80;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Selection {
+    #[serde(default)]
+    pub pinned: bool,
     pub model: String,
     pub effort: String,
     pub reason: String,
@@ -25,6 +27,7 @@ pub struct Selection {
 impl Selection {
     pub fn planner() -> Self {
         Self {
+            pinned: false,
             model: "gpt-6-astra".into(),
             effort: "xhigh".into(),
             reason: "Planning · quality first".into(),
@@ -34,6 +37,7 @@ impl Selection {
 
     pub fn reviewer() -> Self {
         Self {
+            pinned: false,
             model: "gpt-6.1-sol".into(),
             effort: "xhigh".into(),
             reason: "Independent review".into(),
@@ -43,6 +47,7 @@ impl Selection {
 
     pub fn fallback(reason: &str) -> Self {
         Self {
+            pinned: false,
             model: "gpt-6.1-sol".into(),
             effort: "xhigh".into(),
             reason: format!("{reason} · Sol 6.1 xhigh fallback"),
@@ -95,6 +100,7 @@ impl Selection {
             "medium"
         };
         Self {
+            pinned: false,
             model: "gpt-6.1-sol".into(),
             effort: effort.into(),
             reason: format!(

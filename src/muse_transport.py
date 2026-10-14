@@ -3,6 +3,7 @@
 
 import base64
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -211,6 +212,25 @@ def read_account(root):
         rpc.close()
 
 
+def read_models():
+    # The genuine signed-in CLI discovers models without starting a session or turn.
+    rpc = Rpc([str(native()), "serve", "--disable-shell", "--disable-write"], own_group=False)
+    try:
+        rpc.call("initialize", {"clientInfo": {"name": "sprowt_models", "version": "0.1"},
+                                "capabilities": {"experimentalApi": True}})
+        rpc.write({"method": "initialized"})
+        result = rpc.call("model/list", {})
+        if not isinstance(result.get("models"), list):
+            raise BridgeFailure("Muse returned no model catalog.")
+        try:
+            result["usage"] = rpc.call("usage/read", {})
+        except (OSError, BridgeFailure, RpcError):
+            result["usage"] = {}
+        return result
+    finally:
+        rpc.close()
+
+
 def host_login(root, quiet=False):
     """Let the genuine CLI resolve its account credential into host memory."""
     captured = {}
@@ -289,7 +309,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class Broker:
-    def __init__(self, headers, requests=8, lifetime=180, output_tokens=2048):
+    def __init__(self, headers, requests=8, lifetime=180, output_tokens=2048, model=MODEL):
+        self.model = model
         self.capability = secrets.token_hex(32)
         self.headers = {key: value for key, value in headers.items()
                         if key in {"authorization", "user-agent", "x-client-id"}}
@@ -322,7 +343,7 @@ class Broker:
             raw = base64.b64decode(request.get("body", ""), validate=True)
             body = json.loads(raw)
             return (isinstance(body, dict) and len(raw) <= 2 * 1024 * 1024
-                    and body.get("model") == MODEL and body.get("stream") is True)
+                    and body.get("model") == self.model and body.get("stream") is True)
         except (ValueError, TypeError):
             return False
 
@@ -358,8 +379,23 @@ class Broker:
                     self.completed += 1
                 emit({"done": True})
         except urllib.error.HTTPError as error:
+            raw = error.read(8193)
+            secrets_to_hide = [self.secret.decode(), self.capability]
+            encoded_secrets = [variant.encode() for secret in secrets_to_hide for variant in
+                               (secret, base64.b64encode(secret.encode()).decode(), urllib.parse.quote(secret, safe=""))]
+            safe = len(raw) <= 8192 and not any(secret in raw for secret in encoded_secrets)
+            if error.code == 429 and safe:
+                # Muse classifies exhaustion from the real bounded body, never from HTTP 429 alone.
+                headers = {key: value for key, value in error.headers.items()
+                           if ("ratelimit" in key.lower() or "rate-limit" in key.lower() or key.lower() == "retry-after")
+                           and len(value) < 256 and value.isprintable()
+                           and not any(secret in value.encode() for secret in encoded_secrets)}
+                emit({"status": error.code, "content_type": "application/json", "headers": headers})
+                emit({"status": error.code, "chunk": base64.b64encode(raw).decode(), "done": True})
+                return
             if 400 <= error.code < 500 and error.code not in (408, 429):
-                diagnostic = provider_failure(error, [self.secret.decode(), self.capability])
+                diagnostic = provider_failure(urllib.error.HTTPError(error.url, error.code, error.reason, error.headers,
+                                               io.BytesIO(raw if len(raw) <= 8192 else b"{}")), secrets_to_hide)
                 with self.guard:
                     self.failure = diagnostic
                     self.revoked = True
@@ -476,6 +512,8 @@ def guest(start_client, acknowledged=False):
                     if not started:
                         self.send_response(reply.get("status", 502))
                         self.send_header("Content-Type", reply.get("content_type", "application/json"))
+                        for key, value in reply.get("headers", {}).items():
+                            self.send_header(key, value)
                         self.end_headers()
                         started = True
                     if "chunk" in reply:

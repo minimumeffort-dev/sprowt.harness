@@ -15,7 +15,7 @@ import time
 import urllib.request
 
 from muse_transport import (BridgeFailure, Broker, MODEL, FrameReader, Rpc, RpcError,
-                            command_id, failure, guest, host_login, private_json, read_account, settings)
+                            command_id, failure, guest, host_login, private_json, read_account, read_models, settings)
 from muse_release import artifact, prepare
 
 OUTPUT_TOKENS = 32768
@@ -44,13 +44,13 @@ def cleanup_children(pid):
 
 def guest_client(base):
     home = Path.home()
-    if Path("/workspace").exists() or Path("/opt/sprowt-git").exists():
+    if (Path("/workspace").exists() and os.environ.get("SPROWT_MUSE_READONLY") != "1") or Path("/opt/sprowt-git").exists():
         raise BridgeFailure("Muse filesystem boundary includes controller source.")
     value = settings(base)
     value["run"].pop("toolset")
     private_json(home / ".config/muse/settings.json", value)
     private_json(home / ".sprowt-endpoint.json", {"url": base})
-    client = subprocess.Popen(["/opt/sprowt-muse/muse", "serve", "--disable-sandbox"],
+    client = subprocess.Popen(["/opt/sprowt-muse/muse", "serve", "--disable-sandbox"] + (["--disable-write"] if os.environ.get("SPROWT_MUSE_READONLY") == "1" else []),
                               stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                               stderr=subprocess.DEVNULL, text=True)
     # The enclosing exec-server boundary applies to Muse and every child tool.
@@ -258,7 +258,10 @@ class ManagedRpc(Rpc):
 def final_report(text):
     try:
         report = json.loads(text)
-        return isinstance(report, dict) and "status" in report and "checks" in report and "summary" in report
+        return (isinstance(report, dict) and isinstance(report.get("summary"), str)
+                and (isinstance(report.get("tasks"), list)
+                     or isinstance(report.get("status"), str)
+                     and (isinstance(report.get("checks"), list) or isinstance(report.get("findings"), list))))
     except ValueError:
         return False
 
@@ -283,8 +286,15 @@ def normalize(message, finishes=None):
         return {"method": method, "params": {"item": {"type": "agentMessage", "id": item.get("itemId", item.get("id")),
             "text": item.get("text", ""), "phase": "final_answer" if item.get("phase") in {"final", "final_answer"} or final_report(item.get("text", "")) else "commentary"}}}
     if method == "turn/completed":
-        return {"method": method, "params": {"turn": turn_result(
-            params["turnId"], params["terminal"], (finishes or {}).get(params["turnId"]))}}
+        result = turn_result(params["turnId"], params["terminal"], (finishes or {}).get(params["turnId"]))
+        if isinstance(params.get("error"), dict):
+            error = params["error"]
+            result["error"] = {"message": "Muse could not finish the turn."}
+            quota = error.get("quota")
+            if isinstance(quota, dict) and isinstance(quota.get("limitKind"), str) and type(quota.get("resetsAtMs")) is int:
+                result["error"]["quota"] = {"limitKind": quota["limitKind"][:100], "resetsAtMs": quota["resetsAtMs"]}
+                result["error"]["message"] = "Muse subscription quota exhausted."
+        return {"method": method, "params": {"turn": result}}
     return None
 
 
@@ -293,8 +303,8 @@ class SessionState:
         self.path = Path(path)
         saved = json.loads(self.path.read_text()) if self.path.exists() else {}
         if saved and (not isinstance(saved, dict) or saved.get("vm") != config["name"]
-                or type(saved.get("task")) is not int or saved["task"] <= 0
-                or saved.get("cwd") != f'/tasks/{saved["task"]}'
+                or type(saved.get("task")) is not int or saved["task"] < 0
+                or saved.get("cwd") != ("/workspace" if saved["task"] == 0 else f'/tasks/{saved["task"]}')
                 or not isinstance(saved.get("commands"), dict)
                 or not all(isinstance(command, dict) and isinstance(command.get("id"), str)
                            for command in saved["commands"].values())
@@ -302,7 +312,7 @@ class SessionState:
             raise BridgeFailure("Saved Muse recovery state is invalid; work is retained.")
         self.resuming = bool(saved) and saved.get("cwd") == config["cwd"]
         self.value = saved if self.resuming else {
-            "vm": config["name"], "cwd": config["cwd"], "task": int(config["cwd"].rsplit("/", 1)[1]),
+            "vm": config["name"], "cwd": config["cwd"], "task": 0 if config["cwd"] == "/workspace" else int(config["cwd"].rsplit("/", 1)[1]),
             "sessionId": command_id(), "startId": command_id(), "commands": {}}
         self.save()
 
@@ -425,9 +435,9 @@ def recovered_thread(rpc, state, result):
         for turn, values in grouped.items()]}
 
 
-def connect(config, tools, state, headers, root, emit, allow_new):
+def connect(config, tools, state, headers, root, emit, allow_new, model=MODEL):
     state.recover(allow_new)
-    broker = Broker(headers, requests=128, lifetime=3600, output_tokens=OUTPUT_TOKENS)
+    broker = Broker(headers, requests=128, lifetime=3600, output_tokens=OUTPUT_TOKENS, model=model)
     rpc = None
     try:
         guest_files = root / "guest"
@@ -463,7 +473,7 @@ def connect(config, tools, state, headers, root, emit, allow_new):
                 state.value.update(sessionId=command_id(), startId=command_id(), commands={})
                 state.save()
         rpc.call("session/start", {"commandId": state.value["startId"], "sessionId": state.value["sessionId"],
-            "workspaceRoot": config["cwd"], "providerId": "meta", "modelId": MODEL,
+            "workspaceRoot": config["cwd"], "providerId": "meta", "modelId": model,
             "approvalMode": "allowAll", "config": mcp_config})
         state.resuming = True
         return rpc, {"id": state.value["sessionId"], "turns": []}
@@ -519,7 +529,7 @@ def host():
                         config = params["config"]
                         state = SessionState(params["state"], config)
                         rpc, thread = connect(config, params["tools"], state, headers, Path(root.name), emit,
-                                              params.get("allowNew", False))
+                                              params.get("allowNew", False), params.get("model", MODEL))
                         finishes.update((turn["id"], turn["finishReason"]) for turn in thread["turns"]
                                         if "finishReason" in turn)
                         session = thread["id"]
@@ -532,7 +542,7 @@ def host():
                             emit({"method": "thread/started", "params": {"thread": {"id": session}}})
                             text = params["text"] + "\nReturn only a JSON object as your final answer matching this schema: " + json.dumps(params["schema"])
                             result = rpc.call("turn/start", {"commandId": state.command(params["source"]), "sessionId": session,
-                                "reasoningEffort": "high", "input": [{"type": "text", "text": text}]})
+                                "reasoningEffort": params.get("effort", "high"), "input": [{"type": "text", "text": text}]})
                             state.accepted(params["source"], result)
                     elif method == "turn/steer":
                         result = rpc.call(method, {"commandId": state.command(params["source"]), "sessionId": session,
@@ -602,6 +612,8 @@ if __name__ == "__main__":
             mcp()
         elif sys.argv[1:2] == ["--account"]:
             print(json.dumps(read_account(Path(sys.argv[2]))), flush=True)
+        elif sys.argv[1:] == ["--models"]:
+            print(json.dumps(read_models()), flush=True)
         elif sys.argv[1:2] == ["--artifact"]:
             print(artifact(Path(sys.argv[2])), flush=True)
         elif sys.argv[1:2] == ["--prepare"]:

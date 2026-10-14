@@ -8,6 +8,8 @@ The terminal and [macOS app](macos.md) use the same database. Only one controlle
 
 Unsent creation descriptions are saved separately per project. The project catalog lists previously opened folders; expansion is local to the running interface.
 
+Worker teams, project creation defaults, effective assignment pins and quota cooldowns also persist in SQLite. Cooldowns are shared across projects; pending delivery must be recovered before a worker can be replaced.
+
 The global [appearance preference](appearance.md) is also saved in this database and applies across projects.
 
 ## What survives

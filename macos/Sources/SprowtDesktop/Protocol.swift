@@ -35,6 +35,8 @@ enum Appearance: String, Codable, CaseIterable, Sendable {
 }
 
 struct Snapshot: Decodable, Sendable {
+    let workerSettings: WorkerSettings
+    let modelCatalog: ModelCatalog
     let appearance: Appearance
     let project: String
     let projectId: Int64
@@ -265,6 +267,7 @@ struct Command: Encodable, Sendable {
     var appearance: Appearance?
     var projectId: Int64?
     var path: String?
+    var settings: WorkerSettings?
 }
 
 struct Request: Encodable, Sendable {

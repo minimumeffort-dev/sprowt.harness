@@ -107,11 +107,15 @@ Select it in Tasks and press Enter. You can read its latest update, checks, depe
 | `a` | Open all activity |
 | `e` | Expand evidence |
 
-A targeted retry preserves completed peers and waits if both worker slots are occupied. Older messages without a saved task identity remain in all activity.
+A targeted retry preserves completed peers and waits if the configured worker slots are occupied. Older messages without a saved task identity remain in all activity.
 
 ### Inspect the plan
 
 **Ctrl+O** opens contracts, assumptions, task outcomes, dependencies, scopes, coordination topics, checks and routing. Press it again to return to the workspace. Plans use numbered tasks; the numbering follows display order.
+
+## Choose workers
+
+**Ctrl+G → w** opens the [worker team](workers.md#choose-a-worker-team) for this codemod or creation draft. Select planner and reviewer models and execution rows with counts. The same saved settings appear in the macOS app. Changes affect new assignments; current work continues.
 
 ## Understand the dock
 

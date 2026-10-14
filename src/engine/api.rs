@@ -13,6 +13,11 @@ pub struct Request {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Snapshot {},
+    RefreshModels {},
+    SetWorkerSettings {
+        mod_id: Option<i64>,
+        settings: crate::worker_settings::WorkerSettings,
+    },
     SetAppearance {
         appearance: crate::appearance::Appearance,
     },
@@ -177,6 +182,19 @@ impl Engine {
                     return Err("Project changed; keep the draft and try again.".into());
                 }
                 self.set_creation_draft(text).map_err(|e| e.to_string())
+            }
+            Command::RefreshModels {} => {
+                self.refresh_models();
+                Ok(())
+            }
+            Command::SetWorkerSettings { mod_id, settings } => {
+                self.require_no_confirmation()?;
+                if mod_id.is_some() {
+                    self.require_mod(mod_id)?;
+                } else if self.view != View::NewMod {
+                    return Err("Open a new codemod before setting its workers.".into());
+                }
+                self.save_settings(mod_id, settings)
             }
             Command::Snapshot {} | Command::Shutdown {} => Ok(()),
             Command::SetAppearance { appearance } => self

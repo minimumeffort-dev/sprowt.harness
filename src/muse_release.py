@@ -14,7 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "1.4.6-R6000.1"
+VERSION = "1.4.7-R6101.1"
 DOWNLOAD_SECONDS = 600
 
 
@@ -32,8 +32,8 @@ class Artifact:
 
 # SHA-256 and sizes from this release's official manifest, not the mutable channel.
 ARTIFACTS = {
-    "aarch64_macos": Artifact("muse-aarch64-macos", "c713165a287d64afb8816f8351a240b457a23524f4ade06bca0e41dfde410460", 355369136),
-    "aarch64_linux": Artifact("muse-aarch64-linux", "fdbb7f1a85d5fa0727253726785a940e86bdbb5f3885bb0ed182657781f5aa93", 323098728),
+    "aarch64_macos": Artifact("muse-aarch64-macos", "87ff5a31b63e30b6ac04d3e8298285517e753c126fb6f3aee80accf28c4562f1", 358892272),
+    "aarch64_linux": Artifact("muse-aarch64-linux", "48db3c7468cd4f401eff9b415fb7e0cdfe0351fb1730649ceae2a0f766e23b85", 325916776),
 }
 CHECKSUM = ARTIFACTS["aarch64_linux"].checksum
 

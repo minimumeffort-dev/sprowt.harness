@@ -30,7 +30,7 @@ flowchart TB
 6. **Verify together.** Task worktrees refresh to the combined source and rerun every check with their retained dependencies.
 7. **Review.** Combined success starts a fresh [independent review](review.md).
 
-Each codemod has two active slots: two Codex workers, two Muse workers or one of each. Connecting and verification occupy slots. Idle workers are parked and reused. Review repairs run one owner at a time.
+Each codemod uses its [configured execution count](workers.md#choose-a-worker-team), defaulting to two slots without saved settings. Connecting and verification occupy slots. Idle workers are parked and reused. Review repairs run one owner at a time.
 
 Independent task preparation and `run_task_checks` can overlap in their own task folders and HOMEs. Shared cache operations, checkpoints, source replacement, integration and system package mutations remain serialized. Combined checks rerun on current source. See [execution waits](performance.md#overlap-independent-task-work). Workers with unanswered [peer questions](coordination.md) wait; unrelated work can continue.
 

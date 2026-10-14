@@ -62,7 +62,7 @@ Host planning starts preparation of an empty VM for that codemod. It boots the s
 flowchart LR
     planning["Host planning"] --> empty["Empty VM + isolation checks"]
     accepted["Accepted plan + source snapshot"] --> bind["Bind source + task worktrees"]
-    empty --> bind --> ready["Bound VM: up to two workers"]
+    empty --> bind --> ready["Bound VM: configured worker team"]
 ```
 
 The saved states are `Preparing`, `EmptyReady` and `BoundReady`. Binding uses the captured codemod folder and writes `BoundReady` only after source and task worktrees are prepared. A legacy `ready: true` marker means `BoundReady`.
@@ -73,7 +73,7 @@ Pause, replan, close and quit cancel and join early preparation. Saved startup f
 
 New VMs ordinarily receive **4 CPUs and 4 GiB**. Admission limits all running harness-labelled VMs to half the host's logical CPUs and half its physical memory, including older VMs' actual allocations. A private OS lock reserves each pending boot until its running allocation is confirmed. A full budget releases the lock and waits; cancellation stops the wait. Shared image preparation finishes before admission, and RPC, base setup and source binding can overlap across codemods.
 
-If the host's total budget cannot fit the ordinary profile, new VMs use **2 CPUs and 2 GiB**. Temporary occupancy causes waiting, rather than selecting a smaller profile. The worker limit remains two.
+If the host's total budget cannot fit the ordinary profile, new VMs use **2 CPUs and 2 GiB**. Temporary occupancy causes waiting, rather than selecting a smaller profile. The per-codemod [worker count](workers.md#choose-a-worker-team) limits simultaneous execution without changing this host-wide budget.
 
 An [explicit recipe memory request](environments.md#recipe-fields) can select 8 GiB. Apple Container cannot resize a VM: a validated empty VM can be recreated before binding, while a bound VM keeps its allocation and runtime. If its allocation is insufficient, create a new codemod with the explicit request. Early preparation never reconnects or restarts an existing bound VM.
 

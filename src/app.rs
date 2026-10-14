@@ -21,10 +21,12 @@ mod inspector;
 pub mod projects;
 mod scroll;
 mod tasks;
+pub(crate) mod worker_settings;
 pub mod workspace_navigation;
 pub use scroll::Scroll;
 
 pub struct App {
+    pub(crate) worker_settings_editor: Option<worker_settings::Editor>,
     pub(crate) project_picker: projects::PickerPanel,
     pub(crate) project_picker_error: Option<String>,
     pub(crate) appearance_picker: Option<crate::appearance::Appearance>,
@@ -76,6 +78,7 @@ impl App {
     }
     fn from_engine(engine: Session, motion: bool) -> Self {
         let mut app = Self {
+            worker_settings_editor: None,
             project_picker: projects::PickerPanel::Projects,
             project_picker_error: None,
             appearance_picker: None,
@@ -216,6 +219,10 @@ impl App {
             return Ok(());
         }
         match action {
+            Action::Workers => {
+                self.open_worker_settings()?;
+                Ok(())
+            }
             Action::Appearance => {
                 self.appearance_picker = Some(self.engine.appearance);
                 self.appearance_error = None;
@@ -258,6 +265,10 @@ impl App {
     }
     pub fn action_dock(&self) -> ActionDock {
         let mut dock = self.engine.action_dock();
+        dock.actions.push(ActionItem {
+            action: Action::Workers,
+            label: "Workers".into(),
+        });
         dock.actions.push(ActionItem {
             action: Action::Appearance,
             label: "Appearance".into(),
@@ -360,6 +371,10 @@ impl App {
 
     fn handle(&mut self, event: Event) -> Result<()> {
         if matches!(self.engine.view, View::Mods(_)) && self.project_prompt_event(&event) {
+            return Ok(());
+        }
+        if self.worker_settings_editor.is_some() {
+            self.worker_settings_event(event);
             return Ok(());
         }
         if self.appearance_picker.is_some() {
@@ -949,6 +964,7 @@ mod tests {
     mod navigation;
     mod projects;
     mod workbench;
+    pub(crate) mod worker_settings;
     use super::*;
     use crate::store::test_support::TestData;
     use crate::worker::Worker;
@@ -2902,6 +2918,7 @@ mod tests {
         first.worker = Some(12);
         first.provider = Some("muse".into());
         first.selection = Some(crate::router::Selection {
+            pinned: false,
             model: "muse-spark-1.3".into(),
             effort: "high".into(),
             reason: String::new(),

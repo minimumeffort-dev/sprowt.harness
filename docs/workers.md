@@ -2,16 +2,40 @@
 
 # Workers
 
-Codex handles planning and independent review. Codex and Muse can execute tasks in the codemod's Linux VM, with separate conversations, worktrees and runtime homes.
+Choose Codex or Muse models for planning, execution and independent review. Execution workers share the codemod's Linux VM with separate conversations, worktrees and runtime homes.
 
-[Versions](#supported-versions) · [Automatic Muse setup](#automatic-muse-setup) · [Login](#login) · [Execution paths](#two-execution-paths-one-scheduler) · [Muse recovery](#muse-recovery)
+[Worker team](#choose-a-worker-team) · [Quota fallback](#quota-fallback) · [Versions](#supported-versions) · [Automatic Muse setup](#automatic-muse-setup) · [Login](#login) · [Execution paths](#two-execution-paths-one-scheduler) · [Muse recovery](#muse-recovery)
+
+## Choose a worker team
+
+In the macOS app, open **More → Workers**, or **Workers** in the creation editor. In the terminal, use **Ctrl+G → w**. Choose a model and effort for the planner and reviewer, then add execution rows and counts.
+
+For example, one Codex executor and two Muse executors allow **three simultaneous execution workers**. Connecting, running and checking consume that limit. A planner and reviewer use their separate role selections. The total execution count can be 1–16; increasing it does not increase the [host VM resource budget](performance.md#vm-resource-budget).
+
+**Save team** applies to new assignments. Running workers keep their model and continue uninterrupted. Reducing the limit waits for existing work to finish. Settings in the creation editor belong to that project's next codemods, so the planner can be selected before its first run. Cancel preserves the saved team, composer draft and caret.
+
+The terminal dialog uses **↑↓** for rows, **Tab** for count/model/effort, **←→** to change a value, **+ / −** to add/remove an execution row, **r** to refresh models, **s** to save and **Esc** to cancel.
+
+**Refresh models** queries the signed-in CLIs without starting inference. Every catalog model and supported effort is selectable for every role, including Muse Wonder. If discovery fails, the previous catalog remains visible with an error. A selected model is never silently replaced because it disappeared from the catalog; refresh and choose a supported model. Catalog presence does not establish account entitlement.
+
+Codemods without saved worker settings keep their existing model pins, two-worker scheduler and Jev routing. Saving an explicit team replaces those defaults for future assignments.
+
+## Quota fallback
+
+An explicit provider quota error stops the affected attempt before another worker starts. The controller tries another model already selected in the same team, including role selections, while preserving the role, task checkpoint, accepted instructions and acknowledged mail. A task's declared provider requirement still applies. The total execution limit remains unchanged.
+
+Cooldowns save by provider quota bucket, with model scope and reset time when supplied. They are shared across projects using the same database and survive restarts. Healthy usage observations clear only the corresponding older cooldown. Muse's optional last-observed usage snapshot can be absent or stale; unknown usage is not proof of available quota. An eligible selected model may still reject allocation, in which case its explicit quota signal prevents repeated attempts until reset or refreshed evidence.
+
+Authentication failures, network errors, ordinary rate limiting and generic HTTP 429 responses do not trigger quota substitution. Ordinary retries keep the existing worker. When delivery is uncertain, work pauses for receipt recovery instead of replaying the instruction on another provider. Pause and Close also prevent replacement workers from starting.
+
+If no selected compatible worker can continue, work stays saved. Open **Workers** to select another model or **Refresh models** after quota resets, then resume paused work. No unselected model, paid credit reset or broader permission is used.
 
 ## Supported versions
 
 | Component | Supported value | Source of the pin |
 | --- | --- | --- |
 | Codex CLI | **0.159.2** | [`src/sandbox.rs`](../src/sandbox.rs) |
-| Muse CLI, optional | **1.4.6-R6000.1**, managed by Sprowt | [`src/muse_release.py`](../src/muse_release.py) |
+| Muse CLI, optional | **1.4.7-R6101.1**, managed by Sprowt | [`src/muse_release.py`](../src/muse_release.py) |
 | Host platform | Apple silicon, macOS 26+ | Apple Container backend |
 | Muse host adapter | Python 3 | Host stdio transport |
 
@@ -78,15 +102,15 @@ Automatic login refresh is not implemented. After changing login or installed pr
 
 ## Roles
 
-| Role | Connection | Model and effort |
+| Role | Connection | Default for codemods without saved settings |
 | --- | --- | --- |
-| Planner | Host Codex app server, read-only | Astra xhigh |
+| Planner | Host Codex read-only, or selected Muse in read-only VM | Astra xhigh |
 | Codex executor | Host app server + guest execution server | Sol 6.1 medium, high or xhigh |
 | Muse executor | Full Muse CLI inside the VM | Muse Spark 1.3 high |
-| Independent reviewer | Fresh Codex conversation, reads VM source | Sol 6.1 xhigh |
+| Independent reviewer | Fresh conversation, reads VM source | Sol 6.1 xhigh |
 | Publication writer | Separate read-only host Codex call | Sol 6.1 low |
 
-[Jev](planning.md#jev-task-routing) selects Codex executor effort only. The reviewer cannot edit source, publish, approve access or call harness tools; its network access is disabled.
+[Jev](planning.md#jev-task-routing) selects Codex executor effort only when no explicit team is saved. The reviewer cannot edit source, publish, approve access or call harness tools. Read-only Muse roles use only the local model transport; external network access is denied.
 
 The [publication writer](git-workflow.md#commit-and-pr-text) drafts commit and PR text from the reviewed diff. You confirm publication in the terminal.
 
@@ -106,7 +130,7 @@ flowchart TB
     checks --> review["Combined checks + fresh review"]
 ```
 
-Both providers can implement, test and integrate. Two slots can hold either provider combination. Rust balances ready tasks by active provider load across codemods; ties alternate. Saved assignments and retries retain their owner. Dependencies still control readiness.
+Both providers can implement, test and integrate. Saved teams allocate ready tasks to their requested model counts. Codemods without settings retain the two-slot scheduler, balancing provider load across codemods with alternating ties. Ordinary retries retain their owner; explicit quota exhaustion follows the fallback rules above. Dependencies still control readiness.
 
 Each worker has its own cancellation signal and runtime HOME. Connecting, running and checking occupy slots; idle identities do not. Independent task preparation and `run_task_checks` commands can overlap in fixed task sessions. Checkpoints, source replacement, integration and package mutations remain serialized. [Execution waits](performance.md#overlap-independent-task-work) describes the boundary.
 
@@ -120,7 +144,7 @@ New and resumed executor conversations receive the same fixed tool, report and v
 
 Codex's trusted host process handles inference and sends executor tools into the VM. Inherited apps, MCP servers, plugins, hooks and delegation are disabled. The planner uses a read-only host sandbox that denies credential directories and local environment files.
 
-Muse and its children run inside the guest execution server's enforced process sandbox. Muse's internal sandbox is disabled inside that outer boundary. It can write its task folder, HOME and temporary files; peer task folders are unavailable. Downloads use the harness allowlist.
+Muse and its children run inside the guest execution server's enforced process sandbox. Muse's internal sandbox is disabled inside that outer boundary. Executors can write their task folder, HOME and temporary files; peer task folders are unavailable. Downloads use the harness allowlist. Planner and reviewer source access is read-only, with private runtime HOME and temporary files.
 
 ### Shared tools and steering
 
@@ -148,10 +172,10 @@ sequenceDiagram
 | Capability lifetime | One task turn, at most one hour |
 | Requests per capability | 128 |
 | Output allowance per request | 32,768 tokens, including reasoning |
-| Allowed routes | Model catalog and streamed Spark 1.3 responses at fixed endpoints |
+| Allowed routes | Model catalog and streamed responses for the assigned model at fixed endpoints |
 | Revocation | Turn completion or worker stop |
 
-Redirects and other account/model routes are denied. Account authentication is verified; subscription metering is not independently exposed by the CLI. Included usage is not a measured harness guarantee.
+Redirects and other account/model routes are denied. Account authentication is verified; usage observations and explicit quota errors come from the native CLI. The bounded HTTP 429 body and allowed rate-limit headers reach that CLI so it can distinguish quota exhaustion from ordinary throttling. Raw provider credentials are withheld.
 
 ## Muse recovery
 

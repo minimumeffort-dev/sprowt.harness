@@ -73,6 +73,10 @@ pub enum Event {
         message: String,
     },
     Failed(String),
+    QuotaRejected {
+        source: String,
+        quota: crate::quota::Exhausted,
+    },
     MergeConflict {
         source: String,
         conflict: crate::conflict::MergeConflict,
@@ -131,6 +135,7 @@ pub struct Client {
     child: Arc<Mutex<Option<Child>>>,
     task: Option<JoinHandle<()>>,
     closed: bool,
+    stopped_cleanly: Arc<AtomicBool>,
     vm: Arc<Mutex<Option<SharedVm>>>,
     active_task: Arc<AtomicI64>,
     cancelled: Arc<AtomicBool>,
@@ -156,6 +161,14 @@ impl Client {
     }
 
     #[cfg(test)]
+    pub(crate) fn failed_shutdown_for_test() -> Self {
+        let (mut client, _, _) = Self::recording_events();
+        client.closed = false;
+        client.stopped_cleanly.store(false, Ordering::Relaxed);
+        client
+    }
+
+    #[cfg(test)]
     pub(crate) fn recording_events() -> (Self, Sender<Event>, Receiver<Action>) {
         let (actions, inbox) = mpsc::channel();
         let (outgoing, events) = mpsc::channel();
@@ -166,6 +179,7 @@ impl Client {
                 child: Arc::new(Mutex::new(None)),
                 task: None,
                 closed: true,
+                stopped_cleanly: Arc::new(AtomicBool::new(true)),
                 vm: Arc::new(Mutex::new(None)),
                 active_task: Arc::new(AtomicI64::new(0)),
                 cancelled: Arc::new(AtomicBool::new(false)),
@@ -193,11 +207,17 @@ impl Client {
         let project = project.to_owned();
         let (actions, inbox) = mpsc::channel();
         let (outgoing, events) = mpsc::channel();
-        let mut instructions = plan::instructions(role, description, plan, workspace.is_some());
+        let mut instructions = plan::instructions(
+            role,
+            description,
+            plan,
+            workspace.is_some() && role == Role::Executor,
+        );
         let environment = plan.and_then(|plan| plan.environment.clone());
         if role == Role::Planner {
             instructions.push_str(&format!(
-                "\nAvailable executors: {}. Project brief (verify against source): {}",
+                "\nMaximum simultaneous executors: {}. Available executors: {}. Project brief (verify against source): {}",
+                context.worker_capacity(),
                 if context.muse {
                     "Codex and Muse"
                 } else {
@@ -210,6 +230,8 @@ impl Client {
         let child = Arc::new(Mutex::new(None));
         let process = child.clone();
         let stopped = cancelled.clone();
+        let stopped_cleanly = Arc::new(AtomicBool::new(false));
+        let checkpoint_confirmed = stopped_cleanly.clone();
         let controller = Arc::new(Mutex::new(None));
         let shared = controller.clone();
         let active_task = Arc::new(AtomicI64::new(0));
@@ -256,7 +278,7 @@ impl Client {
                     "{}\n{instructions}",
                     crate::skills::instructions(role, &skill_root)
                 );
-                if role == Role::Reviewer
+                if role != Role::Executor
                     && let Some(vm) = &vm
                 {
                     vm.lock()
@@ -274,7 +296,7 @@ impl Client {
                     return crate::muse::serve(
                         vm.ok_or_else(|| io::Error::other("Muse requires a VM."))?,
                         resume,
-                        (instructions, context),
+                        (instructions, context, role, selection),
                         stopped,
                         process.clone(),
                         inbox,
@@ -360,8 +382,25 @@ impl Client {
                 }
                 Ok(())
             })();
-            if let Err(error) = result.and(checkpoint) {
-                let _ = outgoing.send(Event::Failed(error.to_string()));
+            checkpoint_confirmed.store(
+                checkpoint.is_ok()
+                    && (result.is_ok()
+                        || result
+                            .as_ref()
+                            .err()
+                            .and_then(crate::quota::rejection)
+                            .is_some()),
+                Ordering::Relaxed,
+            );
+            if let Err(error) = checkpoint.and(result) {
+                if let Some(quota) = crate::quota::rejection(&error) {
+                    let _ = outgoing.send(Event::QuotaRejected {
+                        source: String::new(),
+                        quota,
+                    });
+                } else {
+                    let _ = outgoing.send(Event::Failed(error.to_string()));
+                }
             }
         });
         Ok(Self {
@@ -370,6 +409,7 @@ impl Client {
             child,
             task: Some(task),
             closed: false,
+            stopped_cleanly,
             vm: controller,
             active_task,
             cancelled,
@@ -403,8 +443,12 @@ impl Client {
 
 impl Client {
     pub fn shutdown(&mut self) {
+        let _ = self.shutdown_checked();
+    }
+
+    pub(crate) fn shutdown_checked(&mut self) -> io::Result<()> {
         if self.closed {
-            return;
+            return self.stop_result();
         }
         self.closed = true;
         self.cancelled.store(true, Ordering::Relaxed);
@@ -419,6 +463,17 @@ impl Client {
             let _ = task.join();
         }
         self.vm.lock().unwrap().take();
+        self.stop_result()
+    }
+
+    fn stop_result(&self) -> io::Result<()> {
+        if self.stopped_cleanly.load(Ordering::Relaxed) {
+            Ok(())
+        } else {
+            Err(io::Error::other(
+                "Worker shutdown and checkpoint could not be confirmed.",
+            ))
+        }
     }
 }
 
@@ -519,7 +574,7 @@ fn flush(
     task: Option<i64>,
     response: &mut crate::diagnostics::timing::FirstResponse,
 ) -> io::Result<()> {
-    for message in std::mem::take(&mut rpc.buffered) {
+    for mut message in std::mem::take(&mut rpc.buffered) {
         if let Some(observation) = response.observe(&message) {
             let _ = outgoing.send(Event::Timing(observation));
         }
@@ -561,6 +616,12 @@ fn flush(
             if context.is_executor() {
                 vm.export(&AtomicBool::new(false))?;
             }
+        }
+        if message["method"] == "turn/completed"
+            && message["params"]["turn"]["error"]["codexErrorInfo"] == "usageLimitExceeded"
+            && let Ok(limits) = rpc.call("account/rateLimits/read", json!({}))
+        {
+            message["params"]["turn"]["error"]["sprowtRateLimits"] = limits;
         }
         let _ = outgoing.send(Event::Notification(message));
     }
@@ -692,6 +753,7 @@ fn serve(
         .map(|selection| resolve_model(&catalog, selection))
         .transpose()?;
     if role == Role::Reviewer
+        && selection.as_ref().is_none_or(|s| !s.pinned)
         && selection
             .as_ref()
             .is_none_or(|s| s.model != "gpt-6.1-sol" || s.effort != "xhigh")
@@ -839,10 +901,14 @@ fn serve(
                             .map(|v| serde_json::from_value(json!(v)))
                             .transpose()?;
                         let _ = outgoing.send(Event::Preparing("choosing task model".into()));
-                        let chosen = match (&router, routing) {
-                            (Some(Ok(router)), Some(state)) => router.route(state),
-                            (Some(Err(error)), _) => Selection::fallback(&error.to_string()),
-                            _ => Selection::fallback("Task routing context unavailable"),
+                        let chosen = if let Some(selected) = &selection {
+                            selected.clone()
+                        } else {
+                            match (&router, routing) {
+                                (Some(Ok(router)), Some(state)) => router.route(state),
+                                (Some(Err(error)), _) => Selection::fallback(&error.to_string()),
+                                _ => Selection::fallback("Task routing context unavailable"),
+                            }
                         };
                         let chosen = resolve_model(&catalog, chosen)?;
                         if cancelled.load(Ordering::Relaxed) {
@@ -963,6 +1029,12 @@ fn serve(
                         turn: turn.to_owned(),
                     });
                 }
+                Err(error) if crate::quota::rejection(&error).is_some() => {
+                    let _ = outgoing.send(Event::QuotaRejected {
+                        source,
+                        quota: crate::quota::rejection(&error).unwrap(),
+                    });
+                }
                 Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
                     let _ = outgoing.send(Event::Rejected {
                         source,
@@ -1003,10 +1075,10 @@ fn serve(
     }
 }
 
-fn model_catalog(rpc: &mut Rpc) -> io::Result<Vec<Value>> {
+pub(crate) fn model_catalog(rpc: &mut Rpc) -> io::Result<Vec<Value>> {
     let mut models = Vec::new();
     let mut cursor = Value::Null;
-    loop {
+    for _ in 0..10 {
         let result = rpc.call(
             "model/list",
             json!({"limit":100,"includeHidden":false,"cursor":cursor}),
@@ -1018,15 +1090,41 @@ fn model_catalog(rpc: &mut Rpc) -> io::Result<Vec<Value>> {
                 .iter()
                 .cloned(),
         );
-        cursor = result["nextCursor"].clone();
+        let next = result["nextCursor"].clone();
+        if !next.is_null() && (next == cursor || models.len() >= 1000) {
+            return Err(io::Error::other(
+                "Codex model catalog pagination did not finish.",
+            ));
+        }
+        cursor = next;
         if cursor.is_null() {
-            break;
+            return Ok(models);
         }
     }
-    Ok(models)
+    Err(io::Error::other("Codex model catalog exceeded ten pages."))
 }
 
 fn resolve_model(models: &[Value], mut selection: Selection) -> io::Result<Selection> {
+    if selection.pinned {
+        let available = models.iter().any(|model| {
+            model["model"] == selection.model
+                && model["supportedReasoningEfforts"]
+                    .as_array()
+                    .is_some_and(|levels| {
+                        levels
+                            .iter()
+                            .any(|level| level["reasoningEffort"] == selection.effort)
+                    })
+        });
+        if !available {
+            return Err(io::Error::other(format!(
+                "Selected model {} with {} effort is unavailable. Open Workers and refresh models.",
+                selection.model, selection.effort
+            )));
+        }
+        return Ok(selection);
+    }
+
     let available = |model: &Value| model["model"] == selection.model;
     let model = if let Some(model) = models.iter().find(|model| available(model)) {
         model

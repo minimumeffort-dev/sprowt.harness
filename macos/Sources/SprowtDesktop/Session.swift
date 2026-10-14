@@ -11,6 +11,7 @@ final class Session {
         let draftRevision: UInt64?
     }
 
+    var workerSettingsDraft: WorkerSettingsDraft?
     private(set) var snapshot: Snapshot?
     private(set) var connection = Connection.disconnected
     private(set) var error: String?
@@ -124,6 +125,16 @@ final class Session {
         connection = .stopping
         finishClosing = completion
         sendNext()
+    }
+
+    func openWorkerSettings() {
+        guard interactive && !busy, let snapshot else { return }
+        workerSettingsDraft = WorkerSettingsDraft(modId: showingNew ? nil : active?.id, settings: snapshot.workerSettings)
+        enqueue(Command(type: "refresh_models"))
+    }
+
+    func saveWorkerSettings(_ settings: WorkerSettings, modId: Int64?) {
+        enqueue(Command(type: "set_worker_settings", modId: modId, settings: settings))
     }
 
     func setAppearance(_ appearance: Appearance) {
@@ -243,6 +254,7 @@ final class Session {
         var restored: Pending?
         var navigated = false
         if let request = current, response.requestId == request.request.id {
+            if request.request.command.type == "set_worker_settings", response.error == nil { workerSettingsDraft = nil }
             navigated = response.error == nil && ["go_back", "go_forward", "select_mod", "select_project", "open_project", "begin_project_creation"].contains(request.request.command.type)
             if response.error == nil, let revision = request.draftRevision {
                 if let id = request.request.command.modId { drafts.acknowledge(id: id, revision: revision) }

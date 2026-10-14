@@ -8,7 +8,7 @@ use crate::{
     store::test_support::TestData,
 };
 
-fn session() -> (TestData, Engine, i64, i64) {
+pub(super) fn session() -> (TestData, Engine, i64, i64) {
     let data = TestData::new();
     let mut store = data.store();
     let project = data.0.join("project");

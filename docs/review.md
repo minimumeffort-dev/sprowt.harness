@@ -112,7 +112,7 @@ SQLite saves finding IDs, reports, decisions, fingerprints and repair budgets. L
 
 ## Reviewer boundaries
 
-The reviewer uses a fresh Sol 6.1 xhigh conversation with the request, contracts, diff, source, checks and saved findings. It reads source in the VM, can use its own temporary files, and cannot edit project source, publish or approve network access.
+The reviewer uses a fresh conversation with the [selected model and effort](workers.md#choose-a-worker-team). Codemods without saved settings default to Sol 6.1 xhigh. The review receives the request, contracts, diff, source, checks and saved findings. It reads source in the VM, can use its own temporary files, and cannot edit project source, publish or approve network access.
 
 For a live verification command, see [development checks](development.md#live-checks).
 

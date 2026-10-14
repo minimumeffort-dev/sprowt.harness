@@ -71,8 +71,9 @@ struct WorkspaceView: View {
                     .buttonStyle(WorkspaceButtonStyle()).overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.control))
                     .disabled(!session.interactive || session.busy)
             }
-            if let actions = session.snapshot?.actions, actions.count > 1 {
+            if let actions = session.snapshot?.actions {
                 Menu {
+                    Button { session.openWorkerSettings() } label: { Label("Workers", systemImage: "person.2") }
                     ForEach(Array(actions.dropFirst()), id: \.identity) { action in
                         Button { session.perform(action) } label: { Label(action.label, systemImage: action.symbol) }
                     }

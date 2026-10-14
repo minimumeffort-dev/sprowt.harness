@@ -139,6 +139,22 @@ impl Sandbox {
             "proxy":{"proxy":{"enabled":true,"enableSocks5":false,"enableSocks5Udp":false,"allowUpstreamProxy":false,"dangerouslyAllowAllUnixSockets":true,"mode":"full","domains":self.domains,"unixSockets":{},"allowLocalBinding":true},"auditMetadata":{}}})
     }
 
+    pub(crate) fn muse_read_configuration(&self, worker: i64) -> Value {
+        let mut config =
+            self.muse_configuration_at("/workspace", &crate::task_worktree::worker_home(worker));
+        for entry in config["sandbox"]["permissions"]["file_system"]["entries"]
+            .as_array_mut()
+            .unwrap()
+        {
+            if entry["path"]["path"] == "file:///workspace" {
+                entry["access"] = json!("read");
+            }
+        }
+        config["env"]["SPROWT_MUSE_READONLY"] = json!("1");
+        config["proxy"]["proxy"]["domains"] = json!({});
+        config
+    }
+
     pub(crate) fn assign_muse_task(
         &mut self,
         id: i64,
@@ -161,7 +177,7 @@ impl Sandbox {
             &[
                 "/bin/mkdir",
                 "-p",
-                &crate::task_worktree::worker_home(worker),
+                &format!("{}/.config/muse", crate::task_worktree::worker_home(worker)),
             ],
             cancelled,
         )

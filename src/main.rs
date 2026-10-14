@@ -19,6 +19,7 @@ mod packages;
 mod plan;
 mod pr_feedback;
 mod publication;
+mod quota;
 mod repair;
 mod review;
 mod router;
@@ -33,6 +34,7 @@ mod task_worktree;
 mod tools;
 mod ui;
 mod worker;
+mod worker_settings;
 mod workspace;
 
 use std::io::{self, IsTerminal};

@@ -82,7 +82,13 @@ impl Message {
             "planner" | "reviewer" => format!("Codex · {}", self.role),
             provider => provider.split_once(':').map_or_else(
                 || format!("{provider} · executor"),
-                |(provider, id)| format!("{provider} · executor · w{id}"),
+                |(provider, id)| {
+                    if ["planner", "reviewer"].contains(&id) {
+                        format!("{provider} · {id}")
+                    } else {
+                        format!("{provider} · executor · w{id}")
+                    }
+                },
             ),
         }
     }
@@ -401,6 +407,7 @@ impl Store {
             .map_err(io::Error::other)?;
         let store = Self(connection);
         store.diagnostics_schema().map_err(io::Error::other)?;
+        store.worker_settings_schema().map_err(io::Error::other)?;
         Ok(store)
     }
 
@@ -520,6 +527,7 @@ impl Store {
             params![project_id, title, name],
         )?;
         let id = transaction.last_insert_rowid();
+        transaction.execute("INSERT INTO worker_settings(mod_id,settings) SELECT ?1,settings FROM worker_team_drafts WHERE project_id=?2",params![id,project_id])?;
         transaction.execute(
             "DELETE FROM project_drafts WHERE project_id=?1",
             [project_id],
@@ -888,7 +896,7 @@ impl Store {
         slot: usize,
         provider: &str,
     ) -> Result<WorkerRecord> {
-        if !["codex", "muse"].contains(&provider) || role != Role::Executor && provider != "codex" {
+        if !["codex", "muse"].contains(&provider) {
             return Err(rusqlite::Error::InvalidQuery);
         }
         let read = || {
@@ -936,7 +944,7 @@ impl Store {
             .next()
             .and_then(|id| i64::from_str_radix(id, 16).ok())
             .ok_or(rusqlite::Error::InvalidQuery)?;
-        let texts = if source.starts_with("00000001-") {
+        let mut texts = if source.starts_with("00000001-") {
             vec![self.0.query_row(
                 "SELECT body FROM queued_messages WHERE mod_id = ?1 AND id = ?2",
                 params![mod_id, id],
@@ -1000,6 +1008,10 @@ impl Store {
                     serde_json::to_string(&run.verification_feedback).unwrap()
                 ));
             }
+            let history = self.0.prepare("SELECT id,from_task,kind,body FROM worker_messages WHERE mod_id=?1 AND recipient_task=?2 AND acknowledged_by IS NOT NULL ORDER BY id")?.query_map(params![mod_id,run.id],|r|Ok(format!("#{} {} from {}: {}",r.get::<_,i64>(0)?,r.get::<_,String>(2)?,r.get::<_,String>(1)?,r.get::<_,String>(3)?)))?.collect::<Result<Vec<_>>>()?;
+            if !history.is_empty() {
+                prompt.push_str(&format!("\nPreviously acknowledged coordination (saved context, do not redeliver or acknowledge again):\n{}",history.join("\n\n")));
+            }
             let inbox = self.task_mail(mod_id, run.id)?;
             if !inbox.is_empty() {
                 prompt.push_str(&format!(
@@ -1019,6 +1031,12 @@ impl Store {
         };
         if texts.is_empty() {
             return Err(rusqlite::Error::QueryReturnedNoRows);
+        }
+        if source.starts_with("00000003-") || source.starts_with("00000004-") {
+            let context = self.accepted_instruction_context(mod_id)?;
+            if !context.is_empty() {
+                texts.push(context);
+            }
         }
         Ok(Submission {
             source: source.to_owned(),
@@ -1249,16 +1267,19 @@ impl Store {
     }
 
     pub fn retry_plan(&self, mod_id: i64) -> Result<()> {
-        let attempt: i64 = self.0.query_row(
-            "SELECT attempt FROM plans WHERE mod_id=?1",
+        let tx = self.0.unchecked_transaction()?;
+        let (attempt, source): (i64, String) = tx.query_row(
+            "SELECT attempt,source FROM plans WHERE mod_id=?1",
             [mod_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        self.0.execute(
+        let next = plan_source(mod_id, attempt + 1);
+        tx.execute(
             "UPDATE plans SET status='pending',attempt=?2,source=?3 WHERE mod_id=?1",
-            params![mod_id, attempt + 1, plan_source(mod_id, attempt + 1)],
+            params![mod_id, attempt + 1, next],
         )?;
-        Ok(())
+        tx.execute("UPDATE worker_role_assignments SET source=?2 WHERE source=?3 AND worker_id IN (SELECT id FROM workers WHERE mod_id=?1 AND role='planner')",params![mod_id,next,source])?;
+        tx.commit()
     }
 
     pub fn planning_status(&self, mod_id: i64, status: &str) -> Result<()> {
@@ -1541,7 +1562,7 @@ impl Store {
             .iter()
             .filter(|run| ["sending", "running", "checking"].contains(&run.status.as_str()))
             .count()
-            >= crate::scheduler::CAPACITY
+            >= self.executor_capacity(mod_id)?
             || execution.tasks.iter().any(|run| {
                 run.worker == Some(worker)
                     && ["sending", "running", "checking"].contains(&run.status.as_str())
@@ -2942,10 +2963,10 @@ mod tests {
             .unwrap();
         assert_eq!(restored.id, muse.id);
         assert_eq!(restored.provider, "muse");
-        assert!(
-            store
-                .worker_provider(m.id, Role::Planner, 0, "muse")
-                .is_err()
-        );
+        let planner = store
+            .worker_provider(m.id, Role::Planner, 0, "muse")
+            .unwrap();
+        assert_eq!(planner.provider, "muse");
+        assert_ne!(planner.id, muse.id);
     }
 }

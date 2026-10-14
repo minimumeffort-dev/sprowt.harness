@@ -1,4 +1,5 @@
 use std::{io, path::Path, time::Instant};
+mod quota;
 
 use serde_json::Value;
 
@@ -142,9 +143,9 @@ impl Worker {
                 &code_mod.description,
                 code_mod.planning.as_ref().and_then(|p| p.plan.as_ref()),
                 if role == Role::Reviewer {
-                    Some(Selection::reviewer())
+                    Some(selection.clone().unwrap_or_else(Selection::reviewer))
                 } else {
-                    None
+                    selection.clone()
                 },
                 context,
             )?)
@@ -274,8 +275,10 @@ impl Worker {
             store.planning_model(self.mod_id, &selection)?;
             code_mod.planning = store.planning(self.mod_id)?;
             self.selection = Some(selection.clone());
-            let mut context = Context::worker(code_mod, self.id, self.role);
+            let mut context = Context::worker(code_mod, self.id, self.role)
+                .with_mailbox(std::path::Path::new(store.0.path().unwrap()));
             context.muse = self.muse;
+            context.provider = self.provider.clone();
             match Client::start(
                 project,
                 self.thread_id.clone().map(|id| Resume {
@@ -792,6 +795,9 @@ impl Worker {
                     )?;
                 }
             }
+            Event::QuotaRejected { source, quota } => {
+                self.stop_for_quota(store, code_mod, quota, Some(&source))?;
+            }
             Event::Failed(message) => {
                 if let Some(client) = &mut self.client {
                     client.shutdown();
@@ -1092,6 +1098,15 @@ impl Worker {
                     }
                     "item/completed" => self.item(store, code_mod, &params["item"], false)?,
                     "turn/completed" if self.turn.as_deref() == params["turn"]["id"].as_str() => {
+                        if let Some(quota) = crate::quota::from_error(
+                            &self.provider,
+                            &params["turn"]["error"],
+                            self.model.as_deref(),
+                        ) {
+                            self.stop_for_quota(store, code_mod, quota, None)?;
+                            return Ok(());
+                        }
+
                         self.turn = None;
                         self.status = Status::Ready;
                         if self.role == Role::Reviewer {
@@ -1316,6 +1331,8 @@ impl Worker {
                 item_id: Some(id.into()),
                 role: if role == "codex" {
                     format!("{}:{}", self.provider, self.id)
+                } else if self.provider == "muse" && ["planner", "reviewer"].contains(&role) {
+                    format!("muse:{role}")
                 } else {
                     role.into()
                 },
@@ -1377,7 +1394,11 @@ impl Worker {
                     source: None,
                     task: None,
                     item_id: Some(format!("review:{source}")),
-                    role: "reviewer".into(),
+                    role: if self.provider == "muse" {
+                        "muse:reviewer".into()
+                    } else {
+                        "reviewer".into()
+                    },
                     body,
                     model: self.model.clone(),
                     effort: self.effort.clone(),

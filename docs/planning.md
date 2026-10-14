@@ -2,17 +2,17 @@
 
 # Planning and routing
 
-You describe the outcome. Astra xhigh inspects the project, defines contracts and splits useful work. Rust validates the plan and assigns ready tasks to available providers.
+You describe the outcome. The selected planner inspects the project, defines contracts and splits useful work. Rust validates the plan and assigns ready tasks to available providers.
 
 ## From request to tasks
 
 ```mermaid
 flowchart LR
-    request["Request + source"] --> planner["Astra plans"]
+    request["Request + source"] --> planner["Selected planner"]
     planner --> validate["Rust validates"]
     validate --> assign["Rust assigns provider"]
-    assign --> codex["Codex · Jev selects effort"]
-    assign --> muse["Muse · Spark 1.3 high"]
+    assign --> codex["Selected Codex model"]
+    assign --> muse["Selected Muse model"]
 ```
 
 Git setup and [starting-source synchronization](git-workflow.md#keep-the-project-current) finish before planning. Edit rounds use the latest source export. A valid plan starts execution automatically.
@@ -49,12 +49,12 @@ These rules validate structure and declared ownership. They do not prove the pla
 ## Provider assignment
 
 - Ready tasks default to `worker: auto`. Implementation, tests and integration can use either provider.
-- Rust chooses the least loaded suitable provider across active codemods in this harness. Ties alternate using saved assignment order.
+- Saved [worker teams](workers.md#choose-a-worker-team) allocate the requested model counts. Without saved settings, Rust chooses the least loaded suitable provider across active codemods; ties alternate using saved assignment order.
 - Complexity alone does not require a provider. Capability reasons are structurally validated, not independently proven.
-- Each codemod has two active slots. Connecting, running and checking all count.
-- Assignments save before delivery. Retries and repairs retain provider and owner; a missing provider pauses saved work.
+- The saved execution count is the simultaneous limit, defaulting to two for codemods without settings. Connecting, running and checking all count.
+- Assignments save before delivery. Ordinary retries and repairs retain provider and owner. Explicit exhaustion can safely replace a worker with another selected model through [quota fallback](workers.md#quota-fallback).
 
-Load measures active work, not subscription quota. [Worker discovery](workers.md#automatic-discovery) does not test inference access or remaining usage.
+Load measures active work. Model discovery and optional usage observations do not guarantee inference access; explicit exhausted quota is recorded separately.
 
 ## Jev task routing
 
@@ -67,13 +67,13 @@ Load measures active work, not subscription quota. [Worker discovery](workers.md
 | Hard, uncertain or high risk | `gpt-6.1-sol` | xhigh |
 | Missing configuration, timeout or invalid answer | `gpt-6.1-sol` | xhigh |
 
-Routing happens before each Codex task turn using the project brief, plan, contracts, scope and checks. Steering stays in the current turn. Planning stays on Astra xhigh; review uses a fresh Sol 6.1 xhigh conversation; Muse uses Spark 1.3 high.
+For codemods without saved worker settings, routing happens before each Codex task turn using the project brief, plan, contracts, scope and checks. Those legacy defaults use Astra xhigh for planning, a fresh Sol 6.1 xhigh reviewer and Spark 1.3 high for Muse. Explicit teams use the saved model and effort for every role. Steering stays in the current turn.
 
 ### Limits and fallback
 
 Jev has an eight-second deadline and a **0.80 confidence floor for every question**. Rust validates options, probabilities and confidence before lowering effort. These thresholds are experimental; confidence describes distribution concentration, not guaranteed correctness.
 
-Codex's model catalog validates the selected model/effort. Unavailable selections fall back to Sol 6.1 or the catalog default, preferring xhigh, high, then medium. Actual account access is established by inference; rejection leaves the turn retryable.
+Codex's model catalog validates model and effort. Legacy routed selections can fall back to Sol 6.1 or the catalog default, preferring xhigh, high, then medium. Explicit worker selections never use that model substitution. Actual account access is established by inference; rejection leaves the turn retryable.
 
 Tasks save the resolved model, effort and reason. **Ctrl+O** can show a reason such as **risk confidence 0.47 < 0.80**. SQLite retains policy version, routing input, duration and available answers/revision. Retries replace the current decision. This is diagnostic evidence, not a calibrated benchmark.
 

@@ -32,6 +32,9 @@ impl Store {
         unavailable: &[i64],
         providers: &[&str],
     ) -> Result<Vec<WorkerRecord>> {
+        if let Some(settings) = self.worker_settings(mod_id)? {
+            return self.schedule_team(mod_id, plan, busy, unavailable, providers, &settings);
+        }
         let mut records = self.executors(mod_id)?;
         if !records.iter().any(|r| busy.contains(&r.id)) && unavailable.is_empty() {
             self.resume_repairs(mod_id)?;

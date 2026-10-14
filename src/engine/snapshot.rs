@@ -4,6 +4,8 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 pub struct Snapshot {
+    pub worker_settings: crate::worker_settings::WorkerSettings,
+    pub model_catalog: crate::worker_settings::catalog::Catalog,
     pub appearance: crate::appearance::Appearance,
     pub project: String,
     pub project_id: i64,
@@ -373,6 +375,14 @@ impl Engine {
             .sort_by_key(|item| Some(item.action) != dock.primary);
         let phase = self.state_summary().phase;
         Snapshot {
+            worker_settings: self
+                .settings_for(if self.view == View::NewMod {
+                    None
+                } else {
+                    self.current_mod().map(|m| m.id)
+                })
+                .unwrap_or_default(),
+            model_catalog: self.models.catalog.clone(),
             appearance: self.appearance,
             workspace_views: super::workspace_view::WorkspaceView::ALL,
             project: self.project.display().to_string(),

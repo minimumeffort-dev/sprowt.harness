@@ -209,6 +209,19 @@ impl Context {
         }
     }
 
+    pub fn worker_capacity(&self) -> usize {
+        self.database
+            .as_ref()
+            .zip(self.mod_id)
+            .and_then(|(path, id)| {
+                crate::store::Store::open(path)
+                    .ok()?
+                    .executor_capacity(id)
+                    .ok()
+            })
+            .unwrap_or(crate::scheduler::CAPACITY)
+    }
+
     pub fn is_executor(&self) -> bool {
         self.worker.is_some_and(|(_, role)| role == Role::Executor)
     }
@@ -234,7 +247,7 @@ impl Context {
 
     pub fn workspace(&self) -> Option<&Path> {
         self.worker
-            .filter(|(_, role)| *role != Role::Planner)
+            .filter(|(_, role)| *role != Role::Planner || self.provider == "muse")
             .and(self.root.as_deref())
     }
 

@@ -61,6 +61,10 @@ Use the composer to answer a question or queue an instruction. Expand the attach
 
 The app is a macOS interface; workers still build and check source in Linux. See [execution boundaries](architecture.md#boundaries-today).
 
+## Choose workers
+
+Open **More → Workers**, or **Workers** beside the creation editor controls. Choose a model and effort for each role and counts for execution rows. **Save team** persists through the shared engine; Cancel preserves the saved values and composer. See [worker teams and quota recovery](workers.md#choose-a-worker-team).
+
 ## Find the same work in the terminal
 
 Both interfaces use the same plans, task inspection, check results and action rules. Their layouts and shortcuts fit their host interface.
@@ -95,6 +99,8 @@ swift test --package-path macos
 ```
 
 The native app communicates with its bundled engine over local stdin/stdout. Typed commands carry a request ID; responses contain the protocol version, an acknowledgement or error, and the current snapshot. The snapshot includes the project catalog, active and expanded project IDs, per-project activity, creation draft, navigation destination, available directions and typed appearance preference. `toggle_project` changes only expansion; `open_project`, `select_project` and `begin_project_creation` use Rust's shared session to retain project runtimes and ownership locks. `set_creation_draft` saves the identified project's unsent description. Draft writes drain before project selection. `set_appearance` accepts `system`, `light` or `dark`; Rust acknowledges the new value only after saving it. Swift owns rendering and editing focus. Rust owns navigation history, scheduling, permissions, persistence and workflow transitions. The session polls every opened project; background dialogs remain with their project and never take over the visible editor. Quitting closes all owned runtimes.
+
+`refresh_models` starts bounded asynchronous catalog discovery. `set_worker_settings` carries `{mod_id, settings}`; a null `mod_id` edits the current project creation defaults. Snapshots include typed `worker_settings` and `model_catalog`. Rust validates models, efforts, rows and total count before acknowledging a save. Swift keeps the editable draft until success and never changes active worker pins.
 
 Native system typography and evergreen colors cover the workspace, editors, dialogs and window chrome. No font files or downloads are required.
 

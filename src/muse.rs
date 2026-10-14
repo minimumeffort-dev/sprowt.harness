@@ -22,7 +22,7 @@ use crate::{
 };
 
 pub const MODEL: &str = "muse-spark-1.3";
-pub const VERSION: &str = "1.4.6-R6000.1";
+pub const VERSION: &str = "1.4.7-R6101.1";
 static FILE: AtomicU64 = AtomicU64::new(0);
 
 fn helper() -> io::Result<std::path::PathBuf> {
@@ -142,16 +142,34 @@ pub fn account_state() -> io::Result<String> {
     result
 }
 
+pub fn model_catalog() -> io::Result<Value> {
+    let root = helper()?;
+    let mut command = command(&root);
+    command.arg("--models");
+    let output = crate::agents::output(command, Duration::from_secs(55))?;
+    if !output.status.success() {
+        return Err(preparation_error(&output.stdout));
+    }
+    serde_json::from_slice(&output.stdout).map_err(io::Error::other)
+}
+
 pub fn serve(
     vm: SharedVm,
     resume: Option<Resume>,
-    setup: (String, Context),
+    setup: (String, Context, crate::plan::Role, Option<Selection>),
     cancelled: Arc<AtomicBool>,
     process: Arc<Mutex<Option<Child>>>,
     actions: Receiver<Action>,
     outgoing: &Sender<Event>,
 ) -> io::Result<()> {
-    let (instructions, context) = setup;
+    let (instructions, context, role, selection) = setup;
+    let selection = selection.unwrap_or_else(|| Selection {
+        pinned: false,
+        model: MODEL.into(),
+        effort: "high".into(),
+        reason: "Muse executor".into(),
+        evidence: None,
+    });
     let root = helper()?;
     let state = context
         .workspace()
@@ -166,7 +184,7 @@ pub fn serve(
         let result = serve_connection(
             &vm,
             resume.as_ref(),
-            (&instructions, &context),
+            (&instructions, &context, role, &selection),
             &cancelled,
             &process,
             &actions,
@@ -236,7 +254,7 @@ fn transport_closed(error: &io::Error) -> bool {
 fn serve_connection(
     vm: &SharedVm,
     resume: Option<&Resume>,
-    setup: (&str, &Context),
+    setup: (&str, &Context, crate::plan::Role, &Selection),
     cancelled: &AtomicBool,
     process: &Mutex<Option<Child>>,
     actions: &Receiver<Action>,
@@ -245,7 +263,7 @@ fn serve_connection(
     state: &std::path::Path,
     accepted: &mut Vec<String>,
 ) -> io::Result<()> {
-    let (instructions, context) = setup;
+    let (instructions, context, role, selection) = setup;
     let _ = outgoing.send(Event::Preparing("preparing Muse".into()));
     let emit = |observation| {
         let _ = outgoing.send(Event::Timing(observation));
@@ -281,7 +299,13 @@ fn serve_connection(
     let mut thread = json!({"id":format!("muse-worker-{}", context.worker_id()),"turns":[]});
     if resume.is_some() && state.exists() {
         let saved: serde_json::Value = serde_json::from_slice(&fs::read(state)?)?;
-        if let Some(id) = saved["task"]
+        if role != crate::plan::Role::Executor {
+            let config = vm
+                .lock()
+                .unwrap()
+                .muse_read_configuration(context.worker_id());
+            thread=rpc.call("session/resume",json!({"state":state,"config":config,"tools":[],"model":selection.model,"effort":selection.effort,"allowNew":resume.is_some_and(|r|r.restart_if_missing)}))?["thread"].clone();
+        } else if let Some(id) = saved["task"]
             .as_i64()
             .filter(|id| context.tasks.contains(id))
         {
@@ -294,7 +318,7 @@ fn serve_connection(
             thread = rpc.call(
                 "session/resume",
                 json!({"state":state,"config":config,
-                "tools":tools::advertised(context),
+                "tools":tools::advertised(context),"model":selection.model,"effort":selection.effort,
                 "allowNew":resume.as_ref().is_some_and(|r| r.restart_if_missing)}),
             )?["thread"]
                 .clone();
@@ -303,8 +327,8 @@ fn serve_connection(
     }
     let _ = outgoing.send(Event::Ready {
         thread,
-        model: Some(MODEL.into()),
-        effort: Some("high".into()),
+        model: Some(selection.model.clone()),
+        effort: Some(selection.effort.clone()),
     });
     connecting.finish();
     let mut response = FirstResponse::new();
@@ -316,44 +340,61 @@ fn serve_connection(
                     text,
                     routing,
                 } => {
-                    let report_schema = crate::execution::task_schema(routing.as_ref());
-                    let environment: Option<crate::environment::Recipe> = routing
-                        .as_ref()
-                        .and_then(|s| s["plan"]["environment"].as_object())
-                        .map(|v| serde_json::from_value(json!(v)))
-                        .transpose()?;
-                    let id = crate::task_worktree::task_id(&source)?;
-                    let mut session =
-                        crate::sandbox::session::prepare_task(vm, context, &source, cancelled)?;
-                    let preflight = match session.preflight(
-                        environment.as_ref(),
-                        cancelled,
-                        |label| {
-                            let _ = outgoing.send(Event::Preparing(label.into()));
-                        },
-                        timing,
-                    ) {
-                        Ok(summary) => summary,
-                        Err(error) => {
-                            let _ = outgoing.send(Event::Rejected {
-                                source: source.clone(),
-                                message: format!("Environment preflight failed: {error}"),
-                            });
-                            continue;
-                        }
+                    let (config, schema, preflight) = if role == crate::plan::Role::Executor {
+                        let schema = crate::execution::task_schema(routing.as_ref());
+                        let environment: Option<crate::environment::Recipe> = routing
+                            .as_ref()
+                            .and_then(|s| s["plan"]["environment"].as_object())
+                            .map(|v| serde_json::from_value(json!(v)))
+                            .transpose()?;
+                        let id = crate::task_worktree::task_id(&source)?;
+                        let mut session =
+                            crate::sandbox::session::prepare_task(vm, context, &source, cancelled)?;
+                        let preflight = match session.preflight(
+                            environment.as_ref(),
+                            cancelled,
+                            |label| {
+                                let _ = outgoing.send(Event::Preparing(label.into()));
+                            },
+                            timing,
+                        ) {
+                            Ok(summary) => summary,
+                            Err(error) => {
+                                let _ = outgoing.send(Event::Rejected {
+                                    source: source.clone(),
+                                    message: format!("Environment preflight failed: {error}"),
+                                });
+                                continue;
+                            }
+                        };
+                        session.authorize(cancelled)?;
+                        task = Some(id);
+                        let _ = outgoing.send(Event::TaskConfigured {
+                            source: source.clone(),
+                            selection: selection.clone(),
+                        });
+                        (session.muse_configuration(cancelled)?, schema, preflight)
+                    } else {
+                        let schema = if role == crate::plan::Role::Planner {
+                            crate::plan::schema(context.muse)
+                        } else {
+                            let owners = routing
+                                .as_ref()
+                                .and_then(|p| p["tasks"].as_array())
+                                .ok_or_else(|| io::Error::other("Review needs its plan."))?
+                                .iter()
+                                .filter_map(|t| t["id"].as_str().map(str::to_owned))
+                                .collect::<Vec<_>>();
+                            crate::review::schema(&owners)
+                        };
+                        (
+                            vm.lock()
+                                .unwrap()
+                                .muse_read_configuration(context.worker_id()),
+                            schema,
+                            String::new(),
+                        )
                     };
-                    session.authorize(cancelled)?;
-                    let config = session.muse_configuration(cancelled)?;
-                    task = Some(id);
-                    let _ = outgoing.send(Event::TaskConfigured {
-                        source: source.clone(),
-                        selection: Selection {
-                            model: MODEL.into(),
-                            effort: "high".into(),
-                            reason: "Muse executor".into(),
-                            evidence: None,
-                        },
-                    });
                     (
                         "turn/start",
                         source.clone(),
@@ -362,8 +403,7 @@ fn serve_connection(
                             accepted,
                             &text,
                             &preflight,
-                            json!({"source":source,"config":config,"state":state,
-                                "tools":tools::advertised(context),"schema":report_schema}),
+                            json!({"source":source,"config":config,"state":state,"tools":tools::advertised(context),"schema":schema,"model":selection.model,"effort":selection.effort}),
                         ),
                     )
                 }
@@ -498,6 +538,9 @@ fn turn_params(
     ));
     params
 }
+
+#[cfg(test)]
+mod role_tests;
 
 #[cfg(test)]
 mod tests {

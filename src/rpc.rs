@@ -76,6 +76,10 @@ impl Rpc {
             let message = self.next(deadline.saturating_duration_since(Instant::now()))?;
             if message.get("id") == Some(&json!(id)) && message.get("method").is_none() {
                 if let Some(error) = message.get("error") {
+                    if let Some(quota) = crate::quota::from_error("codex", &error["data"], None) {
+                        return Err(io::Error::other(crate::quota::Rejected(quota)));
+                    }
+
                     if error["data"]["delivery"] != "rejected"
                         && error["data"]["failure"].is_object()
                     {

@@ -55,6 +55,7 @@ impl Engine {
                     .filter(|w| w.mod_id == m.id)
                     .find_map(|w| w.error.as_deref())
                     .or_else(|| self.git_errors.current(m.id))
+                    .or_else(|| self.worker_waits.contains(&m.id).then_some("No selected worker can continue. Open Workers to refresh models or change the team."))
             })
             .or(self.notice.as_deref())
             .or(self.poll_error.as_deref())
@@ -430,6 +431,26 @@ impl Engine {
     }
 
     pub(crate) fn start_worker(&mut self, index: usize, role: Role) -> Result<()> {
+        if self
+            .store
+            .quota_workers(self.mods[index].id)?
+            .iter()
+            .any(|(_, r)| *r == role)
+        {
+            match role {
+                Role::Executor => {
+                    self.executing_mods.insert(self.mods[index].id);
+                }
+                Role::Planner => {
+                    self.auto_runs.insert(self.mods[index].id);
+                }
+                Role::Reviewer => {
+                    self.auto_reviews.insert(self.mods[index].id);
+                }
+            }
+            return self.maintain_worker_settings();
+        }
+
         let plan = self.mods[index]
             .planning
             .as_ref()
@@ -453,7 +474,10 @@ impl Engine {
             self.executing_mods.insert(mod_id);
             return self.schedule_execution(index);
         }
-        let record = self.store.worker_provider(mod_id, role, 0, "codex")?;
+        let Some(record) = self.store.role_worker(mod_id, role, self.muse)? else {
+            self.notice=Some("All selected worker providers are out of quota. Refresh models or choose another team.".into());
+            return Ok(());
+        };
         self.start_worker_record(index, role, record)
     }
 
@@ -520,6 +544,17 @@ impl Engine {
                 &["codex"]
             },
         )?;
+        let waiting = records.is_empty()
+            && self.store.worker_settings(mod_id)?.is_some()
+            && self.mods[index]
+                .execution
+                .as_ref()
+                .is_some_and(|e| e.ready_tasks(plan).next().is_some());
+        if waiting {
+            self.worker_waits.insert(mod_id);
+        } else {
+            self.worker_waits.remove(&mod_id);
+        }
         self.mods[index].execution = self.store.execution(mod_id)?;
         for worker in self
             .workers
@@ -599,6 +634,7 @@ impl Engine {
                 .record_preparation_failure(mod_id, &error.to_string())?,
         }
         self.workers.remove(&record.id);
+        let chosen = self.store.worker_choice(record.id)?;
         let selection = if role == Role::Planner {
             if record.pending.is_none()
                 && self.mods[index]
@@ -609,10 +645,15 @@ impl Engine {
                 self.store.retry_plan(mod_id)?;
                 self.mods[index].planning = self.store.planning(mod_id)?;
             }
-            Some(crate::router::Selection::planner())
+            Some(
+                chosen
+                    .as_ref()
+                    .map_or_else(crate::router::Selection::planner, |c| c.selection()),
+            )
         } else {
-            None
+            chosen.as_ref().map(|c| c.selection())
         };
+        self.store.bind_role_worker(record.id, mod_id, role)?;
         match Worker::start_with_muse(
             &project,
             &self.mods[index],

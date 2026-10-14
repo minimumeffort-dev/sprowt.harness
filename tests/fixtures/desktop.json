@@ -217,6 +217,11 @@
     "error": "Preserve the native composer draft.",
     "evidence": "Checks · 0 passed · 1 failed · 0 not run · Review outdated · GitHub PR · 1 feedback item to review",
     "expanded_project": 1,
+    "model_catalog": {
+      "errors": [],
+      "loading": false,
+      "models": []
+    },
     "mods": [
       {
         "closed": false,
@@ -275,6 +280,28 @@
       }
     ],
     "status": "Task 2 needs attention",
+    "worker_settings": {
+      "executors": [
+        {
+          "choice": {
+            "effort": "high",
+            "model": "gpt-6.1-sol",
+            "provider": "codex"
+          },
+          "count": 2
+        }
+      ],
+      "planner": {
+        "effort": "xhigh",
+        "model": "gpt-6-astra",
+        "provider": "codex"
+      },
+      "reviewer": {
+        "effort": "xhigh",
+        "model": "gpt-6.1-sol",
+        "provider": "codex"
+      }
+    },
     "workspace_views": [
       "conversation",
       "changes",

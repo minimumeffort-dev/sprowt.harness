@@ -25,6 +25,8 @@ struct NewCodemodView: View {
                             .disabled(!session.interactive || session.busy)
                         GlyphButton(symbol: "mic", label: "Dictate") { editor.dictate() }
                             .disabled(!session.interactive || session.busy)
+                        Button { session.openWorkerSettings() } label: { Label("Workers", systemImage: "person.2") }
+                            .buttonStyle(WorkspaceButtonStyle()).disabled(!session.interactive || session.busy)
                         Spacer()
                         Button { create() } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 10) {

@@ -8,6 +8,9 @@ use std::{
 
 use serde_json::{Value, json};
 
+#[allow(dead_code)]
+#[path = "../src/quota.rs"]
+mod quota;
 #[path = "../src/rpc.rs"]
 mod rpc;
 

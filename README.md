@@ -11,7 +11,7 @@ A local coding harness with terminal and native macOS interfaces that takes a so
 ## From request to PR
 
 1. **Describe the outcome.** The planner reads your project and splits the work into tasks with file scopes, dependencies and checks.
-2. **Follow the work.** The controller prepares the environment and records baseline tests. Up to two executors work in parallel. Read the plan and messages in **Conversation**, then switch to **Changes**, **Checks**, **Findings** or **Agents** for evidence.
+2. **Follow the work.** The controller prepares the environment and records baseline tests. Choose the [worker team](docs/workers.md#choose-a-worker-team) and its parallel limit; existing codemods default to two executors. Read the plan and messages in **Conversation**, then switch to **Changes**, **Checks**, **Findings** or **Agents** for evidence.
 3. **Verify and review.** The harness reruns checks against the combined changes. A fresh reviewer examines that version. Findings have owners and explicit fix or investigation actions.
 4. **Publish when ready.** Passing checks and a clean current review unlock publication. A model writes a concise commit title and PR summary from the diff. Preview the text, confirm publication, then keep editing to update the PR. Review comments and failing GitHub checks on the open PR appear beside the local evidence while the harness is open.
 
