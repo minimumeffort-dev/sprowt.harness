@@ -19,7 +19,7 @@ struct WorkspaceEvidenceView: View {
                 Button("Back to \(selectedTab.label)") { session.workspace.show(selectedTab) }
                     .buttonStyle(WorkspaceButtonStyle())
             }
-            if let inspection = currentInspection, selectedTab == inspection.workspaceTab {
+            if let inspection = currentInspection, (selectedTab == inspection.workspaceTab || selectedTab == .conversation && session.hasUnlistedInspection) {
                 Text(inspection.title).font(Theme.font(16, weight: .semibold))
                 if inspection.kind == "diff" {
                     CodeText(text: inspection.body)
@@ -76,14 +76,17 @@ struct WorkspaceEvidenceView: View {
 
     private var checks: some View {
         VStack(alignment: .leading, spacing: 18) {
+            ForEach(Array(mod.checkActivity.filter { selectedTask == nil || $0.taskId == selectedTask?.id }.enumerated()), id: \.offset) { _, activity in
+                Text(activity.label).font(Theme.font(12)).foregroundStyle(Theme.accent)
+            }
             if let task = selectedTask {
                 SectionHeading(title: task.checksLabel)
                 Text(task.title).font(Theme.font(16, weight: .semibold))
-                ChecksView(checks: task.results)
+                if !task.results.isEmpty { ChecksView(checks: task.results) }
                 PreparationView(preparation: task.preparation)
             } else {
-                SectionHeading(title: "Saved checks", detail: "\(mod.checks.count) saved")
-                ChecksView(checks: mod.checks)
+                SectionHeading(title: "Checks", detail: mod.checks.isEmpty ? "" : "\(mod.checks.count) saved")
+                if !mod.checks.isEmpty { ChecksView(checks: mod.checks) }
                 ForEach(mod.plan?.tasks.filter { $0.preparation != nil } ?? []) { task in
                     VStack(alignment: .leading, spacing: 8) {
                         Text(task.title).font(Theme.font(12, weight: .medium))

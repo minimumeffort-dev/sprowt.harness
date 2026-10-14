@@ -93,7 +93,7 @@ fn appearance_palettes_paint_all_workspace_and_dialog_cells_in_both_themes() {
             Color::Rgb(162, 213, 180),
         ),
     ] {
-        let (_data, mut app, _) = execution_app();
+        let (_data, mut app, _) = super::workbench::all_views_app();
         app.engine.project = PathBuf::from("/example/project");
         app.engine.set_appearance(appearance).unwrap();
         for width in [40, 80, 160] {

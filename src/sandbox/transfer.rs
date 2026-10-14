@@ -237,7 +237,9 @@ pub(super) fn snapshot(
         &AtomicBool::new(false),
         15,
     );
-    let _ = fs::remove_file(log);
+    if result.is_ok() {
+        let _ = fs::remove_file(log);
+    }
     result
 }
 
@@ -262,6 +264,51 @@ mod tests {
         );
         fs::read(archive).unwrap()
     }
+
+    #[test]
+    #[ignore = "requires Apple Container CLI; targets a nonexistent container without starting a VM"]
+    fn failed_transfer_retains_the_private_log_named_in_its_error() {
+        use std::os::unix::fs::PermissionsExt;
+        let data = crate::store::test_support::TestData::new();
+        fs::create_dir(&data.0).unwrap();
+        let name = format!(
+            "missing-transfer-{}",
+            data.0.file_name().unwrap().to_string_lossy()
+        );
+        let scope = session::CommandScope {
+            cwd: "/workspace".into(),
+            home: "/home/sprowt".into(),
+            domains: BTreeMap::new(),
+        };
+        let (mut child, mut rpc) = Rpc::start(&mut Command::new("/usr/bin/true")).unwrap();
+        let result = snapshot(
+            &name,
+            &data.0,
+            &scope,
+            &mut rpc,
+            "/opt/sprowt-transfer/missing",
+            None,
+            &AtomicBool::new(false),
+        );
+        child.wait().unwrap();
+        let error = result.unwrap_err().to_string();
+        let files = data
+            .0
+            .read_dir()
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        assert_eq!(files.len(), 1, "{error}");
+        let log = &files[0];
+        assert_eq!(log.extension().unwrap(), "log");
+        assert!(error.contains(log.to_str().unwrap()), "{error}");
+        assert_eq!(
+            fs::metadata(log).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert!(fs::read_to_string(log).unwrap().contains(&name));
+    }
+
     #[test]
     fn credential_files_remain_excluded_while_templates_are_source() {
         let data = crate::store::test_support::TestData::new();
@@ -284,6 +331,77 @@ mod tests {
                 (
                     PathBuf::from("nested/.env.sample"),
                     b"SAMPLE=placeholder".to_vec(),
+                    0o644
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn oversized_download_names_the_file_and_home_cache_leaves_source_unchanged() {
+        let data = crate::store::test_support::TestData::new();
+        let work = data.0.join("work");
+        let cache = work.join(".cache/ms-playwright/chromium-1193/chrome-linux");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(work.join("source.js"), "export const answer = 42;\n").unwrap();
+        let binary = cache.join("chrome");
+        fs::File::create(&binary)
+            .unwrap()
+            .set_len(427_986_736)
+            .unwrap();
+        let basis = data.0.join("basis.json");
+        let archive = data.0.join("delta.tar");
+        fs::write(&basis, "{}").unwrap();
+        let output = Command::new("python3")
+            .args(["-c", HELPER])
+            .arg(&work)
+            .arg(&basis)
+            .arg(&archive)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains("'.cache/ms-playwright/chromium-1193/chrome-linux/chrome' (427986736 bytes, 408.16 MiB)"),
+            "{error}"
+        );
+        assert!(error.contains("64 MiB"), "{error}");
+        assert!(!archive.exists());
+
+        let home = data.0.join("home");
+        fs::create_dir(&home).unwrap();
+        fs::rename(work.join(".cache"), home.join(".cache")).unwrap();
+        let source = apply(&delta(&work, &vec![]), &vec![]).unwrap();
+        assert_eq!(
+            source,
+            vec![(
+                PathBuf::from("source.js"),
+                b"export const answer = 42;\n".to_vec(),
+                0o644
+            )]
+        );
+        assert_eq!(
+            fs::metadata(home.join(".cache/ms-playwright/chromium-1193/chrome-linux/chrome"))
+                .unwrap()
+                .len(),
+            427_986_736
+        );
+
+        fs::create_dir(work.join(".cache")).unwrap();
+        fs::write(work.join(".cache/source-config.json"), "{}").unwrap();
+        fs::write(work.join("source.js"), "export const answer = 43;\n").unwrap();
+        let changed = apply(&delta(&work, &source), &source).unwrap();
+        assert_eq!(
+            changed,
+            vec![
+                (
+                    PathBuf::from(".cache/source-config.json"),
+                    b"{}".to_vec(),
+                    0o644
+                ),
+                (
+                    PathBuf::from("source.js"),
+                    b"export const answer = 43;\n".to_vec(),
                     0o644
                 ),
             ]

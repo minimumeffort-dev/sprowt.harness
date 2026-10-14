@@ -25,7 +25,7 @@ The bundle is signed locally for development. It is not a notarized distribution
 
 Choose a codemod in the sidebar to open **Conversation**. Your request appears once, followed by current messages and numbered plan tasks with outcomes and dependencies. **Saved history** contains earlier updates that are no longer in the feed.
 
-The main area switches between **Conversation**, **Changes**, **Checks**, **Findings** and **Agents**. The composer and queue stay available across these views. **Agents** shows the agent count and each worker's state. The sidebar contains codemod navigation.
+The main area always shows **Conversation**. **Changes**, **Checks**, **Findings**, and **Agents** appear when they have [evidence](terminal.md#read-task-progress). If the last evidence disappears, selection returns to Conversation. The composer and queue stay available across views. **Agents** shows worker states and recorded setup timings. The sidebar contains codemod navigation.
 
 Select a plan task or an agent to inspect its current attempt, model, files and results. Use **Back to Conversation** or **Back to Agents** to return. Selecting a main tab shows that view for the whole codemod.
 
@@ -61,7 +61,7 @@ Use the title bar's sidebar button or the sidebar command in **View** to hide or
 
 Use the title bar's **Back** and **Forward** arrows, **View → Back / Forward**, or **⌘[** and **⌘]** to revisit codemods and unfinished creation. [Navigation history](codemods.md#create-and-manage-work) is retained separately for each project until you quit. Inspections do not block navigation; confirmations still do.
 
-Press **⌘1** through **⌘5** for **Conversation**, **Changes**, **Checks**, **Findings** and **Agents**, respectively. These shortcuts preserve the composer draft.
+Press **⌘1** through **⌘5** for **Conversation**, **Changes**, **Checks**, **Findings** and **Agents**, respectively. The numbers stay fixed as tabs appear. Shortcuts for hidden tabs are disabled; the composer draft stays intact.
 
 Choose **System**, **Light** or **Dark** from **Appearance** in the bottom profile menu. The preference is shared with the terminal. See [Appearance](appearance.md) for controls and status colors.
 

@@ -36,6 +36,7 @@ struct WorkspaceSelection: Equatable {
         if let dialog = snapshot.dialog, dialog.isInspection, inspectionId != dialog.id {
             show(dialog.workspaceTab)
         }
+        if !snapshot.workspaceViews.contains(tab) { show(.conversation) }
         inspectionId = snapshot.dialog.flatMap { $0.isInspection ? $0.id : nil }
     }
 }

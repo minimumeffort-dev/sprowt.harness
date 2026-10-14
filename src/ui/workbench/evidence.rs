@@ -540,6 +540,14 @@ fn checks(app: &App, item: Option<Key>, d: &mut Document) {
     if let Some(Key::Task(id)) = item {
         if let Some(task) = app.inspect_task(id) {
             d.heading(&task.task.title);
+            for activity in app
+                .engine
+                .check_activity()
+                .into_iter()
+                .filter(|activity| activity.task_id.as_deref() == Some(&task.task.id))
+            {
+                d.muted(&activity.label);
+            }
             d.lines.extend(tasks::preparation_lines(app, id, d.width));
             d.heading(task.check_origin.label());
             if task.checks.is_empty() {

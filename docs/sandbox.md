@@ -69,6 +69,8 @@ A disconnected VM stops execution; tools never fall back to the host. Inherited 
 
 Exports preserve regular files, modes, binary bytes and deletions. After the first full snapshot, the controller transfers changed files against its verified basis. SHA-256 content, modes and the complete manifest are checked, including a fresh whole-tree check after transfer. A changing tree gets at most three exports, with a full snapshot on the last retry. Invalid paths, links, special files, corrupt hashes and bounds fail without replacing accepted source. Common credentials/dependencies remain excluded. Limits are **512 MiB per export**, **64 MiB per source file** and **100,000 files**. Source fingerprints and full import behavior are unchanged.
 
+An oversized-file error names the file and its byte size. This is a source-export limit, not the VM's disk allocation. If setup downloaded a browser or model into the project, revise the recipe to use the worker's existing `XDG_CACHE_HOME` instead of a relative `.cache` path. This keeps the download outside source and available to that worker's checks. Failed transfers retain the private `transfer-*.log` named in the error; successful transfers remove their temporary logs.
+
 ## Downloads
 
 The default allowlist covers common runtime/package sources and Playwright browser downloads, including `cdn.playwright.dev`, its Microsoft mirror and `storage.googleapis.com` redirects. System setup uses `deb.debian.org`.

@@ -132,13 +132,21 @@ impl App {
                 }
             }
             Control::Tab(tab) => {
+                if !self.engine.workspace_views().contains(&tab) {
+                    return Ok(());
+                }
                 self.workspace.selected = None;
                 self.workspace.inspector.select(None);
                 self.workspace.inspector.set_tab(tab);
                 self.workspace.focus = Focus::Content;
             }
             Control::TaskChecks(id) => {
-                if self.valid_target(Key::Task(id)) {
+                if self.valid_target(Key::Task(id))
+                    && self
+                        .engine
+                        .workspace_views()
+                        .contains(&WorkspaceView::Checks)
+                {
                     self.workspace.selected = Some(Key::Task(id));
                     self.workspace.inspector.select(Some(Key::Task(id)));
                     self.workspace.inspector.set_tab(WorkspaceView::Checks);

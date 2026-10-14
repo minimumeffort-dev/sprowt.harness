@@ -49,6 +49,10 @@ final class Session {
     var editable: Bool { connection == .ready }
     var projects: [ProjectSummary] { snapshot?.projects ?? catalog?.projects ?? [] }
     var expandedProject: Int64? { snapshot.map { $0.expandedProject } ?? catalogExpandedProject }
+    var hasUnlistedInspection: Bool {
+        guard let dialog, dialog.isInspection else { return false }
+        return snapshot?.workspaceViews.contains(dialog.workspaceTab) == false
+    }
     var appearance: Appearance { snapshot?.appearance ?? catalog?.appearance ?? .system }
     var canBrowseProjects: Bool { !busy && (interactive || (snapshot == nil && catalog != nil && connection == .disconnected)) }
     var interactive: Bool { editable && (dialog == nil || dialog?.isInspection == true) }

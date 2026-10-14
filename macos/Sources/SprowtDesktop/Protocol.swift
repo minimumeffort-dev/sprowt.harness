@@ -137,6 +137,7 @@ struct CodemodDetail: Decodable, Identifiable, Sendable {
     let steering: [String]
     let plan: Plan?
     let checks: [Check]
+    let checkActivity: [CheckActivity]
     let findings: [Finding]
     let prFeedback: [Finding]
     let prFeedbackError: String?
@@ -343,4 +344,9 @@ struct Drafts {
 enum WorkspaceTab: String, Decodable, CaseIterable, Sendable {
     case conversation, changes, checks, findings, agents
     var label: String { rawValue.capitalized }
+}
+
+struct CheckActivity: Decodable, Sendable {
+    let taskId: String?
+    let label: String
 }

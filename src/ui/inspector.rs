@@ -47,22 +47,25 @@ pub(super) fn check_summary(app: &App, width: u16) -> Vec<Line<'static>> {
     let Some(m) = app.current_mod() else {
         return lines;
     };
+    for activity in app.engine.check_activity() {
+        lines.extend(wrap_line(Line::from(activity.label).fg(ACCENT), width, 0));
+    }
     if let Some(e) = &m.execution {
         lines.push(Line::from("Combined verification").fg(ACCENT).bold());
-        lines.extend(wrap_line(
-            Line::from(if e.checks.is_empty() {
-                "Combined checks have not run on this version."
-            } else if e.status == "verifying" {
-                "Combined checks are running."
-            } else if e.status == "review" && e.fingerprint.is_some() && e.complete() {
-                "Combined results for the verified version."
-            } else {
-                "Saved results · this version is not yet verified."
-            })
-            .fg(KEY_HINT),
-            width,
-            0,
-        ));
+        if e.status != "verifying" {
+            lines.extend(wrap_line(
+                Line::from(if e.checks.is_empty() {
+                    "Combined checks have not run on this version."
+                } else if e.status == "review" && e.fingerprint.is_some() && e.complete() {
+                    "Combined results for the verified version."
+                } else {
+                    "Saved results · this version is not yet verified."
+                })
+                .fg(KEY_HINT),
+                width,
+                0,
+            ));
+        }
         if !e.checks.is_empty() {
             let mut counts = Vec::new();
             for (count, label, color) in [

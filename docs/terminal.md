@@ -2,7 +2,7 @@
 
 # Terminal guide
 
-The workspace has five views: **Conversation**, **Changes**, **Checks**, **Findings** and **Agents**. The dock keeps your draft and next action available while you inspect evidence.
+The workspace always shows **Conversation**. **Changes**, **Checks**, **Findings**, and **Agents** appear when they have evidence. The dock keeps your draft and next action available while you inspect evidence.
 
 [Navigation](#switch-workspace-views) · [Details](#details) · [Next action](#understand-the-dock) · [Keyboard reference](#keyboard-reference) · [CLI](#commands)
 
@@ -53,7 +53,7 @@ Letters and numbers type normally when the composer is focused.
 ## Switch workspace views
 
 1. Press **Tab** to explore the workspace.
-2. Choose **1–5** to switch views, or click a tab.
+2. Choose a visible tab by its fixed number (**1–5**), or click it. Hidden tabs keep their numbers but their shortcuts do nothing.
 3. Use **↑/↓**, **Page Up/Down** and **Home/End** to scroll.
 4. Press **Tab** or **Esc** to return to your draft.
 
@@ -69,11 +69,13 @@ Use the wheel or trackpad over the workspace or composer. Each workspace view re
 
 Conversation shows numbered tasks with short outcomes and dependencies. Select a task for its worker, model, latest update, file scope and checks. **Ctrl+T** also opens a keyboard-accessible task list when there are no findings or combined failures to inspect.
 
-Keep a repair selected as it finishes: its evidence changes to the completed result while your selected tab, focus and draft stay in place.
+Keep a repair selected as it finishes: its evidence changes to the completed result while your selected tab, focus, and draft stay in place. If a tab loses its last evidence, the workspace returns to Conversation and clears the inspected target.
 
 **Latest update** belongs to the current attempt. Earlier narration remains in saved history. In Conversation, click **Saved history** or press **h** while exploring to show older messages. Worker elapsed time measures the current connected turn; last activity measures observed events. Neither is a completion estimate or proof of progress.
 
 [Long messages and pasted JSON](codemods.md#read-long-messages) start compact. While exploring Conversation, use **[ / ]** to select **Show full message** or a source row, then **Enter** to expand or fold it. Mouse clicks work too; the draft stays untouched.
+
+**Changes** appears after a saved or loaded diff contains changes. Edits still in progress may appear only after the next source review. Use **More → View diff** when available to load the current diff. **Checks** includes running verification, saved results, and preparation receipts. **Findings** includes saved issues and GitHub feedback or retrieval errors. **Agents** includes worker details and recorded setup timings.
 
 ## Details
 
@@ -167,7 +169,7 @@ Shortcuts are contextual. **Ctrl+G · More** lists actions available in the curr
 | --- | --- |
 | Tab / Shift+Tab | Switch focus between composer and workspace |
 | ↑↓ / Page Up/Down | Scroll the workspace while exploring |
-| 1–5 while exploring | Conversation / Changes / Checks / Findings / Agents |
+| 1–5 while exploring | Conversation / Changes / Checks / Findings / Agents, when visible |
 | h in Conversation while exploring | Show or hide saved history |
 | [ / ] in review evidence | Previous / next finding |
 | [ / ] in Conversation while exploring | Previous / next message disclosure |

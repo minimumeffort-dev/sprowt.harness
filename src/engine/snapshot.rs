@@ -11,7 +11,7 @@ pub struct Snapshot {
     pub project_id: i64,
     pub creation_draft: String,
     pub navigation: super::NavigationSnapshot,
-    pub workspace_views: [super::workspace_view::WorkspaceView; 5],
+    pub workspace_views: Vec<super::workspace_view::WorkspaceView>,
     pub mods: Vec<ModSummary>,
     pub active_mod: Option<ModDetail>,
     pub status: String,
@@ -54,6 +54,7 @@ pub struct ModDetail {
     steering: Vec<String>,
     plan: Option<Plan>,
     checks: Vec<Check>,
+    check_activity: Vec<super::workspace_view::CheckActivity>,
     findings: Vec<Finding>,
     pr_feedback: Vec<Finding>,
     pr_feedback_error: Option<String>,
@@ -289,7 +290,12 @@ impl Engine {
                     }))
                     .chain(execution.tasks.iter().flat_map(|run| {
                         self.inspect_task(run.id)
-                            .filter(|task| task.check_origin == super::CheckOrigin::Observed)
+                            .filter(|task| {
+                                matches!(
+                                    task.check_origin,
+                                    super::CheckOrigin::Observed | super::CheckOrigin::Previous
+                                )
+                            })
                             .map(|task| self.task_results(code_mod, &task))
                             .unwrap_or_default()
                     }))
@@ -389,7 +395,7 @@ impl Engine {
                 .unwrap_or_default(),
             model_catalog: self.models.catalog.clone(),
             appearance: self.appearance,
-            workspace_views: super::workspace_view::WorkspaceView::ALL,
+            workspace_views: self.workspace_views(),
             project: self.project.display().to_string(),
             project_id: self.project_id,
             creation_draft: self.creation_draft.clone(),
@@ -551,18 +557,39 @@ impl Engine {
                             .collect(),
                     }),
                     checks: self.snapshot_checks(m),
+                    check_activity: self.check_activity(),
                     findings: m
                         .agent_review
                         .iter()
-                        .flat_map(|r| &r.issues)
-                        .map(|f| Finding {
-                            id: f.id.to_string(),
-                            title: f.finding.title.clone(),
+                        .flat_map(|review| {
+                            review
+                                .issues
+                                .iter()
+                                .map(|issue| (&issue.finding, issue.id, issue.status.as_str()))
+                                .chain(
+                                    review
+                                        .report
+                                        .iter()
+                                        .filter(|_| review.issues.is_empty())
+                                        .flat_map(|report| &report.findings)
+                                        .enumerate()
+                                        .map(|(index, finding)| {
+                                            (
+                                                finding,
+                                                finding.id.unwrap_or(index as u32 + 1),
+                                                review.status.as_str(),
+                                            )
+                                        }),
+                                )
+                        })
+                        .map(|(finding, id, status)| Finding {
+                            id: id.to_string(),
+                            title: finding.title.clone(),
                             detail: format!(
                                 "{}:{}\n{}\n{}",
-                                f.finding.file, f.finding.line, f.finding.evidence, f.finding.fix
+                                finding.file, finding.line, finding.evidence, finding.fix
                             ),
-                            status: f.status.clone(),
+                            status: status.into(),
                             imported: false,
                         })
                         .collect(),

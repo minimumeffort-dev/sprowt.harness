@@ -12,7 +12,7 @@ struct WorkspaceView: View {
             header
             WorkspaceDivider()
             HStack(spacing: 4) {
-                ForEach(session.snapshot?.workspaceViews ?? WorkspaceTab.allCases, id: \.self) { tab in
+                ForEach(session.snapshot?.workspaceViews ?? [.conversation], id: \.self) { tab in
                     Button {
                         session.workspace.show(tab)
                     } label: {
@@ -30,7 +30,7 @@ struct WorkspaceView: View {
             }.padding(.horizontal, Theme.inset).padding(.vertical, 8)
             WorkspaceDivider()
             ScrollView {
-                if session.workspace.tab == .conversation && session.workspace.target == nil {
+                if session.workspace.tab == .conversation && session.workspace.target == nil && !session.hasUnlistedInspection {
                     FeedView(session: session, mod: mod)
                         .padding(Theme.inset).frame(maxWidth: .infinity, alignment: .leading)
                 } else {
@@ -78,7 +78,7 @@ struct WorkspaceView: View {
                         Button { session.perform(action) } label: { Label(action.label, systemImage: action.symbol) }
                     }
                 } label: { Image(systemName: "ellipsis").font(.system(size: 13)).frame(width: 24, height: 24) }
-                    .menuStyle(.borderlessButton).fixedSize().accessibilityLabel("More codemod actions")
+                    .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("More codemod actions")
                     .disabled(!session.interactive || session.busy)
             }
         }.padding(.horizontal, Theme.inset).padding(.vertical, 16)

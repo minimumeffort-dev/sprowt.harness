@@ -41,6 +41,7 @@
       }
     ],
     "active_mod": {
+      "check_activity": [],
       "checks": [
         {
           "id": "final:unverified:0",
@@ -440,7 +441,6 @@
     },
     "workspace_views": [
       "conversation",
-      "changes",
       "checks",
       "findings",
       "agents"

@@ -30,18 +30,24 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             .as_ref()
             .map_or(String::new(), |p| p.source.clone()),
     ));
+    let views = app.engine.workspace_views();
+    if !views.contains(&app.workspace.inspector.tab) {
+        app.workspace.selected = None;
+        app.workspace.inspector.select(None);
+        app.workspace.inspector.set_tab(WorkspaceView::Conversation);
+    }
     let tab = app.workspace.inspector.tab;
     let count = app
         .current_mod()
         .map_or(0, |m| app.worker_summaries(m).len());
-    let labels: Vec<_> = WorkspaceView::ALL
+    let labels: Vec<_> = views
         .into_iter()
-        .enumerate()
-        .map(|(i, view)| {
+        .map(|view| {
+            let shortcut = view as usize + 1;
             let label = if view == WorkspaceView::Agents && count > 0 {
-                format!(" {} {} {count} ", i + 1, view.label())
+                format!(" {} {} {count} ", shortcut, view.label())
             } else {
-                format!(" {} {} ", i + 1, view.label())
+                format!(" {} {} ", shortcut, view.label())
             };
             (view, label)
         })

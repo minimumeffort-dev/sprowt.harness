@@ -1,4 +1,5 @@
 use super::*;
+mod contextual_tabs;
 mod messages;
 mod preparation;
 mod typography;
@@ -28,6 +29,29 @@ fn reviewed_app() -> (TestData, App) {
     store.save_draft(m.id, "keep this draft").unwrap();
     let app = App::load(data.0.join("project"), false, store).unwrap();
     (data, app)
+}
+
+pub(super) fn all_views_app() -> (TestData, App, PathBuf) {
+    let (data, mut app, root) = execution_app();
+    app.engine.review = Some(workspace::review(&root).unwrap());
+    app.engine.mods[0].agent_review = Some(crate::review::State {
+        report: Some(serde_json::from_str(&crate::review::tests::finding()).unwrap()),
+        status: "findings".into(),
+        ..Default::default()
+    });
+    let record = app.engine.store.worker(app.engine.mods[0].id).unwrap();
+    let mut worker = Worker::start(
+        &app.engine.project,
+        &app.engine.mods[0],
+        record,
+        Role::Planner,
+        None,
+    )
+    .unwrap();
+    worker.status = Status::Ready;
+    worker.enabled = false;
+    app.engine.workers.insert(worker.id, worker);
+    (data, app, root)
 }
 
 fn click(app: &mut App, control: Control) {
@@ -436,7 +460,7 @@ fn workbench_new_codemod_newline_remains_editable_with_a_closed_selection() {
 
 #[test]
 fn workspace_views_keep_draft_caret_queue_and_typed_digits() {
-    let (_data, mut app, _) = execution_app();
+    let (_data, mut app, _) = all_views_app();
     screen(&mut app, 100, 46);
     key(&mut app, KeyCode::Left, KeyModifiers::NONE);
     let cursor = app.input.cursor();
@@ -468,7 +492,7 @@ fn workspace_views_keep_draft_caret_queue_and_typed_digits() {
 #[test]
 fn workspace_all_five_views_fit_narrow_terminals_and_tasks_have_a_return() {
     for width in [36, 40, 80, 160] {
-        let (_data, mut app, _) = execution_app();
+        let (_data, mut app, _) = all_views_app();
         let id = app.engine.mods[0].execution.as_ref().unwrap().tasks[0].id;
         for tab in WorkspaceView::ALL {
             screen(&mut app, width, 50);
@@ -510,7 +534,7 @@ fn workspace_all_five_views_fit_narrow_terminals_and_tasks_have_a_return() {
 
 #[test]
 fn workspace_view_scroll_is_independent_and_resize_preserves_selection() {
-    let (_data, mut app, _) = execution_app();
+    let (_data, mut app, _) = all_views_app();
     let template = app.engine.mods[0]
         .planning
         .as_ref()

@@ -42,7 +42,11 @@ def scan(root, basis, retain):
             if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
                 raise ValueError('Source export requires regular files without links')
             if before.st_size > MAX_FILE:
-                raise ValueError('Source file exceeds 64 MiB')
+                raise ValueError(
+                    f'Source file exceeds 64 MiB: {relative!r} '
+                    f'({before.st_size} bytes, {before.st_size / (1024 * 1024):.2f} MiB). '
+                    'Keep browser and model downloads in XDG_CACHE_HOME outside the task source.'
+                )
             total += before.st_size
             if total > MAX_BYTES or len(current) >= MAX_FILES:
                 raise ValueError('Source export exceeds its bounds')

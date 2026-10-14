@@ -45,7 +45,7 @@ struct SprowtApp: App {
                 ForEach(Array(WorkspaceTab.allCases.enumerated()), id: \.element.rawValue) { index, tab in
                     Button(tab.label) { session.workspace.show(tab) }
                         .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
-                        .disabled(session.active == nil)
+                        .disabled(session.active == nil || session.snapshot?.workspaceViews.contains(tab) != true)
                 }
             }
             CommandGroup(after: .appSettings) {
