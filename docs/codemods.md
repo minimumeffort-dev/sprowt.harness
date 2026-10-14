@@ -10,7 +10,9 @@ Open **Ctrl+P** to browse projects and their indented codemods. Click a project 
 
 Press **N** or click the project header's **✎** to start a codemod there. **.** opens the project's menu; **+** opens a folder path prompt. **Tab** switches active and closed codemods. In the [macOS sidebar](macos.md#work-on-a-project), the compose icon beside **…** starts a codemod in that project, and the rail's folder-plus button opens another folder.
 
-Selecting another project's codemod switches the active project. Pause running work in the current project first, and wait for any Git or preparation operation to finish. A failed switch keeps the current workspace and drafts. A project already controlled by another app or terminal window stays locked there.
+Selecting another project's codemod switches the visible workspace while agents, preparation, checks and Git jobs keep running in every opened project. Returning reuses the same worker sessions and restores the project's draft and navigation. A background project shows a small activity mark, or **!** when it needs attention. Select it to inspect a failure or answer an approval request; background work never approves requests automatically. A failed switch keeps the current workspace and drafts. A project already controlled by another app or terminal window stays locked there.
+
+Quitting the interface stops workers in all its opened projects. Each codemod keeps the existing two-executor limit, and VM admission still shares the host-wide CPU and memory budget.
 
 Use **Alt+←** and **Alt+→** to revisit codemods or an unfinished creation draft in the current session. The [macOS app](macos.md#work-on-a-project) provides **Back** and **Forward** with **⌘[** and **⌘]**. Both preserve instruction drafts and the unsent creation description. Choosing another destination after going back replaces the forward path. Closed codemods remain readable; deleted codemods leave the history. Each project keeps its navigation history until you quit. Creation descriptions are saved per project and survive restarting, alongside codemod instruction drafts.
 

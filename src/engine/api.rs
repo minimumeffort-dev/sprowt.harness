@@ -106,7 +106,7 @@ pub struct Response {
     pub protocol_version: u32,
     pub request_id: Option<u64>,
     pub error: Option<String>,
-    pub snapshot: super::snapshot::Snapshot,
+    pub snapshot: crate::session::Snapshot,
 }
 
 #[derive(Serialize)]
@@ -164,33 +164,13 @@ impl Engine {
         actions
     }
 
-    pub fn response(&self, request_id: Option<u64>, error: Option<String>) -> Response {
-        Response {
-            protocol_version: 1,
-            request_id,
-            error,
-            snapshot: self.snapshot(),
-        }
-    }
-
-    pub fn command(&mut self, command: Command) -> Result<(), String> {
-        let result = self.execute_command(command);
-        self.projects = self.store.projects().map_err(|e| e.to_string())?;
-        result
-    }
-
-    fn execute_command(&mut self, command: Command) -> Result<(), String> {
+    pub(crate) fn command(&mut self, command: Command) -> Result<(), String> {
         match command {
-            Command::ToggleProject { project_id } => self.toggle_project(project_id),
-            Command::OpenProject { path } => self.open_project(std::path::Path::new(&path)),
-            Command::SelectProject { project_id } => self.select_project(project_id, None),
-            Command::BeginProjectCreation { project_id } => {
-                if !self.can_begin_creation() {
-                    return Err(super::navigation::navigation_blocked().to_string());
-                }
-                self.select_project(project_id, None)?;
-                self.expanded_project = Some(project_id);
-                self.begin_creation().map_err(|e| e.to_string())
+            Command::ToggleProject { .. }
+            | Command::OpenProject { .. }
+            | Command::SelectProject { .. }
+            | Command::BeginProjectCreation { .. } => {
+                Err("Project navigation requires a session.".into())
             }
             Command::SetCreationDraft { project_id, text } => {
                 if project_id != self.project_id {
@@ -213,18 +193,11 @@ impl Engine {
             Command::GoForward {} => self.navigate(false).map_err(|e| e.to_string()),
             Command::SelectMod { mod_id } => {
                 self.require_no_confirmation()?;
-                let project_id = self
-                    .store
-                    .mod_project(mod_id)
-                    .map_err(|e| e.to_string())?
-                    .ok_or("Codemod no longer exists.")?;
-                self.select_project(project_id, Some(mod_id))?;
                 let index = self
                     .mods
                     .iter()
                     .position(|m| m.id == mod_id)
                     .ok_or("Codemod no longer exists.")?;
-                self.expanded_project = Some(project_id);
                 self.select_mod(index).map_err(|e| e.to_string())
             }
             Command::NewMod { description } => {

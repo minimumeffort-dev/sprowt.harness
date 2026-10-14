@@ -162,3 +162,52 @@ fn terminal_background_delete_keeps_the_focused_project_row() {
     );
     assert_eq!(app.input.lines(), ["Current instruction"]);
 }
+
+#[test]
+fn terminal_project_switch_keeps_worker_receipts_and_background_failures_scoped() {
+    use crate::{codex::Event as WorkerEvent, engine::api::Command, worker::Worker};
+    let (_data, mut app, a, b) = fixture();
+    let first = app.current_mod().unwrap().id;
+    let record = app.store.worker(first).unwrap();
+    let worker_id = record.id;
+    let (worker, events, actions) =
+        Worker::recording(&app.project, app.current_mod().unwrap(), record).unwrap();
+    app.engine.workers.insert(worker_id, worker);
+    key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+    click(&mut app, Control::PickMod(3));
+    click(&mut app, Control::PickMod(2));
+    assert_eq!(app.project_id, b);
+    paste(&mut app, "Keep notes draft");
+    key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+    let cursor = app.input.cursor();
+    events
+        .send(WorkerEvent::Ready {
+            thread: serde_json::json!({"id":"terminal-background-thread"}),
+            model: Some("background-model".into()),
+            effort: None,
+        })
+        .unwrap();
+    app.poll_workers().unwrap();
+    assert_eq!(app.input.cursor(), cursor);
+    assert_eq!(app.input.lines(), ["Keep notes draft"]);
+    assert!(actions.try_recv().is_err());
+    events
+        .send(WorkerEvent::Failed("Background connection failed".into()))
+        .unwrap();
+    app.poll_workers().unwrap();
+    assert_eq!(
+        app.projects.iter().find(|p| p.id == a).unwrap().activity,
+        crate::store::ProjectActivity::Attention
+    );
+    assert_eq!(app.project_id, b);
+    key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+    let rendered = rows(&screen(&mut app, 100, 36)).join("\n");
+    assert!(rendered.contains("todo !"), "{rendered}");
+    app.project_command(Command::SelectMod { mod_id: first });
+    assert_eq!(app.project_id, a);
+    assert_eq!(
+        app.workers[&worker_id].model.as_deref(),
+        Some("background-model")
+    );
+    assert_eq!(app.worker_error(), Some("Background connection failed"));
+}

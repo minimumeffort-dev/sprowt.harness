@@ -41,7 +41,7 @@ SPROWT_APPEARANCE_BUFFERS=/tmp/sprowt-appearance-captures \
 
 **Expected:** light and dark text and JSON cell buffers at 40, 80 and 160 columns, with explicit foreground and background colors.
 
-Project navigation tests exercise the real engine commands, native draft bridge and terminal keys/clicks. They cover accordion expansion without navigation, cross-project draft restoration, stale history pruning and rejected switches.
+Project navigation tests exercise the real engine commands, native draft bridge and terminal keys/clicks. They cover accordion expansion without navigation, cross-project draft restoration, retained worker sessions, background event/job/preparation progress, scoped network approvals, failed switches and cleanup of every runtime on exit. Shared protocol fixtures include project activity; terminal and native tests preserve the visible draft while background status changes.
 
 For native interface changes, [build the macOS bundle](macos.md#build-and-open) and exercise the changed flow in the app. The Rust and Swift protocol checks must agree before a shared boundary change is complete.
 
@@ -132,7 +132,7 @@ Standalone compatibility probes live in [examples](../examples). They are separa
 | Responsibility | Entry points |
 | --- | --- |
 | CLI and terminal loop | [`main.rs`](../src/main.rs), [`app.rs`](../src/app.rs) |
-| Shared controller | [`engine.rs`](../src/engine.rs), [`engine`](../src/engine) |
+| Shared session and project runtimes | [`session.rs`](../src/session.rs), [`engine.rs`](../src/engine.rs), [`engine`](../src/engine) |
 | State and actions | [`engine/state.rs`](../src/engine/state.rs), [`engine/actions.rs`](../src/engine/actions.rs) |
 | Native command protocol | [`desktop.rs`](../src/desktop.rs), [`engine/api.rs`](../src/engine/api.rs), [`engine/snapshot.rs`](../src/engine/snapshot.rs) |
 | Native macOS interface | [`macos/Sources`](../macos/Sources), [build and development guide](macos.md) |

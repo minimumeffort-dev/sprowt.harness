@@ -88,7 +88,7 @@ impl Preparations {
         }))
     }
 
-    fn with_backend(backend: Backend) -> Self {
+    pub(crate) fn with_backend(backend: Backend) -> Self {
         Self {
             entries: BTreeMap::new(),
             backend,

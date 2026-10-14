@@ -106,7 +106,16 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
         match row {
             ProjectRow::Project(_) => Line::from(vec![
                 "▱ ".fg(ACCENT),
-                Span::raw(fit_name(&project.name, list_area.width.saturating_sub(10))),
+                Span::raw(fit_name(&project.name, list_area.width.saturating_sub(12))),
+                if project.id == app.project_id {
+                    Span::raw("")
+                } else {
+                    match project.activity {
+                        crate::store::ProjectActivity::Idle => Span::raw(""),
+                        crate::store::ProjectActivity::Working => " •".fg(ACCENT),
+                        crate::store::ProjectActivity::Attention => " !".fg(RED),
+                    }
+                },
             ]),
             ProjectRow::Codemod { id, .. } => {
                 let m = project.mods.iter().find(|m| m.id == *id).unwrap();

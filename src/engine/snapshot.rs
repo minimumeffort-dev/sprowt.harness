@@ -7,8 +7,6 @@ pub struct Snapshot {
     pub appearance: crate::appearance::Appearance,
     pub project: String,
     pub project_id: i64,
-    pub projects: Vec<crate::store::ProjectSummary>,
-    pub expanded_project: Option<i64>,
     pub creation_draft: String,
     pub navigation: super::NavigationSnapshot,
     pub workspace_views: [super::workspace_view::WorkspaceView; 5],
@@ -379,8 +377,6 @@ impl Engine {
             workspace_views: super::workspace_view::WorkspaceView::ALL,
             project: self.project.display().to_string(),
             project_id: self.project_id,
-            projects: self.projects.clone(),
-            expanded_project: self.expanded_project,
             creation_draft: self.creation_draft.clone(),
             navigation: self.navigation_snapshot(),
             mods: self

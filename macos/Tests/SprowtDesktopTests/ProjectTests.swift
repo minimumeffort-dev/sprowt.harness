@@ -31,7 +31,7 @@ import Testing
             while not os.path.exists(sys.argv[0] + '.draft_release'): time.sleep(0.01)
             snapshot['creation_draft'] = command['text']
         elif kind == 'select_project':
-            if os.path.exists(sys.argv[0] + '.reject'): error = 'Pause running work in this project before switching projects.'
+            if os.path.exists(sys.argv[0] + '.reject'): error = 'This project is already open in another Sprowt window.'
             else: snapshot = snapshots[command['project_id']]
         elif kind == 'toggle_project':
             snapshot['expanded_project'] = None if snapshot['expanded_project'] == command['project_id'] else command['project_id']
@@ -65,4 +65,44 @@ import Testing
         .split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String: Any] }
     #expect(commands.prefix(3).compactMap { $0["type"] as? String } == ["set_creation_draft", "set_creation_draft", "select_project"])
     #expect(commands[1]["text"] as? String == "A latest draft")
+}
+
+@Test @MainActor func backgroundProjectUpdatesPreserveTheVisibleDraftAndSelection() async throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let executable = directory.appendingPathComponent("engine")
+    try Data(snapshotJSON.utf8).write(to: URL(fileURLWithPath: executable.path + ".json"))
+    try installExecutable(#"""
+    #!/usr/bin/python3
+    import copy, json, sys
+    snapshot = json.load(open(sys.argv[0] + '.json'))
+    other = copy.deepcopy(snapshot['projects'][0])
+    other.update(id=2, name='Background', path='/tmp/background', activity='working')
+    snapshot['projects'].append(other)
+    def respond(request_id=None):
+        print(json.dumps(dict(protocol_version=1, request_id=request_id, error=None, snapshot=snapshot)), flush=True)
+    respond()
+    for line in sys.stdin:
+        request = json.loads(line)
+        command = request['command']
+        if command['type'] == 'set_draft':
+            snapshot['active_mod']['draft'] = command['text']
+            respond(request['id'])
+            snapshot['projects'][1]['activity'] = 'attention'
+            respond()
+        else: respond(request['id'])
+    """#, at: executable)
+    let session = Session()
+    defer { session.close {} }
+    session.start(project: directory, executable: executable)
+    try await waitUntil { session.editable }
+    #expect(session.snapshot?.projects.last?.activity == .working)
+    session.editDraft("Keep typing in this project")
+    try await waitUntil { session.snapshot?.projects.last?.activity == .attention && !session.busy }
+    #expect(session.snapshot?.projectId == 1)
+    #expect(session.active?.id == 1)
+    #expect(session.draft == "Keep typing in this project")
+    #expect(session.canCompose)
+    #expect(session.snapshot?.dialog == nil)
+    #expect(session.error == nil)
 }

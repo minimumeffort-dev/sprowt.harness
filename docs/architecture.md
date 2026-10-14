@@ -39,7 +39,7 @@ flowchart TB
 
 Source is copied into the VM. Host project folders and Git credentials are not mounted there. The production Codex connection keeps its app server on the host and sends execution into Linux; Muse runs its CLI in Linux behind a host credential broker.
 
-The terminal calls the Rust engine directly. The SwiftUI app starts a bundled copy of the Rust executable and exchanges typed commands and state snapshots over local stdin/stdout. One controller owns a project at a time; both interfaces reuse the same saved state. See the [macOS guide](macos.md#switch-between-interfaces).
+The terminal calls the Rust engine directly. The SwiftUI app starts a bundled copy of the Rust executable and exchanges typed commands and state snapshots over local stdin/stdout. A shared Rust session owns one Engine per opened project and selects which workspace is visible. Each Engine retains its workers, jobs, preparation, drafts, navigation and ownership lock. The session polls all opened projects; switching never reloads a live Engine. One controller owns each project at a time; both interfaces reuse the same saved state. See the [macOS guide](macos.md#switch-between-interfaces).
 
 ## Responsibilities
 
@@ -47,7 +47,7 @@ The terminal calls the Rust engine directly. The SwiftUI app starts a bundled co
 | --- | --- | --- |
 | Terminal | Workspace views, evidence inspection, drafts and contextual actions | [Terminal](terminal.md) |
 | macOS interface | Native project picker, codemod views, composer and confirmations | [macOS app](macos.md) |
-| Shared engine | Workflow transitions, allowed actions and controller lifetime | [Development](development.md#source-map) |
+| Shared session and project engines | Visible project selection, background polling, workflow transitions, allowed actions and runtime lifetime | [Development](development.md#source-map) |
 | Planner | Contracts, tasks, scopes, dependencies and checks | [Planning](planning.md) |
 | Scheduler | Ready tasks, two active slots and saved provider assignments | [Execution](execution.md) |
 | Executors | Implementation within a task folder; repeatable check commands | [Workers](workers.md) |

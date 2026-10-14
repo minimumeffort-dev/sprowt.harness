@@ -75,11 +75,23 @@ struct NavigationState: Decodable, Sendable {
     let canGoForward: Bool
 }
 
+enum ProjectActivity: String, Decodable, Sendable {
+    case idle, working, attention
+    var label: String {
+        switch self {
+        case .idle: ""
+        case .working: "Working in background"
+        case .attention: "Needs attention"
+        }
+    }
+}
+
 struct ProjectSummary: Decodable, Identifiable, Sendable {
     let id: Int64
     let path: String
     let name: String
     let mods: [ProjectCodemod]
+    let activity: ProjectActivity
 }
 
 struct ProjectCodemod: Decodable, Identifiable, Sendable {

@@ -21,6 +21,8 @@ struct SidebarView: View {
 
     private func projectGroup(_ project: ProjectSummary) -> some View {
         let expanded = session.snapshot?.expandedProject == project.id
+        let showActivity = project.id != session.snapshot?.projectId && project.activity != .idle
+        let accessibilityLabel = "\(project.name), \(expanded ? "expanded" : "collapsed")" + (showActivity ? ", \(project.activity.label)" : "")
         let mods = project.mods.filter { $0.closed == session.showClosed }
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 2) {
@@ -29,11 +31,17 @@ struct SidebarView: View {
                         Image(systemName: "folder").frame(width: 18, height: 18)
                         Text(project.name).lineLimit(1)
                         Spacer(minLength: 0)
+                        if showActivity {
+                            Image(systemName: project.activity == .attention ? "exclamationmark.circle.fill" : "circle.fill")
+                                .font(.system(size: project.activity == .attention ? 11 : 6))
+                                .foregroundStyle(project.activity == .attention ? Theme.amber : Theme.accent)
+                                .help(project.activity.label).accessibilityLabel(project.activity.label)
+                        }
                     }.font(Theme.font(12, weight: .medium))
                         .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).help(project.path)
-                    .accessibilityLabel("\(project.name), \(expanded ? "expanded" : "collapsed")")
+                    .accessibilityLabel(accessibilityLabel)
                     .disabled(!session.editable || session.busy)
                 Menu {
                     Button("Open project") { session.selectProject(project.id) }

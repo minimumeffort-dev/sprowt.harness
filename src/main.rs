@@ -25,6 +25,7 @@ mod router;
 mod rpc;
 mod sandbox;
 mod scheduler;
+mod session;
 mod skills;
 mod sprout;
 mod store;

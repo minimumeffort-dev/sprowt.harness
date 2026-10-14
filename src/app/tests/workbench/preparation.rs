@@ -67,7 +67,7 @@ fn observed_task_check_receipt_reaches_terminal_evidence_without_completion() {
 
 pub(super) fn setup_failed_app() -> (TestData, App, PathBuf, i64) {
     let (data, mut app, root) = execution_app();
-    let m = &app.engine.mods[0];
+    let m = &app.engine.foreground.mods[0];
     let id = m.execution.as_ref().unwrap().tasks[0].id;
     let source = crate::store::task_source(id, 2);
     let recipe = crate::environment::Recipe {
@@ -97,6 +97,7 @@ pub(super) fn setup_failed_app() -> (TestData, App, PathBuf, i64) {
     let mut plan = m.planning.as_ref().unwrap().plan.clone().unwrap();
     plan.environment = Some(recipe.clone());
     app.engine
+        .foreground
         .store
         .save_plan(m.id, &m.planning.as_ref().unwrap().source, &plan)
         .unwrap();

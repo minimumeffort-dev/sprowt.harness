@@ -28,7 +28,9 @@ The header's **◇** selector opens the project accordion with **Ctrl+P**. Click
 
 Actual terminal output with disposable example projects.
 
-The header shows **‹ Back Alt←** and **› Forward Alt→** when a destination is available. Click an arrow or use its shortcut to revisit a codemod or unsent creation. At narrow widths, the controls show the glyph and shortcut. [Navigation history](codemods.md#create-and-manage-work) preserves both drafts and retains each project's history until you quit. Finish an open dialog or inspection before navigating.
+Switching projects keeps their agents running. Background projects show **•** while working or **!** when they need attention. Select the project to inspect its work or respond to a request. Quitting stops all projects owned by that terminal session.
+
+The header shows **‹ Back Alt←** and **› Forward Alt→** when a destination is available. Click an arrow or use its shortcut to revisit a codemod or unsent creation. At narrow widths, the controls show the glyph and shortcut. [Navigation history](codemods.md#create-and-manage-work) preserves both drafts and retains each project's history until you quit. Finish or cancel an open confirmation before navigating; read-only inspections are safe to leave.
 
 ## Read the evidence
 

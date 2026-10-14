@@ -1,12 +1,21 @@
 use super::*;
 use serde::Serialize;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectActivity {
+    Idle,
+    Working,
+    Attention,
+}
+
 #[derive(Clone, Serialize)]
 pub struct ProjectSummary {
     pub id: i64,
     pub path: String,
     pub name: String,
     pub mods: Vec<ProjectCodemod>,
+    pub activity: ProjectActivity,
 }
 
 #[derive(Clone, Serialize)]
@@ -31,6 +40,7 @@ impl Store {
                         .map_or_else(|| path.clone(), |name| name.to_string_lossy().into_owned()),
                     path,
                     mods: Vec::new(),
+                    activity: ProjectActivity::Idle,
                 })
             })?
             .collect::<Result<Vec<_>>>()?;

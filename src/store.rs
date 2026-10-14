@@ -122,7 +122,7 @@ pub struct ProjectState {
 }
 
 mod projects;
-pub use projects::ProjectSummary;
+pub use projects::{ProjectActivity, ProjectSummary};
 
 pub struct Store(pub(crate) Connection);
 

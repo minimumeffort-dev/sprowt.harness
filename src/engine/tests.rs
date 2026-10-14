@@ -2,7 +2,6 @@ use super::*;
 mod navigation;
 mod observed_checks;
 mod partial_review;
-mod projects;
 mod workspace_views;
 use crate::{
     engine::api::{Command, Direction},
@@ -475,7 +474,7 @@ fn desktop_contract_matches_the_native_fixture() {
         },
     );
     engine.view = View::DeleteMod(0);
-    engine.projects = engine.store.projects().unwrap();
+    let mut engine = crate::session::Session::from_engine(engine).unwrap();
     engine.projects[0].path = "/example/project".into();
     engine.projects[0].name = "project".into();
     let actual = serde_json::to_value(engine.response(Some(7), None)).unwrap();

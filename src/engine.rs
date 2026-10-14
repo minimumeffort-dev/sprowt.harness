@@ -20,12 +20,12 @@ mod git;
 mod git_errors;
 mod interaction;
 mod navigation;
-mod ownership;
+pub(crate) mod ownership;
 mod poll;
 pub(crate) mod preparation;
 mod projects;
 mod review;
-mod snapshot;
+pub(crate) mod snapshot;
 pub(crate) mod state;
 mod sync;
 mod tasks;
@@ -63,9 +63,6 @@ pub enum View {
 }
 
 pub struct Engine {
-    pub(crate) projects: Vec<crate::store::ProjectSummary>,
-    pub(crate) expanded_project: Option<i64>,
-    project_navigation: BTreeMap<i64, navigation::Navigation>,
     pub(crate) appearance: crate::appearance::Appearance,
     pub(crate) network_requests: Vec<crate::network::Access>,
     pub(crate) muse: bool,
@@ -98,6 +95,7 @@ pub struct Engine {
     pub(crate) target_errors: BTreeMap<i64, String>,
     pub(crate) update_errors: BTreeSet<i64>,
     pub(crate) notice: Option<String>,
+    pub(crate) poll_error: Option<String>,
     pub(crate) store: Store,
     pub(crate) project_id: i64,
     pub(crate) active: Option<usize>,
@@ -105,7 +103,7 @@ pub struct Engine {
     pub(crate) creation_draft: String,
     pub(crate) navigation: navigation::Navigation,
     pub(crate) celebrations: u64,
-    _ownership: Option<std::fs::File>,
+    pub(crate) _ownership: Option<ownership::Ownership>,
 }
 
 impl Engine {
@@ -196,9 +194,6 @@ impl Engine {
             store.select_mod(state.id, state.mods[index].id)?;
         }
         let mut app = Self {
-            projects: store.projects()?,
-            expanded_project: Some(state.id),
-            project_navigation: BTreeMap::new(),
             appearance: store.appearance()?,
             composer: String::new(),
             creation_draft: store.creation_draft(state.id)?,
@@ -247,6 +242,7 @@ impl Engine {
             target_errors: BTreeMap::new(),
             update_errors: BTreeSet::new(),
             notice: None,
+            poll_error: None,
             store,
             project_id: state.id,
             active,

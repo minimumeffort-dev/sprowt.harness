@@ -50,7 +50,7 @@ For the native SwiftUI app, build with Xcode 26 or newer:
 open target/macos/Sprowt.app
 ```
 
-Both interfaces have the same five workspace views, with the composer available while you inspect evidence. The native sidebar and terminal project picker group codemods under collapsible projects. Both use the same Rust engine, saved work and [System, Light or Dark appearance](docs/appearance.md). Close one before opening the same project in the other. See the [macOS guide](docs/macos.md).
+Both interfaces have the same five workspace views, with the composer available while you inspect evidence. The native sidebar and terminal project picker group codemods under collapsible projects. Agents keep running as you switch projects; background activity and requests stay visible in the project list. Both use the same Rust engine, saved work and [System, Light or Dark appearance](docs/appearance.md). Close one before opening the same project in the other. See the [macOS guide](docs/macos.md).
 
 ## Find what you need
 

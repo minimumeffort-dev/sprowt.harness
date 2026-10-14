@@ -211,7 +211,7 @@ impl Engine {
 
     pub fn action_error(&self) -> Option<&str> {
         if self.action_context() == View::NewMod {
-            self.notice.as_deref()
+            self.poll_error.as_deref().or(self.notice.as_deref())
         } else {
             self.worker_error()
         }

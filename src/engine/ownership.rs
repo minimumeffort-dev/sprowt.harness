@@ -5,7 +5,17 @@ use std::{
     path::Path,
 };
 
-pub fn acquire(database: &Path, project: &Path) -> io::Result<File> {
+#[derive(Debug)]
+pub(crate) struct Ownership(File);
+
+impl Drop for Ownership {
+    fn drop(&mut self) {
+        // Forked Git commands can briefly inherit this descriptor before exec.
+        let _ = self.0.unlock();
+    }
+}
+
+pub fn acquire(database: &Path, project: &Path) -> io::Result<Ownership> {
     let directory = database
         .parent()
         .ok_or_else(|| io::Error::other("Invalid data directory."))?;
@@ -28,5 +38,5 @@ pub fn acquire(database: &Path, project: &Path) -> io::Result<File> {
             "This project is already open in another Sprowt CLI or desktop window. Close it there, then reopen it here."),
         TryLockError::Error(error) => error,
     })?;
-    Ok(file)
+    Ok(Ownership(file))
 }

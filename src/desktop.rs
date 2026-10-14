@@ -1,7 +1,5 @@
-use crate::engine::{
-    Engine,
-    api::{Command, Request},
-};
+use crate::engine::api::{Command, Request};
+use crate::session::Session;
 use std::{
     io::{self, BufRead, Read, Write},
     path::PathBuf,
@@ -16,7 +14,7 @@ pub fn run(
     data_dir: Option<PathBuf>,
     closed_worktree_days: u32,
 ) -> io::Result<()> {
-    let mut engine = Engine::new(project, data_dir.as_deref())?;
+    let mut engine = Session::new(project, data_dir.as_deref())?;
     engine
         .prune_closed(closed_worktree_days)
         .map_err(io::Error::other)?;
@@ -52,7 +50,7 @@ pub fn run(
 }
 
 fn serve(
-    engine: &mut Engine,
+    engine: &mut Session,
     receiver: mpsc::Receiver<io::Result<String>>,
     output: &mut impl Write,
 ) -> io::Result<()> {
@@ -124,7 +122,9 @@ mod tests {
         let data = TestData::new();
         let project = data.0.join("project");
         std::fs::create_dir_all(&project).unwrap();
-        let mut engine = Engine::load(project, data.store()).unwrap();
+        let mut engine =
+            Session::from_engine(crate::engine::Engine::load(project, data.store()).unwrap())
+                .unwrap();
         let (sender, receiver) = mpsc::channel();
         for line in [
             r#"{"id":1,"command":{"type":"not_a_command"}}"#,
@@ -175,7 +175,9 @@ mod tests {
         let data = TestData::new();
         let project = data.0.join("project");
         std::fs::create_dir_all(&project).unwrap();
-        let mut engine = Engine::load(project, data.store()).unwrap();
+        let mut engine =
+            Session::from_engine(crate::engine::Engine::load(project, data.store()).unwrap())
+                .unwrap();
         let (sender, receiver) = mpsc::channel();
         drop(sender);
         let mut output = Vec::new();
@@ -184,5 +186,77 @@ mod tests {
         assert_eq!(lines.lines().count(), 1);
         let first: serde_json::Value = serde_json::from_str(lines.trim()).unwrap();
         assert_eq!(first["snapshot"]["status"], "New codemod");
+    }
+    #[test]
+    fn desktop_switch_polls_retained_worker_events_and_returns_to_the_same_session() {
+        use crate::{codex::Event, engine::Engine, worker::Worker};
+        let data = TestData::new();
+        let mut store = data.store();
+        let mut ids = Vec::new();
+        for name in ["first", "second"] {
+            let path = data.0.join(name);
+            std::fs::create_dir_all(&path).unwrap();
+            let path = path.canonicalize().unwrap();
+            let project = store.load_project(&path).unwrap().id;
+            let codemod = store.create_mod(project, name).unwrap().id;
+            ids.push((path, project, codemod));
+        }
+        let mut session =
+            Session::from_engine(Engine::load(ids[0].0.clone(), store).unwrap()).unwrap();
+        let record = session.store.worker(ids[0].2).unwrap();
+        let worker_id = record.id;
+        let (worker, events, actions) =
+            Worker::recording(&session.project, session.current_mod().unwrap(), record).unwrap();
+        session.workers.insert(worker_id, worker);
+        events
+            .send(Event::Ready {
+                thread: serde_json::json!({"id":"desktop-background-session"}),
+                model: Some("retained-model".into()),
+                effort: None,
+            })
+            .unwrap();
+        let (sender, receiver) = mpsc::channel();
+        for (id, command) in [
+            (
+                1,
+                serde_json::json!({"type":"select_mod", "mod_id":ids[1].2}),
+            ),
+            (
+                2,
+                serde_json::json!({"type":"select_project", "project_id":ids[0].1}),
+            ),
+            (3, serde_json::json!({"type":"shutdown"})),
+        ] {
+            sender
+                .send(Ok(
+                    serde_json::json!({"id":id,"command":command}).to_string()
+                ))
+                .unwrap();
+        }
+        let mut output = Vec::new();
+        serve(&mut session, receiver, &mut output).unwrap();
+        let frames: Vec<serde_json::Value> = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let switched = frames.iter().find(|f| f["request_id"] == 1).unwrap();
+        assert!(switched["error"].is_null());
+        assert_eq!(switched["snapshot"]["project_id"], ids[1].1);
+        let returned = frames.iter().find(|f| f["request_id"] == 2).unwrap();
+        assert!(returned["error"].is_null());
+        assert_eq!(
+            returned["snapshot"]["active_mod"]["worker_details"][0]["id"],
+            worker_id
+        );
+        assert_eq!(
+            session.workers[&worker_id].model.as_deref(),
+            Some("retained-model")
+        );
+        assert_eq!(
+            session.store.worker(ids[0].2).unwrap().thread_id.as_deref(),
+            Some("desktop-background-session")
+        );
+        assert!(actions.try_recv().is_err());
     }
 }

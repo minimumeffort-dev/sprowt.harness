@@ -187,9 +187,10 @@ fn stopped_setup_app() -> (TestData, App, PathBuf, i64) {
     std::fs::write(path, &bytes).unwrap();
     std::fs::write(root.join("environments").join(format!("{id}.json")), bytes).unwrap();
     app.engine
+        .foreground
         .store
         .finish_task(
-            app.engine.mods[0].id,
+            app.engine.foreground.mods[0].id,
             &source,
             "paused",
             "Environment preflight failed: Environment preparation stopped.",

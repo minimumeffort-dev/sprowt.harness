@@ -55,22 +55,6 @@ impl Navigation {
             .map(|destination| (index, destination))
     }
 
-    pub(crate) fn retain_mods(&mut self, mods: &[crate::store::CodeMod]) {
-        let removed: Vec<_> = self
-            .entries
-            .iter()
-            .filter_map(|destination| match destination {
-                Destination::Codemod { mod_id } if !mods.iter().any(|m| m.id == *mod_id) => {
-                    Some(*mod_id)
-                }
-                _ => None,
-            })
-            .collect();
-        for id in removed {
-            self.forget(id);
-        }
-    }
-
     pub(crate) fn forget(&mut self, mod_id: i64) {
         let removed = Destination::Codemod { mod_id };
         let before = self.entries[..self.cursor]

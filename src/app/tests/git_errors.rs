@@ -3,8 +3,9 @@ use super::*;
 fn add_other_mod(app: &mut App, root: &std::path::Path) -> i64 {
     let mut code_mod = app
         .engine
+        .foreground
         .store
-        .create_mod(app.engine.project_id, "Other codemod")
+        .create_mod(app.engine.foreground.project_id, "Other codemod")
         .unwrap();
     code_mod.git_root = Some(root.to_path_buf());
     let id = code_mod.id;

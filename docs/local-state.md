@@ -4,7 +4,7 @@
 
 The harness saves work automatically in SQLite and private source checkpoints. Run from the same project root to restore its codemods, drafts, queue and history.
 
-The terminal and [macOS app](macos.md) use the same database. Only one controller can open a project at a time; close the active interface before switching. The project lock is released after worker cleanup on exit, or after a successful idle project switch. Switching requires current work to be paused and active Git or preparation jobs to finish.
+The terminal and [macOS app](macos.md) use the same database. Only one controller can own a project at a time. A session keeps every opened project's runtime and ownership lock while you switch between them. Agents and project jobs keep running in the background. To open one of those projects in another app or terminal window, quit the owning interface first. Quitting cleans up all its workers and project jobs before releasing their locks.
 
 Unsent creation descriptions are saved separately per project. The project catalog lists previously opened folders; expansion is local to the running interface.
 
@@ -14,6 +14,7 @@ The global [appearance preference](appearance.md) is also saved in this database
 
 | Event | Source and history | Runtime and native conversations | Does work resume? |
 | --- | --- | --- | --- |
+| Switch project | Retained | Same live workers and jobs | Work continues in the background |
 | Pause | Retained | Retained | Only on explicit resume |
 | Quit | Retained | Stopped VM disk retained | Unfinished work stays paused on reopen |
 | Publish | Retained, with PR URL/commit | Retained | Ready for further edits |

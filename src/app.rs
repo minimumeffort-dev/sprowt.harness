@@ -1,5 +1,5 @@
 pub use crate::engine::{Action, ActionDock, ActionItem, Tone, View};
-use crate::{engine::Engine, git_mod, plan::Role, sprout, store::source_id, ui, worker::Status};
+use crate::{git_mod, plan::Role, session::Session, sprout, store::source_id, ui, worker::Status};
 use ratatui::{
     DefaultTerminal,
     crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -30,7 +30,7 @@ pub struct App {
     pub(crate) appearance_picker: Option<crate::appearance::Appearance>,
     pub(crate) appearance_error: Option<String>,
     system_appearance: ui::theme::SystemAppearance,
-    pub(crate) engine: Engine,
+    pub(crate) engine: Session,
     pub history_origin: Option<View>,
     pub history_offset: u16,
     pub page_size: u16,
@@ -52,26 +52,29 @@ pub struct App {
 }
 
 impl Deref for App {
-    type Target = Engine;
-    fn deref(&self) -> &Engine {
+    type Target = Session;
+    fn deref(&self) -> &Session {
         &self.engine
     }
 }
 impl DerefMut for App {
-    fn deref_mut(&mut self) -> &mut Engine {
+    fn deref_mut(&mut self) -> &mut Session {
         &mut self.engine
     }
 }
 
 impl App {
     pub fn new(project: PathBuf, motion: bool) -> io::Result<Self> {
-        Ok(Self::from_engine(Engine::new(project, None)?, motion))
+        Ok(Self::from_engine(Session::new(project, None)?, motion))
     }
     #[cfg(test)]
     fn load(project: PathBuf, motion: bool, store: crate::store::Store) -> Result<Self> {
-        Ok(Self::from_engine(Engine::load(project, store)?, motion))
+        Ok(Self::from_engine(
+            Session::from_engine(crate::engine::Engine::load(project, store)?)?,
+            motion,
+        ))
     }
-    fn from_engine(engine: Engine, motion: bool) -> Self {
+    fn from_engine(engine: Session, motion: bool) -> Self {
         let mut app = Self {
             project_picker: projects::PickerPanel::Projects,
             project_picker_error: None,
@@ -137,7 +140,7 @@ impl App {
             self.happy_since = self.motion.then(Instant::now);
         }
     }
-    fn with_engine<T>(&mut self, operation: impl FnOnce(&mut Engine) -> T) -> T {
+    fn with_engine<T>(&mut self, operation: impl FnOnce(&mut Session) -> T) -> T {
         self.engine.composer = self.input.lines().join("\n");
         let before = self.engine.celebrations;
         let previous_view = self.engine.view;
@@ -188,20 +191,20 @@ impl App {
         self.reset_editor();
     }
     fn create_mod(&mut self) -> Result<()> {
-        self.with_engine(Engine::create_mod)
+        self.with_engine(|engine| engine.create_mod())
     }
     fn submit(&mut self) -> Result<()> {
-        self.with_engine(Engine::submit)
+        self.with_engine(|engine| engine.submit())
     }
     fn save_draft(&mut self) -> Result<()> {
-        self.with_engine(Engine::save_draft)
+        self.with_engine(|engine| engine.save_draft())
     }
     #[cfg(test)]
     fn poll_git_jobs(&mut self) -> Result<()> {
-        self.with_engine(Engine::poll_git_jobs)
+        self.with_engine(|engine| engine.poll_git_jobs())
     }
     fn poll_workers(&mut self) -> Result<()> {
-        self.with_engine(Engine::poll_workers)
+        self.with_engine(|engine| engine.poll_workers())
     }
     fn perform_action(&mut self, action: Action) -> Result<()> {
         if !self
@@ -226,7 +229,7 @@ impl App {
             Action::Mods => {
                 self.show_closed = self.current_mod().is_some_and(|m| m.closed)
                     && self.navigation.current() != crate::engine::Destination::NewCodemod;
-                self.projects = self.store.projects()?;
+                self.engine.refresh_projects()?;
                 self.project_picker = projects::PickerPanel::Projects;
                 self.project_picker_error = None;
                 self.engine.view = View::Mods(self.project_rows().iter().position(|row| {
@@ -273,7 +276,7 @@ impl App {
         self.with_engine(|engine| engine.start_repository(request));
     }
     fn adopt_mod(&mut self) -> Result<()> {
-        self.with_engine(Engine::adopt_mod)
+        self.with_engine(|engine| engine.adopt_mod())
     }
     fn finish_mod(&mut self, index: usize, discard: bool, delete: bool) -> Result<()> {
         self.with_engine(|engine| engine.finish_mod(index, discard, delete))
@@ -285,11 +288,11 @@ impl App {
         self.with_engine(|engine| engine.reopen_mod(index));
     }
     fn open_publication(&mut self) -> Result<()> {
-        self.with_engine(Engine::open_publication)
+        self.with_engine(|engine| engine.open_publication())
     }
     #[cfg(test)]
     fn open_review(&mut self) -> Result<()> {
-        self.with_engine(Engine::open_review)
+        self.with_engine(|engine| engine.open_review())
     }
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         self.system_appearance.refresh();
@@ -559,7 +562,8 @@ impl App {
                                 && key.kind == KeyEventKind::Press
                                 && self.can_publish() =>
                         {
-                            self.engine.start_publication(self.engine.active.unwrap());
+                            let index = self.engine.active.unwrap();
+                            self.engine.start_publication(index);
                         }
                         _ => {}
                     },
@@ -1468,8 +1472,9 @@ mod tests {
         app.engine.mods[0].git_root = Some(root);
         let second = app
             .engine
+            .foreground
             .store
-            .create_mod(app.engine.project_id, "Second codemod")
+            .create_mod(app.engine.foreground.project_id, "Second codemod")
             .unwrap();
         let second_id = second.id;
         app.engine.mods.push(second);
@@ -2163,16 +2168,18 @@ mod tests {
         let (_data, mut app, _root) = execution_app();
         let id = app.engine.mods[0].id;
         for i in 0..20 {
-            app.engine.mods[0].queue.push(
+            app.engine.foreground.mods[0].queue.push(
                 app.engine
+                    .foreground
                     .store
                     .enqueue(id, &format!("Instruction {i}"))
                     .unwrap(),
             );
             let mut code_mod = app
                 .engine
+                .foreground
                 .store
-                .create_mod(app.engine.project_id, &format!("Codemod {i}"))
+                .create_mod(app.engine.foreground.project_id, &format!("Codemod {i}"))
                 .unwrap();
             code_mod.name = format!("Codemod {i}");
             app.engine
@@ -2381,11 +2388,11 @@ mod tests {
                 .iter()
                 .any(|a| a.action == Action::Publish)
         );
-        let state = app.engine.git_states.get_mut(&id).unwrap();
+        let state = app.engine.foreground.git_states.get_mut(&id).unwrap();
         state.base = "new-head".into();
         state.phase = "published".into();
         state.pr = Some("https://github.com/fixture/project/pull/1".into());
-        state.fingerprint = app.engine.mods[0]
+        state.fingerprint = app.engine.foreground.mods[0]
             .execution
             .as_ref()
             .unwrap()
@@ -2505,9 +2512,13 @@ mod tests {
         assert_eq!(app.history_offset, history_offset);
         key(&mut app, KeyCode::Char('g'), KeyModifiers::CONTROL);
         let id = app.engine.mods[0].id;
-        app.engine.mods[0]
-            .queue
-            .push(app.engine.store.enqueue(id, "Keep these edits").unwrap());
+        app.engine.foreground.mods[0].queue.push(
+            app.engine
+                .foreground
+                .store
+                .enqueue(id, "Keep these edits")
+                .unwrap(),
+        );
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert!(matches!(app.engine.view, View::Actions(Action::Review)));
         assert!(app.engine.workers.is_empty() && app.engine.mods[0].agent_review.is_none());
@@ -2767,8 +2778,9 @@ mod tests {
         screen(&mut app, 160, 36);
         assert_eq!(app.scroll.input.height, 5);
         let id = app.engine.mods[0].id;
-        app.engine.mods[0].queue.push(
+        app.engine.foreground.mods[0].queue.push(
             app.engine
+                .foreground
                 .store
                 .enqueue(id, "Keep the current icons")
                 .unwrap(),
@@ -2848,7 +2860,7 @@ mod tests {
     #[test]
     fn conflict_inspection_keeps_paths_owners_and_draft_visible() {
         let (_data, mut app, _root) = execution_app();
-        let m = &mut app.engine.mods[0];
+        let m = &mut app.engine.foreground.mods[0];
         let execution = m.execution.as_mut().unwrap();
         execution.status = "running".into();
         execution.checks.clear();
@@ -2860,7 +2872,7 @@ mod tests {
         conflict.files[0].owners = vec!["one".into()];
         run.conflict = Some(conflict);
         let id = run.id;
-        app.engine.auto_runs.insert(m.id);
+        app.engine.foreground.auto_runs.insert(m.id);
         assert_eq!(
             app.action_dock().status,
             "Working · resolving task 1 conflicts"
@@ -4220,9 +4232,13 @@ mod tests {
         assert!(expanded.contains("Inspected greeting"));
         assert_eq!(app.input.lines().join("\n"), "keep draft");
         let id = app.engine.mods[0].id;
-        app.engine.mods[0]
-            .queue
-            .push(app.engine.store.enqueue(id, "Request changes").unwrap());
+        app.engine.foreground.mods[0].queue.push(
+            app.engine
+                .foreground
+                .store
+                .enqueue(id, "Request changes")
+                .unwrap(),
+        );
         app.maintain_reviews().unwrap();
         assert_eq!(
             app.engine.mods[0].agent_review.as_ref().unwrap().status,
@@ -4657,9 +4673,9 @@ mod tests {
         }
         app.engine.view = View::Checks(0);
         assert!(app.review_due(0));
-        app.engine.mods[0]
+        app.engine.foreground.mods[0]
             .queue
-            .push(app.engine.store.enqueue(id, "an edit").unwrap());
+            .push(app.engine.foreground.store.enqueue(id, "an edit").unwrap());
         assert!(!app.review_due(0));
         app.engine.mods[0].queue.clear();
         app.engine.mods[0].steering.push("pending delivery".into());
@@ -5261,8 +5277,9 @@ mod tests {
             .clone();
         let other = app
             .engine
+            .foreground
             .store
-            .create_mod(app.engine.project_id, "Another goal")
+            .create_mod(app.engine.foreground.project_id, "Another goal")
             .unwrap();
         app.engine
             .store
@@ -5653,11 +5670,12 @@ mod tests {
         worker.effort = Some("high".into());
         let id = worker.id;
         app.engine.workers.insert(worker.id, worker);
-        let execution = app.engine.mods[0].execution.as_mut().unwrap();
+        let execution = app.engine.foreground.mods[0].execution.as_mut().unwrap();
         execution.status = "running".into();
         execution.tasks[0].status = "running".into();
         execution.tasks[0].worker = Some(id);
         app.engine
+            .foreground
             .workers
             .get_mut(&id)
             .unwrap()
@@ -5786,10 +5804,15 @@ mod tests {
             plan.tasks.push(task);
         }
         app.engine
+            .foreground
             .store
             .save_plan(
                 mod_id,
-                &app.engine.mods[0].planning.as_ref().unwrap().source,
+                &app.engine.foreground.mods[0]
+                    .planning
+                    .as_ref()
+                    .unwrap()
+                    .source,
                 &plan,
             )
             .unwrap();
@@ -5907,7 +5930,7 @@ mod tests {
         second.title = "Second task".into();
         second.worker = "muse".into();
         plan.tasks.push(second);
-        let execution = app.engine.mods[0].execution.as_mut().unwrap();
+        let execution = app.engine.foreground.mods[0].execution.as_mut().unwrap();
         execution.status = "running".into();
         execution.tasks[0].status = "running".into();
         execution.tasks[0].worker = Some(workers[0]);
@@ -5919,6 +5942,7 @@ mod tests {
         execution.tasks.push(second);
         for run in &execution.tasks {
             app.engine
+                .foreground
                 .workers
                 .get_mut(&run.worker.unwrap())
                 .unwrap()
@@ -5985,8 +6009,9 @@ mod tests {
         assert_eq!(app.companion_mood(), sprout::Mood::Finished);
         let other = app
             .engine
+            .foreground
             .store
-            .create_mod(app.engine.project_id, "Another goal")
+            .create_mod(app.engine.foreground.project_id, "Another goal")
             .unwrap();
         let record = app.engine.store.worker(other.id).unwrap();
         let worker =
@@ -6268,10 +6293,15 @@ mod tests {
             .unwrap();
         plan.tasks[0].checks = vec!["Suite".into(), "Browser flows".into(), "Real model".into()];
         app.engine
+            .foreground
             .store
             .save_plan(
                 id,
-                &app.engine.mods[0].planning.as_ref().unwrap().source,
+                &app.engine.foreground.mods[0]
+                    .planning
+                    .as_ref()
+                    .unwrap()
+                    .source,
                 &plan,
             )
             .unwrap();

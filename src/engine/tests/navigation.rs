@@ -1,7 +1,7 @@
 use super::*;
 
 fn destination(engine: &Engine) -> serde_json::Value {
-    serde_json::to_value(engine.response(None, None)).unwrap()["snapshot"]["navigation"].clone()
+    serde_json::to_value(engine.snapshot()).unwrap()["navigation"].clone()
 }
 
 #[test]
@@ -189,8 +189,7 @@ fn desktop_creation_keeps_saved_paused_and_running_mod_statuses() {
             engine.mods[0].planning.as_mut().unwrap().status = "running".into();
         }
         engine.command(Command::BeginCreation {}).unwrap();
-        let snapshot =
-            serde_json::to_value(engine.response(None, None)).unwrap()["snapshot"].clone();
+        let snapshot = serde_json::to_value(engine.snapshot()).unwrap().clone();
         let saved = snapshot["mods"]
             .as_array()
             .unwrap()

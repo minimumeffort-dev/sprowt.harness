@@ -1,4 +1,4 @@
-use super::{App, Engine, View};
+use super::{App, View};
 use crate::engine::api::Command;
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui_textarea::TextArea;
@@ -115,7 +115,7 @@ impl App {
                 self.project_command(Command::OpenProject { path });
                 if self.project_picker_error.is_none() {
                     self.project_picker = PickerPanel::Projects;
-                    let _ = self.with_engine(Engine::dismiss_picker);
+                    let _ = self.with_engine(|engine| engine.dismiss_picker());
                 }
             }
             Event::Key(key) => {
@@ -142,7 +142,7 @@ impl App {
                     self.project_command(Command::SelectProject { project_id: id });
                     if self.project_picker_error.is_none() {
                         self.project_picker = PickerPanel::Projects;
-                        self.with_engine(Engine::dismiss_picker)?;
+                        self.with_engine(|engine| engine.dismiss_picker())?;
                     }
                 }
                 KeyCode::Tab => {
@@ -166,10 +166,10 @@ impl App {
                 self.engine.view = View::Mods(0);
             }
             KeyCode::Esc => {
-                self.with_engine(Engine::dismiss_picker)?;
+                self.with_engine(|engine| engine.dismiss_picker())?;
             }
             KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.with_engine(Engine::dismiss_picker)?;
+                self.with_engine(|engine| engine.dismiss_picker())?;
             }
             KeyCode::Char('+') | KeyCode::Char('o')
                 if !key.modifiers.contains(KeyModifiers::CONTROL) =>

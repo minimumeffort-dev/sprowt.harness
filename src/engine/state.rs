@@ -57,6 +57,11 @@ impl Engine {
     pub fn state_summary(&self) -> Summary {
         use Action::*;
         use Phase::*;
+        if let Some(error) = &self.poll_error {
+            let mut state = Summary::new(NeedsYou, "Project update needs attention", Some(Failure));
+            state.error = Some(error.clone());
+            return state;
+        }
         let Some(m) = self
             .current_mod()
             .filter(|_| self.composer_view() != View::NewMod)

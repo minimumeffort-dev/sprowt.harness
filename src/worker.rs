@@ -70,6 +70,24 @@ impl Worker {
     }
 
     #[cfg(test)]
+    pub(crate) fn recording(
+        project: &Path,
+        code_mod: &CodeMod,
+        record: WorkerRecord,
+    ) -> io::Result<(
+        Self,
+        std::sync::mpsc::Sender<Event>,
+        std::sync::mpsc::Receiver<Action>,
+    )> {
+        let mut worker = Self::start(project, code_mod, record, Role::Planner, None)?;
+        let (client, events, actions) = Client::recording_events();
+        worker.client = Some(client);
+        worker.status = Status::Connecting;
+        worker.enabled = false;
+        Ok((worker, events, actions))
+    }
+
+    #[cfg(test)]
     pub fn start(
         project: &Path,
         code_mod: &CodeMod,
@@ -293,7 +311,16 @@ impl Worker {
             .map(|client| client.poll().collect::<Vec<_>>())
             .unwrap_or_default();
         for event in events {
-            self.receive(event, store, code_mod)?;
+            if let Err(error) = self.receive(event, store, code_mod) {
+                if let Some(client) = &mut self.client {
+                    client.shutdown();
+                }
+                // Keep saved delivery receipts; explicit retry recovers the provider session.
+                self.fail(format!(
+                    "Could not save worker progress: {error}. Retry work after storage recovers."
+                ));
+                return Err(error);
+            }
         }
         if self.role == Role::Reviewer {
             if dispatch && self.enabled && self.status == Status::Ready && self.pending.is_none() {

@@ -256,6 +256,7 @@
     "project_id": 1,
     "projects": [
       {
+        "activity": "idle",
         "id": 1,
         "mods": [
           {

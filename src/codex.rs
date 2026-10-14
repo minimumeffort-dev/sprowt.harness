@@ -151,8 +151,14 @@ impl Client {
 
     #[cfg(test)]
     pub(crate) fn recording() -> (Self, Receiver<Action>) {
+        let (client, _, inbox) = Self::recording_events();
+        (client, inbox)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn recording_events() -> (Self, Sender<Event>, Receiver<Action>) {
         let (actions, inbox) = mpsc::channel();
-        let (_, events) = mpsc::channel();
+        let (outgoing, events) = mpsc::channel();
         (
             Self {
                 actions,
@@ -164,6 +170,7 @@ impl Client {
                 active_task: Arc::new(AtomicI64::new(0)),
                 cancelled: Arc::new(AtomicBool::new(false)),
             },
+            outgoing,
             inbox,
         )
     }

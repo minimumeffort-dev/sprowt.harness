@@ -57,6 +57,7 @@ impl Engine {
                     .or_else(|| self.git_errors.current(m.id))
             })
             .or(self.notice.as_deref())
+            .or(self.poll_error.as_deref())
     }
 
     pub(crate) fn toggle_worker(&mut self) -> Result<()> {
