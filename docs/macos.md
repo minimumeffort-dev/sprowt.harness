@@ -49,6 +49,8 @@ The left icon rail contains **Projects**, **Open project** and **Closed codemods
 
 The **…** menu opens that project, switches between active and closed codemods, or removes it from the sidebar. [Removing a project](codemods.md#remove-a-project-from-the-sidebar) keeps its files and saved work. The adjacent compose icon creates a codemod in that project. Choosing another project's codemod switches the active project after pending drafts are saved. Agents and project operations continue in the background; returning keeps their existing sessions. A small dot marks background activity, and an attention icon marks a request or failure to inspect. Failed or locked destinations leave the current workspace intact. See [projects and codemods](codemods.md#create-and-manage-work).
 
+**Back**, **Forward**, and the sidebar toggle appear directly on the title bar as plain icon controls.
+
 Use the title bar's sidebar button or the sidebar command in **View** to hide or show the sidebar. **⌃⌘S** works while the sidebar is hidden. The icon rail remains visible. Your codemod selection and composer drafts stay in place.
 
 Use the title bar's **Back** and **Forward** arrows, **View → Back / Forward**, or **⌘[** and **⌘]** to revisit codemods and unfinished creation. [Navigation history](codemods.md#create-and-manage-work) is retained separately for each project until you quit. Inspections do not block navigation; confirmations still do.

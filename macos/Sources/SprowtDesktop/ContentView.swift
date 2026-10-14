@@ -51,14 +51,14 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
-                Button { session.navigate(back: true) } label: { Image(systemName: "chevron.left") }
+                Button { session.navigate(back: true) } label: { Image(systemName: "arrow.left") }
                     .disabled(!session.canGoBack).help("Back (⌘[)").accessibilityLabel("Back")
-                Button { session.navigate(back: false) } label: { Image(systemName: "chevron.right") }
+                Button { session.navigate(back: false) } label: { Image(systemName: "arrow.right") }
                     .disabled(!session.canGoForward).help("Forward (⌘])").accessibilityLabel("Forward")
                 Button { sidebarVisible.toggle() } label: {
                     Image(systemName: "sidebar.left")
                 }.help("Toggle sidebar (⌃⌘S)").accessibilityLabel("Toggle sidebar")
-            }
+            }.sharedBackgroundVisibility(.hidden)
         }
         .toolbarBackground(Theme.sidebar, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
