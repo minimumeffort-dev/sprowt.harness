@@ -1,29 +1,20 @@
 import Foundation
 
-enum InspectorTab: String, CaseIterable { case changes = "Changes", checks = "Checks", findings = "Findings", activity = "Activity" }
-
 struct WorkspaceSelection: Equatable {
     struct Context: Equatable { let project: String; let modId: Int64 }
-    enum Target: Equatable { case task(String), worker(Int64) }
-    enum Inspector: Equatable { case hidden, visible(InspectorTab, Target?) }
+    enum Target: Hashable { case task(String), worker(Int64) }
     enum Queue: Equatable { case closed, open }
 
     private(set) var context: Context?
     private var inspectionId: String?
-    var inspector = Inspector.visible(.activity, nil)
+    private(set) var tab = WorkspaceTab.conversation
+    private(set) var target: Target?
     var queue = Queue.closed
 
-    var inspectorTab: InspectorTab? {
-        if case .visible(let tab, _) = inspector { return tab }
-        return nil
+    mutating func show(_ tab: WorkspaceTab, target: Target? = nil) {
+        self.tab = tab
+        self.target = target
     }
-    var target: Target? {
-        if case .visible(_, let target) = inspector { return target }
-        return nil
-    }
-
-    mutating func show(_ tab: InspectorTab, target: Target? = nil) { inspector = .visible(tab, target) }
-    mutating func toggleInspector() { inspector = inspectorTab == nil ? .visible(.activity, nil) : .hidden }
     mutating func toggleQueue() { queue = queue == .closed ? .open : .closed }
 
     mutating func reconcile(_ snapshot: Snapshot) {
@@ -35,20 +26,21 @@ struct WorkspaceSelection: Equatable {
         guard let mod = snapshot.activeMod else { return }
         switch target {
         case .task(let id) where mod.plan?.tasks.contains(where: { $0.id == id }) != true:
-            inspector = .visible(inspectorTab ?? .activity, nil)
+            target = nil
         case .worker(let id) where !mod.workerDetails.contains(where: { $0.id == id }):
-            inspector = .visible(inspectorTab ?? .activity, nil)
+            target = nil
         default: break
         }
         if mod.queue.isEmpty { queue = .closed }
         if let dialog = snapshot.dialog, dialog.isInspection, inspectionId != dialog.id {
-            show(dialog.kind == "diff" ? .changes : dialog.kind == "findings" ? .findings : .activity)
+            show(dialog.workspaceTab)
         }
         inspectionId = snapshot.dialog.flatMap { $0.isInspection ? $0.id : nil }
     }
 }
 
 extension EngineDialog {
+    var workspaceTab: WorkspaceTab { kind == "diff" ? .changes : kind == "findings" ? .findings : .agents }
     var isInspection: Bool { ["diff", "failure", "sync_details", "findings"].contains(kind) && confirmLabel == nil }
 }
 

@@ -17,13 +17,15 @@ fn blocked_partial_review_terminal_caption_keeps_reason_and_fix_action() {
         "{text}"
     );
     assert_eq!(app.action_dock().primary, Some(Action::FixIssues));
-    let review = app
-        .timeline_items()
-        .into_iter()
-        .find(|item| item.key == Key::Review)
+    app.view = View::Chat;
+    screen(&mut app, 160, 70);
+    app.activate_control(Control::Tab(WorkspaceView::Findings))
         .unwrap();
-    assert_eq!(review.title, "Review incomplete · 1 known issue");
-    assert_eq!(review.action, Some(Action::FixIssues));
+    let text = rows(&screen(&mut app, 160, 70)).join("\n");
+    assert!(
+        text.contains("Review incomplete")
+            && text.contains("required follow-up inspection could not finish")
+    );
     assert!(!app.engine.can_publish());
 }
 

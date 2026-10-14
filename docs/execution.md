@@ -145,7 +145,7 @@ A late peer acknowledgement with no commands retains the last valid report. A ne
 
 ## Fix a failed combined check
 
-**Ctrl+T → 2 · Checks → x** or **Ctrl+G → x** chooses **Fix failed check**, when the failure has a recorded owner and command.
+Open **3 · Checks** while exploring the workspace. **Ctrl+G → x** chooses **Fix failed check** when the failure has a recorded owner and command.
 
 The original worker receives the latest combined source, scripts, command and failure output. It can repair source within its scope or correct a faulty check while preserving coverage. Completed peers keep their work and owners.
 

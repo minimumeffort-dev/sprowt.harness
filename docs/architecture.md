@@ -45,7 +45,7 @@ The terminal calls the Rust engine directly. The SwiftUI app starts a bundled co
 
 | Component | Owns | Read more |
 | --- | --- | --- |
-| Terminal | Evidence Workbench, stage selection, drafts and contextual actions | [Terminal](terminal.md) |
+| Terminal | Workspace views, evidence inspection, drafts and contextual actions | [Terminal](terminal.md) |
 | macOS interface | Native project picker, codemod views, composer and confirmations | [macOS app](macos.md) |
 | Shared engine | Workflow transitions, allowed actions and controller lifetime | [Development](development.md#source-map) |
 | Planner | Contracts, tasks, scopes, dependencies and checks | [Planning](planning.md) |

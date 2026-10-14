@@ -4,14 +4,14 @@ A local coding harness with terminal and native macOS interfaces that takes a so
 
 **[Get started →](docs/quickstart.md)** · [Documentation](docs/README.md) · [Troubleshooting](docs/troubleshooting.md)
 
-![Evidence Workbench: stages on the left, selected evidence on the right, and a message dock with the next action below.](docs/assets/terminal-overview.svg)
+![Terminal workspace with Conversation, Changes, Checks, Findings and Agents views above the message dock.](docs/assets/terminal-overview.svg)
 
 *Rendered terminal layout with sample tasks and results.*
 
 ## From request to PR
 
 1. **Describe the outcome.** The planner reads your project and splits the work into tasks with file scopes, dependencies and checks.
-2. **Follow the work.** The controller prepares the environment and records baseline tests. Up to two executors work in parallel. Select a stage in the Evidence Workbench to read its summary, checks or activity.
+2. **Follow the work.** The controller prepares the environment and records baseline tests. Up to two executors work in parallel. Read the plan and messages in **Conversation**, then switch to **Changes**, **Checks**, **Findings** or **Agents** for evidence.
 3. **Verify and review.** The harness reruns checks against the combined changes. A fresh reviewer examines that version. Findings have owners and explicit fix or investigation actions.
 4. **Publish when ready.** Passing checks and a clean current review unlock publication. A model writes a concise commit title and PR summary from the diff. Preview the text, confirm publication, then keep editing to update the PR. Review comments and failing GitHub checks on the open PR appear beside the local evidence while the harness is open.
 
@@ -50,7 +50,7 @@ For the native SwiftUI app, build with Xcode 26 or newer:
 open target/macos/Sprowt.app
 ```
 
-The native workspace has one feed — plan, task checklist and conversation — with a side pane for changes, checks, findings and activity. Both interfaces use the same Rust engine and saved work. Close one before opening the same project in the other. See the [macOS guide](docs/macos.md).
+Both interfaces have the same five workspace views, with the composer available while you inspect evidence. The native sidebar switches codemods. Both use the same Rust engine and saved work. Close one before opening the same project in the other. See the [macOS guide](docs/macos.md).
 
 ## Find what you need
 
@@ -58,7 +58,7 @@ The native workspace has one feed — plan, task checklist and conversation — 
 | --- | --- |
 | Make my first PR | [Quickstart](docs/quickstart.md) |
 | Use the native app | [macOS guide](docs/macos.md) |
-| Navigate the timeline and inspect results | [Terminal guide](docs/terminal.md) |
+| Switch workspace views and inspect results | [Terminal guide](docs/terminal.md) |
 | Send edits, steer workers or reopen work | [Codemods and messages](docs/codemods.md) |
 | Reuse a project's setup commands | [Environment recipe](docs/environments.md#add-a-project-recipe) |
 | Understand or fix review findings | [Review and repairs](docs/review.md) |

@@ -29,6 +29,7 @@ pub(crate) mod state;
 mod sync;
 mod tasks;
 mod workers;
+pub mod workspace_view;
 pub use actions::{Action, ActionDock, ActionItem, Tone};
 pub use navigation::{Destination, NavigationSnapshot};
 pub use tasks::CheckOrigin;

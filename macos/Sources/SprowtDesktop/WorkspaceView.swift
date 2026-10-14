@@ -11,20 +11,33 @@ struct WorkspaceView: View {
         VStack(spacing: 0) {
             header
             WorkspaceDivider()
-            HSplitView {
-                VStack(spacing: 0) {
-                    ScrollView {
-                        FeedView(session: session, mod: mod)
-                            .padding(Theme.inset).frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .id(mod.id)
-                    composer
-                }.frame(minWidth: 350, maxWidth: .infinity)
-                if session.workspace.inspectorTab != nil {
-                    InspectorView(session: session, mod: mod)
-                        .frame(minWidth: 290, idealWidth: 330, maxWidth: 350)
+            HStack(spacing: 4) {
+                ForEach(session.snapshot?.workspaceViews ?? WorkspaceTab.allCases, id: \.self) { tab in
+                    Button {
+                        session.workspace.show(tab)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text(tab.label)
+                            if tab == .agents && !mod.workerDetails.isEmpty {
+                                Text("\(mod.workerDetails.count)").foregroundStyle(Theme.muted)
+                            }
+                        }
+                    }.buttonStyle(WorkspaceButtonStyle(selected: session.workspace.tab == tab))
+                        .accessibilityAddTraits(session.workspace.tab == tab ? .isSelected : [])
+                        .accessibilityLabel(tab == .agents && !mod.workerDetails.isEmpty ? "Agents, \(mod.workerDetails.count)" : tab.label)
                 }
-            }
+                Spacer(minLength: 0)
+            }.padding(.horizontal, Theme.inset).padding(.vertical, 8)
+            WorkspaceDivider()
+            ScrollView {
+                if session.workspace.tab == .conversation && session.workspace.target == nil {
+                    FeedView(session: session, mod: mod)
+                        .padding(Theme.inset).frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    WorkspaceEvidenceView(session: session, mod: mod)
+                }
+            }.id("\(mod.id):\(session.workspace.tab.rawValue):\(String(describing: session.workspace.target))")
+            composer
         }
         .onChange(of: session.workspace.queue) { _, state in if state == .closed { composerFocused = true } }
         .onChange(of: mod.id) { _, _ in composerFocused = true }
@@ -38,17 +51,25 @@ struct WorkspaceView: View {
                 HStack(spacing: 6) {
                     Circle().fill(session.snapshot?.phase.color ?? Theme.muted).frame(width: 5, height: 5)
                     Text(session.snapshot?.status ?? "").lineLimit(1)
-                    if !mod.workerDetails.isEmpty { Text("· \(mod.workerDetails.count) agents") }
                 }.font(Theme.font(11)).foregroundStyle(Theme.muted)
+                if let detail = session.snapshot?.detail, !detail.isEmpty {
+                    Text(detail).font(Theme.font(11)).foregroundStyle(Theme.muted).textSelection(.enabled)
+                }
+                if let evidence = session.snapshot?.evidence, !evidence.isEmpty {
+                    Text(evidence).font(Theme.font(11)).foregroundStyle(Theme.muted).textSelection(.enabled)
+                }
             }
             Spacer(minLength: 8)
+            if let dialog = session.dialog, dialog.isInspection {
+                Button("Done") { session.enqueue(Command(type: "cancel")) }
+                    .buttonStyle(WorkspaceButtonStyle()).keyboardShortcut(.cancelAction)
+                    .accessibilityLabel("Close \(dialog.title)")
+                    .disabled(!session.editable || session.busy)
+            }
             if let action = primaryAction {
                 Button { session.perform(action) } label: { Label(action.label, systemImage: action.symbol) }
                     .buttonStyle(WorkspaceButtonStyle()).overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.line))
                     .disabled(!session.interactive || session.busy)
-            }
-            GlyphButton(symbol: "sidebar.right", label: session.workspace.inspectorTab == nil ? "Show workspace" : "Hide workspace", selected: session.workspace.inspectorTab != nil) {
-                session.workspace.toggleInspector()
             }
             if let actions = session.snapshot?.actions, actions.count > 1 {
                 Menu {

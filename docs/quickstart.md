@@ -88,7 +88,7 @@ Keep the default command behavior unchanged.
 
 Press **Ctrl+J** for a newline and **Enter** to submit. The codemod appears as **New codemod** until the planner generates its short title. Your complete request stays in the conversation. See [codemods and messages](codemods.md#create-and-manage-work).
 
-**Expected:** a numbered plan appears and execution starts automatically. The timeline follows tasks, combined checks and review. You do not need to choose worker counts or assign providers.
+**Expected:** a numbered plan appears in **Conversation** and execution starts automatically. **Checks**, **Findings** and **Agents** show the results and worker state. You do not need to choose worker counts or assign providers.
 
 | To… | Use |
 | --- | --- |
@@ -107,7 +107,7 @@ After task checks pass, the harness combines the changes and reruns checks. A fr
 - **Clean review:** inspect the diff with **Ctrl+D** and proceed to publication.
 - **Confirmed findings:** choose **Fix review issues** with **Ctrl+G → x**. Repairs and fresh review run within a bounded budget.
 - **Uncertain findings:** choose **Investigate findings** before making source changes.
-- **Failed checks:** open **Ctrl+T → 2 · Checks** and follow the suggested action.
+- **Failed checks:** press **Tab**, then **3 · Checks**, and follow the suggested action.
 
 Read [Review and repairs](review.md) for closure rules and [Troubleshooting](troubleshooting.md) if work stops.
 
@@ -123,7 +123,7 @@ gh auth setup-git
 
 When the dock says **Ready to publish**, press **Ctrl+S**. Review the generated commit title, PR title, summary and verification, then confirm publication. If needed, the harness offers to connect a repository or create a private one.
 
-**Expected:** the PR URL is saved and the timeline shows publication. Checks and a clean current review are required for every new or updated PR. The harness does not merge PRs automatically.
+**Expected:** the PR URL is saved and the workspace shows publication. Checks and a clean current review are required for every new or updated PR. The harness does not merge PRs automatically.
 
 ## Keep working
 

@@ -4,7 +4,6 @@ mod formatting;
 mod inspector;
 mod navigation;
 mod tasks;
-mod timeline;
 mod workbench;
 
 use std::time::Duration;
@@ -90,7 +89,7 @@ pub fn draw(
 ) -> Rect {
     app.scroll.begin(app.view);
     app.controls.begin(app.view);
-    app.timeline.inspector.area = Rect::default();
+    app.workspace.inspector.area = Rect::default();
     let area = frame.area().inner(Margin::new(2, 1));
     let composer_view = app.composer_view();
     let show_dock = matches!(composer_view, View::Chat | View::NewMod);
@@ -101,20 +100,6 @@ pub fn draw(
     let dock_header = dock::header(&dock, dock_width, elapsed, menu_open);
     let dock_hints = dock::hints(app, dock_width, menu_open);
     let read_only = matches!(composer_view, View::Chat) && app.read_only();
-    let mut identities: Vec<_> = app.active_workers().collect();
-    if identities.is_empty() {
-        identities.extend(app.current_worker());
-    }
-    let identities = Paragraph::new(
-        identities
-            .iter()
-            .map(|worker| {
-                Line::from(worker.label(worker.busy().then(|| activity_glyph(elapsed))))
-                    .fg(KEY_HINT)
-            })
-            .collect::<Vec<_>>(),
-    )
-    .wrap(Wrap { trim: false });
     let header_height = if area.width >= 100 { 4 } else { 2 };
     let mod_height = u16::from(!matches!(
         composer_view,
@@ -193,34 +178,11 @@ pub fn draw(
         Line::from(fit_name(&project, project_area.width)).fg(MUTED),
         project_area,
     );
-    let status = app.local_status();
-    let width = Line::from(status.clone()).width() as u16;
-    if heading.width > width + 18 {
-        frame.render_widget(
-            Line::from(status).fg(KEY_HINT).right_aligned(),
-            Rect {
-                x: area.right().saturating_sub(width + 2),
-                width,
-                height: 1,
-                ..header
-            },
-        );
-    }
-    frame.render_widget(
-        identities,
-        Rect {
-            y: heading.y + 2,
-            height: heading.height.saturating_sub(2),
-            ..heading
-        },
-    );
-
     let selector = draw_mod_selector(
         frame,
         app.current_mod()
             .map_or("", |code_mod| code_mod.name.as_str()),
         mod_row,
-        &app.worker_activity(),
         matches!(
             app.view,
             View::Mods(_) | View::DeleteMod(_) | View::CloseMod(_)
@@ -268,7 +230,7 @@ pub fn draw(
         ])
         .areas(content);
         draw_conversation(frame, app, conversation, elapsed);
-        if !app.has_timeline() {
+        if !app.has_workspace() {
             app.scroll.content = conversation;
         }
         draw_queue_preview(frame, app, queue);
@@ -443,7 +405,8 @@ pub fn draw(
     }
     if show_dock {
         let composer_focused = !menu_open
-            && (!app.has_timeline() || app.timeline.focus == crate::app::timeline::Focus::Composer);
+            && (!app.has_workspace()
+                || app.workspace.focus == crate::app::workspace_navigation::Focus::Composer);
         let block = Block::bordered()
             .border_type(BorderType::Rounded)
             .border_style(Style::new().fg(if composer_focused { ACCENT } else { BORDER }))
@@ -711,32 +674,13 @@ fn draw_pr_feedback_editor(frame: &mut Frame, app: &mut App, index: usize, area:
     );
 }
 
-fn draw_mod_selector(
-    frame: &mut Frame,
-    name: &str,
-    area: Rect,
-    workers: &[String],
-    open: bool,
-) -> Rect {
-    let [label, selector, status] = Layout::horizontal([
+fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, open: bool) -> Rect {
+    let [label, selector, _status] = Layout::horizontal([
         Constraint::Length(3),
         Constraint::Length(area.width.saturating_sub(3).min(54)),
         Constraint::Min(0),
     ])
     .areas(area);
-    if !workers.is_empty() {
-        let activity = format!("  {}", workers.join(" │ "));
-        let count = workers.len();
-        let label = if Line::from(activity.clone()).width() <= status.width as usize {
-            activity
-        } else {
-            format!(
-                "  {count} {} running",
-                if count == 1 { "worker" } else { "workers" }
-            )
-        };
-        frame.render_widget(Line::from(label).fg(ACCENT), status);
-    }
     frame.render_widget(Line::from(MOD_GLYPH).fg(ACCENT), label);
     frame.render_widget(
         Block::new()
@@ -2165,8 +2109,8 @@ fn conversation_blocks<'a>(
 }
 
 fn draw_conversation(frame: &mut Frame, app: &mut App, area: Rect, elapsed: Option<Duration>) {
-    if app.has_timeline() {
-        workbench::draw(frame, app, area, elapsed);
+    if app.has_workspace() {
+        workbench::draw(frame, app, area);
         return;
     }
     app.page_size = area.height.max(1);

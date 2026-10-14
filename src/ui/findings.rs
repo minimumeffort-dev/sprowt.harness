@@ -153,13 +153,6 @@ fn saved_findings(text: &str) -> Option<Vec<crate::review::Finding>> {
         .filter(|findings| !findings.is_empty())
 }
 
-pub(super) fn saved_summary(text: &str) -> String {
-    saved_findings(text).map_or_else(
-        || text.lines().next().unwrap_or(text).to_owned(),
-        |findings| format!("{} review findings · {}", findings.len(), findings[0].title),
-    )
-}
-
 pub(super) fn saved_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     if let Some(findings) = saved_findings(text) {
         let mut lines =

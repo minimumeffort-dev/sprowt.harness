@@ -6,9 +6,9 @@ The harness reuses verified setup while keeping each codemod's source and runtim
 
 ## Read startup timings
 
-1. Select a timeline step and open **Details**.
-2. Choose **4 · Activity**.
-3. Read **Recorded setup timings** above saved updates.
+1. Open the codemod's workspace.
+2. Choose **5 · Agents** in the terminal, or **Agents** in the app.
+3. Press **e** in the terminal to show worker details and timings, or expand **Recorded timings** in the app.
 
 For example, recorded evidence can show:
 
@@ -67,7 +67,7 @@ flowchart LR
 
 The saved states are `Preparing`, `EmptyReady` and `BoundReady`. Binding uses the captured codemod folder and writes `BoundReady` only after source and task worktrees are prepared. A legacy `ready: true` marker means `BoundReady`.
 
-Pause, replan, close and quit cancel and join early preparation. Failures appear in **Activity**; the planner can still finish and execution can retry ordinary startup. Healthy VMs remain owned for 90 seconds without enabled or busy workers. Idle disabled clients are then retired; worker records remain saved. Enabled workers waiting for a dependency keep their VM.
+Pause, replan, close and quit cancel and join early preparation. Saved startup failures remain in the terminal's **Activity** details; the planner can still finish and execution can retry ordinary startup. Healthy VMs remain owned for 90 seconds without enabled or busy workers. Idle disabled clients are then retired; worker records remain saved. Enabled workers waiting for a dependency keep their VM.
 
 ## VM resource budget
 
@@ -147,6 +147,6 @@ Use the observed phase to choose the next step:
 | Image build | Let the first shared build finish; subsequent VMs reuse it |
 | Dependency setup | Check the project's [environment recipe](environments.md) and setup output |
 | Provider preparation or connection | Inspect [provider startup](troubleshooting.md#worker-startup) and the saved failure |
-| Checks | Open **2 · Checks** for command, duration and output; follow [check recovery](troubleshooting.md#checks-fail-or-take-too-long) |
+| Checks | Open **3 · Checks** in the terminal or **Checks** in the app for command, duration and output; follow [check recovery](troubleshooting.md#checks-fail-or-take-too-long) |
 
 Do not infer a hang from elapsed time alone. Inspect the current operation and its last observed update before retrying.

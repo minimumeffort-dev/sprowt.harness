@@ -6,6 +6,7 @@ use serde::Serialize;
 pub struct Snapshot {
     pub project: String,
     pub navigation: super::NavigationSnapshot,
+    pub workspace_views: [super::workspace_view::WorkspaceView; 5],
     pub mods: Vec<ModSummary>,
     pub active_mod: Option<ModDetail>,
     pub status: String,
@@ -26,13 +27,13 @@ pub struct ModSummary {
 }
 #[derive(Serialize)]
 pub struct WorkerSummary {
-    id: i64,
-    provider: String,
-    identity: String,
-    role: &'static str,
-    task_id: Option<String>,
-    state: &'static str,
-    activity: String,
+    pub(crate) id: i64,
+    pub(crate) provider: String,
+    pub(crate) identity: String,
+    pub(crate) role: &'static str,
+    pub(crate) task_id: Option<String>,
+    pub(crate) state: &'static str,
+    pub(crate) activity: String,
 }
 #[derive(Serialize)]
 pub struct ModDetail {
@@ -53,10 +54,12 @@ pub struct ModDetail {
     pr_feedback_error: Option<String>,
     workers: Vec<String>,
     worker_details: Vec<WorkerSummary>,
+    timings: String,
 }
 #[derive(Serialize)]
 pub struct Message {
     role: String,
+    author: String,
     body: String,
     model: Option<String>,
     effort: Option<String>,
@@ -161,6 +164,7 @@ impl From<&crate::store::Message> for Message {
     fn from(message: &crate::store::Message) -> Self {
         Self {
             role: message.role.clone(),
+            author: message.author(),
             body: message.body.clone(),
             model: message.model.clone(),
             effort: message.effort.clone(),
@@ -194,7 +198,7 @@ impl Check {
 }
 
 impl Engine {
-    fn worker_summaries(&self, code_mod: &CodeMod) -> Vec<WorkerSummary> {
+    pub(crate) fn worker_summaries(&self, code_mod: &CodeMod) -> Vec<WorkerSummary> {
         self.workers
             .values()
             .filter(|worker| worker.mod_id == code_mod.id)
@@ -366,6 +370,7 @@ impl Engine {
             .sort_by_key(|item| Some(item.action) != dock.primary);
         let phase = self.state_summary().phase;
         Snapshot {
+            workspace_views: super::workspace_view::WorkspaceView::ALL,
             project: self.project.display().to_string(),
             navigation: self.navigation_snapshot(),
             mods: self
@@ -403,13 +408,7 @@ impl Engine {
                 messages: m
                     .messages
                     .iter()
-                    .filter(|v| {
-                        m.shows_message(v)
-                            && !v
-                                .item_id
-                                .as_deref()
-                                .is_some_and(|id| id.starts_with("plan:"))
-                    })
+                    .filter(|v| m.shows_conversation_message(v))
                     .map(Message::from)
                     .chain(
                         m.coordination
@@ -417,13 +416,19 @@ impl Engine {
                             .filter(|v| m.needs_answer(v))
                             .map(|v| Message {
                                 role: "question".into(),
+                                author: "question".into(),
                                 body: format!("{}: {}", v.from_task, v.body),
                                 model: None,
                                 effort: None,
                             }),
                     )
                     .collect(),
-                history: m.messages.iter().map(Message::from).collect(),
+                history: m
+                    .messages
+                    .iter()
+                    .filter(|v| !m.shows_conversation_message(v))
+                    .map(Message::from)
+                    .collect(),
                 queue: m
                     .queue
                     .iter()
@@ -543,6 +548,7 @@ impl Engine {
                     .and_then(|target| target.pr_feedback_error.clone()),
                 workers: self.worker_activity(),
                 worker_details: self.worker_summaries(m),
+                timings: m.diagnostics.timing_packet(None),
             }),
             status: dock.status,
             phase: match phase {

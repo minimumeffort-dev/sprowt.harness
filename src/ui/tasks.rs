@@ -143,6 +143,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         return Vec::new();
     };
     let mut lines = wrap_line(Line::from(task.task.title.clone()).bold(), width, 0);
+    lines.extend(indented_text(&task.task.outcome, width, 0));
     lines.extend(wrap_line(Line::from(task.identity).fg(KEY_HINT), width, 0));
     lines.push(Line::from(Span::styled(
         format!(" {} ", task.state),

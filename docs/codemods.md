@@ -13,7 +13,7 @@ Use **Alt+←** and **Alt+→** to revisit codemods or an unfinished creation dr
 | Action | How | Result |
 | --- | --- | --- |
 | Create | Choose **New codemod**, describe it, press Enter | Planning and execution start after any required Git confirmation |
-| Switch | Select an active codemod, press Enter | Its timeline and draft return |
+| Switch | Select an active codemod, press Enter | Its conversation and draft return |
 | Read closed history | Tab to closed codemods, press Enter | Opens saved work without reopening |
 | Close | Select an active codemod, press `c`, confirm | Checkpoints source and removes its VM; history stays |
 | Reopen | Tab to closed codemods, select one, press `r` | Restores source; unfinished work waits for resume |

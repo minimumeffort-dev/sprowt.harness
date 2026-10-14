@@ -134,9 +134,9 @@ Existing recipes without `network_domains` still run under the existing policy. 
 | Baseline tests | Save the failure and let the worker repair the starting source |
 | Source or lockfile changed during preparation | Preserve the edits, list changed paths and pause; choose **Revise setup recipe** |
 
-Select **Implementation → 2 · Checks** to read saved setup failures before the task checks. **Inspect failure** opens the affected task. Press **e** for the complete preparation output, command, elapsed time and limit. The failure remains visible after restart. Preparation results never count as completion checks.
+Select **3 · Checks** while exploring the workspace to read saved setup failures before the task checks. **Inspect failure** opens the affected task. Press **e** for the complete preparation output, command, elapsed time and limit. The failure remains visible after restart. Preparation results never count as completion checks.
 
-For commands that change source, choose **Ctrl+G → v · Revise setup recipe** from the workbench or task details. The correction includes the recipe, changed paths and evidence. Press **e** in task details for the complete path list and command output. An unchanged retry does not correct those commands. Transient download failures still offer retry; blocked downloads require [network approval](sandbox.md#downloads).
+For commands that change source, choose **Ctrl+G → v · Revise setup recipe** from the workspace or task details. The correction includes the recipe, changed paths and evidence. Press **e** in task details for the complete path list and command output. An unchanged retry does not correct those commands. Transient download failures still offer retry; blocked downloads require [network approval](sandbox.md#downloads).
 
 Preparation evidence also reports copied bytes, dependency reuse and cache rejection. Results belong to that attempt's source and worker HOME.
 

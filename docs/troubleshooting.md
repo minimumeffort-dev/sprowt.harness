@@ -72,7 +72,7 @@ Select the failed task in **Details → Tasks**, then press **r**. Independent p
 
 ## Project preparation fails
 
-Read the saved failure in the dock or **Implementation → 2 · Checks**. Choose **Inspect failure**, or press **Ctrl+G → f**, to open the affected task. Press **e** for its full preparation output, command, elapsed time and limit. These results survive restart.
+Read the saved failure in the dock or **3 · Checks** while exploring the workspace. Choose **Inspect failure**, or press **Ctrl+G → f**, to open the affected task. Press **e** for its full preparation output, command, elapsed time and limit. These results survive restart.
 
 | Failure | Next step |
 | --- | --- |
@@ -91,7 +91,7 @@ Pytest, mypy and Ruff cache updates do not count as code changes, including cach
 
 ## Checks fail or take too long
 
-Open **Ctrl+T → 2 · Checks**, then press **e** for the saved command, output, elapsed time and limit.
+Press **Tab**, then **3 · Checks** and **e** for the saved command, output, elapsed time and limit.
 
 | Evidence | Appropriate action |
 | --- | --- |

@@ -38,8 +38,8 @@ struct SprowtApp: App {
                 Button("Forward") { session.navigate(back: false) }
                     .keyboardShortcut("]").disabled(!session.canGoForward)
                 Divider()
-                ForEach(Array(InspectorTab.allCases.enumerated()), id: \.element.rawValue) { index, tab in
-                    Button(tab.rawValue) { session.workspace.show(tab, target: session.workspace.target) }
+                ForEach(Array(WorkspaceTab.allCases.enumerated()), id: \.element.rawValue) { index, tab in
+                    Button(tab.label) { session.workspace.show(tab) }
                         .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
                         .disabled(session.active == nil)
                 }

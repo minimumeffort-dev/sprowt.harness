@@ -1,6 +1,6 @@
 import SwiftUI
 
-struct InspectorView: View {
+struct WorkspaceEvidenceView: View {
     @Bindable var session: Session
     let mod: CodemodDetail
 
@@ -20,48 +20,31 @@ struct InspectorView: View {
     private var inspection: EngineDialog? { session.dialog.flatMap { $0.isInspection ? $0 : nil } }
 
     var body: some View {
-        let selectedTab = session.workspace.inspectorTab
+        let selectedTab = session.workspace.tab
         let currentInspection = inspection
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 0) {
-                ForEach(InspectorTab.allCases, id: \.self) { tab in
-                    Button(tab.rawValue) { session.workspace.show(tab, target: session.workspace.target) }
-                        .buttonStyle(WorkspaceButtonStyle(selected: selectedTab == tab))
-                        .accessibilityAddTraits(selectedTab == tab ? .isSelected : [])
-                }
-                Spacer(minLength: 0)
-            }.padding(.horizontal, 8).padding(.vertical, 8)
-            WorkspaceDivider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    if let inspection = currentInspection {
-                        HStack(alignment: .top, spacing: 8) {
-                            Text(inspection.title).font(Theme.font(16, weight: .semibold))
-                            Spacer(minLength: 4)
-                            Button("Done") { session.enqueue(Command(type: "cancel")) }
-                                .buttonStyle(WorkspaceButtonStyle()).keyboardShortcut(.cancelAction)
-                                .disabled(!session.editable || session.busy)
-                        }
-                    }
-                    if let inspection = currentInspection,
-                       selectedTab == (inspection.kind == "diff" ? .changes : inspection.kind == "findings" ? .findings : .activity) {
-                        Text(inspection.body).font(inspection.kind == "diff" ? .system(size: 11, design: .monospaced) : Theme.font(12))
-                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        panel(selectedTab)
-                    }
-                }.padding(18).frame(maxWidth: .infinity, alignment: .leading)
+        return VStack(alignment: .leading, spacing: 18) {
+            if session.workspace.target != nil {
+                Button("Back to \(selectedTab.label)") { session.workspace.show(selectedTab) }
+                    .buttonStyle(WorkspaceButtonStyle())
             }
-        }.background(Theme.panel)
+            if let inspection = currentInspection, selectedTab == inspection.workspaceTab {
+                Text(inspection.title).font(Theme.font(16, weight: .semibold))
+                Text(inspection.body).font(inspection.kind == "diff" ? .system(size: 11, design: .monospaced) : Theme.font(12))
+                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                panel(selectedTab)
+            }
+        }.padding(Theme.inset).frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    @ViewBuilder private func panel(_ tab: InspectorTab?) -> some View {
+    @ViewBuilder private func panel(_ tab: WorkspaceTab) -> some View {
         switch tab {
         case .changes: changes
         case .checks: checks
         case .findings: findings
-        case .activity: activity
-        case nil: EmptyView()
+        case .agents: agents
+        case .conversation:
+            if let task = selectedTask { TaskInspectorView(session: session, task: task) }
         }
     }
 
@@ -105,46 +88,49 @@ struct InspectorView: View {
             } else {
                 SectionHeading(title: "Saved checks", detail: "\(mod.checks.count) saved")
                 ChecksView(checks: mod.checks)
+                ForEach(mod.plan?.tasks.filter { $0.preparation != nil } ?? []) { task in
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(task.title).font(Theme.font(12, weight: .medium))
+                        PreparationView(preparation: task.preparation)
+                    }
+                }
             }
         }
     }
 
-    private var activity: some View {
+    private var agents: some View {
         VStack(alignment: .leading, spacing: 18) {
-            SectionHeading(title: "Work log", detail: mod.workerDetails.isEmpty ? "" : "\(mod.workerDetails.count) agents")
+            if !mod.timings.isEmpty {
+                DisclosureGroup("Recorded timings") {
+                    Text(mod.timings).font(.system(size: 11, design: .monospaced)).textSelection(.enabled)
+                }.font(Theme.font(11)).foregroundStyle(Theme.muted)
+            }
             if let worker = selectedWorker {
-                WorkerActivityView(worker: worker, showDetails: selectedTask == nil)
+                WorkerActivityView(worker: worker, showDetails: true)
                 if let task = selectedTask { TaskInspectorView(session: session, task: task) }
-            } else if let task = selectedTask {
-                TaskInspectorView(session: session, task: task)
             } else {
+                if mod.workerDetails.isEmpty {
+                    Text("No agents yet.").font(Theme.font(12)).foregroundStyle(Theme.muted)
+                }
                 ForEach(mod.workerDetails) { worker in
-                    Button { session.workspace.show(.activity, target: .worker(worker.id)) } label: {
-                        WorkerActivityView(worker: worker)
+                    Button { session.workspace.show(.agents, target: .worker(worker.id)) } label: {
+                        WorkerActivityView(worker: worker, taskTitle: mod.plan?.tasks.first(where: { $0.id == worker.taskId })?.title)
                     }.buttonStyle(WorkspaceButtonStyle())
-                }
-                ForEach(mod.plan?.tasks.filter { $0.latest != nil } ?? []) { task in
-                    VStack(alignment: .leading, spacing: 9) {
-                        Button(task.title) { session.workspace.show(.activity, target: .task(task.id)) }
-                            .buttonStyle(WorkspaceButtonStyle())
-                        if let latest = task.latest { MessageView(message: latest) }
-                    }
-                    WorkspaceDivider()
-                }
-                if mod.plan?.tasks.contains(where: { $0.latest != nil }) != true {
-                    ForEach(Array(mod.messages.enumerated()), id: \.offset) { _, message in MessageView(message: message) }
                 }
             }
         }
     }
+
 }
 
 private struct WorkerActivityView: View {
     let worker: WorkerSummary
+    var taskTitle: String?
     var showDetails = false
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Label("\(worker.provider.capitalized) · \(worker.role)", systemImage: "arrow.turn.down.right").font(Theme.font(12, weight: .medium))
+            if let taskTitle { Text(taskTitle).font(Theme.font(12)) }
             Text(worker.state).font(Theme.font(11)).foregroundStyle(Theme.muted)
             if !worker.activity.isEmpty { Text(worker.activity).font(Theme.font(12)).foregroundStyle(Theme.muted).textSelection(.enabled) }
             if showDetails {
@@ -165,6 +151,7 @@ struct TaskInspectorView: View {
             Text(task.title).font(Theme.font(16, weight: .semibold)).textSelection(.enabled)
             Label(task.status, systemImage: task.hasCurrentFailure ? "exclamationmark.circle" : task.completed ? "checkmark" : "circle")
                 .font(Theme.font(11)).foregroundStyle(task.hasCurrentFailure ? Theme.red : task.completed ? Theme.green : Theme.muted)
+            Text(task.outcome).font(Theme.font(12)).textSelection(.enabled)
             if !task.detail.isEmpty { Text(task.detail).font(Theme.font(12)).textSelection(.enabled) }
             if let error = task.error { Text(error).font(Theme.font(12)).foregroundStyle(Theme.red).textSelection(.enabled) }
             if let latest = task.latest { MessageView(message: latest) }

@@ -32,6 +32,7 @@ enum ProtocolError: LocalizedError {
 struct Snapshot: Decodable, Sendable {
     let project: String
     let navigation: NavigationState
+    let workspaceViews: [WorkspaceTab]
     let phase: WorkflowPhase
     let mods: [CodemodSummary]
     let activeMod: CodemodDetail?
@@ -90,6 +91,7 @@ struct CodemodDetail: Decodable, Identifiable, Sendable {
     let prFeedbackError: String?
     let workers: [String]
     let workerDetails: [WorkerSummary]
+    let timings: String
 }
 
 enum WorkflowPhase: String, Decodable, Sendable {
@@ -128,6 +130,7 @@ struct PreparationEvidence: Decodable, Sendable {
 
 struct ConversationMessage: Decodable, Sendable {
     let role: String
+    let author: String
     let body: String
     let model: String?
     let effort: String?
@@ -278,4 +281,10 @@ struct Drafts {
     func text(for id: Int64, fallback: String) -> String {
         entries[id]?.text ?? fallback
     }
+}
+
+
+enum WorkspaceTab: String, Decodable, CaseIterable, Sendable {
+    case conversation, changes, checks, findings, agents
+    var label: String { rawValue.capitalized }
 }

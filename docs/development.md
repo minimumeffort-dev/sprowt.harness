@@ -48,17 +48,17 @@ cargo run --locked -- --no-motion
 
 Creating a codemod from that UI starts planning and execution against this repository. For product work, install the binary and launch it from the intended project instead.
 
-### Check the workbench
+### Check workspace navigation
 
 Run the focused interaction tests, then export terminal buffers at desktop and narrow sizes:
 
 ```sh
 cargo test --locked workbench
-SPROWT_UI_CAPTURE_DIR=/tmp/sprowt-workbench-captures \
-  cargo test --locked export_workbench_buffers -- --ignored --nocapture
+SPROWT_WORKSPACE_BUFFERS=/tmp/sprowt-workspace-captures \
+  cargo test --locked export_workspace_buffers -- --ignored --nocapture
 ```
 
-**Expected:** interaction tests pass; the output directory contains JSON cell buffers with symbols, colors and positions. The captures use sample tasks and saved results. Render and inspect these buffers before updating the documentation visual.
+**Expected:** interaction tests pass; the output directory contains JSON cell buffers with symbols, colors and positions. The captures use sample tasks and saved results, including all five workspace views. Render and inspect these buffers before updating the documentation visual. Verify tab changes, task drilldown, saved history and queue dismissal preserve the composer draft and caret.
 
 ## Live checks
 
@@ -125,8 +125,8 @@ Standalone compatibility probes live in [examples](../examples). They are separa
 | State and actions | [`engine/state.rs`](../src/engine/state.rs), [`engine/actions.rs`](../src/engine/actions.rs) |
 | Native command protocol | [`desktop.rs`](../src/desktop.rs), [`engine/api.rs`](../src/engine/api.rs), [`engine/snapshot.rs`](../src/engine/snapshot.rs) |
 | Native macOS interface | [`macos/Sources`](../macos/Sources), [build and development guide](macos.md) |
-| Workbench and navigation | [`app/timeline.rs`](../src/app/timeline.rs), [`app/controls.rs`](../src/app/controls.rs), [`ui/workbench.rs`](../src/ui/workbench.rs) |
-| Dock and full evidence views | [`ui/dock.rs`](../src/ui/dock.rs), [`ui/timeline.rs`](../src/ui/timeline.rs), [`ui/inspector.rs`](../src/ui/inspector.rs) |
+| Workspace views and navigation | [`engine/workspace_view.rs`](../src/engine/workspace_view.rs), [`app/workspace_navigation.rs`](../src/app/workspace_navigation.rs), [`app/controls.rs`](../src/app/controls.rs), [`ui/workbench.rs`](../src/ui/workbench.rs) |
+| Dock and evidence views | [`ui/dock.rs`](../src/ui/dock.rs), [`ui/workbench/evidence.rs`](../src/ui/workbench/evidence.rs), [`ui/inspector.rs`](../src/ui/inspector.rs) |
 | Terminal rendering and companion | [`ui.rs`](../src/ui.rs), [`sprout.rs`](../src/sprout.rs) |
 | Plans, assignment and routing | [`plan.rs`](../src/plan.rs), [`scheduler.rs`](../src/scheduler.rs), [`router.rs`](../src/router.rs) |
 | Project preparation, bounded asset reuse and baseline receipts | [`environment.rs`](../src/environment.rs), [`environment/cache.rs`](../src/environment/cache.rs), [`environment_cache.py`](../sandbox/environment_cache.py) |

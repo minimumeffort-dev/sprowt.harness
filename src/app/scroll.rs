@@ -39,53 +39,23 @@ impl App {
         {
             return self.activate_control(control);
         }
-        if self.engine.view == View::Chat && self.has_timeline() {
+        if self.engine.view == View::Chat && self.has_workspace() {
             if mouse.kind == MouseEventKind::Down(ratatui::crossterm::event::MouseButton::Left) {
-                if self.timeline.jump_area.contains(position) {
-                    self.timeline.jump();
-                } else if self.scroll.input.contains(position) {
-                    self.timeline.focus = super::timeline::Focus::Composer;
-                } else if self.timeline.inspector.area.contains(position) {
-                    self.timeline.focus = super::timeline::Focus::Inspector;
-                    self.timeline.held = true;
-                } else if self.scroll.content.contains(position) {
-                    let row = self.timeline.top + usize::from(mouse.row - self.scroll.content.y);
-                    if let Some((id, _, _)) = self
-                        .timeline
-                        .rows
-                        .iter()
-                        .find(|(_, start, end)| row >= *start && row < *end)
-                    {
-                        self.timeline.selected = Some(*id);
-                        self.timeline.focus = super::timeline::Focus::Timeline;
-                        self.timeline.held = true;
-                    }
+                if self.scroll.input.contains(position) {
+                    self.workspace.focus = super::workspace_navigation::Focus::Composer;
+                } else if self.workspace.inspector.area.contains(position) {
+                    self.workspace.focus = super::workspace_navigation::Focus::Content;
                 }
                 return Ok(());
             }
-            if self.timeline.inspector.area.contains(position)
+            if self.workspace.inspector.area.contains(position)
                 && matches!(
                     mouse.kind,
                     MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
                 )
             {
-                self.timeline.held = true;
-                self.timeline
+                self.workspace
                     .inspector
-                    .scroll(if mouse.kind == MouseEventKind::ScrollUp {
-                        -3
-                    } else {
-                        3
-                    });
-                return Ok(());
-            }
-            if self.scroll.content.contains(position)
-                && matches!(
-                    mouse.kind,
-                    MouseEventKind::ScrollUp | MouseEventKind::ScrollDown
-                )
-            {
-                self.timeline
                     .scroll(if mouse.kind == MouseEventKind::ScrollUp {
                         -3
                     } else {

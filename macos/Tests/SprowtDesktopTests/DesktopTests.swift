@@ -5,7 +5,7 @@ import Testing
 @testable import SprowtDesktop
 
 private let snapshotJSON = #"""
-{"project":"/tmp/project","navigation":{"destination":{"kind":"codemod","mod_id":1},"can_go_back":false,"can_go_forward":false},"phase":"building","mods":[{"id":1,"name":"Example","closed":false,"status":"Building","workers":[]}],"active_mod":{"id":1,"name":"Example","description":"Change the CLI","closed":false,"user_paused":false,"draft":"Saved draft","messages":[{"role":"user","body":"Change the CLI","model":null,"effort":null},{"role":"planner","body":"Ready","model":"codex","effort":"high"}],"history":[],"queue":[{"id":7,"body":"Keep tests"}],"steering":["Preserve the interface"],"plan":{"status":"ready","summary":"One task","tasks":[{"id":"implement_cli","title":"Change command","outcome":"CLI works","depends_on":["design"],"status":"pending","detail":"Ready","files":["src/main.rs"],"checks":["cargo test"],"run_id":12,"identity":"codex executor","source":"task:12:attempt:1","error":null,"latest":null,"results":[],"checks_label":"Checks","completed":false,"preparation":null,"actions":[]}]},"checks":[{"id":"task:12:check:0","task_id":"implement_cli","kind":"check","label":"cargo test","status":"passed","output":"3 passed"}],"findings":[{"id":"F1","title":"Handle EOF","detail":"Keep draft","status":"open","imported":false}],"pr_feedback":[{"id":"thread:30","title":"src/main.rs:42 · rev","detail":"This drops the error.","status":"unresolved thread","imported":false}],"pr_feedback_error":null,"workers":["codex executor running"],"worker_details":[{"id":4,"provider":"codex","identity":"codex executor","role":"executor","task_id":"implement_cli","state":"running","activity":"Running cargo test"}]},"status":"Ready","detail":"Run plan","evidence":"3 checks","error":null,"actions":[{"id":"retry_task","label":"Retry task","task_id":12}],"dialog":null}
+{"project":"/tmp/project","navigation":{"destination":{"kind":"codemod","mod_id":1},"can_go_back":false,"can_go_forward":false},"phase":"building","mods":[{"id":1,"name":"Example","closed":false,"status":"Building","workers":[]}],"active_mod":{"id":1,"name":"Example","description":"Change the CLI","closed":false,"user_paused":false,"draft":"Saved draft","messages":[{"role":"user","body":"Change the CLI","model":null,"effort":null,"author":"user"},{"role":"planner","body":"Ready","model":"codex","effort":"high","author":"Codex · planner"}],"history":[],"queue":[{"id":7,"body":"Keep tests"}],"steering":["Preserve the interface"],"plan":{"status":"ready","summary":"One task","tasks":[{"id":"implement_cli","title":"Change command","outcome":"CLI works","depends_on":["design"],"status":"pending","detail":"Ready","files":["src/main.rs"],"checks":["cargo test"],"run_id":12,"identity":"codex executor","source":"task:12:attempt:1","error":null,"latest":null,"results":[],"checks_label":"Checks","completed":false,"preparation":null,"actions":[]}]},"checks":[{"id":"task:12:check:0","task_id":"implement_cli","kind":"check","label":"cargo test","status":"passed","output":"3 passed"}],"findings":[{"id":"F1","title":"Handle EOF","detail":"Keep draft","status":"open","imported":false}],"pr_feedback":[{"id":"thread:30","title":"src/main.rs:42 · rev","detail":"This drops the error.","status":"unresolved thread","imported":false}],"pr_feedback_error":null,"workers":["codex executor running"],"worker_details":[{"id":4,"provider":"codex","identity":"codex executor","role":"executor","task_id":"implement_cli","state":"running","activity":"Running cargo test"}],"timings":""},"status":"Ready","detail":"Run plan","evidence":"3 checks","error":null,"actions":[{"id":"retry_task","label":"Retry task","task_id":12}],"dialog":null,"workspace_views":["conversation","changes","checks","findings","agents"]}
 """#
 
 @Test func decodesGoldenFixtureProducedByRust() throws {
@@ -14,7 +14,11 @@ private let snapshotJSON = #"""
     let response = try Envelope.decode(Data(contentsOf: root.appendingPathComponent("tests/fixtures/desktop.json")))
     #expect(response.snapshot.activeMod?.name == "Add native controls")
     #expect(response.snapshot.activeMod?.plan?.tasks.last?.dependsOn == ["core"])
+    #expect(response.snapshot.workspaceViews == WorkspaceTab.allCases)
     #expect(response.snapshot.activeMod?.messages.count == 1)
+    #expect(response.snapshot.activeMod?.history.count == 2)
+    #expect(response.snapshot.activeMod?.history.contains(where: { $0.role == "user" }) == false)
+    #expect(response.snapshot.activeMod?.history.first?.author == "Codex · planner")
     #expect(response.snapshot.activeMod?.history.contains(where: { $0.role == "planner" }) == true)
     #expect(response.snapshot.activeMod?.plan?.tasks.first?.completed == true)
     #expect(response.snapshot.activeMod?.plan?.tasks.last?.latest?.body == "Native controls are ready; draft persistence needs repair.")
@@ -424,7 +428,7 @@ private func installExecutable(_ source: String, at url: URL) throws {
     selection.show(.checks, target: .task("implement_cli"))
     selection.queue = .open
     selection.reconcile(original)
-    #expect(selection.inspectorTab == .checks)
+    #expect(selection.tab == .checks)
     #expect(selection.target == .task("implement_cli"))
     #expect(selection.queue == .open)
     let removed = try decodeSnapshot { root in
@@ -436,8 +440,8 @@ private func installExecutable(_ source: String, at url: URL) throws {
     }
     selection.reconcile(removed)
     #expect(selection.target == nil)
-    #expect(selection.inspectorTab == .checks)
-    selection.show(.activity, target: .worker(4))
+    #expect(selection.tab == .checks)
+    selection.show(.agents, target: .worker(4))
     selection.reconcile(original)
     #expect(selection.target == .worker(4))
     let workerRemoved = try decodeSnapshot { root in
@@ -449,7 +453,7 @@ private func installExecutable(_ source: String, at url: URL) throws {
     #expect(selection.target == nil)
     let switched = try decodeSnapshot { $0["project"] = "/tmp/other-project" }
     selection.reconcile(switched)
-    #expect(selection.inspectorTab == .activity)
+    #expect(selection.tab == .conversation)
     #expect(selection.queue == .closed)
     #expect(selection.context?.project == "/tmp/other-project")
 }
@@ -460,11 +464,11 @@ private func installExecutable(_ source: String, at url: URL) throws {
     }
     var selection = WorkspaceSelection()
     selection.reconcile(snapshot)
-    #expect(selection.inspectorTab == .changes)
+    #expect(selection.tab == .changes)
     selection.show(.findings, target: .task("implement_cli"))
     selection.reconcile(snapshot)
     selection.reconcile(snapshot)
-    #expect(selection.inspectorTab == .findings)
+    #expect(selection.tab == .findings)
     #expect(selection.target == .task("implement_cli"))
     #expect(snapshot.dialog?.isInspection == true)
 }
@@ -514,13 +518,13 @@ private func installExecutable(_ source: String, at url: URL) throws {
     #expect(session.canCompose)
     #expect(!session.canBeginCreation)
     #expect(session.draft == "Saved draft")
-    #expect(session.workspace.inspectorTab == .changes)
+    #expect(session.workspace.tab == .changes)
     session.editDraft("Edited while inspecting")
     #expect(session.draft == "Edited while inspecting")
     session.workspace.show(.checks, target: .task("implement_cli"))
     session.enqueue(Command(type: "snapshot"))
     try await waitUntil { !session.busy }
-    #expect(session.workspace.inspectorTab == .checks)
+    #expect(session.workspace.tab == .checks)
     #expect(session.workspace.target == .task("implement_cli"))
     session.enqueue(Command(type: "cancel"))
     try await waitUntil { session.dialog == nil && !session.busy }
@@ -603,7 +607,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     let dark = resolved(Theme.paper, dark: true)
     #expect(light != nil && dark != nil && light != dark)
     #expect(WorkflowPhase.needsYou.color != WorkflowPhase.building.color)
-    #expect(InspectorTab.allCases.map(\.rawValue) == ["Changes", "Checks", "Findings", "Activity"])
+    #expect(WorkspaceTab.allCases.map(\.label) == ["Conversation", "Changes", "Checks", "Findings", "Agents"])
 }
 
 @Test func packagedFontResourcesResolveInsideTheAppWithoutBuildFallback() throws {
@@ -666,7 +670,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     try await waitUntil { session.dialog?.kind == "diff" }
     #expect(!session.showingNew)
     #expect(session.interactive)
-    #expect(session.workspace.inspectorTab == .changes)
+    #expect(session.workspace.tab == .changes)
     #expect(session.draft == "Saved draft")
     #expect(session.newDescription == "Keep this unfinished description")
     session.enqueue(Command(type: "cancel"))
@@ -722,7 +726,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     try Data().write(to: URL(fileURLWithPath: executable.path + ".release"))
     try await waitUntil { session.dialog?.kind == "diff" && session.active?.draft == "A newer draft while inspection waits" }
     #expect(!session.showingNew)
-    #expect(session.workspace.inspectorTab == .changes)
+    #expect(session.workspace.tab == .changes)
     #expect(session.draft == "A newer draft while inspection waits")
     #expect(session.newDescription == "Keep this unfinished description")
     session.enqueue(Command(type: "cancel"))
@@ -782,7 +786,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     try Data().write(to: URL(fileURLWithPath: executable.path + ".release"))
     try await waitUntil { session.dialog?.kind == "diff" }
     #expect(!session.showingNew)
-    #expect(session.workspace.inspectorTab == .changes)
+    #expect(session.workspace.tab == .changes)
     #expect(session.draft == "Keep the composer draft")
     #expect(session.newDescription == "New description typed during loading")
     session.enqueue(Command(type: "cancel"))
@@ -793,4 +797,20 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     #expect(session.showingNew)
     #expect(session.draft == "Keep the composer draft")
     #expect(session.newDescription == "New description typed during loading")
+}
+
+
+@Test func workspaceTabsClearExplicitScopeAndKeepQueueState() throws {
+    let snapshot = try decodeSnapshot()
+    var selection = WorkspaceSelection()
+    selection.reconcile(snapshot)
+    selection.queue = .open
+    for tab in snapshot.workspaceViews {
+        selection.show(.checks, target: .task("implement_cli"))
+        selection.show(tab)
+        selection.reconcile(snapshot)
+        #expect(selection.tab == tab)
+        #expect(selection.target == nil)
+        #expect(selection.queue == .open)
+    }
 }

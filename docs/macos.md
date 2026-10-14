@@ -23,11 +23,13 @@ The bundle is signed locally for development. It is not a notarized distribution
 
 ## Work on a project
 
-Choose a codemod in the sidebar to open its workspace. The feed shows the plan outcome, its numbered task checklist with outcomes and dependencies, then the conversation with messages and questions that need your answer.
+Choose a codemod in the sidebar to open **Conversation**. Your request appears once, followed by current messages and numbered plan tasks with outcomes and dependencies. **Saved history** contains earlier updates that are no longer in the feed.
 
-Select a task or a connected worker to read its current attempt, latest update and check output in the side pane. The **Changes**, **Checks**, **Findings** and **Activity** tabs switch the side pane's evidence; it is the one place for diffs, check output, review findings and the work log. Hide the pane when you want more room.
+The main area switches between **Conversation**, **Changes**, **Checks**, **Findings** and **Agents**. The composer and queue stay available across these views. **Agents** shows the agent count and each worker's state. The sidebar contains codemod navigation.
 
-In **Changes**, choose the offered inspection action to read the actual diff. Inspections are ordinary side-pane content: keep typing, switch tabs or codemods, and choose **Done** whenever you finish reading. Only starting a new codemod asks you to finish an inspection first, since it replaces the workspace. Opening evidence never starts a worker.
+Select a plan task or an agent to inspect its current attempt, model, files and results. Use **Back to Conversation** or **Back to Agents** to return. Selecting a main tab shows that view for the whole codemod.
+
+In **Changes**, choose the offered inspection action to read the actual diff. Keep typing, switch tabs or codemods, and choose **Done** when you finish the inspection. Starting a new codemod asks you to finish an inspection first, since it replaces the workspace. Opening evidence never starts a worker.
 
 The header button shows Rust's recommended action; **More** holds the other available actions. A partial review with confirmed findings offers **Fix review issues**, while publication waits for a complete, clean review. See [review and repairs](review.md).
 
@@ -43,13 +45,15 @@ The creation editor shows headings, emphasis, lists, checklists and code as form
 
 The editor sends Markdown through the existing Rust command. Supported formatting appears in the app; unsupported Markdown remains literal, with its source preserved. Code blocks contain literal text, so inline emphasis does not apply inside them. The full request is stored in both interfaces.
 
-The **Sprowt** menu at the top of the sidebar contains **Open project…** and the switch between active and closed codemods. **⌘O** opens a project folder directly. Each codemod has a diamond glyph, status and agent count when workers exist.
+The **Sprowt** menu at the top of the sidebar contains **Open project…** and the switch between active and closed codemods. **⌘O** opens a project folder directly. Each codemod has a diamond glyph and a short title. The workspace header shows the selected codemod's status and next action.
 
 Use the title bar's sidebar button or the sidebar command in **View** to hide or show the sidebar. **⌃⌘S** works while the sidebar is hidden. Your codemod selection and composer drafts stay in place.
 
 Use the title bar's **Back** and **Forward** arrows, **View → Back / Forward**, or **⌘[** and **⌘]** to revisit codemods and unfinished creation. [Navigation history](codemods.md#create-and-manage-work) lasts for the current project session. Inspections do not block navigation; confirmations still do.
 
-Press **⌘1**–**⌘4** to open the **Changes**, **Checks**, **Findings** and **Activity** side-pane tabs. The app follows your system appearance and text size in both light and dark mode, and status is always shown as text as well as color — blue while work runs, gold when Sprowt needs you, green when ready or published.
+Press **⌘1** through **⌘5** for **Conversation**, **Changes**, **Checks**, **Findings** and **Agents**, respectively. These shortcuts preserve the composer draft.
+
+The app follows your system appearance and text size in light and dark mode. Status appears as text and color: blue while work runs, gold when Sprowt needs you, green when ready or published.
 
 Use the composer to answer a question or queue an instruction. Expand the attached queue to edit, reorder, remove or steer pending instructions. Save an edit before choosing **Steer**. These actions preserve the composer draft. Removing the last queued instruction closes the queue and returns focus to the composer. Steering without connected workers saves instructions as waiting for workers; it does not claim delivery.
 
@@ -61,9 +65,9 @@ Both interfaces use the same plans, task inspection, check results and action ru
 
 | In the macOS app | In the terminal |
 | --- | --- |
-| Feed and task checklist | Stage rail in the [Evidence Workbench](terminal.md#read-the-screen) |
+| Conversation and task checklist | **1 · Conversation** in the [workspace](terminal.md#read-the-screen) |
 | Task or worker inspection | Select a task and press Enter, or open **Ctrl+T · Details** |
-| Changes, Checks, Findings and Activity pane | **1–4** in the workbench; full results in Details |
+| Changes, Checks, Findings and Agents | **2** through **5** while exploring |
 | Attached queue | **Ctrl+Q · Queue** |
 | Contextual actions | Action dock or **Ctrl+G · More** |
 | Back / Forward or **⌘[ / ⌘]** | Header arrows or **Alt+← / Alt+→** |
@@ -92,9 +96,9 @@ The light theme uses Minimum Effort's Manrope font, warm neutral backgrounds and
 
 Row icons align with the center of their label's first line, even when the label wraps.
 
-![Aligned icons in the sidebar and saved checks](assets/macos-icon-alignment.jpg)
+![Codemod navigation and the five workspace views](assets/macos-workspace.png)
 
-Example paused codemod with sample saved checks in a disposable project.
+Paused codemod with sample tasks in a disposable project. The request appears once; the sidebar switches codemods and each main tab has one purpose.
 
 For an isolated development session, replace both paths below with disposable directories:
 

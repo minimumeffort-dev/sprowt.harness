@@ -47,36 +47,11 @@ struct SidebarView: View {
                                     .font(.system(size: 11)).foregroundStyle(Theme.muted).frame(width: 13).symbolBaseline(textSize: 12)
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(mod.name).lineLimit(2).font(Theme.font(12, weight: selected ? .semibold : .medium))
-                                    Text(mod.status).font(Theme.font(10)).foregroundStyle(Theme.muted).lineLimit(2)
-                                    if !mod.workers.isEmpty {
-                                        Text("\(mod.workers.count) agents").font(Theme.font(10)).foregroundStyle(Theme.muted)
-                                    }
                                 }
                                 Spacer(minLength: 0)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.buttonStyle(WorkspaceButtonStyle(selected: selected)).disabled(!session.interactive)
-                            .accessibilityLabel("\(mod.name), \(mod.status)\(mod.workers.isEmpty ? "" : ", \(mod.workers.count) agents")")
-                        if selected && !mod.workers.isEmpty {
-                            VStack(alignment: .leading, spacing: 1) {
-                                ForEach(mod.workers) { worker in
-                                    Button { session.workspace.show(.activity, target: .worker(worker.id)) } label: {
-                                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                            Image(systemName: "arrow.turn.down.right").font(.system(size: 10)).symbolBaseline(textSize: 10)
-                                            VStack(alignment: .leading, spacing: 3) {
-                                                Text("\(worker.provider.capitalized) · \(worker.role)").lineLimit(2)
-                                                if let id = worker.taskId, let task = session.active?.plan?.tasks.first(where: { $0.id == id }) {
-                                                    Text(task.title).lineLimit(1)
-                                                } else { Text(worker.state).lineLimit(1) }
-                                            }
-                                            Spacer(minLength: 0)
-                                        }.font(Theme.font(10)).foregroundStyle(Theme.muted)
-                                            .frame(maxWidth: .infinity, alignment: .leading)
-                                    }.buttonStyle(WorkspaceButtonStyle(selected: session.workspace.target == .worker(worker.id)))
-                                        .accessibilityLabel("Inspect \(worker.provider) \(worker.role) \(worker.id)")
-                                }
-                            }.padding(.leading, 20).padding(.bottom, 6)
-                                .overlay(alignment: .leading) { Rectangle().fill(Theme.line).frame(width: 1).padding(.leading, 16) }
-                        }
+                            .accessibilityLabel("\(mod.name), \(mod.status)")
                     }
                 }
             }

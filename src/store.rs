@@ -40,6 +40,14 @@ impl CodeMod {
             || saved && message.role == "planner")
     }
 
+    pub fn shows_conversation_message(&self, message: &Message) -> bool {
+        self.shows_message(message)
+            && !message
+                .item_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("plan:"))
+    }
+
     pub fn question(&self) -> Option<&crate::mailbox::Envelope> {
         self.coordination.iter().find(|m| self.needs_answer(m))
     }
@@ -68,6 +76,17 @@ pub struct Message {
 }
 
 impl Message {
+    pub fn author(&self) -> String {
+        match self.role.as_str() {
+            "user" | "harness" | "question" => self.role.clone(),
+            "planner" | "reviewer" => format!("Codex · {}", self.role),
+            provider => provider.split_once(':').map_or_else(
+                || format!("{provider} · executor"),
+                |(provider, id)| format!("{provider} · executor · w{id}"),
+            ),
+        }
+    }
+
     pub fn belongs_to_attempt(&self, source: &str) -> bool {
         self.source
             .as_deref()

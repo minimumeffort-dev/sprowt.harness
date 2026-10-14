@@ -2,6 +2,7 @@ use super::*;
 mod navigation;
 mod observed_checks;
 mod partial_review;
+mod workspace_views;
 use crate::{
     engine::api::{Command, Direction},
     store::test_support::TestData,
@@ -486,7 +487,7 @@ fn desktop_contract_matches_the_native_fixture() {
             .as_array()
             .unwrap()
             .len(),
-        3
+        2
     );
     let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/desktop.json");
     if std::env::var_os("SPROWT_DESKTOP_FIXTURE").is_some() {

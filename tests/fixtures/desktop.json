@@ -65,18 +65,14 @@
       ],
       "history": [
         {
-          "body": "Add native controls",
-          "effort": null,
-          "model": null,
-          "role": "user"
-        },
-        {
+          "author": "Codex · planner",
           "body": "I will split this into two tasks.",
           "effort": "high",
           "model": "gpt-6.1-sol",
           "role": "planner"
         },
         {
+          "author": "codex · executor · wexecutor",
           "body": "Native controls are ready; draft persistence needs repair.",
           "effort": "high",
           "model": "gpt-6.1-sol",
@@ -86,6 +82,7 @@
       "id": 1,
       "messages": [
         {
+          "author": "user",
           "body": "Add native controls",
           "effort": null,
           "model": null,
@@ -145,6 +142,7 @@
             "id": "native",
             "identity": "codex · gpt-6.1-sol · high",
             "latest": {
+              "author": "codex · executor · wexecutor",
               "body": "Native controls are ready; draft persistence needs repair.",
               "effort": "high",
               "model": "gpt-6.1-sol",
@@ -188,6 +186,7 @@
       "steering": [
         "Preserve the existing keyboard controls"
       ],
+      "timings": "",
       "user_paused": false,
       "worker_details": [
         {
@@ -251,6 +250,13 @@
     },
     "phase": "needs_you",
     "project": "/example/project",
-    "status": "Task 2 needs attention"
+    "status": "Task 2 needs attention",
+    "workspace_views": [
+      "conversation",
+      "changes",
+      "checks",
+      "findings",
+      "agents"
+    ]
   }
 }

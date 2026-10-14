@@ -6,26 +6,13 @@ struct FeedView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            VStack(alignment: .leading, spacing: 8) {
-                let summary = mod.plan?.summary ?? ""
-                Text(summary.isEmpty ? mod.description : summary)
-                    .font(Theme.font(21, weight: .semibold)).textSelection(.enabled)
-                if let detail = session.snapshot?.detail, !detail.isEmpty {
-                    Text(detail).font(Theme.font(12)).foregroundStyle(Theme.muted).textSelection(.enabled)
-                }
-                if let evidence = session.snapshot?.evidence, !evidence.isEmpty {
-                    Text(evidence).font(Theme.font(11)).foregroundStyle(Theme.muted).textSelection(.enabled)
-                }
-            }
-            if let plan = mod.plan {
+            ForEach(Array(mod.messages.enumerated()), id: \.offset) { _, message in MessageView(message: message) }
+            if let plan = mod.plan, !plan.tasks.isEmpty {
                 TaskListView(tasks: plan.tasks, selected: session.workspace.target) { task in
-                    session.workspace.show(.activity, target: .task(task.id))
+                    session.workspace.show(.conversation, target: .task(task.id))
                 }
-            } else {
-                Text("The plan will appear here when it is saved.").foregroundStyle(Theme.muted)
             }
-            WorkspaceDivider()
-            ConversationView(mod: mod)
+            SavedHistoryView(mod: mod)
         }
     }
 }
@@ -37,7 +24,6 @@ struct TaskListView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if tasks.isEmpty { Text("No tasks in the current plan.").foregroundStyle(Theme.muted) }
             ForEach(Array(tasks.enumerated()), id: \.element.id) { index, task in
                 Button { inspect(task) } label: {
                     HStack(alignment: .top, spacing: 10) {
@@ -65,11 +51,10 @@ struct TaskListView: View {
     }
 }
 
-struct ConversationView: View {
+struct SavedHistoryView: View {
     let mod: CodemodDetail
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            ForEach(Array(mod.messages.enumerated()), id: \.offset) { _, message in MessageView(message: message) }
             if !mod.history.isEmpty {
                 DisclosureGroup("Saved history") {
                     VStack(alignment: .leading, spacing: 24) {
@@ -90,7 +75,7 @@ struct MessageView: View {
                     Image(systemName: "leaf").font(.system(size: 12)).frame(width: 21, height: 21)
                         .background(Theme.gold.opacity(0.22), in: RoundedRectangle(cornerRadius: 5))
                         .symbolBaseline(textSize: 11)
-                    Text(message.role.replacingOccurrences(of: ":", with: " · "))
+                    Text(message.author)
                         .font(Theme.font(11, weight: .medium)).foregroundStyle(Theme.muted)
                 }
             }
