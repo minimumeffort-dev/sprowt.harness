@@ -111,6 +111,25 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     let document = document(app, app.workspace.selected, body.width.saturating_sub(2));
+    app.workspace.agent_controls = document
+        .controls
+        .iter()
+        .filter_map(|(row, control)| {
+            if let Control::AgentDetail(detail) = control {
+                Some((*detail, *row))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !app
+        .workspace
+        .agent_controls
+        .iter()
+        .any(|(detail, _)| app.workspace.agent_cursor == Some(*detail))
+    {
+        app.workspace.agent_cursor = None;
+    }
     app.workspace.message_controls = document
         .controls
         .iter()
@@ -132,6 +151,8 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let hint_text = if app.workspace.focus == Focus::Composer {
         "tab Explore"
+    } else if tab == WorkspaceView::Agents && !app.workspace.agent_controls.is_empty() {
+        "tab Write · [ ] Details · ↵ Toggle"
     } else if tab == WorkspaceView::Conversation && !app.workspace.message_controls.is_empty() {
         if hint.width < 60 {
             "tab Write · [ ] Details · ↵ Toggle"

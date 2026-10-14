@@ -44,9 +44,11 @@ Click a tab, or press **Tab** to explore and choose **1** through **5**.
 | **2 · Changes** | Access to the current diff when available |
 | **3 · Checks** | Saved setup failures and observed task results, with failed checks first |
 | **4 · Findings** | Review findings, evidence, proposed fixes and GitHub PR feedback |
-| **5 · Agents** | Worker identities, state and recorded startup timings |
+| **5 · Agents** | Task assignments and current worker states, with failure details and setup timings folded |
 
 Use **[ / ]** to move between review findings. **e** expands command evidence. Selecting a main tab clears a task-specific inspection and shows that view for the whole codemod.
+
+In **Agents**, use **[ / ]** to select a disclosure and **Enter** to expand it, or click its label. **Failure details** preserves the full diagnostic; **Worker details** includes model information and any previous diagnostic. **Setup timings** follows the workers, with readable durations and optional **Exact timing evidence**. Opening these details preserves your draft and never retries work. A current worker failure appears once in Agents; unrelated errors remain in the dock.
 
 Letters and numbers type normally when the composer is focused.
 
@@ -173,7 +175,9 @@ Shortcuts are contextual. **Ctrl+G · More** lists actions available in the curr
 | h in Conversation while exploring | Show or hide saved history |
 | [ / ] in review evidence | Previous / next finding |
 | [ / ] in Conversation while exploring | Previous / next message disclosure |
+| [ / ] in Agents while exploring | Previous / next worker or timing disclosure |
 | Enter on a selected message disclosure | Expand or fold prose/source |
+| Enter on a selected Agents disclosure | Expand or fold diagnostics, worker details or timings |
 | e while exploring | Expand command evidence |
 | Ctrl+L | Return to Conversation at the top |
 | Home / End | Top / bottom of the workspace while exploring |

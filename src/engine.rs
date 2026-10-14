@@ -15,6 +15,7 @@ use std::{
 };
 
 mod actions;
+pub mod agents;
 pub mod api;
 mod git;
 mod git_errors;

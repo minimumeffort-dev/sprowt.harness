@@ -6,7 +6,8 @@ struct ContentView: View {
 
     private var visibleError: String? {
         if let error = session.error { return error }
-        guard let error = session.snapshot?.error else { return nil }
+        guard let snapshot = session.snapshot, let error = snapshot.error else { return nil }
+        if session.workspace.ownsAgentError(error, in: snapshot) { return nil }
         let inspected = session.active?.inspectedTask(session.workspace.target)
         let showingTask = session.workspace.tab == .conversation && session.dialog?.isInspection != true
         return showingTask && inspected?.error == error ? nil : error

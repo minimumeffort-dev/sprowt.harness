@@ -61,6 +61,7 @@ pub struct ModDetail {
     workers: Vec<String>,
     worker_details: Vec<WorkerSummary>,
     timings: String,
+    agents: super::agents::Agents,
 }
 #[derive(Serialize)]
 pub struct Message {
@@ -620,6 +621,7 @@ impl Engine {
                     workers: self.worker_activity(),
                     worker_details: self.worker_summaries(m),
                     timings: m.diagnostics.timing_packet(None),
+                    agents: self.agents().unwrap(),
                 }
             }),
             status: dock.status,

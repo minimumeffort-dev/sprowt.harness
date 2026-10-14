@@ -1,3 +1,4 @@
+mod agents;
 use super::*;
 use crate::app::workspace_navigation::Key;
 
@@ -170,7 +171,7 @@ pub(super) fn document(app: &App, item: Option<Key>, width: u16) -> Document {
             review(app, &mut d);
             pr_feedback(app, &mut d);
         }
-        WorkspaceView::Agents => agents(app, &mut d),
+        WorkspaceView::Agents => agents::draw(app, &mut d),
     }
     d
 }
@@ -266,58 +267,6 @@ fn conversation(app: &App, d: &mut Document) {
             }
         }
     }
-}
-
-fn agents(app: &App, d: &mut Document) {
-    let Some(m) = app.current_mod() else { return };
-    let workers = app.worker_summaries(m);
-    let timings = m.diagnostics.timing_packet(None);
-    if app.show_evidence && !timings.is_empty() {
-        d.heading("Recorded timings");
-        d.text(&timings);
-        d.gap();
-    }
-    if workers.is_empty() {
-        d.text("No agents yet.");
-    }
-    for worker in workers {
-        d.heading(&format!("{} · {}", worker.provider, worker.role));
-        d.lines.extend(wrap_line(
-            Line::from(worker.state).fg(theme::status_color(worker.state)),
-            d.width,
-            0,
-        ));
-        if !worker.activity.is_empty() {
-            d.text(&worker.activity);
-        }
-        if app.show_evidence {
-            d.muted(&worker.identity);
-        }
-        if let Some(task) = worker
-            .task_id
-            .as_ref()
-            .and_then(|task_id| {
-                m.execution
-                    .as_ref()?
-                    .tasks
-                    .iter()
-                    .find(|r| &r.task_id == task_id)
-            })
-            .and_then(|run| app.inspect_task(run.id))
-        {
-            d.control(
-                format!("Task {} · {}", task.number, task.task.title),
-                Control::Drill(Key::Task(task.run.id)),
-                false,
-            );
-        }
-        d.gap();
-    }
-    d.control(
-        "e Worker details & timings".into(),
-        Control::Evidence,
-        app.show_evidence,
-    );
 }
 
 fn summary(app: &App, key: Key, d: &mut Document) {

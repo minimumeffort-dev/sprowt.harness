@@ -24,6 +24,7 @@ pub enum Control {
     Inspect,
     History,
     Message(u128, usize),
+    AgentDetail(super::workspace_navigation::AgentDetail),
     FullEvidence,
     Current,
     Drill(Key),
@@ -117,6 +118,13 @@ impl App {
                     self.workspace.message_toggles.insert(key);
                 }
                 self.workspace.message_cursor = Some(key);
+                self.workspace.focus = Focus::Content;
+            }
+            Control::AgentDetail(detail) => {
+                if !self.workspace.agent_toggles.remove(&detail) {
+                    self.workspace.agent_toggles.insert(detail);
+                }
+                self.workspace.agent_cursor = Some(detail);
                 self.workspace.focus = Focus::Content;
             }
             Control::FullEvidence => self.open_workspace_details()?,

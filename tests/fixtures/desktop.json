@@ -41,6 +41,31 @@
       }
     ],
     "active_mod": {
+      "agents": {
+        "summary": "Task 2 needs attention",
+        "timings": [],
+        "workers": [
+          {
+            "activity": "",
+            "activity_preview": "",
+            "failure": null,
+            "previous_diagnostic": null,
+            "state": "Ready",
+            "task_number": null,
+            "title": "codex planner",
+            "tone": "quiet",
+            "worker": {
+              "activity": "",
+              "id": 1,
+              "identity": "codex · planner · gpt-6.1-sol · high",
+              "provider": "codex",
+              "role": "planner",
+              "state": "ready",
+              "task_id": null
+            }
+          }
+        ]
+      },
       "check_activity": [],
       "checks": [
         {

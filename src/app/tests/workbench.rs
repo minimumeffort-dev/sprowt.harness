@@ -1,4 +1,5 @@
 use super::*;
+mod agents;
 mod contextual_tabs;
 mod messages;
 mod preparation;
@@ -884,10 +885,25 @@ fn agents_display_persisted_operation_timings_with_the_draft_intact() {
     app.engine.mods[0].diagnostics = app.engine.store.diagnostics(mod_id).unwrap();
     screen(&mut app, 160, 44);
     click(&mut app, Control::Tab(WorkspaceView::Agents));
-    app.show_evidence = true;
     let output = rows(&screen(&mut app, 160, 44)).join("\n");
-    assert!(output.contains("VM boot: 1.234s"), "{output}");
-    assert!(output.contains("Recorded setup timings"));
+    assert!(
+        output.contains("Setup timings") && output.contains("1.2s"),
+        "{output}"
+    );
+    click(
+        &mut app,
+        Control::AgentDetail(workspace_navigation::AgentDetail::Timings),
+    );
+    screen(&mut app, 160, 44);
+    click(
+        &mut app,
+        Control::AgentDetail(workspace_navigation::AgentDetail::TimingSource),
+    );
+    let expanded = rows(&screen(&mut app, 160, 44)).join("\n");
+    assert!(
+        expanded.contains("VM boot: 1.234s") && expanded.contains("Recorded setup timings"),
+        "{expanded}"
+    );
     assert_eq!(app.workspace.inspector.tab, WorkspaceView::Agents);
     assert_eq!(app.input.lines(), ["keep this draft"]);
     assert!(queued(&app).is_empty());

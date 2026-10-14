@@ -144,6 +144,7 @@ struct CodemodDetail: Decodable, Identifiable, Sendable {
     let workers: [String]
     let workerDetails: [WorkerSummary]
     let timings: String
+    let agents: AgentsEvidence
 }
 
 enum WorkflowPhase: String, Decodable, Sendable {
@@ -349,4 +350,34 @@ enum WorkspaceTab: String, Decodable, CaseIterable, Sendable {
 struct CheckActivity: Decodable, Sendable {
     let taskId: String?
     let label: String
+}
+
+struct AgentsEvidence: Decodable, Sendable {
+    let summary: String
+    let workers: [AgentEvidence]
+    let timings: [TimingEvidence]
+    func owns(_ error: String, worker: Int64? = nil) -> Bool {
+        workers.contains { (worker == nil || $0.id == worker) && $0.failure?.detail == error }
+    }
+}
+struct AgentEvidence: Decodable, Identifiable, Sendable {
+    let worker: WorkerSummary
+    let taskNumber: Int?
+    let title: String
+    let state: String
+    let tone: String
+    let activity: String
+    let activityPreview: String
+    let previousDiagnostic: String?
+    let failure: AgentFailure?
+    var id: Int64 { worker.id }
+}
+struct AgentFailure: Decodable, Sendable {
+    let summary: String
+    let detail: String
+}
+struct TimingEvidence: Decodable, Sendable {
+    let label: String
+    let durationMs: UInt64
+    let duration: String
 }

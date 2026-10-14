@@ -29,7 +29,7 @@ struct WorkspaceEvidenceView: View {
             } else {
                 panel(selectedTab)
             }
-        }.padding(Theme.inset).frame(maxWidth: 790, alignment: .leading)
+        }.padding(Theme.inset).frame(maxWidth: selectedTab == .agents ? 880 : 790, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -98,46 +98,7 @@ struct WorkspaceEvidenceView: View {
     }
 
     private var agents: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if !mod.timings.isEmpty {
-                DisclosureGroup("Recorded timings") {
-                    CodeText(text: mod.timings).padding(.top, 8)
-                }.font(Theme.font(11)).foregroundStyle(Theme.muted)
-            }
-            if let worker = selectedWorker {
-                WorkerActivityView(worker: worker, showDetails: true)
-                if let task = selectedTask { TaskInspectorView(session: session, task: task) }
-            } else {
-                if mod.workerDetails.isEmpty {
-                    Text("No agents yet.").font(Theme.font(12)).foregroundStyle(Theme.muted)
-                }
-                ForEach(mod.workerDetails) { worker in
-                    Button { session.workspace.show(.agents, target: .worker(worker.id)) } label: {
-                        WorkerActivityView(worker: worker, taskTitle: mod.plan?.tasks.first(where: { $0.id == worker.taskId })?.title)
-                    }.buttonStyle(WorkspaceButtonStyle())
-                }
-            }
-        }
-    }
-
-}
-
-private struct WorkerActivityView: View {
-    let worker: WorkerSummary
-    var taskTitle: String?
-    var showDetails = false
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label("\(worker.provider.capitalized) · \(worker.role)", systemImage: "arrow.turn.down.right").font(Theme.font(12, weight: .medium))
-            if let taskTitle { Text(taskTitle).font(Theme.font(14)).foregroundStyle(Theme.ink) }
-            Text(worker.state).font(Theme.font(11)).foregroundStyle(Theme.statusColor(worker.state))
-            if !worker.activity.isEmpty { MessageText(source: worker.activity) }
-            if showDetails {
-                DisclosureGroup("Worker details") {
-                    Text(worker.identity).font(Theme.font(12)).textSelection(.enabled).padding(.top, 8)
-                }.font(Theme.font(11)).foregroundStyle(Theme.muted)
-            }
-        }.frame(maxWidth: .infinity, alignment: .leading)
+        AgentsView(agents: mod.agents, rawTimings: mod.timings, selection: $session.workspace, selectedWorker: selectedWorker?.id)
     }
 }
 

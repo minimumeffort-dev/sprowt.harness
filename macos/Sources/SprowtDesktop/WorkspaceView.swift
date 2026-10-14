@@ -46,16 +46,16 @@ struct WorkspaceView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(mod.name).font(Theme.font(18, weight: .semibold)).lineLimit(2).textSelection(.enabled)
+            VStack(alignment: .leading, spacing: session.workspace.tab == .agents ? 9 : 5) {
+                Text(mod.name).font(Theme.font(session.workspace.tab == .agents ? 19 : 18, weight: .semibold)).lineLimit(2).textSelection(.enabled)
                 HStack(spacing: 6) {
                     Circle().fill(session.snapshot?.phase.color ?? Theme.muted).frame(width: 5, height: 5)
-                    Text(session.snapshot?.status ?? "").lineLimit(1)
-                }.font(Theme.font(11)).foregroundStyle(Theme.muted)
-                if let detail = session.snapshot?.detail, !detail.isEmpty {
+                    Text(session.workspace.tab == .agents ? mod.agents.summary : session.snapshot?.status ?? "").lineLimit(2)
+                }.font(Theme.font(session.workspace.tab == .agents ? 12 : 11)).foregroundStyle(Theme.muted)
+                if session.workspace.tab != .agents, let detail = session.snapshot?.detail, !detail.isEmpty {
                     Text(detail).font(Theme.font(11)).foregroundStyle(Theme.muted).textSelection(.enabled)
                 }
-                if let evidence = session.snapshot?.evidence, !evidence.isEmpty {
+                if session.workspace.tab != .agents, let evidence = session.snapshot?.evidence, !evidence.isEmpty {
                     Text(evidence).font(Theme.font(11)).foregroundStyle(Theme.muted).textSelection(.enabled)
                 }
             }
@@ -81,7 +81,7 @@ struct WorkspaceView: View {
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().accessibilityLabel("More codemod actions")
                     .disabled(!session.interactive || session.busy)
             }
-        }.padding(.horizontal, Theme.inset).padding(.vertical, 16)
+        }.padding(.horizontal, Theme.inset).padding(.vertical, session.workspace.tab == .agents ? 24 : 16)
     }
 
     private var composer: some View {

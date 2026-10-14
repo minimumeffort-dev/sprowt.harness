@@ -25,9 +25,11 @@ The bundle is signed locally for development. It is not a notarized distribution
 
 Choose a codemod in the sidebar to open **Conversation**. Your request appears once, followed by current messages and numbered plan tasks with outcomes and dependencies. **Saved history** contains earlier updates that are no longer in the feed.
 
-The main area always shows **Conversation**. **Changes**, **Checks**, **Findings**, and **Agents** appear when they have [evidence](terminal.md#read-task-progress). If the last evidence disappears, selection returns to Conversation. The composer and queue stay available across views. **Agents** shows worker states and recorded setup timings. The sidebar contains codemod navigation.
+The main area always shows **Conversation**. **Changes**, **Checks**, **Findings**, and **Agents** appear when they have [evidence](terminal.md#read-task-progress). If the last evidence disappears, selection returns to Conversation. The composer and queue stay available across views. The sidebar contains codemod navigation.
 
-Select a plan task or an agent to inspect its current attempt, model, files and results. Use **Back to Conversation** or **Back to Agents** to return. Selecting a main tab shows that view for the whole codemod.
+Select a plan task to inspect its current attempt, model, files and results. Use **Back to Conversation** to return. Selecting a main tab shows that view for the whole codemod.
+
+**Agents** puts each task assignment and worker state first. Expand **Failure details** for the complete diagnostic or **Worker details** for its model and previous diagnostic. **Setup timings** appears below the workers, folded by default; expand it for durations or the original timing evidence. A current failure appears beside its worker without a duplicate banner. Unrelated errors remain visible. These disclosures preserve your draft and never retry work.
 
 Expand **Files, checks and worker** for the file scope and individual required checks. File names stand out from muted directories; the full paths stay intact. Evidence uses a bounded, left-aligned reading width. **Source reference** reveals the complete saved identifier. Preparation stays aligned with the task details; pending network access is amber, and failures are red. A current preparation failure opens its evidence automatically. The same failure is shown once in task details, with the full saved output available under each check.
 

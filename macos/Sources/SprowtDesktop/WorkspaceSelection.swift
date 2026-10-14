@@ -11,12 +11,19 @@ struct WorkspaceSelection: Equatable {
     private(set) var target: Target?
     var queue = Queue.closed
     var messageToggles: Set<String> = []
+    var agentDetails: Set<String> = []
 
     mutating func show(_ tab: WorkspaceTab, target: Target? = nil) {
         self.tab = tab
         self.target = target
     }
     mutating func toggleQueue() { queue = queue == .closed ? .open : .closed }
+
+    func ownsAgentError(_ error: String, in snapshot: Snapshot) -> Bool {
+        guard tab == .agents, snapshot.dialog?.isInspection != true else { return false }
+        let worker: Int64? = if case .worker(let id) = target { id } else { nil }
+        return snapshot.activeMod?.agents.owns(error, worker: worker) == true
+    }
 
     mutating func reconcile(_ snapshot: Snapshot) {
         let next = snapshot.activeMod.map { Context(project: snapshot.project, modId: $0.id) }

@@ -51,6 +51,15 @@ impl Inspector {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum AgentDetail {
+    Failure(i64),
+    Activity(i64),
+    Worker(i64),
+    Timings,
+    TimingSource,
+}
+
 #[derive(Default)]
 pub struct Workspace {
     pub context: Option<(i64, String)>,
@@ -61,6 +70,9 @@ pub struct Workspace {
     pub message_toggles: std::collections::HashSet<(u128, usize)>,
     pub message_cursor: Option<(u128, usize)>,
     pub message_controls: Vec<(u128, usize, usize)>,
+    pub agent_toggles: std::collections::HashSet<AgentDetail>,
+    pub agent_cursor: Option<AgentDetail>,
+    pub agent_controls: Vec<(AgentDetail, usize)>,
 }
 
 impl Workspace {
@@ -146,6 +158,26 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('[' | ']') if self.workspace.inspector.tab == WorkspaceView::Agents => {
+                let controls = &self.workspace.agent_controls;
+                let current = controls
+                    .iter()
+                    .position(|(detail, _)| self.workspace.agent_cursor == Some(*detail));
+                let index = match (current, key.code) {
+                    (Some(index), KeyCode::Char('[')) => index.saturating_sub(1),
+                    (Some(index), _) => (index + 1).min(controls.len().saturating_sub(1)),
+                    _ => 0,
+                };
+                if let Some(&(detail, row)) = controls.get(index) {
+                    self.workspace.agent_cursor = Some(detail);
+                    let inspector = &mut self.workspace.inspector;
+                    if row < usize::from(inspector.offset)
+                        || row >= usize::from(inspector.offset) + usize::from(inspector.area.height)
+                    {
+                        inspector.offset = (row as u16).min(inspector.maximum);
+                    }
+                }
+            }
             KeyCode::Char('[' | ']') if self.workspace.inspector.tab == WorkspaceView::Findings => {
                 let ids = self.review_finding_ids();
                 let index = ids
@@ -189,6 +221,16 @@ impl App {
             {
                 let (message, segment) = self.workspace.message_cursor.unwrap();
                 self.activate_control(Control::Message(message, segment))?;
+            }
+            KeyCode::Enter if self.workspace.inspector.tab == WorkspaceView::Agents => {
+                if let Some(detail) = self.workspace.agent_cursor.filter(|key| {
+                    self.workspace
+                        .agent_controls
+                        .iter()
+                        .any(|(detail, _)| detail == key)
+                }) {
+                    self.activate_control(Control::AgentDetail(detail))?;
+                }
             }
             KeyCode::Enter => self.open_workspace_details()?,
             _ => {
