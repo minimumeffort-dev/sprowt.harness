@@ -59,7 +59,7 @@ struct ContentView: View {
         }
         .toolbarBackground(Theme.sidebar, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
-        .font(Theme.font()).foregroundStyle(Theme.ink).tint(Theme.ink)
+        .font(Theme.font()).foregroundStyle(Theme.ink).tint(Theme.accent)
         .background(Theme.paper)
         .sheet(item: Binding(get: { session.dialog.flatMap { $0.isInspection ? nil : $0 } }, set: { _ in })) { dialog in
             EngineDialogView(session: session, dialog: dialog).interactiveDismissDisabled()

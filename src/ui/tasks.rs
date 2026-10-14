@@ -20,21 +20,7 @@ pub(super) fn panel(frame: &mut Frame, area: Rect, title: String, keys: &[(&str,
 }
 
 fn state_style(state: &str) -> Style {
-    Style::new().fg(
-        if matches!(
-            state,
-            "Check failed" | "Final checks failed" | "Worker stopped" | "Blocked"
-        ) {
-            Color::Red
-        } else if matches!(
-            state,
-            "Done" | "Working" | "Checking" | "Starting" | "Resolving conflicts"
-        ) {
-            ACCENT
-        } else {
-            KEY_HINT
-        },
-    )
+    Style::new().fg(theme::status_color(state))
 }
 
 pub(super) fn draw_tasks(frame: &mut Frame, app: &mut App, selected: usize, area: Rect) {
@@ -165,7 +151,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         lines.extend(
             indented_text(error, width, 2)
                 .into_iter()
-                .map(|line| line.fg(Color::Red)),
+                .map(|line| line.fg(RED)),
         );
         lines.push(Line::default());
     }
@@ -184,7 +170,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
                     Line::from(format!(
                         "Same failure recorded in {repeats} attempts · revise the approach"
                     ))
-                    .fg(Color::Yellow),
+                    .fg(AMBER),
                     width,
                     0,
                 ));
@@ -226,9 +212,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
     }
     if let Some(check) = task.checks.iter().find(|check| check.failed()) {
         lines.extend(wrap_line(
-            Line::from(format!("! {}", check.check))
-                .fg(Color::Red)
-                .bold(),
+            Line::from(format!("! {}", check.check)).fg(RED).bold(),
             width,
             2,
         ));
@@ -248,7 +232,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         lines.extend(
             indented_text(&output, width, 2)
                 .into_iter()
-                .map(|line| line.fg(Color::Red)),
+                .map(|line| line.fg(RED)),
         );
         lines.push(Line::default());
     }
@@ -307,7 +291,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         let mut counts = Vec::new();
         for (count, label, color) in [
             (passed, "passed", ACCENT),
-            (failed, "failed", Color::Red),
+            (failed, "failed", RED),
             (unrun, "not run", KEY_HINT),
         ] {
             if count > 0 {
@@ -335,7 +319,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
             "·"
         };
         let color = match marker {
-            "!" => Color::Red,
+            "!" => RED,
             "✓" => ACCENT,
             _ => KEY_HINT,
         };
@@ -365,11 +349,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
                     check.evidence()
                 };
                 lines.extend(output.lines().map(|line| {
-                    Line::from(line.to_owned()).fg(if check.failed() {
-                        Color::Red
-                    } else {
-                        KEY_HINT
-                    })
+                    Line::from(line.to_owned()).fg(if check.failed() { RED } else { KEY_HINT })
                 }));
             }
         }
@@ -388,7 +368,7 @@ pub(super) fn preparation_lines(app: &App, id: i64, width: u16) -> Vec<Line<'sta
     let color = if busy || stopped || !preparation.current {
         KEY_HINT
     } else if preparation.failed() {
-        Color::Red
+        RED
     } else {
         ACCENT
     };
@@ -411,7 +391,7 @@ pub(super) fn preparation_lines(app: &App, id: i64, width: u16) -> Vec<Line<'sta
     if app.show_evidence {
         lines.extend(indented_text(&receipt.cache_summary(), width, 2));
         if !receipt.source_changes.is_empty() {
-            lines.push(Line::from("Changed source paths").fg(Color::Red).bold());
+            lines.push(Line::from("Changed source paths").fg(RED).bold());
             for path in &receipt.source_changes {
                 lines.extend(indented_text(
                     &path.to_string_lossy().escape_debug().to_string(),
@@ -469,16 +449,12 @@ pub(super) fn preparation_lines(app: &App, id: i64, width: u16) -> Vec<Line<'sta
 }
 
 pub(super) fn failure_lines(reason: &str, width: u16) -> Vec<Line<'static>> {
-    let mut lines = wrap_line(
-        Line::from("Needs attention").fg(Color::Red).bold(),
-        width,
-        0,
-    );
+    let mut lines = wrap_line(Line::from("Needs attention").fg(RED).bold(), width, 0);
     let brief = reason.lines().take(2).collect::<Vec<_>>().join("\n");
     lines.extend(
         indented_text(&brief, width, 2)
             .into_iter()
-            .map(|line| line.fg(Color::Red)),
+            .map(|line| line.fg(RED)),
     );
     lines.push(Line::default());
     lines

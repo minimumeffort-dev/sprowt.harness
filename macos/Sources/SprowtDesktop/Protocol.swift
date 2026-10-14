@@ -29,7 +29,13 @@ enum ProtocolError: LocalizedError {
     }
 }
 
+enum Appearance: String, Codable, CaseIterable, Sendable {
+    case system, light, dark
+    var label: String { rawValue.capitalized }
+}
+
 struct Snapshot: Decodable, Sendable {
+    let appearance: Appearance
     let project: String
     let navigation: NavigationState
     let workspaceViews: [WorkspaceTab]
@@ -227,6 +233,7 @@ struct Command: Encodable, Sendable {
     var allow: Bool?
     var slug: String?
     var create: Bool?
+    var appearance: Appearance?
 }
 
 struct Request: Encodable, Sendable {

@@ -74,7 +74,7 @@ pub(super) fn check_summary(app: &App, width: u16) -> Vec<Line<'static>> {
                 (
                     e.checks.iter().filter(|c| c.failed()).count(),
                     "failed",
-                    Color::Red,
+                    RED,
                 ),
                 (
                     e.checks.iter().filter(|c| c.skipped()).count(),
@@ -97,7 +97,7 @@ pub(super) fn check_summary(app: &App, width: u16) -> Vec<Line<'static>> {
                 }
             }
             for (phase, label, color) in [
-                (0, "Needs attention", Color::Red),
+                (0, "Needs attention", RED),
                 (1, "Passed checks", ACCENT),
                 (2, "Not run", KEY_HINT),
             ] {
@@ -243,7 +243,7 @@ pub(super) fn check_lines(
         let failed = group.iter().any(|check| check.failed());
         let passed = group.iter().all(|check| check.exit_code == Some(0));
         let (glyph, color) = if failed {
-            ("!", Color::Red)
+            ("!", RED)
         } else if passed {
             ("✓", ACCENT)
         } else {
@@ -298,7 +298,7 @@ pub(super) fn check_lines(
                 lines.extend(
                     indented_text(&output, width, 4)
                         .into_iter()
-                        .map(|line| line.fg(if check.failed() { Color::Red } else { KEY_HINT })),
+                        .map(|line| line.fg(if check.failed() { RED } else { KEY_HINT })),
                 );
             }
         }

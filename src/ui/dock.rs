@@ -110,8 +110,8 @@ pub(super) fn header(
 ) -> Rows {
     let (glyph, color) = match dock.tone {
         Tone::Quiet => ("◇", KEY_HINT),
-        Tone::Busy => (activity_glyph(elapsed), ACCENT),
-        Tone::Attention => ("!", Color::Red),
+        Tone::Busy => (activity_glyph(elapsed), BLUE),
+        Tone::Attention => ("!", AMBER),
         Tone::Ready => ("✓", ACCENT),
     };
     let mut rows = Rows::default();
@@ -152,20 +152,20 @@ pub(super) fn header(
     if let Some(error) = &dock.error {
         let mut lines: Vec<_> = indented_text(error, width, 0)
             .into_iter()
-            .map(|line| line.fg(Color::Red))
+            .map(|line| line.fg(RED))
             .collect();
         if lines.len() > 2 {
             lines[1] = Line::from(format!(
                 "{}…",
                 fit_name(&lines[1].to_string(), width.saturating_sub(1))
             ))
-            .fg(Color::Red);
+            .fg(RED);
         }
         rows.lines.extend(lines.into_iter().take(2));
     }
     if let Some(sync) = dock.sync {
         rows.lines.extend(wrap_line(
-            Line::from(format!("! {sync}")).fg(Color::Yellow),
+            Line::from(format!("! {sync}")).fg(AMBER),
             width,
             0,
         ));

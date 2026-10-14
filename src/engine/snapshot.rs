@@ -4,6 +4,7 @@ use serde::Serialize;
 
 #[derive(Serialize)]
 pub struct Snapshot {
+    pub appearance: crate::appearance::Appearance,
     pub project: String,
     pub navigation: super::NavigationSnapshot,
     pub workspace_views: [super::workspace_view::WorkspaceView; 5],
@@ -370,6 +371,7 @@ impl Engine {
             .sort_by_key(|item| Some(item.action) != dock.primary);
         let phase = self.state_summary().phase;
         Snapshot {
+            appearance: self.appearance,
             workspace_views: super::workspace_view::WorkspaceView::ALL,
             project: self.project.display().to_string(),
             navigation: self.navigation_snapshot(),

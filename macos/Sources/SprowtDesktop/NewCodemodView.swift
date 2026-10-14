@@ -29,7 +29,7 @@ struct NewCodemodView: View {
                         Button { create() } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 10) {
                                 Text("Create codemod")
-                                Text("⌘↩").font(Theme.font(10)).foregroundStyle(Theme.muted)
+                                Text("⌘↩").font(Theme.font(10))
                                 Image(systemName: "arrow.up").font(.system(size: 12)).symbolBaseline(textSize: 12)
                             }
                         }.buttonStyle(WorkspaceButtonStyle(prominent: true))
@@ -39,7 +39,7 @@ struct NewCodemodView: View {
                 }
                 .background(Theme.paper, in: RoundedRectangle(cornerRadius: 12))
                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.line))
+                .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.control))
                 .overlay(alignment: .bottomLeading) {
                     if let menu = editor.menu {
                         VStack(alignment: .leading, spacing: 2) {
@@ -56,7 +56,7 @@ struct NewCodemodView: View {
                             }
                         }.padding(6).frame(width: 192)
                             .background(Theme.panel, in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.line))
+                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Theme.control))
                             .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
                             .padding(.leading, 14).offset(y: -52)
                     }

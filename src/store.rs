@@ -153,6 +153,10 @@ impl Store {
             .execute_batch(
                 "PRAGMA foreign_keys = ON;
              PRAGMA journal_mode = WAL;
+             CREATE TABLE IF NOT EXISTS preferences (
+                 id INTEGER PRIMARY KEY CHECK (id = 1),
+                 appearance TEXT NOT NULL CHECK (appearance IN ('system', 'light', 'dark'))
+             );
              CREATE TABLE IF NOT EXISTS projects (
                  id INTEGER PRIMARY KEY,
                  path TEXT NOT NULL UNIQUE,

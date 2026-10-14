@@ -131,7 +131,7 @@ private struct WorkerActivityView: View {
         VStack(alignment: .leading, spacing: 6) {
             Label("\(worker.provider.capitalized) · \(worker.role)", systemImage: "arrow.turn.down.right").font(Theme.font(12, weight: .medium))
             if let taskTitle { Text(taskTitle).font(Theme.font(12)) }
-            Text(worker.state).font(Theme.font(11)).foregroundStyle(Theme.muted)
+            Text(worker.state).font(Theme.font(11)).foregroundStyle(Theme.statusColor(worker.state))
             if !worker.activity.isEmpty { Text(worker.activity).font(Theme.font(12)).foregroundStyle(Theme.muted).textSelection(.enabled) }
             if showDetails {
                 DisclosureGroup("Worker details") {
@@ -150,7 +150,7 @@ struct TaskInspectorView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text(task.title).font(Theme.font(16, weight: .semibold)).textSelection(.enabled)
             Label(task.status, systemImage: task.hasCurrentFailure ? "exclamationmark.circle" : task.completed ? "checkmark" : "circle")
-                .font(Theme.font(11)).foregroundStyle(task.hasCurrentFailure ? Theme.red : task.completed ? Theme.green : Theme.muted)
+                .font(Theme.font(11)).foregroundStyle(task.hasCurrentFailure ? Theme.red : task.completed ? Theme.green : Theme.statusColor(task.status))
             Text(task.outcome).font(Theme.font(12)).textSelection(.enabled)
             if !task.detail.isEmpty { Text(task.detail).font(Theme.font(12)).textSelection(.enabled) }
             if let error = task.error { Text(error).font(Theme.font(12)).foregroundStyle(Theme.red).textSelection(.enabled) }

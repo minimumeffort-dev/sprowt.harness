@@ -56,6 +56,10 @@ struct SidebarView: View {
                 }
             }
             Spacer(minLength: 8)
+            Picker("Appearance", selection: Binding(get: { session.snapshot?.appearance ?? .system }, set: { session.setAppearance($0) })) {
+                ForEach(Appearance.allCases, id: \.self) { Text($0.label).tag($0) }
+            }.pickerStyle(.menu).font(Theme.font(11)).foregroundStyle(Theme.muted)
+                .disabled(!session.editable).padding(.horizontal, 5)
         }.padding(.horizontal, 12).padding(.top, 18).padding(.bottom, 10)
             .frame(maxHeight: .infinity).background(Theme.sidebar)
     }

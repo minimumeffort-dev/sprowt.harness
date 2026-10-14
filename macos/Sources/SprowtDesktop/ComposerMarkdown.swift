@@ -147,7 +147,7 @@ enum ComposerMarkdown {
             if block.hasPrefix("#") { font = NSFontManager.shared.convert(font, toSize: 20) }
             if bits & 1 != 0 || block.hasPrefix("#") { font = NSFontManager.shared.convert(font, toHaveTrait: .boldFontMask) }
             if bits & 2 != 0 { font = NSFontManager.shared.convert(font, toHaveTrait: .italicFontMask) }
-            // Manrope has no italic face. Avoid adding a second slant to fonts that do.
+            // Some code fonts have no italic face.
             if bits & 2 != 0, !font.fontDescriptor.symbolicTraits.contains(.italic) {
                 text.addAttribute(.obliqueness, value: 0.15, range: range)
             } else {

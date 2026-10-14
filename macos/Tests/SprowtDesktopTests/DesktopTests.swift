@@ -5,7 +5,7 @@ import Testing
 @testable import SprowtDesktop
 
 private let snapshotJSON = #"""
-{"project":"/tmp/project","navigation":{"destination":{"kind":"codemod","mod_id":1},"can_go_back":false,"can_go_forward":false},"phase":"building","mods":[{"id":1,"name":"Example","closed":false,"status":"Building","workers":[]}],"active_mod":{"id":1,"name":"Example","description":"Change the CLI","closed":false,"user_paused":false,"draft":"Saved draft","messages":[{"role":"user","body":"Change the CLI","model":null,"effort":null,"author":"user"},{"role":"planner","body":"Ready","model":"codex","effort":"high","author":"Codex · planner"}],"history":[],"queue":[{"id":7,"body":"Keep tests"}],"steering":["Preserve the interface"],"plan":{"status":"ready","summary":"One task","tasks":[{"id":"implement_cli","title":"Change command","outcome":"CLI works","depends_on":["design"],"status":"pending","detail":"Ready","files":["src/main.rs"],"checks":["cargo test"],"run_id":12,"identity":"codex executor","source":"task:12:attempt:1","error":null,"latest":null,"results":[],"checks_label":"Checks","completed":false,"preparation":null,"actions":[]}]},"checks":[{"id":"task:12:check:0","task_id":"implement_cli","kind":"check","label":"cargo test","status":"passed","output":"3 passed"}],"findings":[{"id":"F1","title":"Handle EOF","detail":"Keep draft","status":"open","imported":false}],"pr_feedback":[{"id":"thread:30","title":"src/main.rs:42 · rev","detail":"This drops the error.","status":"unresolved thread","imported":false}],"pr_feedback_error":null,"workers":["codex executor running"],"worker_details":[{"id":4,"provider":"codex","identity":"codex executor","role":"executor","task_id":"implement_cli","state":"running","activity":"Running cargo test"}],"timings":""},"status":"Ready","detail":"Run plan","evidence":"3 checks","error":null,"actions":[{"id":"retry_task","label":"Retry task","task_id":12}],"dialog":null,"workspace_views":["conversation","changes","checks","findings","agents"]}
+{"appearance":"system","project":"/tmp/project","navigation":{"destination":{"kind":"codemod","mod_id":1},"can_go_back":false,"can_go_forward":false},"phase":"building","mods":[{"id":1,"name":"Example","closed":false,"status":"Building","workers":[]}],"active_mod":{"id":1,"name":"Example","description":"Change the CLI","closed":false,"user_paused":false,"draft":"Saved draft","messages":[{"role":"user","body":"Change the CLI","model":null,"effort":null,"author":"user"},{"role":"planner","body":"Ready","model":"codex","effort":"high","author":"Codex · planner"}],"history":[],"queue":[{"id":7,"body":"Keep tests"}],"steering":["Preserve the interface"],"plan":{"status":"ready","summary":"One task","tasks":[{"id":"implement_cli","title":"Change command","outcome":"CLI works","depends_on":["design"],"status":"pending","detail":"Ready","files":["src/main.rs"],"checks":["cargo test"],"run_id":12,"identity":"codex executor","source":"task:12:attempt:1","error":null,"latest":null,"results":[],"checks_label":"Checks","completed":false,"preparation":null,"actions":[]}]},"checks":[{"id":"task:12:check:0","task_id":"implement_cli","kind":"check","label":"cargo test","status":"passed","output":"3 passed"}],"findings":[{"id":"F1","title":"Handle EOF","detail":"Keep draft","status":"open","imported":false}],"pr_feedback":[{"id":"thread:30","title":"src/main.rs:42 · rev","detail":"This drops the error.","status":"unresolved thread","imported":false}],"pr_feedback_error":null,"workers":["codex executor running"],"worker_details":[{"id":4,"provider":"codex","identity":"codex executor","role":"executor","task_id":"implement_cli","state":"running","activity":"Running cargo test"}],"timings":""},"status":"Ready","detail":"Run plan","evidence":"3 checks","error":null,"actions":[{"id":"retry_task","label":"Retry task","task_id":12}],"dialog":null,"workspace_views":["conversation","changes","checks","findings","agents"]}
 """#
 
 @Test func decodesGoldenFixtureProducedByRust() throws {
@@ -414,11 +414,10 @@ private func installExecutable(_ source: String, at url: URL) throws {
     }
 }
 
-@Test @MainActor func bundledManropeRegistersAndResolvesTheActualFamily() throws {
-    _ = Theme.registerFonts()
-    let font = try #require(NSFont(name: "Manrope", size: 13))
-    #expect(font.familyName == "Manrope")
-    #expect(font.fontName.hasPrefix("Manrope"))
+@Test @MainActor func nativeTypographyUsesPreferredSystemFont() {
+    let font = Theme.composerFont
+    #expect(font.familyName == NSFont.systemFont(ofSize: 14).familyName)
+    #expect(font.pointSize == NSFont.preferredFont(forTextStyle: .body).pointSize + 1)
 }
 
 @Test func workspaceSelectionKeepsLocalChoicesAndClearsStaleContexts() throws {
@@ -610,29 +609,6 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     #expect(WorkspaceTab.allCases.map(\.label) == ["Conversation", "Changes", "Checks", "Findings", "Agents"])
 }
 
-@Test func packagedFontResourcesResolveInsideTheAppWithoutBuildFallback() throws {
-    let directory = try temporaryDirectory()
-    defer { try? FileManager.default.removeItem(at: directory) }
-    let app = directory.appendingPathComponent("Relocated.app")
-    let contents = app.appendingPathComponent("Contents")
-    let resources = contents.appendingPathComponent("Resources")
-    try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
-    let info: [String: Any] = ["CFBundlePackageType": "APPL", "CFBundleIdentifier": "dev.sprowt.resource-test", "CFBundleExecutable": "Sprowt"]
-    try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: contents.appendingPathComponent("Info.plist"))
-    let source = try #require(Theme.resourceBundle())
-    let copied = resources.appendingPathComponent("SprowtDesktop_SprowtDesktop.bundle")
-    try FileManager.default.copyItem(at: source.bundleURL, to: copied)
-    let main = try #require(Bundle(url: app))
-    let font = try #require(Theme.resourceBundle(in: main)?.url(forResource: "Manrope", withExtension: "ttf", subdirectory: "Manrope"))
-    #expect(font.path == copied.appendingPathComponent("Manrope/Manrope.ttf").path)
-    #expect(try Data(contentsOf: font).prefix(4) == Data([0x00, 0x01, 0x00, 0x00]))
-    let missing = directory.appendingPathComponent("Missing.app/Contents")
-    try FileManager.default.createDirectory(at: missing.appendingPathComponent("Resources"), withIntermediateDirectories: true)
-    try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0).write(to: missing.appendingPathComponent("Info.plist"))
-    let incomplete = try #require(Bundle(url: missing.deletingLastPathComponent()))
-    #expect(Theme.resourceBundle(in: incomplete) == nil)
-}
-
 @Test @MainActor func pendingInspectionKeepsDoneAccessibleAndPreservesCreationAndComposerDrafts() async throws {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -813,4 +789,125 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
         #expect(selection.target == nil)
         #expect(selection.queue == .open)
     }
+}
+
+@Test @MainActor func appearanceCommandsPreserveDraftsWorkspaceAndRejectedPreference() async throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let executable = directory.appendingPathComponent("engine")
+    try Data(snapshotJSON.utf8).write(to: URL(fileURLWithPath: executable.path + ".json"))
+    try installExecutable(#"""
+    #!/usr/bin/python3
+    import json, sys
+    snapshot = json.load(open(sys.argv[0] + '.json'))
+    def emit(request_id=None, error=None):
+        print(json.dumps(dict(protocol_version=1, request_id=request_id, error=error, snapshot=snapshot)), flush=True)
+    emit()
+    for line in sys.stdin:
+        request = json.loads(line)
+        command = request['command']
+        error = None
+        if command['type'] == 'set_draft':
+            snapshot['active_mod']['draft'] = command['text']
+        elif command['type'] == 'set_appearance':
+            if command['appearance'] == 'dark':
+                error = 'Could not save appearance'
+            else:
+                snapshot['appearance'] = command['appearance']
+        emit(request['id'], error)
+    """#, at: executable)
+    let session = Session()
+    session.start(project: directory, executable: executable)
+    try await waitUntil { session.editable }
+    session.newDescription = "Creation draft"
+    session.editDraft("Unsent instruction")
+    session.workspace.show(.checks, target: .task("implement_cli"))
+    session.setAppearance(.light)
+    try await waitUntil { session.snapshot?.appearance == .light && !session.busy }
+    #expect(session.draft == "Unsent instruction")
+    #expect(session.newDescription == "Creation draft")
+    #expect(session.workspace.tab == .checks)
+    #expect(session.workspace.target == .task("implement_cli"))
+    session.setAppearance(.dark)
+    try await waitUntil { session.error == "Could not save appearance" && !session.busy }
+    #expect(session.snapshot?.appearance == .light)
+    #expect(session.draft == "Unsent instruction")
+    session.setAppearance(.system)
+    try await waitUntil { session.snapshot?.appearance == .system && !session.busy }
+    #expect(session.workspace.tab == .checks)
+    session.close {}
+    try await waitUntil { session.connection == .disconnected }
+}
+
+@Test func appearanceWireValuesAreTypedAndRejectUnknownPreferences() throws {
+    let data = try Request(id: 19, command: Command(type: "set_appearance", appearance: .dark)).encodedLine()
+    let request = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let command = try #require(request["command"] as? [String: String])
+    #expect(command == ["type": "set_appearance", "appearance": "dark"])
+    #expect(throws: DecodingError.self) {
+        _ = try decodeSnapshot { $0["appearance"] = "gold" }
+    }
+}
+
+@Test @MainActor func resolvedNativeColorsMatchRustAndKeepTextReadable() throws {
+    var root = URL(fileURLWithPath: #filePath)
+    for _ in 0..<4 { root.deleteLastPathComponent() }
+    let fixture = try JSONDecoder().decode([String: [String: [Int]]].self,
+        from: Data(contentsOf: root.appendingPathComponent("tests/fixtures/appearance.json")))
+    let colors: [String: Color] = ["paper": Theme.paper, "ink": Theme.ink, "muted": Theme.muted,
+        "control": Theme.control, "sidebar": Theme.sidebar, "selected": Theme.selected, "panel": Theme.panel,
+        "accent": Theme.accent, "blue": Theme.blue, "amber": Theme.amber, "red": Theme.red,
+        "workingStatus": Theme.statusColor("Working"), "attentionStatus": Theme.statusColor("Needs your answer"),
+        "workerStatus": Theme.statusColor("running")]
+    func luminance(_ rgb: [Int]) -> Double {
+        let linear = rgb.map { value -> Double in
+            let channel = Double(value) / 255
+            return channel <= 0.04045 ? channel / 12.92 : pow((channel + 0.055) / 1.055, 2.4)
+        }
+        return linear[0] * 0.2126 + linear[1] * 0.7152 + linear[2] * 0.0722
+    }
+    for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
+        let expected = try #require(fixture[name])
+        for (role, color) in colors {
+            var rgb: [Int] = []
+            NSAppearance(named: appearance)?.performAsCurrentDrawingAppearance {
+                if let value = NSColor(color).usingColorSpace(.sRGB) {
+                    rgb = [value.redComponent, value.greenComponent, value.blueComponent].map { Int(($0 * 255).rounded()) }
+                }
+            }
+            #expect(rgb == expected[role], "\(name) \(role) differs across app and terminal")
+        }
+        for foreground in ["ink", "muted", "accent", "blue", "amber", "red"] {
+            for background in ["paper", "sidebar", "panel"] {
+                let a = luminance(try #require(expected[foreground]))
+                let b = luminance(try #require(expected[background]))
+                #expect((max(a,b) + 0.05) / (min(a,b) + 0.05) >= 4.5, "\(name) \(foreground) on \(background)")
+            }
+        }
+    }
+}
+
+@Test @MainActor func editorAppearanceChangesPreserveSourceSelectionAndUndo() throws {
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 500, height: 250), styleMask: [.titled], backing: .buffered, defer: false)
+    let editor = ComposerTextView(frame: window.contentView!.bounds, textContainer: nil)
+    window.contentView = editor
+    editor.load("Native text")
+    editor.setSelectedRange(NSRange(location: 0, length: 6))
+    editor.apply(.bold)
+    let source = editor.source
+    let selection = editor.selectedRange()
+    for appearance in [NSAppearance.Name.aqua, .darkAqua] {
+        editor.appearance = NSAppearance(named: appearance)
+        #expect(editor.source == source)
+        #expect(editor.selectedRange() == selection)
+        var caret: [Int] = []
+        editor.effectiveAppearance.performAsCurrentDrawingAppearance {
+            if let color = editor.insertionPointColor.usingColorSpace(.sRGB) {
+                caret = [color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }
+            }
+        }
+        #expect(caret == (appearance == .aqua ? [41, 103, 70] : [162, 213, 180]))
+    }
+    editor.undoManager?.undo()
+    #expect(editor.source == "Native text")
 }

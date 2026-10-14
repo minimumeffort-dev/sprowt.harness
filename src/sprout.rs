@@ -2,8 +2,7 @@ use std::time::Duration;
 
 use ratatui::{Frame, layout::Rect, style::Color};
 
-const BODY: Color = Color::Rgb(157, 190, 121);
-const INK: Color = Color::Rgb(28, 51, 38);
+use crate::ui::theme::{PET_BODY as BODY, PET_HIGHLIGHT, PET_INK as INK, PET_LEAF, PET_SHADE};
 const PIXELS: [&str; 8] = [
     "     T  ", "   HT   ", "  HBBB  ", " HBBBBB ", " HBBBBB ", " BBBBBB ", "  BSSB  ", "  S  S  ",
 ];
@@ -198,9 +197,9 @@ fn pixel(pixels: &[&str; 8], x: usize, y: usize, leaf: i8) -> u8 {
 fn color(pixel: u8) -> Option<Color> {
     match pixel {
         b'B' => Some(BODY),
-        b'H' => Some(Color::Rgb(190, 215, 157)),
-        b'S' => Some(Color::Rgb(106, 149, 88)),
-        b'T' => Some(Color::Rgb(80, 158, 104)),
+        b'H' => Some(PET_HIGHLIGHT),
+        b'S' => Some(PET_SHADE),
+        b'T' => Some(PET_LEAF),
         _ => None,
     }
 }

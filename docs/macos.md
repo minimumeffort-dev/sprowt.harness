@@ -35,7 +35,7 @@ The header button shows Rust's recommended action; **More** holds the other avai
 
 Choose **New codemod** or press **⌘N** to describe the change in the compact creation editor. **Create codemod** or **⌘Return** starts the same planning and execution flow as the terminal app. The planner supplies a short title while the complete request stays in the conversation. Setup, network access, publication, closing and deletion retain their explicit confirmation steps.
 
-![Native creation editor](assets/macos-composer.jpg)
+![Native creation editor](assets/macos-appearance-light.png)
 
 Actual native creation editor using a disposable project. No plan was created.
 
@@ -53,7 +53,7 @@ Use the title bar's **Back** and **Forward** arrows, **View → Back / Forward**
 
 Press **⌘1** through **⌘5** for **Conversation**, **Changes**, **Checks**, **Findings** and **Agents**, respectively. These shortcuts preserve the composer draft.
 
-The app follows your system appearance and text size in light and dark mode. Status appears as text and color: blue while work runs, gold when Sprowt needs you, green when ready or published.
+Choose **System**, **Light** or **Dark** from **Appearance** at the bottom of the sidebar. The preference is shared with the terminal. See [Appearance](appearance.md) for controls and status colors.
 
 Use the composer to answer a question or queue an instruction. Expand the attached queue to edit, reorder, remove or steer pending instructions. Save an edit before choosing **Steer**. These actions preserve the composer draft. Removing the last queued instruction closes the queue and returns focus to the composer. Steering without connected workers saves instructions as waiting for workers; it does not claim delivery.
 
@@ -90,15 +90,11 @@ Run the native tests from the harness repository:
 swift test --package-path macos
 ```
 
-The native app communicates with its bundled engine over local stdin/stdout. Typed commands carry a request ID; responses contain the protocol version, an acknowledgement or error, and the current snapshot. The snapshot includes the navigation destination and available directions. Swift owns rendering and editing focus. Rust owns navigation history, scheduling, permissions, persistence and workflow transitions.
+The native app communicates with its bundled engine over local stdin/stdout. Typed commands carry a request ID; responses contain the protocol version, an acknowledgement or error, and the current snapshot. The snapshot includes the navigation destination, available directions and typed appearance preference. `set_appearance` accepts `system`, `light` or `dark`; Rust acknowledges the new value only after saving it. Swift owns rendering and editing focus. Rust owns navigation history, scheduling, permissions, persistence and workflow transitions.
 
-The light theme uses Minimum Effort's Manrope font, warm neutral backgrounds and yellow action accents. Manrope is bundled under the SIL Open Font License; the app does not fetch fonts at runtime. Its [source](../macos/Sources/SprowtDesktop/Resources/Manrope/SOURCE.txt) and [license](../macos/Sources/SprowtDesktop/Resources/Manrope/OFL.txt) are included with the bundle.
+Native system typography and evergreen colors cover the workspace, editors, dialogs and window chrome. No font files or downloads are required.
 
 Row icons align with the center of their label's first line, even when the label wraps.
-
-![Codemod navigation and the five workspace views](assets/macos-workspace.png)
-
-Paused codemod with sample tasks in a disposable project. The request appears once; the sidebar switches codemods and each main tab has one purpose.
 
 For an isolated development session, replace both paths below with disposable directories:
 

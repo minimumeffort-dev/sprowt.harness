@@ -101,6 +101,10 @@ final class Session {
         sendNext()
     }
 
+    func setAppearance(_ appearance: Appearance) {
+        enqueue(Command(type: "set_appearance", appearance: appearance))
+    }
+
     func editDraft(_ text: String) {
         guard let id = active?.id, canCompose else { return }
         let revision = drafts.edit(text, for: id)

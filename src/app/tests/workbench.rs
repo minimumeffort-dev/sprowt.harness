@@ -814,7 +814,7 @@ fn workspace_task_details_keep_readable_previous_findings_and_reports() {
             buffer
                 .content
                 .iter()
-                .any(|cell| cell.symbol() == "P" && cell.fg == Color::Red)
+                .any(|cell| cell.symbol() == "P" && cell.fg == Color::Rgb(239, 163, 157))
         );
     }
     app.activate_control(Control::Drill(Key::Task(done_id)))
@@ -826,7 +826,7 @@ fn workspace_task_details_keep_readable_previous_findings_and_reports() {
     let pane = app.workspace.inspector.area;
     assert!(
         (pane.y..pane.bottom()).any(|y| buffer[(pane.x + 2, y)].symbol() == "✓"
-            && buffer[(pane.x + 2, y)].fg == Color::Green)
+            && buffer[(pane.x + 2, y)].fg == Color::Rgb(162, 213, 180))
     );
     app.engine.view = View::Task(done_id, 0);
     let text = rows(&overview_screen(&mut app, 80, 46)).join("\n");

@@ -2,6 +2,7 @@ use super::*;
 
 impl Engine {
     pub(crate) fn poll_workers(&mut self) -> Result<()> {
+        self.appearance = self.store.appearance()?;
         self.preparations.poll(&self.store)?;
         self.refresh_network_requests()?;
         self.poll_git_jobs()?;

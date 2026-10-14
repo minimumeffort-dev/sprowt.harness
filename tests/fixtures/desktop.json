@@ -3,6 +3,7 @@
   "protocol_version": 1,
   "request_id": 7,
   "snapshot": {
+    "appearance": "system",
     "actions": [
       {
         "id": "retry_task",

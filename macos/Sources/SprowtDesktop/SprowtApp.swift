@@ -7,12 +7,14 @@ struct SprowtApp: App {
     @State private var session = Session()
     @State private var sidebarVisible = true
 
-    init() { Theme.registerFonts() }
-
     var body: some Scene {
         Window("Sprowt", id: "main") {
             ContentView(session: session, sidebarVisible: $sidebarVisible)
                 .frame(minWidth: 900, minHeight: 650)
+                .preferredColorScheme(session.snapshot?.appearance.colorScheme)
+                .onChange(of: session.snapshot?.appearance) { _, value in
+                    NSApp.appearance = value?.nsAppearance
+                }
                 .task {
                     delegate.session = session
                     let arguments = ProcessInfo.processInfo.arguments
@@ -44,6 +46,13 @@ struct SprowtApp: App {
                         .disabled(session.active == nil)
                 }
             }
+            CommandGroup(after: .appSettings) {
+                Menu("Appearance") {
+                    Picker("Appearance", selection: Binding(get: { session.snapshot?.appearance ?? .system }, set: { session.setAppearance($0) })) {
+                        ForEach(Appearance.allCases, id: \.self) { Text($0.label).tag($0) }
+                    }.pickerStyle(.inline).disabled(!session.editable)
+                }
+            }
             CommandGroup(replacing: .newItem) {
                 Button("New codemod") { session.beginCreation() }
                     .keyboardShortcut("n")
@@ -72,4 +81,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+}
+
+
+extension Appearance {
+    var colorScheme: ColorScheme? {
+        switch self { case .system: nil; case .light: .light; case .dark: .dark }
+    }
+    var nsAppearance: NSAppearance? {
+        switch self { case .system: nil; case .light: NSAppearance(named: .aqua); case .dark: NSAppearance(named: .darkAqua) }
+    }
 }

@@ -242,22 +242,20 @@ private func composerKey(_ characters: String, code: UInt16, modifiers: NSEvent.
     #expect(editor.source == "code 🌱\n")
 }
 
-@Test @MainActor func bundledManropeShowsItalicAndRemovesTheSyntheticSlantWhenToggledOff() throws {
-    _ = Theme.registerFonts()
-    let manrope = try #require(NSFont(name: "Manrope", size: 14))
-    #expect(manrope.familyName == "Manrope")
+@Test @MainActor func nativeItalicUsesItsOwnFaceAndTogglesBackToBody() throws {
     let editor = ComposerTextView(frame: .zero, textContainer: nil)
-    editor.load("Italic Manrope")
+    editor.load("Italic text")
     editor.setSelectedRange(editor.textStorage!.fullRange)
     editor.apply(.italic)
     let font = try #require(editor.textStorage!.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
-    #expect(font.familyName == "Manrope")
-    #expect(!font.fontDescriptor.symbolicTraits.contains(.italic))
-    #expect(editor.textStorage!.attribute(.obliqueness, at: 0, effectiveRange: nil) as? Double == 0.15)
-    #expect(editor.source == "*Italic Manrope*")
-    editor.apply(.italic)
+    #expect(font.familyName == Theme.composerFont.familyName)
+    #expect(font.fontDescriptor.symbolicTraits.contains(.italic))
     #expect(editor.textStorage!.attribute(.obliqueness, at: 0, effectiveRange: nil) == nil)
-    #expect(editor.source == "Italic Manrope")
+    #expect(editor.source == "*Italic text*")
+    editor.apply(.italic)
+    let plain = try #require(editor.textStorage!.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)
+    #expect(!plain.fontDescriptor.symbolicTraits.contains(.italic))
+    #expect(editor.source == "Italic text")
 }
 
 @Test @MainActor func emphasisKeepsWhitespaceOutsideMarkersAcrossMixedAndMultilineSelections() {

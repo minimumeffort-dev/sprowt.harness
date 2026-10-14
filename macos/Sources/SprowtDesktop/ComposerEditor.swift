@@ -112,6 +112,8 @@ final class ComposerTextView: NSTextView, NSTextViewDelegate {
         isHorizontallyResizable = false
         autoresizingMask = [.width]
         self.textContainer?.widthTracksTextView = true
+        insertionPointColor = Theme.nsAccent
+        selectedTextAttributes = [.backgroundColor: Theme.nsSelected, .foregroundColor: Theme.nsText]
         typingAttributes = ComposerMarkdown.attributes
         isAutomaticQuoteSubstitutionEnabled = false
         isAutomaticDashSubstitutionEnabled = false
@@ -172,7 +174,7 @@ final class ComposerTextView: NSTextView, NSTextViewDelegate {
         if string.isEmpty {
             let placeholder = "Describe the change…"
             placeholder.draw(at: NSPoint(x: textContainerInset.width + 5, y: textContainerInset.height),
-                             withAttributes: [.font: ComposerMarkdown.baseFont, .foregroundColor: NSColor.secondaryLabelColor])
+                             withAttributes: [.font: ComposerMarkdown.baseFont, .foregroundColor: Theme.nsMuted])
         }
     }
 

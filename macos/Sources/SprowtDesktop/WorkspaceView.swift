@@ -47,7 +47,7 @@ struct WorkspaceView: View {
     private var header: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 5) {
-                Text(mod.name).font(Theme.font(15, weight: .semibold)).lineLimit(2).textSelection(.enabled)
+                Text(mod.name).font(Theme.font(18, weight: .semibold)).lineLimit(2).textSelection(.enabled)
                 HStack(spacing: 6) {
                     Circle().fill(session.snapshot?.phase.color ?? Theme.muted).frame(width: 5, height: 5)
                     Text(session.snapshot?.status ?? "").lineLimit(1)
@@ -68,7 +68,7 @@ struct WorkspaceView: View {
             }
             if let action = primaryAction {
                 Button { session.perform(action) } label: { Label(action.label, systemImage: action.symbol) }
-                    .buttonStyle(WorkspaceButtonStyle()).overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.line))
+                    .buttonStyle(WorkspaceButtonStyle()).overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.control))
                     .disabled(!session.interactive || session.busy)
             }
             if let actions = session.snapshot?.actions, actions.count > 1 {
@@ -97,7 +97,7 @@ struct WorkspaceView: View {
             }
             VStack(alignment: .leading, spacing: 8) {
                 TextEditor(text: Binding(get: { session.draft }, set: { session.editDraft($0) }))
-                    .font(Theme.font(13)).frame(height: 62).scrollContentBackground(.hidden)
+                    .font(Theme.font(14)).frame(height: 62).scrollContentBackground(.hidden)
                     .accessibilityLabel("Instruction").focused($composerFocused).disabled(!session.canCompose)
                 HStack(spacing: 8) {
                     if !mod.queue.isEmpty {
@@ -115,7 +115,7 @@ struct WorkspaceView: View {
                         .disabled(!session.canCompose || session.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }.padding(11).background(Theme.paper, in: RoundedRectangle(cornerRadius: Theme.radius))
-                .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.line))
+                .overlay(RoundedRectangle(cornerRadius: Theme.radius).stroke(Theme.control))
         }.padding(.horizontal, Theme.inset).padding(.bottom, 16)
     }
 }

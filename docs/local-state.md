@@ -6,6 +6,8 @@ The harness saves work automatically in SQLite and private source checkpoints. R
 
 The terminal and [macOS app](macos.md) use the same database. Only one controller can open a project at a time; close the active interface before switching. The project lock is released after worker cleanup on exit.
 
+The global [appearance preference](appearance.md) is also saved in this database and applies across projects.
+
 ## What survives
 
 | Event | Source and history | Runtime and native conversations | Does work resume? |

@@ -59,7 +59,7 @@ pub(super) fn finding_lines(app: &App, width: u16) -> Vec<Line<'static>> {
             lines.extend(
                 indented_text(reason, width, 0)
                     .into_iter()
-                    .map(|l| l.fg(Color::Yellow)),
+                    .map(|l| l.fg(AMBER)),
             );
         }
         lines.push(Line::from(if review.status == "fixing" {
@@ -175,8 +175,8 @@ fn finding_block(
     width: u16,
 ) -> Vec<Line<'static>> {
     let color = match finding.priority.as_str() {
-        "P0" | "P1" => Color::Red,
-        "P2" => Color::Yellow,
+        "P0" | "P1" => RED,
+        "P2" => AMBER,
         _ => KEY_HINT,
     };
     let mut lines = vec![Line::default()];
@@ -203,11 +203,11 @@ fn finding_block(
     ));
     if !state.is_empty() {
         let color = if state.contains("resolved") {
-            Color::Green
+            ACCENT
         } else if state.contains("confirmed") {
-            Color::Red
+            RED
         } else if state.contains("investigate") {
-            Color::Yellow
+            AMBER
         } else {
             KEY_HINT
         };
@@ -273,7 +273,7 @@ mod tests {
                 lines
                     .iter()
                     .flat_map(|line| &line.spans)
-                    .any(|span| span.content == " P1 " && span.style.fg == Some(Color::Red))
+                    .any(|span| span.content == " P1 " && span.style.fg == Some(RED))
             );
         }
         for text in [

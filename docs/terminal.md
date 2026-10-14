@@ -6,6 +6,8 @@ The workspace has five views: **Conversation**, **Changes**, **Checks**, **Findi
 
 [Navigation](#switch-workspace-views) · [Details](#details) · [Next action](#understand-the-dock) · [Keyboard reference](#keyboard-reference) · [CLI](#commands)
 
+Choose the shared light or dark theme with **Ctrl+G → A · Appearance**. See [Appearance](appearance.md) for system behavior and keyboard controls.
+
 ## Read the screen
 
 ![Terminal workspace views above the conversation and message dock.](assets/terminal-overview.svg)

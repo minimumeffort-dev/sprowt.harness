@@ -128,7 +128,11 @@ fn conversation(app: &App, d: &mut Document) {
                 d.muted(&format!("After: {}", numbers.join(", ")));
             }
             if let Some(run) = run.and_then(|run| app.inspect_task(run.id)) {
-                d.muted(run.state);
+                d.lines.extend(wrap_line(
+                    Line::from(run.state).fg(theme::status_color(run.state)),
+                    d.width,
+                    0,
+                ));
             }
             d.gap();
         }
@@ -184,7 +188,11 @@ fn agents(app: &App, d: &mut Document) {
     }
     for worker in workers {
         d.heading(&format!("{} · {}", worker.provider, worker.role));
-        d.muted(worker.state);
+        d.lines.extend(wrap_line(
+            Line::from(worker.state).fg(theme::status_color(worker.state)),
+            d.width,
+            0,
+        ));
         if !worker.activity.is_empty() {
             d.text(&worker.activity);
         }
@@ -345,9 +353,9 @@ fn review(app: &App, d: &mut Document) {
         .unwrap_or(0);
     for (i, (id, finding, _)) in entries.iter().enumerate() {
         let color = if matches!(finding.priority.as_str(), "P0" | "P1") {
-            Color::Red
+            RED
         } else {
-            Color::Yellow
+            AMBER
         };
         d.controls.push((d.lines.len(), Control::Finding(*id)));
         d.lines.push(

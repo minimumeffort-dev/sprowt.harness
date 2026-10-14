@@ -14,6 +14,7 @@ use std::{
 };
 use tachyonfx::Effect;
 mod actions;
+mod appearance;
 pub mod controls;
 pub mod formatting;
 mod inspector;
@@ -23,6 +24,9 @@ pub mod workspace_navigation;
 pub use scroll::Scroll;
 
 pub struct App {
+    pub(crate) appearance_picker: Option<crate::appearance::Appearance>,
+    pub(crate) appearance_error: Option<String>,
+    system_appearance: ui::theme::SystemAppearance,
     pub(crate) engine: Engine,
     pub history_origin: Option<View>,
     pub history_offset: u16,
@@ -66,6 +70,9 @@ impl App {
     }
     fn from_engine(engine: Engine, motion: bool) -> Self {
         let mut app = Self {
+            appearance_picker: None,
+            appearance_error: None,
+            system_appearance: ui::theme::SystemAppearance::default(),
             history_origin: None,
             history_offset: 0,
             page_size: 1,
@@ -75,16 +82,19 @@ impl App {
             queue_selection: std::collections::BTreeSet::new(),
             pr_feedback_selection: std::collections::BTreeSet::new(),
             show_closed: false,
-            engine,
             input: ui::input(),
             formatting_menu: None,
             scroll: Scroll::default(),
             workspace: workspace_navigation::Workspace::default(),
             controls: controls::Controls::default(),
-            welcome: ui::welcome_effect(motion),
+            welcome: ui::welcome_effect(
+                motion,
+                ui::theme::Palette::new(engine.appearance, true).foreground(ui::theme::MUTED),
+            ),
             motion,
             happy_since: None,
             quit: false,
+            engine,
         };
         app.restore_input();
         app
@@ -194,6 +204,11 @@ impl App {
             return Ok(());
         }
         match action {
+            Action::Appearance => {
+                self.appearance_picker = Some(self.engine.appearance);
+                self.appearance_error = None;
+                Ok(())
+            }
             Action::Details => {
                 self.plan_details = !self.plan_details;
                 self.focus_plan = true;
@@ -230,6 +245,10 @@ impl App {
     }
     pub fn action_dock(&self) -> ActionDock {
         let mut dock = self.engine.action_dock();
+        dock.actions.push(ActionItem {
+            action: Action::Appearance,
+            label: "Appearance".into(),
+        });
         if self.plan_details
             && let Some(item) = dock
                 .actions
@@ -272,12 +291,17 @@ impl App {
         self.with_engine(Engine::open_review)
     }
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+        self.system_appearance.refresh();
+        self.welcome = ui::welcome_effect(self.motion, self.palette().foreground(ui::theme::MUTED));
         let started = Instant::now();
         let mut last_frame = started;
         let mut companion = (None, sprout::Mood::Idle);
         let mut mood_since = started;
         while !self.quit {
             self.poll_workers().map_err(io::Error::other)?;
+            if self.engine.appearance == crate::appearance::Appearance::System {
+                self.system_appearance.refresh();
+            }
             let now = Instant::now();
             let elapsed = now.duration_since(last_frame);
             last_frame = now;
@@ -331,6 +355,10 @@ impl App {
     }
 
     fn handle(&mut self, event: Event) -> Result<()> {
+        if self.appearance_picker.is_some() {
+            self.appearance_event(event);
+            return Ok(());
+        }
         if self.engine.view != View::NewMod || matches!(event, Event::Paste(_)) {
             self.formatting_menu = None;
         }
@@ -954,6 +982,7 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    mod appearance;
     mod formatting;
     mod git_errors;
     mod navigation;
@@ -2759,7 +2788,7 @@ mod tests {
             if width > 80 {
                 assert_eq!(
                     buffer[(80, app.scroll.content.y - 1)].bg,
-                    ratatui::style::Color::Reset
+                    ratatui::style::Color::Rgb(24, 28, 26)
                 );
             }
             assert_eq!(app.scroll.input, ratatui::layout::Rect::default());
@@ -2843,7 +2872,10 @@ mod tests {
         assert!(rendered[user].starts_with("  > "));
         assert!((82..158).any(|x| buffer[(x, user as u16)].symbol() != " "));
         assert_ne!(buffer[(157, user as u16)].bg, ratatui::style::Color::Reset);
-        assert_eq!(buffer[(158, user as u16)].bg, ratatui::style::Color::Reset);
+        assert_eq!(
+            buffer[(158, user as u16)].bg,
+            ratatui::style::Color::Rgb(24, 28, 26)
+        );
     }
 
     #[test]
@@ -4977,13 +5009,13 @@ mod tests {
                 buffer
                     .content
                     .iter()
-                    .any(|cell| cell.symbol() == "✓" && cell.fg == Color::Green)
+                    .any(|cell| cell.symbol() == "✓" && cell.fg == Color::Rgb(162, 213, 180))
             );
             assert!(
                 buffer
                     .content
                     .iter()
-                    .any(|cell| cell.symbol() == "!" && cell.fg == Color::Red)
+                    .any(|cell| cell.symbol() == "!" && cell.fg == Color::Rgb(239, 163, 157))
             );
         }
         app.show_evidence = true;
@@ -6486,7 +6518,10 @@ mod tests {
                 .unwrap() as u16;
             let background = buffer[(4, first)].bg;
             assert_ne!(background, ratatui::style::Color::Reset);
-            assert_eq!(buffer[(6, first)].fg, ratatui::style::Color::White);
+            assert_eq!(
+                buffer[(6, first)].fg,
+                ratatui::style::Color::Rgb(237, 241, 235)
+            );
             assert!(
                 !buffer[(6, first)]
                     .modifier

@@ -13,6 +13,9 @@ pub struct Request {
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Snapshot {},
+    SetAppearance {
+        appearance: crate::appearance::Appearance,
+    },
     BeginCreation {},
     GoBack {},
     GoForward {},
@@ -157,6 +160,9 @@ impl Engine {
     pub fn command(&mut self, command: Command) -> Result<(), String> {
         match command {
             Command::Snapshot {} | Command::Shutdown {} => Ok(()),
+            Command::SetAppearance { appearance } => self
+                .set_appearance(appearance)
+                .map_err(|error| error.to_string()),
             Command::Cancel {} => {
                 if self.dialog().is_none() {
                     return Err("This dialog is no longer available.".into());

@@ -1,5 +1,6 @@
 mod agents;
 mod app;
+mod appearance;
 mod checks;
 mod codex;
 mod conflict;

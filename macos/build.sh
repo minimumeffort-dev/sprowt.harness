@@ -15,6 +15,8 @@ cp macos/Info.plist "$bundle/Contents/Info.plist"
 iconset="$root/target/macos/Sprowt.iconset"
 swift macos/Tools/GenerateAppIcon.swift "$iconset"
 iconutil --convert icns --output "$bundle/Contents/Resources/Sprowt.icns" "$iconset"
-cp -R "$swift_bin/SprowtDesktop_SprowtDesktop.bundle" "$bundle/Contents/Resources/"
+if [ -d "$bundle/Contents/Resources/SprowtDesktop_SprowtDesktop.bundle" ]; then
+    rm -r "$bundle/Contents/Resources/SprowtDesktop_SprowtDesktop.bundle"
+fi
 codesign --force --deep --sign - "$bundle"
 printf '%s\n' "$bundle"

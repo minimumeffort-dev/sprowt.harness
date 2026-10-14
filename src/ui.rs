@@ -1,9 +1,11 @@
+mod appearance;
 mod dock;
 mod findings;
 mod formatting;
 mod inspector;
 mod navigation;
 mod tasks;
+pub(crate) mod theme;
 mod workbench;
 
 use std::time::Duration;
@@ -29,13 +31,9 @@ use crate::{
     worker::Status,
 };
 
-const ACCENT: Color = Color::Green;
-const MUTED: Color = Color::Rgb(161, 170, 160);
-const BORDER: Color = Color::Rgb(89, 99, 79);
-const CONTROL: Color = Color::Rgb(51, 59, 50);
-const SELECTED: Color = Color::Rgb(62, 73, 55);
-const USER_BACKGROUND: Color = Color::Rgb(43, 49, 43);
-const KEY_HINT: Color = Color::Rgb(161, 170, 160);
+use theme::{
+    ACCENT, AMBER, BLUE, BORDER, CONTROL, INK, KEY_HINT, MUTED, RED, SELECTED, USER_BACKGROUND,
+};
 const MOD_GLYPH: &str = "◇";
 const DIALOG_WIDTH: u16 = 68;
 
@@ -74,14 +72,28 @@ fn field(title: &'static str, placeholder: &'static str) -> TextArea<'static> {
     input
 }
 
-pub fn welcome_effect(motion: bool) -> Effect {
+pub fn welcome_effect(motion: bool, muted: Color) -> Effect {
     fx::fade_from_fg(
-        MUTED,
+        muted,
         (if motion { 400 } else { 0 }, Interpolation::SineOut),
     )
 }
 
 pub fn draw(
+    frame: &mut Frame,
+    app: &mut App,
+    pose: sprout::Pose,
+    elapsed: Option<Duration>,
+) -> Rect {
+    let header = draw_contents(frame, app, pose, elapsed);
+    if let Some(selected) = app.appearance_picker {
+        appearance::draw(frame, app, selected);
+    }
+    app.palette().paint(frame.buffer_mut());
+    header
+}
+
+fn draw_contents(
     frame: &mut Frame,
     app: &mut App,
     pose: sprout::Pose,
@@ -405,6 +417,7 @@ pub fn draw(
     }
     if show_dock {
         let composer_focused = !menu_open
+            && app.appearance_picker.is_none()
             && (!app.has_workspace()
                 || app.workspace.focus == crate::app::workspace_navigation::Focus::Composer);
         let block = Block::bordered()
@@ -684,7 +697,7 @@ fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, open: bool) -> R
     frame.render_widget(Line::from(MOD_GLYPH).fg(ACCENT), label);
     frame.render_widget(
         Block::new()
-            .fg(Color::White)
+            .fg(INK)
             .bg(if open { SELECTED } else { CONTROL }),
         selector,
     );
@@ -890,9 +903,9 @@ fn draw_review(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
             } else if line.starts_with('+') {
                 Style::new().fg(ACCENT)
             } else if line.starts_with('-') {
-                Style::new().fg(Color::Red)
+                Style::new().fg(RED)
             } else if line.starts_with("@@") {
-                Style::new().fg(Color::Cyan)
+                Style::new().fg(BLUE)
             } else {
                 Style::new()
             };
@@ -1040,7 +1053,7 @@ fn draw_project_setup(frame: &mut Frame, app: &mut App, saved: bool, scroll: u16
 }
 
 fn dialog_selection() -> Style {
-    Style::new().fg(Color::White).bg(SELECTED)
+    Style::new().fg(INK).bg(SELECTED)
 }
 
 fn draw_network(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, area: Rect) {
@@ -1141,7 +1154,7 @@ fn key_hints(shortcuts: &[(&str, &str)]) -> Paragraph<'static> {
             hints.push(Span::raw("  "));
         }
         // Keep each key and its description together when wrapping.
-        hints.push(format!("{key}\u{a0}").fg(Color::White).bold());
+        hints.push(format!("{key}\u{a0}").fg(INK).bold());
         hints.push(label.replace(' ', "\u{a0}").fg(KEY_HINT));
     }
     Paragraph::new(Line::from(hints)).wrap(Wrap { trim: false })
@@ -1412,7 +1425,7 @@ fn draw_failure(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
         ];
         for (scope, error) in app.sync_errors() {
             lines.push(Line::default());
-            lines.push(Line::from(scope).fg(Color::Yellow).bold());
+            lines.push(Line::from(scope).fg(AMBER).bold());
             lines.extend(error.lines().map(Line::from));
         }
         Text::from(lines)
@@ -1601,9 +1614,7 @@ fn plan_lines(
         }
         let title = task.title.clone();
         lines.push(Line::from(vec![
-            prefix
-                .fg(if marker == "!" { Color::Red } else { ACCENT })
-                .bold(),
+            prefix.fg(if marker == "!" { RED } else { ACCENT }).bold(),
             title.bold(),
             run.and_then(|r| r.worker)
                 .filter(|_| {
@@ -1741,7 +1752,7 @@ fn plan_lines(
                         "     verification · {passed}/{total} passed · {failed} failed · {} not run",
                         total - passed - failed
                     ))
-                    .fg(if passed == total { ACCENT } else { Color::Red }),
+                    .fg(if passed == total { ACCENT } else { RED }),
                 );
             }
             lines.push(Line::from("     checks").fg(KEY_HINT));
@@ -1780,7 +1791,7 @@ fn plan_lines(
                             result
                                 .evidence()
                                 .lines()
-                                .map(|line| Line::from(format!("       {line}")).fg(Color::Red)),
+                                .map(|line| Line::from(format!("       {line}")).fg(RED)),
                         );
                     }
                 }
@@ -1802,12 +1813,12 @@ fn plan_lines(
                     .iter()
                     .filter(|check| check.failed())
                 {
-                    lines.push(Line::from(format!("     ! {}", check.check)).fg(Color::Red));
+                    lines.push(Line::from(format!("     ! {}", check.check)).fg(RED));
                     lines.extend(
                         check
                             .evidence()
                             .lines()
-                            .map(|line| Line::from(format!("       {line}")).fg(Color::Red)),
+                            .map(|line| Line::from(format!("       {line}")).fg(RED)),
                     );
                 }
             }
@@ -1848,14 +1859,16 @@ fn plan_lines(
             }
             if let Some(check) = execution.checks.iter().find(|check| check.failed()) {
                 lines.extend(wrap_line(
-                    Line::from(format!("! {}", check.check)).fg(Color::Red),
+                    Line::from(format!("! {}", check.check)).fg(RED),
                     width,
                     2,
                 ));
                 lines.extend(command_lines(&check.command, width));
-                lines.extend(check.evidence().lines().flat_map(|line| {
-                    wrap_line(Line::from(format!("  {line}")).fg(Color::Red), width, 2)
-                }));
+                lines.extend(
+                    check.evidence().lines().flat_map(|line| {
+                        wrap_line(Line::from(format!("  {line}")).fg(RED), width, 2)
+                    }),
+                );
             }
             let skipped = execution
                 .checks
@@ -2012,7 +2025,7 @@ fn conversation_blocks<'a>(
             && review.status == "blocked"
             && let Some(report) = &review.report
         {
-            lines.push(Line::from(report.summary.clone()).fg(Color::Red));
+            lines.push(Line::from(report.summary.clone()).fg(RED));
         }
         if review.report.is_some() {
             lines.push(Line::from(vec![
@@ -2182,7 +2195,7 @@ fn draw_message_rows(
             ..area
         };
         if user {
-            frame.render_widget(Block::new().bg(USER_BACKGROUND).fg(Color::White), visible);
+            frame.render_widget(Block::new().bg(USER_BACKGROUND).fg(INK), visible);
             if visible_start == top {
                 frame.render_widget(
                     Line::from(">").fg(ACCENT).bold(),

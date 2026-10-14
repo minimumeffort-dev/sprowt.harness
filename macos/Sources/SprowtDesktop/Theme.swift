@@ -1,59 +1,59 @@
 import AppKit
-import CoreText
 import SwiftUI
 
 enum Theme {
-    // One warm-paper identity in both appearances; every surface resolves
-    // through these dynamic colors so the system appearance just works.
-    static let paper = Color(light: 0xfafaf7, dark: 0x1b1b18)
-    static let sidebar = Color(light: 0xf0f0e9, dark: 0x23231f)
-    static let panel = Color(light: 0xf6f6f1, dark: 0x282820)
-    static let ink = Color(light: 0x171717, dark: 0xf2f0e9)
-    static let muted = Color(light: 0x62625c, dark: 0xaba79b)
-    static let line = Color(light: 0xdeded6, dark: 0x3c3c34)
-    static let selected = Color(light: 0xe5e5dc, dark: 0x35352c)
-    static let gold = Color(light: 0xf7c843, dark: 0xf7c843)
-    static let green = Color(light: 0x477759, dark: 0x86ba97)
-    static let blue = Color(light: 0x39739f, dark: 0x7aabcf)
-    static let red = Color(light: 0xa13e35, dark: 0xda8d80)
+    static let paper = Color(light: 0xfafbf8, dark: 0x181c1a)
+    static let sidebar = Color(light: 0xf0f3ee, dark: 0x212723)
+    static let panel = Color(light: 0xeef3ed, dark: 0x252f28)
+    static let ink = Color(light: 0x202923, dark: 0xedf1eb)
+    static let muted = Color(light: 0x5b685e, dark: 0xaab6ad)
+    static let line = Color(light: 0xd9dfd7, dark: 0x39433c)
+    static let control = Color(light: 0x7d8b80, dark: 0x728477)
+    static let selected = Color(light: 0xdeeadf, dark: 0x304338)
+    static let accent = Color(light: 0x296746, dark: 0xa2d5b4)
+    static let onAccent = Color(light: 0xffffff, dark: 0x19291f)
+    static let green = accent
+    static let blue = Color(light: 0x30668d, dark: 0x9bc5e2)
+    static let amber = Color(light: 0x825b12, dark: 0xebc477)
+    static let red = Color(light: 0xa13730, dark: 0xefa39d)
+    static func statusColor(_ status: String) -> Color {
+        switch status.lowercased() {
+        case "check failed", "final checks failed", "worker stopped", "blocked", "failed": red
+        case "needs your answer", "needs network access": amber
+        case "done", "complete": green
+        case "working", "checking", "starting", "resolving conflicts", "connecting worker",
+             "starting repair", "fixing failed check", "restoring environment", "stopping",
+             "routing", "connecting", "running": blue
+        default: muted
+        }
+    }
+
     static let inset: CGFloat = 24
     static let radius: CGFloat = 7
 
-    static var nsText: NSColor {
-        NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(white: 0.93, alpha: 1) : NSColor(white: 0.09, alpha: 1) }
-    }
-    static var nsCodeBackground: NSColor {
-        NSColor(name: nil) { $0.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            ? NSColor(white: 0.22, alpha: 1) : NSColor(white: 0.93, alpha: 1) }
+    static let nsText = NSColor(ink)
+    static let nsMuted = NSColor(muted)
+    static let nsAccent = NSColor(accent)
+    static let nsSelected = NSColor(selected)
+    static let nsCodeBackground = NSColor(Color(light: 0xe9eee6, dark: 0x242d27))
+
+    static func font(_ size: CGFloat = 14, weight: Font.Weight = .regular) -> Font {
+        .system(size: scaledSize(size), weight: weight)
     }
 
-    static func font(_ size: CGFloat = 13, weight: Font.Weight = .regular) -> Font {
-        let style: Font.TextStyle = size >= 20 ? .title2 : size <= 11 ? .caption : .body
-        return .custom("Manrope", size: size, relativeTo: style).weight(weight)
+    static func scaledSize(_ size: CGFloat) -> CGFloat {
+        let style: NSFont.TextStyle = size >= 18 ? .title2 : size <= 11 ? .caption1 : .body
+        let standard: CGFloat = size >= 18 ? 17 : size <= 11 ? 10 : 13
+        return size + NSFont.preferredFont(forTextStyle: style).pointSize - standard
     }
 
-    static var composerFont: NSFont {
-        let size = NSFont.preferredFont(forTextStyle: .body).pointSize + 1
-        return NSFont(name: "Manrope", size: size) ?? .systemFont(ofSize: size)
-    }
+    static var composerFont: NSFont { .systemFont(ofSize: scaledSize(14)) }
 
-    @discardableResult static func registerFonts() -> Bool {
-        guard let url = resourceBundle()?.url(forResource: "Manrope", withExtension: "ttf", subdirectory: "Manrope") else { return false }
-        return CTFontManagerRegisterFontsForURL(url as CFURL, .process, nil)
-    }
-
-    static func resourceBundle(in main: Bundle = .main) -> Bundle? {
-        if main.bundleURL.pathExtension == "app" {
-            return main.url(forResource: "SprowtDesktop_SprowtDesktop", withExtension: "bundle").flatMap(Bundle.init(url:))
-        }
-        return .module
-    }
 }
 
 extension View {
     func symbolBaseline(textSize: CGFloat) -> some View {
-        let capHeight = (NSFont(name: "Manrope", size: textSize) ?? NSFont.systemFont(ofSize: textSize)).capHeight
+        let capHeight = NSFont.systemFont(ofSize: Theme.scaledSize(textSize)).capHeight
         return alignmentGuide(.firstTextBaseline) { dimensions in
             dimensions[VerticalAlignment.center] + capHeight / 2
         }
@@ -84,9 +84,9 @@ struct WorkspaceButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(Theme.font(12, weight: selected || prominent ? .semibold : .medium))
-            .foregroundStyle(Theme.ink)
+            .foregroundStyle(prominent ? Theme.onAccent : Theme.ink)
             .padding(.horizontal, 9).padding(.vertical, 7)
-            .background(prominent ? Theme.gold : selected || configuration.isPressed ? Theme.selected : .clear,
+            .background(prominent ? Theme.accent : selected || configuration.isPressed ? Theme.selected : .clear,
                         in: RoundedRectangle(cornerRadius: 5))
             .contentShape(RoundedRectangle(cornerRadius: 5))
             .opacity(enabled ? 1 : 0.4)
@@ -97,7 +97,7 @@ extension WorkflowPhase {
     var color: Color {
         switch self {
         case .ready, .published: Theme.green
-        case .needsYou: Theme.gold
+        case .needsYou: Theme.amber
         case .planning, .building, .checking, .recovering, .reviewing, .git: Theme.blue
         case .new, .paused, .closed: Theme.muted
         }

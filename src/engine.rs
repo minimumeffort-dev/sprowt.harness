@@ -62,6 +62,7 @@ pub enum View {
 }
 
 pub struct Engine {
+    pub(crate) appearance: crate::appearance::Appearance,
     pub(crate) network_requests: Vec<crate::network::Access>,
     pub(crate) muse: bool,
     pub(crate) project: PathBuf,
@@ -191,6 +192,7 @@ impl Engine {
             store.select_mod(state.id, state.mods[index].id)?;
         }
         let mut app = Self {
+            appearance: store.appearance()?,
             composer: String::new(),
             creation_draft: String::new(),
             navigation: navigation::Navigation::new(active.map_or(

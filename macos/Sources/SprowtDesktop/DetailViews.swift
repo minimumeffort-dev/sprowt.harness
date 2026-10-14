@@ -34,7 +34,7 @@ struct TaskListView: View {
                                 Text(task.title).font(Theme.font(13, weight: .semibold))
                                 Spacer(minLength: 8)
                                 Label(task.status, systemImage: task.hasCurrentFailure ? "exclamationmark.circle" : task.completed ? "checkmark" : "circle")
-                                    .font(Theme.font(10)).foregroundStyle(task.hasCurrentFailure ? Theme.red : task.completed ? Theme.green : Theme.muted)
+                                    .font(Theme.font(10)).foregroundStyle(task.hasCurrentFailure ? Theme.red : task.completed ? Theme.green : Theme.statusColor(task.status))
                             }
                             Text(task.outcome).font(Theme.font(12)).foregroundStyle(Theme.muted)
                             if !task.dependsOn.isEmpty {
@@ -73,14 +73,14 @@ struct MessageView: View {
             if message.role != "user" {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "leaf").font(.system(size: 12)).frame(width: 21, height: 21)
-                        .background(Theme.gold.opacity(0.22), in: RoundedRectangle(cornerRadius: 5))
+                        .background(Theme.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 5))
                         .symbolBaseline(textSize: 11)
                     Text(message.author)
                         .font(Theme.font(11, weight: .medium)).foregroundStyle(Theme.muted)
                 }
             }
             Text(message.role == "user" ? "> \(message.body)" : message.body)
-                .font(Theme.font(13)).foregroundStyle(Theme.ink)
+                .font(Theme.font(14)).foregroundStyle(Theme.ink)
                 .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled)
         }.padding(message.role == "user" ? 12 : 0)
             .background(message.role == "user" ? Theme.panel : .clear,

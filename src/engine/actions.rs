@@ -4,6 +4,7 @@ use rusqlite::Result;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
+    Appearance,
     Run,
     Stop,
     Retry,
@@ -40,7 +41,7 @@ impl Action {
             | Self::SyncDetails
             | Self::Diff
             | Self::Findings => 1,
-            Self::Mods | Self::NewMod | Self::Close | Self::Reopen => 2,
+            Self::Mods | Self::NewMod | Self::Close | Self::Reopen | Self::Appearance => 2,
             Self::Delete => 3,
             _ => 0,
         }
@@ -68,6 +69,7 @@ impl Action {
 
     pub fn menu_shortcut(self) -> Option<char> {
         match self {
+            Self::Appearance => Some('a'),
             Self::NewMod => Some('n'),
             Self::Close => Some('c'),
             Self::Delete => Some('d'),
@@ -451,6 +453,7 @@ impl Engine {
             return Ok(());
         }
         match action {
+            Action::Appearance => {} // The terminal owns its presentation picker.
             Action::FixCheck(id) => self.fix_failed_check(id)?,
             Action::RetryTask(id) => self.retry_task(id)?,
             Action::Run | Action::Stop | Action::Retry | Action::RetryGit | Action::Reopen => {

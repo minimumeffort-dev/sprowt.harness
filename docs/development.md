@@ -32,6 +32,15 @@ SPROWT_UI_CAPTURE_DIR=/tmp/sprowt-navigation-captures \
 
 **Expected:** the directory contains text and JSON cell buffers with working Back and Forward controls. Native verification also checks title-bar arrows and keyboard commands with the sidebar hidden.
 
+Appearance tests use public commands and terminal keys to check persistence across projects, rejection of invalid values, save failures and draft/caret preservation. A shared fixture compares the actual resolved native and terminal colors and checks text contrast. Export all five terminal views and the appearance picker in both themes:
+
+```sh
+SPROWT_APPEARANCE_BUFFERS=/tmp/sprowt-appearance-captures \
+  cargo test --locked appearance_palettes_paint_all_workspace_and_dialog_cells_in_both_themes
+```
+
+**Expected:** light and dark text and JSON cell buffers at 40, 80 and 160 columns, with explicit foreground and background colors.
+
 For native interface changes, [build the macOS bundle](macos.md#build-and-open) and exercise the changed flow in the app. The Rust and Swift protocol checks must agree before a shared boundary change is complete.
 
 To inspect CLI help without starting the interactive app:
