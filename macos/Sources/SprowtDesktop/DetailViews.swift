@@ -1,11 +1,11 @@
 import SwiftUI
 
-struct OverviewView: View {
+struct FeedView: View {
     @Bindable var session: Session
     let mod: CodemodDetail
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: 24) {
             VStack(alignment: .leading, spacing: 8) {
                 let summary = mod.plan?.summary ?? ""
                 Text(summary.isEmpty ? mod.description : summary)
@@ -17,48 +17,15 @@ struct OverviewView: View {
                     Text(evidence).font(Theme.font(11)).foregroundStyle(Theme.muted).textSelection(.enabled)
                 }
             }
-            HStack(spacing: 3) {
-                ForEach(WorkStage.allCases, id: \.self) { stage in
-                    Button(stage.rawValue) { session.workspace.stage = stage }
-                        .buttonStyle(WorkspaceButtonStyle(selected: session.workspace.stage == stage))
-                        .accessibilityAddTraits(session.workspace.stage == stage ? .isSelected : [])
+            if let plan = mod.plan {
+                TaskListView(tasks: plan.tasks, selected: session.workspace.target) { task in
+                    session.workspace.show(.activity, target: .task(task.id))
                 }
-                Spacer(minLength: 0)
+            } else {
+                Text("The plan will appear here when it is saved.").foregroundStyle(Theme.muted)
             }
             WorkspaceDivider()
-            switch session.workspace.stage {
-            case .plan, .build:
-                if let plan = mod.plan {
-                    TaskListView(tasks: plan.tasks, selected: session.workspace.target) { task in
-                        session.workspace.show(.progress, target: .task(task.id))
-                    }
-                } else {
-                    Text("The plan will appear here when it is saved.").foregroundStyle(Theme.muted)
-                }
-                if session.workspace.stage == .build {
-                    ForEach(mod.plan?.tasks.filter { $0.latest != nil } ?? []) { task in
-                        if let message = task.latest {
-                            VStack(alignment: .leading, spacing: 10) {
-                                MessageView(message: message)
-                                Button { session.workspace.show(.activity, target: .task(task.id)) } label: {
-                                    Label("Inspect task activity", systemImage: "arrow.up.right")
-                                }.buttonStyle(WorkspaceButtonStyle())
-                            }.padding(.top, 8)
-                        }
-                    }
-                }
-            case .checks:
-                ChecksView(checks: mod.checks)
-            case .review:
-                FindingsView(findings: mod.findings)
-                if !mod.prFeedback.isEmpty || mod.prFeedbackError != nil {
-                    PrFeedbackView(session: session, mod: mod)
-                }
-                if let action = session.snapshot?.actions.first(where: { $0.id == "review" || $0.id == "findings" }) {
-                    Button(action.label) { session.perform(action) }
-                        .buttonStyle(WorkspaceButtonStyle()).disabled(!session.interactive || session.busy)
-                }
-            }
+            ConversationView(mod: mod)
         }
     }
 }

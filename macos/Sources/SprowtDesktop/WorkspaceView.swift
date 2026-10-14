@@ -13,16 +13,11 @@ struct WorkspaceView: View {
             WorkspaceDivider()
             HSplitView {
                 VStack(spacing: 0) {
-                    pageTabs
-                    WorkspaceDivider()
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 24) {
-                            if session.workspace.page == .overview {
-                                OverviewView(session: session, mod: mod)
-                            } else { ConversationView(mod: mod) }
-                        }.padding(Theme.inset).frame(maxWidth: .infinity, alignment: .leading)
+                        FeedView(session: session, mod: mod)
+                            .padding(Theme.inset).frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    .id("\(mod.id):\(session.workspace.page.rawValue)")
+                    .id(mod.id)
                     composer
                 }.frame(minWidth: 350, maxWidth: .infinity)
                 if session.workspace.inspectorTab != nil {
@@ -67,34 +62,8 @@ struct WorkspaceView: View {
         }.padding(.horizontal, Theme.inset).padding(.vertical, 16)
     }
 
-    private var pageTabs: some View {
-        HStack(spacing: 2) {
-            ForEach(WorkspacePage.allCases, id: \.self) { page in
-                Button(page.rawValue) { session.workspace.page = page }
-                    .buttonStyle(WorkspaceButtonStyle(selected: session.workspace.page == page))
-                    .accessibilityAddTraits(session.workspace.page == page ? .isSelected : [])
-            }
-            Spacer()
-        }.padding(.horizontal, Theme.inset).padding(.vertical, 8)
-    }
-
     private var composer: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let plan = mod.plan, !plan.tasks.isEmpty {
-                Button { session.workspace.show(.progress) } label: {
-                    HStack(spacing: 8) {
-                        HStack(spacing: 3) {
-                            ForEach(plan.tasks) { task in
-                                RoundedRectangle(cornerRadius: 1).fill(task.completed ? Theme.green : Theme.line).frame(height: 3)
-                            }
-                        }.frame(width: 45)
-                        Text("\(plan.tasks.filter(\.completed).count) of \(plan.tasks.count) tasks done").font(Theme.font(11))
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.system(size: 10))
-                    }.foregroundStyle(Theme.muted)
-                }.buttonStyle(.plain).padding(.vertical, 10)
-                WorkspaceDivider()
-            }
             if !mod.steering.isEmpty {
                 DisclosureGroup("Steering: waiting for workers (\(mod.steering.count))") {
                     ForEach(Array(mod.steering.enumerated()), id: \.offset) { _, text in

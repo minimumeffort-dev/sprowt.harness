@@ -1,8 +1,6 @@
 import Foundation
 
-enum WorkspacePage: String, CaseIterable { case overview = "Overview", conversation = "Conversation" }
-enum WorkStage: String, CaseIterable { case plan = "Plan", build = "Build", checks = "Checks", review = "Review" }
-enum InspectorTab: String, CaseIterable { case progress = "Progress", changes = "Changes", checks = "Checks", activity = "Activity" }
+enum InspectorTab: String, CaseIterable { case changes = "Changes", checks = "Checks", findings = "Findings", activity = "Activity" }
 
 struct WorkspaceSelection: Equatable {
     struct Context: Equatable { let project: String; let modId: Int64 }
@@ -12,8 +10,6 @@ struct WorkspaceSelection: Equatable {
 
     private(set) var context: Context?
     private var inspectionId: String?
-    var page = WorkspacePage.overview
-    var stage = WorkStage.build
     var inspector = Inspector.visible(.activity, nil)
     var queue = Queue.closed
 
@@ -39,14 +35,14 @@ struct WorkspaceSelection: Equatable {
         guard let mod = snapshot.activeMod else { return }
         switch target {
         case .task(let id) where mod.plan?.tasks.contains(where: { $0.id == id }) != true:
-            inspector = .visible(inspectorTab ?? .progress, nil)
+            inspector = .visible(inspectorTab ?? .activity, nil)
         case .worker(let id) where !mod.workerDetails.contains(where: { $0.id == id }):
             inspector = .visible(inspectorTab ?? .activity, nil)
         default: break
         }
         if mod.queue.isEmpty { queue = .closed }
         if let dialog = snapshot.dialog, dialog.isInspection, inspectionId != dialog.id {
-            show(dialog.kind == "diff" ? .changes : .activity)
+            show(dialog.kind == "diff" ? .changes : dialog.kind == "findings" ? .findings : .activity)
         }
         inspectionId = snapshot.dialog.flatMap { $0.isInspection ? $0.id : nil }
     }

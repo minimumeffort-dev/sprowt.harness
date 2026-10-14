@@ -35,8 +35,8 @@ Select a stage, then click a tab or press **1–4** while exploring.
 | Tab | Shows |
 | --- | --- |
 | **1 · Summary** | The selected stage's outcome and next action; review findings with evidence and proposed fixes |
-| **2 · Checks** | Saved setup failures and observed task results, with failed checks first |
-| **3 · Changes** | Access to the current diff when available |
+| **2 · Changes** | Access to the current diff when available |
+| **3 · Checks** | Saved setup failures and observed task results, with failed checks first |
 | **4 · Activity** | Saved updates for a selected task, or codemod history for a stage |
 
 Use **[ / ]** to move between review findings. **e** expands command evidence. To read the complete workflow history, choose **Timeline overview** or press **v** while exploring.
@@ -159,7 +159,7 @@ Shortcuts are contextual. **Ctrl+G · More** lists actions available in the curr
 | --- | --- |
 | Tab / Shift+Tab | Cycle composer, timeline and side inspector |
 | ↑↓ / Space / Enter | Select / expand / inspect in the timeline |
-| 1–4 while exploring | Summary / Checks / Changes / Activity |
+| 1–4 while exploring | Summary / Changes / Checks / Activity |
 | v while exploring | Toggle Timeline overview |
 | [ / ] in review evidence | Previous / next finding |
 | e while exploring | Expand command evidence |

@@ -44,9 +44,9 @@
 <rect x="548" y="270" width="121" height="25" fill="#3e4937"/>
 <text x="548" y="289" fill="#b4c367" xml:space="preserve" textLength="121" lengthAdjust="spacingAndGlyphs"> 1 Summary </text>
 <rect x="680" y="270" width="110" height="25" fill="#333b32"/>
-<text x="680" y="289" fill="#a1aaa0" xml:space="preserve" textLength="110" lengthAdjust="spacingAndGlyphs"> 2 Checks </text>
+<text x="680" y="289" fill="#a1aaa0" xml:space="preserve" textLength="121" lengthAdjust="spacingAndGlyphs"> 2 Changes </text>
 <rect x="801" y="270" width="121" height="25" fill="#333b32"/>
-<text x="801" y="289" fill="#a1aaa0" xml:space="preserve" textLength="121" lengthAdjust="spacingAndGlyphs"> 3 Changes </text>
+<text x="812" y="289" fill="#a1aaa0" xml:space="preserve" textLength="110" lengthAdjust="spacingAndGlyphs"> 3 Checks </text>
 <rect x="933" y="270" width="132" height="25" fill="#333b32"/>
 <text x="933" y="289" fill="#a1aaa0" xml:space="preserve" textLength="132" lengthAdjust="spacingAndGlyphs"> 4 Activity </text>
 <text x="42" y="314" fill="#b4c367" xml:space="preserve" textLength="33" lengthAdjust="spacingAndGlyphs"> ✓ </text>

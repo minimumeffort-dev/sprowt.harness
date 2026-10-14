@@ -44,7 +44,7 @@ struct InspectorView: View {
                         }
                     }
                     if let inspection = currentInspection,
-                       selectedTab == (inspection.kind == "diff" ? .changes : .activity) {
+                       selectedTab == (inspection.kind == "diff" ? .changes : inspection.kind == "findings" ? .findings : .activity) {
                         Text(inspection.body).font(inspection.kind == "diff" ? .system(size: 11, design: .monospaced) : Theme.font(12))
                             .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                     } else {
@@ -57,23 +57,25 @@ struct InspectorView: View {
 
     @ViewBuilder private func panel(_ tab: InspectorTab?) -> some View {
         switch tab {
-        case .progress: progress
         case .changes: changes
         case .checks: checks
+        case .findings: findings
         case .activity: activity
         case nil: EmptyView()
         }
     }
 
-    private var progress: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            if let plan = mod.plan {
-                SectionHeading(title: "Implementation plan", detail: "\(plan.tasks.filter(\.completed).count) / \(plan.tasks.count)")
-                TaskListView(tasks: plan.tasks, selected: session.workspace.target) { task in
-                    session.workspace.show(.progress, target: .task(task.id))
-                }
-                if let task = selectedTask { TaskInspectorView(session: session, task: task) }
-            } else { Text("No saved plan.").foregroundStyle(Theme.muted) }
+    private var findings: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            SectionHeading(title: "Review findings", detail: mod.findings.isEmpty ? "" : "\(mod.findings.count) saved")
+            FindingsView(findings: mod.findings)
+            if let action = session.snapshot?.actions.first(where: { $0.id == "review" || $0.id == "findings" || $0.id == "fix_issues" }) {
+                Button(action.label) { session.perform(action) }
+                    .buttonStyle(WorkspaceButtonStyle()).disabled(!session.interactive || session.busy)
+            }
+            if !mod.prFeedback.isEmpty || mod.prFeedbackError != nil {
+                PrFeedbackView(session: session, mod: mod)
+            }
         }
     }
 

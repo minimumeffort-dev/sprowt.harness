@@ -50,7 +50,7 @@ For the native SwiftUI app, build with Xcode 26 or newer:
 open target/macos/Sprowt.app
 ```
 
-The native execution workspace has a task overview, conversation and side panes for checks, changes and activity. Both interfaces use the same Rust engine and saved work. Close one before opening the same project in the other. See the [macOS guide](docs/macos.md).
+The native workspace has one feed — plan, task checklist and conversation — with a side pane for changes, checks, findings and activity. Both interfaces use the same Rust engine and saved work. Close one before opening the same project in the other. See the [macOS guide](docs/macos.md).
 
 ## Find what you need
 

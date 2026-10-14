@@ -420,13 +420,10 @@ private func installExecutable(_ source: String, at url: URL) throws {
     let original = try decodeSnapshot()
     var selection = WorkspaceSelection()
     selection.reconcile(original)
-    selection.page = .conversation
-    selection.stage = .review
     selection.show(.checks, target: .task("implement_cli"))
     selection.queue = .open
     selection.reconcile(original)
-    #expect(selection.page == .conversation)
-    #expect(selection.stage == .review)
+    #expect(selection.inspectorTab == .checks)
     #expect(selection.target == .task("implement_cli"))
     #expect(selection.queue == .open)
     let removed = try decodeSnapshot { root in
@@ -451,8 +448,6 @@ private func installExecutable(_ source: String, at url: URL) throws {
     #expect(selection.target == nil)
     let switched = try decodeSnapshot { $0["project"] = "/tmp/other-project" }
     selection.reconcile(switched)
-    #expect(selection.page == .overview)
-    #expect(selection.stage == .build)
     #expect(selection.inspectorTab == .activity)
     #expect(selection.queue == .closed)
     #expect(selection.context?.project == "/tmp/other-project")
@@ -465,10 +460,10 @@ private func installExecutable(_ source: String, at url: URL) throws {
     var selection = WorkspaceSelection()
     selection.reconcile(snapshot)
     #expect(selection.inspectorTab == .changes)
-    selection.show(.progress, target: .task("implement_cli"))
+    selection.show(.findings, target: .task("implement_cli"))
     selection.reconcile(snapshot)
     selection.reconcile(snapshot)
-    #expect(selection.inspectorTab == .progress)
+    #expect(selection.inspectorTab == .findings)
     #expect(selection.target == .task("implement_cli"))
     #expect(snapshot.dialog?.isInspection == true)
 }

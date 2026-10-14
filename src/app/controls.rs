@@ -11,13 +11,13 @@ use ratatui::{
 pub enum EvidenceTab {
     #[default]
     Summary,
-    Checks,
     Changes,
+    Checks,
     Activity,
 }
 
 impl EvidenceTab {
-    pub const ALL: [Self; 4] = [Self::Summary, Self::Checks, Self::Changes, Self::Activity];
+    pub const ALL: [Self; 4] = [Self::Summary, Self::Changes, Self::Checks, Self::Activity];
 
     pub fn label(self) -> &'static str {
         match self {

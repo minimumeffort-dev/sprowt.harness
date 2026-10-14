@@ -154,7 +154,7 @@ This design draws on [GitHub Copilot's diff-based commit suggestions](https://do
 While the harness is open, each target check also reads the open PR on your Mac, at most every 30 seconds. Reading sends nothing back to GitHub.
 
 1. Open the published codemod.
-2. Select **Pull request** in the terminal, or **Review → GitHub PR feedback** in the macOS app.
+2. Select **Pull request** in the terminal, or the **Findings** tab in the macOS app's side pane.
 3. Select the items to act on: **Ctrl+G → Fix PR feedback**, then **Space** to mark and **x** to send in the terminal; use the checkboxes and **Send selected to review** in the app.
 4. A fresh review triages each selected item. Confirmed defects then appear under **Fix review issues**; dismissals stay in the [finding ledger](review.md#understand-a-finding). Repairs run fresh checks and review, then update the same PR.
 

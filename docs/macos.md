@@ -23,9 +23,9 @@ The bundle is signed locally for development. It is not a notarized distribution
 
 ## Work on a project
 
-Choose a codemod in the sidebar to open its execution workspace. **Overview** shows the plan's numbered tasks, outcomes and dependencies. **Conversation** shows messages and questions that need your answer.
+Choose a codemod in the sidebar to open its workspace. The feed shows the plan outcome, its numbered task checklist with outcomes and dependencies, then the conversation with messages and questions that need your answer.
 
-Use **Plan**, **Build**, **Checks** and **Review** to inspect the saved work. Select a task or a connected worker to read its current attempt, latest update and check output beside the main view. The **Progress**, **Changes**, **Checks** and **Activity** tabs switch the side pane's evidence. Hide the pane when you want more room.
+Select a task or a connected worker to read its current attempt, latest update and check output in the side pane. The **Changes**, **Checks**, **Findings** and **Activity** tabs switch the side pane's evidence; it is the one place for diffs, check output, review findings and the work log. Hide the pane when you want more room.
 
 In **Changes**, choose the offered inspection action to read the actual diff. Choose **Done** to finish an inspection before sending instructions or changing codemods. Opening evidence never starts a worker.
 
@@ -59,9 +59,9 @@ Both interfaces use the same plans, task inspection, check results and action ru
 
 | In the macOS app | In the terminal |
 | --- | --- |
-| Overview and stage navigation | Stage rail in the [Evidence Workbench](terminal.md#read-the-screen) |
+| Feed and task checklist | Stage rail in the [Evidence Workbench](terminal.md#read-the-screen) |
 | Task or worker inspection | Select a task and press Enter, or open **Ctrl+T · Details** |
-| Checks, Changes and Activity panes | **1–4** in the workbench; full results in Details |
+| Changes, Checks, Findings and Activity pane | **1–4** in the workbench; full results in Details |
 | Attached queue | **Ctrl+Q · Queue** |
 | Contextual actions | Action dock or **Ctrl+G · More** |
 | Back / Forward or **⌘[ / ⌘]** | Header arrows or **Alt+← / Alt+→** |
