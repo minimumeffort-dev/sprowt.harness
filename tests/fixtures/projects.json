@@ -1,0 +1,20 @@
+{
+  "protocol_version": 1,
+  "projects": [
+    {
+      "id": 1,
+      "path": "/example/todo",
+      "name": "todo",
+      "mods": [{ "id": 1, "name": "New codemod", "closed": false }],
+      "activity": "idle"
+    },
+    {
+      "id": 2,
+      "path": "/example/notes",
+      "name": "notes",
+      "mods": [],
+      "activity": "idle"
+    }
+  ],
+  "appearance": "system"
+}

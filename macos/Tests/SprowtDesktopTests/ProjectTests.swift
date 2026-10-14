@@ -2,6 +2,18 @@ import Foundation
 import Testing
 @testable import SprowtDesktop
 
+@Test func savedProjectCatalogMatchesTheRustFixture() throws {
+    var root = URL(fileURLWithPath: #filePath)
+    for _ in 0..<4 { root.deleteLastPathComponent() }
+    let catalog = try ProjectCatalog.decode(Data(contentsOf: root.appendingPathComponent("tests/fixtures/projects.json")))
+    #expect(catalog.projects.map(\.name) == ["todo", "notes"])
+    #expect(catalog.projects[0].mods.map(\.id) == [1])
+    #expect(catalog.appearance == .system)
+    #expect(throws: ProtocolError.self) {
+        try ProjectCatalog.decode(Data(#"{"protocol_version":2,"projects":[],"appearance":"system"}"#.utf8))
+    }
+}
+
 @Test @MainActor func projectCommandsDrainDraftsAndRejectSwitchesWithoutReplacingLocalText() async throws {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
@@ -105,4 +117,85 @@ import Testing
     #expect(session.canCompose)
     #expect(session.snapshot?.dialog == nil)
     #expect(session.error == nil)
+}
+
+@Test @MainActor func savedProjectsLoadBeforeOpeningAndSelectTheRequestedCodemod() async throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let executable = directory.appendingPathComponent("engine")
+    try Data(snapshotJSON.utf8).write(to: URL(fileURLWithPath: executable.path + ".json"))
+    try installExecutable(#"""
+    #!/usr/bin/python3
+    import json, sys
+    snapshot = json.load(open(sys.argv[0] + '.json'))
+    with open(sys.argv[0] + '.launches', 'a') as f: f.write(json.dumps(sys.argv[1:]) + '\n')
+    if sys.argv[1] == 'projects':
+        snapshot['projects'][0]['path'] = sys.argv[sys.argv.index('--data-dir')+1]
+        snapshot['projects'][0]['mods'].append(dict(id=2, name='Second task', closed=False))
+        print(json.dumps(dict(protocol_version=1, projects=snapshot['projects'], appearance='light')), flush=True)
+        sys.exit(0)
+    def respond(request_id=None):
+        print(json.dumps(dict(protocol_version=1, request_id=request_id, error=None, snapshot=snapshot)), flush=True)
+    respond()
+    for line in sys.stdin:
+        request = json.loads(line)
+        command = request['command']
+        if command['type'] == 'select_mod':
+            snapshot['active_mod']['id'] = command['mod_id']
+            snapshot['active_mod']['name'] = 'Second task'
+        respond(request['id'])
+    """#, at: executable)
+    let session = Session()
+    defer { session.close {} }
+    session.loadCatalog(dataDirectory: directory.path, executable: executable)
+    try await waitUntil { session.canBrowseProjects }
+    #expect(session.snapshot == nil)
+    #expect(session.projects.map(\.name) == ["project"])
+    #expect(session.appearance == .light)
+    session.toggleProject(1)
+    #expect(session.expandedProject == 1)
+    session.toggleProject(1)
+    #expect(session.expandedProject == nil)
+    let before = try String(contentsOfFile: executable.path + ".launches", encoding: .utf8)
+    #expect(before.split(separator: "\n").count == 1)
+    #expect(before.contains("projects"))
+    session.select(2)
+    try await waitUntil { session.active?.id == 2 && !session.busy }
+    #expect(session.active?.name == "Second task")
+    #expect(session.draft == "Saved draft")
+    let launches = try String(contentsOfFile: executable.path + ".launches", encoding: .utf8)
+        .split(separator: "\n").map { try JSONSerialization.jsonObject(with: Data($0.utf8)) as! [String] }
+    #expect(launches == [["projects", "--data-dir", directory.path], ["desktop", "--project", directory.path, "--data-dir", directory.path]])
+}
+
+@Test @MainActor func removeSavedProjectBeforeOpeningRefreshesTheCatalogAndKeepsFailuresVisible() async throws {
+    let directory = try temporaryDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let executable = directory.appendingPathComponent("engine")
+    try installExecutable(#"""
+    #!/usr/bin/python3
+    import json, sys
+    projects = [dict(id=n, path='/tmp/project'+str(n), name='Project '+str(n), activity='idle', mods=[]) for n in [1,2]]
+    if '--remove' in sys.argv:
+        removed = int(sys.argv[sys.argv.index('--remove')+1])
+        if removed == 2:
+            print('Catalog write failed', file=sys.stderr)
+            sys.exit(1)
+        projects = [p for p in projects if p['id'] != removed]
+    print(json.dumps(dict(protocol_version=1, projects=projects, appearance='dark')), flush=True)
+    """#, at: executable)
+    let session = Session()
+    session.loadCatalog(dataDirectory: directory.path, executable: executable)
+    try await waitUntil { session.canBrowseProjects }
+    session.toggleProject(1)
+    session.removeProject(1)
+    try await waitUntil { session.canBrowseProjects && session.projects.count == 1 }
+    #expect(session.projects.map(\.id) == [2])
+    #expect(session.expandedProject == nil)
+    #expect(session.snapshot == nil)
+    #expect(session.appearance == .dark)
+    session.removeProject(2)
+    try await waitUntil { session.canBrowseProjects && session.error != nil }
+    #expect(session.error == "Catalog write failed")
+    #expect(session.projects.map(\.id) == [2])
 }

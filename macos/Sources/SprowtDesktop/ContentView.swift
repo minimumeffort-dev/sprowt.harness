@@ -30,7 +30,7 @@ struct ContentView: View {
                     if session.connection == .starting || session.connection == .stopping {
                         HStack(spacing: 10) {
                             ProgressView().controlSize(.small)
-                            Text(session.connection == .starting ? "Opening project…" : "Saving and stopping workers…")
+                            Text(session.connection == .starting ? "Loading…" : "Saving and stopping workers…")
                             Spacer()
                         }.padding(16).foregroundStyle(Theme.muted)
                     }

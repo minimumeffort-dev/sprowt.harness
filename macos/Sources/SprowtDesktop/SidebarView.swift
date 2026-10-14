@@ -10,17 +10,17 @@ struct SidebarView: View {
                 .padding(.horizontal, 9)
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    ForEach(session.snapshot?.projects ?? []) { project in
+                    ForEach(session.projects) { project in
                         projectGroup(project)
                     }
                 }
             }
         }.padding(.horizontal, 10).padding(.top, 20).padding(.bottom, 10)
-            .frame(maxHeight: .infinity).background(Theme.sidebar)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading).background(Theme.sidebar)
     }
 
     private func projectGroup(_ project: ProjectSummary) -> some View {
-        let expanded = session.snapshot?.expandedProject == project.id
+        let expanded = session.expandedProject == project.id
         let showActivity = project.id != session.snapshot?.projectId && project.activity != .idle
         let accessibilityLabel = "\(project.name), \(expanded ? "expanded" : "collapsed")" + (showActivity ? ", \(project.activity.label)" : "")
         let mods = project.mods.filter { $0.closed == session.showClosed }
@@ -42,22 +42,24 @@ struct SidebarView: View {
                         .contentShape(Rectangle())
                 }.buttonStyle(.plain).help(project.path)
                     .accessibilityLabel(accessibilityLabel)
-                    .disabled(!session.editable || session.busy)
+                    .disabled(!session.canBrowseProjects)
                 Menu {
                     Button("Open project") { session.selectProject(project.id) }
                     Button(session.showClosed ? "Show active codemods" : "Show closed codemods") {
                         session.showClosed.toggle()
                         if !expanded { session.toggleProject(project.id) }
                     }
+                    Divider()
+                    Button("Remove from sidebar") { session.removeProject(project.id) }
                 } label: { Image(systemName: "ellipsis").frame(width: 26, height: 30) }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
                     .help("Project actions").accessibilityLabel("Actions for \(project.name)")
-                    .disabled(!session.interactive || session.busy)
+                    .disabled(!session.canBrowseProjects)
                 Button { session.beginCreation(in: project.id) } label: {
                     Image(systemName: "square.and.pencil").frame(width: 26, height: 30)
                 }.buttonStyle(.plain).help("New codemod in \(project.name)" + (session.snapshot?.projectId == project.id ? " (⌘N)" : ""))
                     .accessibilityLabel("New codemod in \(project.name)")
-                    .disabled(!session.canBeginCreation)
+                    .disabled(!session.canBrowseProjects || session.dialog != nil)
             }.foregroundStyle(Theme.ink).padding(.horizontal, 8)
             if expanded {
                 if mods.isEmpty {
@@ -77,7 +79,7 @@ struct SidebarView: View {
                             Spacer(minLength: 0)
                         }.frame(maxWidth: .infinity, alignment: .leading)
                     }.buttonStyle(WorkspaceButtonStyle(selected: selected))
-                        .padding(.leading, 17).disabled(!session.interactive || session.busy)
+                        .padding(.leading, 17).disabled(!session.canBrowseProjects)
                 }
             }
         }
@@ -104,11 +106,11 @@ struct NavigationRail: View {
                 Image(systemName: "archivebox").frame(width: 34, height: 34)
             }.help("Closed codemods").accessibilityLabel("Closed codemods")
                 .background(session.showClosed ? Theme.selected : .clear, in: RoundedRectangle(cornerRadius: 7))
-                .disabled(!session.editable)
+                .disabled(!session.canBrowseProjects)
             Spacer(minLength: 12)
             Menu {
                 Text("Local profile")
-                Picker("Appearance", selection: Binding(get: { session.snapshot?.appearance ?? .system }, set: { session.setAppearance($0) })) {
+                Picker("Appearance", selection: Binding(get: { session.appearance }, set: { session.setAppearance($0) })) {
                     ForEach(Appearance.allCases, id: \.self) { Text($0.label).tag($0) }
                 }.disabled(!session.editable)
             } label: {

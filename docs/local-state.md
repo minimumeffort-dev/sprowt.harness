@@ -10,6 +10,8 @@ Unsent creation descriptions are saved separately per project. The project catal
 
 Worker teams, project creation defaults, effective assignment pins and quota cooldowns also persist in SQLite. Cooldowns are shared across projects; pending delivery must be recovered before a worker can be replaced.
 
+Project sidebar visibility is saved in the same database. Removing a project hides its entry without deleting project records, files or codemods.
+
 The global [appearance preference](appearance.md) is also saved in this database and applies across projects.
 
 ## What survives

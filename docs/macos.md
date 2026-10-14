@@ -15,7 +15,7 @@ From the harness repository:
 open target/macos/Sprowt.app
 ```
 
-**Expected:** Sprowt opens a native window with its yellow seedling icon. Choose a project folder to load its codemods. The build includes the Rust executable inside the app, so the interface and engine come from the same checkout.
+**Expected:** Sprowt opens a native window with its yellow seedling icon. Saved projects appear immediately in the sidebar. Expand a project to choose a codemod, or choose a folder to add another project. The build includes the Rust executable inside the app, so the interface and engine come from the same checkout.
 
 The matching terminal executable is `target/release/sprowt-harness`. To update a separately installed CLI, run `cargo install --path . --locked --force` from this checkout as well.
 
@@ -47,7 +47,7 @@ The editor sends Markdown through the existing Rust command. Supported formattin
 
 The left icon rail contains **Projects**, **Open project** and **Closed codemods**, with the local profile at the bottom. **⌘O** opens a project folder directly. Click a project name to expand or collapse its indented codemods; there is no disclosure caret. Only one project is expanded at a time. Folding a project preserves the workspace, editor and draft.
 
-The **…** menu opens that project or switches between active and closed codemods. The adjacent compose icon creates a codemod in that project. Choosing another project's codemod switches the active project after pending drafts are saved. Agents and project operations continue in the background; returning keeps their existing sessions. A small dot marks background activity, and an attention icon marks a request or failure to inspect. Failed or locked destinations leave the current workspace intact. See [projects and codemods](codemods.md#create-and-manage-work).
+The **…** menu opens that project, switches between active and closed codemods, or removes it from the sidebar. [Removing a project](codemods.md#remove-a-project-from-the-sidebar) keeps its files and saved work. The adjacent compose icon creates a codemod in that project. Choosing another project's codemod switches the active project after pending drafts are saved. Agents and project operations continue in the background; returning keeps their existing sessions. A small dot marks background activity, and an attention icon marks a request or failure to inspect. Failed or locked destinations leave the current workspace intact. See [projects and codemods](codemods.md#create-and-manage-work).
 
 Use the title bar's sidebar button or the sidebar command in **View** to hide or show the sidebar. **⌃⌘S** works while the sidebar is hidden. The icon rail remains visible. Your codemod selection and composer drafts stay in place.
 
@@ -98,7 +98,9 @@ Run the native tests from the harness repository:
 swift test --package-path macos
 ```
 
-The native app communicates with its bundled engine over local stdin/stdout. Typed commands carry a request ID; responses contain the protocol version, an acknowledgement or error, and the current snapshot. The snapshot includes the project catalog, active and expanded project IDs, per-project activity, creation draft, navigation destination, available directions and typed appearance preference. `toggle_project` changes only expansion; `open_project`, `select_project` and `begin_project_creation` use Rust's shared session to retain project runtimes and ownership locks. `set_creation_draft` saves the identified project's unsent description. Draft writes drain before project selection. `set_appearance` accepts `system`, `light` or `dark`; Rust acknowledges the new value only after saving it. Swift owns rendering and editing focus. Rust owns navigation history, scheduling, permissions, persistence and workflow transitions. The session polls every opened project; background dialogs remain with their project and never take over the visible editor. Quitting closes all owned runtimes.
+At launch, the app calls `projects` on its bundled Rust executable to read the saved catalog and appearance without opening a workspace or starting workers. Selecting a project starts the desktop session.
+
+The native app communicates with its bundled engine over local stdin/stdout. Typed commands carry a request ID; responses contain the protocol version, an acknowledgement or error, and the current snapshot. The snapshot includes the project catalog, active and expanded project IDs, per-project activity, creation draft, navigation destination, available directions and typed appearance preference. `remove_project` saves sidebar visibility without stopping its runtime. `toggle_project` changes only expansion; `open_project`, `select_project` and `begin_project_creation` use Rust's shared session to retain project runtimes and ownership locks. `set_creation_draft` saves the identified project's unsent description. Draft writes drain before project selection. `set_appearance` accepts `system`, `light` or `dark`; Rust acknowledges the new value only after saving it. Swift owns rendering and editing focus. Rust owns navigation history, scheduling, permissions, persistence and workflow transitions. The session polls every opened project; background dialogs remain with their project and never take over the visible editor. Quitting closes all owned runtimes.
 
 `refresh_models` starts bounded asynchronous catalog discovery. `set_worker_settings` carries `{mod_id, settings}`; a null `mod_id` edits the current project creation defaults. Snapshots include typed `worker_settings` and `model_catalog`. Rust validates models, efforts, rows and total count before acknowledging a save. Swift keeps the editable draft until success and never changes active worker pins.
 

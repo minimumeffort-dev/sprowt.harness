@@ -45,6 +45,45 @@ fn click(app: &mut App, control: Control) {
 }
 
 #[test]
+fn terminal_remove_project_keeps_draft_and_empty_picker_can_reopen_the_folder() {
+    let (_data, mut app, a, b) = fixture();
+    let path = app.project.clone();
+    let active = app.current_mod().unwrap().id;
+    paste(&mut app, "Keep this draft");
+    key(&mut app, KeyCode::Left, KeyModifiers::NONE);
+    let cursor = app.input.cursor();
+    key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+    for id in [b, a] {
+        click(&mut app, Control::ProjectMenu(id));
+        let display = rows(&screen(&mut app, 100, 36)).join("\n");
+        assert!(
+            display
+                .replace('\u{a0}', " ")
+                .contains("remove from sidebar"),
+            "{display}"
+        );
+        key(&mut app, KeyCode::Char('x'), KeyModifiers::NONE);
+    }
+    let display = rows(&screen(&mut app, 100, 36)).join("\n");
+    assert!(display.contains("No projects"), "{display}");
+    assert_eq!(app.project_id, a);
+    assert_eq!(app.input.lines(), ["Keep this draft"]);
+    assert_eq!(app.input.cursor(), cursor);
+    key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
+    key(&mut app, KeyCode::Char('.'), KeyModifiers::NONE);
+    assert!(matches!(
+        app.project_picker,
+        crate::app::projects::PickerPanel::Projects
+    ));
+    key(&mut app, KeyCode::Char('+'), KeyModifiers::NONE);
+    paste(&mut app, &path.display().to_string());
+    key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+    assert_eq!(app.projects.iter().map(|p| p.id).collect::<Vec<_>>(), [a]);
+    assert_eq!(app.current_mod().unwrap().id, active);
+    assert_eq!(app.input.lines(), ["Keep this draft"]);
+}
+
+#[test]
 fn terminal_project_accordion_mouse_and_keys_preserve_workspace_and_caret() {
     let (_data, mut app, a, b) = fixture();
     paste(&mut app, "Keep this draft");

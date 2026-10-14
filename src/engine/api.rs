@@ -30,6 +30,9 @@ pub enum Command {
     SelectProject {
         project_id: i64,
     },
+    RemoveProject {
+        project_id: i64,
+    },
     BeginProjectCreation {
         project_id: i64,
     },
@@ -174,6 +177,7 @@ impl Engine {
             Command::ToggleProject { .. }
             | Command::OpenProject { .. }
             | Command::SelectProject { .. }
+            | Command::RemoveProject { .. }
             | Command::BeginProjectCreation { .. } => {
                 Err("Project navigation requires a session.".into())
             }

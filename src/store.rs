@@ -175,6 +175,9 @@ impl Store {
                  project_id INTEGER PRIMARY KEY REFERENCES projects(id),
                  text TEXT NOT NULL DEFAULT ''
              );
+             CREATE TABLE IF NOT EXISTS hidden_projects (
+                 project_id INTEGER PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE
+             );
              CREATE TABLE IF NOT EXISTS code_mods (
                  id INTEGER PRIMARY KEY,
                  project_id INTEGER NOT NULL REFERENCES projects(id),

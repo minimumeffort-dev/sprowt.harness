@@ -11,9 +11,9 @@ struct SprowtApp: App {
         Window("Sprowt", id: "main") {
             ContentView(session: session, sidebarVisible: $sidebarVisible)
                 .frame(minWidth: 900, minHeight: 650)
-                .preferredColorScheme(session.snapshot?.appearance.colorScheme)
-                .onChange(of: session.snapshot?.appearance) { _, value in
-                    NSApp.appearance = value?.nsAppearance
+                .preferredColorScheme(session.appearance.colorScheme)
+                .onChange(of: session.appearance) { _, value in
+                    NSApp.appearance = value.nsAppearance
                 }
                 .task {
                     delegate.session = session
@@ -24,6 +24,8 @@ struct SprowtApp: App {
                     }
                     if let project = argument("--project") {
                         session.start(project: URL(fileURLWithPath: project), dataDirectory: argument("--data-dir"))
+                    } else {
+                        session.loadCatalog(dataDirectory: argument("--data-dir"))
                     }
                 }
         }
@@ -48,7 +50,7 @@ struct SprowtApp: App {
             }
             CommandGroup(after: .appSettings) {
                 Menu("Appearance") {
-                    Picker("Appearance", selection: Binding(get: { session.snapshot?.appearance ?? .system }, set: { session.setAppearance($0) })) {
+                    Picker("Appearance", selection: Binding(get: { session.appearance }, set: { session.setAppearance($0) })) {
                         ForEach(Appearance.allCases, id: \.self) { Text($0.label).tag($0) }
                     }.pickerStyle(.inline).disabled(!session.editable)
                 }

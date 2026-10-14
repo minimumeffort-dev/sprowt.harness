@@ -34,6 +34,104 @@ fn second_project(data: &TestData, engine: &mut Session) -> (i64, i64, PathBuf) 
 }
 
 #[test]
+fn removing_projects_keeps_running_work_and_explicit_open_restores_the_same_session() {
+    use crate::{codex::Event, worker::Worker};
+    let (data, mut session, first, _) = project_session();
+    let a = session.project_id;
+    let path = session.project.clone();
+    let (b, _, other) = second_project(&data, &mut session);
+    session
+        .command(Command::SetDraft {
+            mod_id: first,
+            text: "Keep this draft".into(),
+        })
+        .unwrap();
+    let record = session.store.worker(first).unwrap();
+    let worker_id = record.id;
+    let (worker, events, actions) = Worker::recording(&path, &session.mods[0], record).unwrap();
+    session.workers.insert(worker_id, worker);
+    let request: crate::engine::api::Request = serde_json::from_value(
+        serde_json::json!({"id":1,"command":{"type":"remove_project","project_id":a}}),
+    )
+    .unwrap();
+    session.command(request.command).unwrap();
+    assert_eq!(
+        session.projects.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [b]
+    );
+    assert_eq!(session.expanded_project, None);
+    assert_eq!(session.project_id, a);
+    assert_eq!(session.composer, "Keep this draft");
+    session
+        .command(Command::OpenProject {
+            path: path.display().to_string(),
+        })
+        .unwrap();
+    assert_eq!(
+        session.projects.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [a, b]
+    );
+    session
+        .command(Command::SelectProject { project_id: b })
+        .unwrap();
+    session
+        .command(Command::RemoveProject { project_id: a })
+        .unwrap();
+    events
+        .send(Event::Ready {
+            thread: serde_json::json!({"id":"hidden-project-worker"}),
+            model: Some("same-model".into()),
+            effort: None,
+        })
+        .unwrap();
+    session.poll_workers().unwrap();
+    assert_eq!(
+        session.projects.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [b]
+    );
+    assert_eq!(
+        session.background[&a].workers[&worker_id].model.as_deref(),
+        Some("same-model")
+    );
+    assert_eq!(
+        session.store.worker(first).unwrap().thread_id.as_deref(),
+        Some("hidden-project-worker")
+    );
+    assert_eq!(session.project_id, b);
+    session
+        .command(Command::OpenProject {
+            path: path.display().to_string(),
+        })
+        .unwrap();
+    assert_eq!(
+        session.projects.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [a, b]
+    );
+    assert_eq!(session.composer, "Keep this draft");
+    assert_eq!(
+        session.workers[&worker_id].model.as_deref(),
+        Some("same-model")
+    );
+    assert!(
+        actions.try_recv().is_err(),
+        "Removing and restoring a project must not stop or restart workers"
+    );
+    session
+        .command(Command::RemoveProject { project_id: b })
+        .unwrap();
+    session
+        .command(Command::OpenProject {
+            path: other.display().to_string(),
+        })
+        .unwrap();
+    assert_eq!(session.project_id, b);
+    assert_eq!(
+        session.projects.iter().map(|p| p.id).collect::<Vec<_>>(),
+        [a, b]
+    );
+}
+
+#[test]
 fn project_accordion_only_browses_and_switching_preserves_drafts_and_history() {
     let (data, mut engine, first, _) = project_session();
     let a = engine.project_id;

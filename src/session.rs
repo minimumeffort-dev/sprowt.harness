@@ -49,6 +49,7 @@ impl Session {
     }
 
     pub(crate) fn from_engine(engine: Engine) -> rusqlite::Result<Self> {
+        engine.store.restore_project(engine.project_id)?;
         let projects = engine.store.projects()?;
         Ok(Self {
             expanded_project: Some(engine.project_id),
@@ -85,7 +86,16 @@ impl Session {
                     (self.expanded_project != Some(project_id)).then_some(project_id);
                 Ok(())
             }
-            Command::OpenProject { path } => self.open_project(Path::new(&path), None),
+            Command::OpenProject { path } => {
+                self.open_project(Path::new(&path), None)?;
+                self.store
+                    .restore_project(self.project_id)
+                    .map_err(|e| e.to_string())
+            }
+            Command::RemoveProject { project_id } => self
+                .store
+                .remove_project(project_id)
+                .map_err(|e| e.to_string()),
             Command::SelectProject { project_id } => self.select_project(project_id, None),
             Command::BeginProjectCreation { project_id } => {
                 if !self.can_begin_creation() {
@@ -203,6 +213,9 @@ impl Session {
 
     pub(crate) fn refresh_projects(&mut self) -> rusqlite::Result<()> {
         self.projects = self.store.projects()?;
+        self.expanded_project = self
+            .expanded_project
+            .filter(|id| self.projects.iter().any(|project| project.id == *id));
         for project in &mut self.projects {
             let engine = if project.id == self.foreground.project_id {
                 Some(&self.foreground)

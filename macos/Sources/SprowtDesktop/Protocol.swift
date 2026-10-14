@@ -34,6 +34,20 @@ enum Appearance: String, Codable, CaseIterable, Sendable {
     var label: String { rawValue.capitalized }
 }
 
+struct ProjectCatalog: Decodable, Sendable {
+    let protocolVersion: Int
+    let projects: [ProjectSummary]
+    let appearance: Appearance
+
+    static func decode(_ data: Data) throws -> ProjectCatalog {
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let catalog = try decoder.decode(Self.self, from: data)
+        guard catalog.protocolVersion == 1 else { throw ProtocolError.unsupportedVersion(catalog.protocolVersion) }
+        return catalog
+    }
+}
+
 struct Snapshot: Decodable, Sendable {
     let workerSettings: WorkerSettings
     let modelCatalog: ModelCatalog

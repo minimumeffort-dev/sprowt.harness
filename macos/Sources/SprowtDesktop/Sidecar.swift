@@ -16,13 +16,22 @@ final class Sidecar {
     private let writes = DispatchQueue(label: "dev.sprowt.desktop.stdin")
 
     func start(project: URL, dataDirectory: String?, executable: URL? = nil) throws -> AsyncStream<TransportEvent> {
+        try start(arguments: ["desktop", "--project", project.path], directory: project, dataDirectory: dataDirectory, executable: executable)
+    }
+
+    func catalog(dataDirectory: String?, removing project: Int64? = nil, executable: URL? = nil) throws -> AsyncStream<TransportEvent> {
+        let arguments = ["projects"] + (project.map { ["--remove", String($0)] } ?? [])
+        return try start(arguments: arguments, directory: nil, dataDirectory: dataDirectory, executable: executable)
+    }
+
+    private func start(arguments: [String], directory: URL?, dataDirectory: String?, executable: URL?) throws -> AsyncStream<TransportEvent> {
         let binary = executable ?? Bundle.main.executableURL!
             .deletingLastPathComponent().appendingPathComponent("sprowt-harness")
         let process = Process()
         process.executableURL = binary
-        process.arguments = ["desktop", "--project", project.path]
+        process.arguments = arguments
         if let dataDirectory { process.arguments! += ["--data-dir", dataDirectory] }
-        process.currentDirectoryURL = project
+        process.currentDirectoryURL = directory
         var environment = ProcessInfo.processInfo.environment
         environment["PATH"] = Self.searchPath(environment: environment)
         process.environment = environment

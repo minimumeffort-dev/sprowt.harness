@@ -29,7 +29,7 @@ impl Store {
     pub fn projects(&self) -> Result<Vec<ProjectSummary>> {
         let mut query = self
             .0
-            .prepare("SELECT id, path FROM projects ORDER BY id")?;
+            .prepare("SELECT id, path FROM projects WHERE id NOT IN (SELECT project_id FROM hidden_projects) ORDER BY id")?;
         let mut projects = query
             .query_map([], |row| {
                 let path: String = row.get(1)?;
@@ -59,6 +59,22 @@ impl Store {
                 .collect::<Result<Vec<_>>>()?;
         }
         Ok(projects)
+    }
+
+    pub fn remove_project(&self, project: i64) -> Result<()> {
+        self.0.execute(
+            "INSERT INTO hidden_projects (project_id) VALUES (?1) ON CONFLICT DO NOTHING",
+            [project],
+        )?;
+        Ok(())
+    }
+
+    pub fn restore_project(&self, project: i64) -> Result<()> {
+        self.0.execute(
+            "DELETE FROM hidden_projects WHERE project_id = ?1",
+            [project],
+        )?;
+        Ok(())
     }
 
     pub fn mod_project(&self, id: i64) -> Result<Option<i64>> {

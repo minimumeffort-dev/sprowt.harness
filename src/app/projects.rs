@@ -149,6 +149,12 @@ impl App {
                     self.show_closed = !self.show_closed;
                     self.project_picker = PickerPanel::Projects;
                 }
+                KeyCode::Char('x') => {
+                    self.project_command(Command::RemoveProject { project_id: id });
+                    if self.project_picker_error.is_none() {
+                        self.project_picker = PickerPanel::Projects;
+                    }
+                }
                 _ => {}
             }
             return Ok(());
@@ -176,10 +182,14 @@ impl App {
             {
                 self.open_project_prompt()
             }
-            KeyCode::Char('.') => self.project_picker = PickerPanel::ProjectMenu(project),
-            KeyCode::Char('n') => self.project_command(Command::BeginProjectCreation {
-                project_id: project,
-            }),
+            KeyCode::Char('.') if selected.is_some() => {
+                self.project_picker = PickerPanel::ProjectMenu(project)
+            }
+            KeyCode::Char('n') if selected.is_some() => {
+                self.project_command(Command::BeginProjectCreation {
+                    project_id: project,
+                })
+            }
             KeyCode::Enter | KeyCode::Left | KeyCode::Right => match selected {
                 Some(ProjectRow::Project(id)) => {
                     if key.code == KeyCode::Enter

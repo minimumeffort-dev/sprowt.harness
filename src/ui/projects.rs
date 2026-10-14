@@ -46,6 +46,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
             &[
                 ("↵", "open project"),
                 ("tab", "active / closed"),
+                ("x", "remove from sidebar"),
                 ("esc", "back"),
             ],
         );
@@ -60,13 +61,17 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
         return;
     }
     let rows = app.project_rows();
-    let mut hints = vec![
-        ("↑↓", "select"),
-        ("↵", "open / fold"),
-        ("n", "new"),
-        (".", "menu"),
-        ("+", "project"),
-    ];
+    let mut hints = if rows.is_empty() {
+        vec![("+", "project")]
+    } else {
+        vec![
+            ("↑↓", "select"),
+            ("↵", "open / fold"),
+            ("n", "new"),
+            (".", "menu"),
+            ("+", "project"),
+        ]
+    };
     if matches!(rows.get(index), Some(ProjectRow::Codemod { .. })) {
         hints.extend(if app.show_closed {
             vec![("r", "reopen"), ("d", "delete")]
@@ -86,7 +91,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
         } else {
             "projects"
         },
-        rows.len() + usize::from(app.project_picker_error.is_some()) * 2,
+        rows.len().max(1) + usize::from(app.project_picker_error.is_some()) * 2,
         false,
         &hints,
     );
@@ -147,6 +152,9 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
         list_area,
         &mut state,
     );
+    if rows.is_empty() {
+        frame.render_widget(Paragraph::new("No projects").fg(MUTED), list_area);
+    }
     for (row, entry) in (state.offset()..rows.len())
         .take(list_area.height as usize)
         .enumerate()

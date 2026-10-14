@@ -28,6 +28,8 @@ The header's **◇** selector opens the project accordion with **Ctrl+P**. Click
 
 Actual terminal output with disposable example projects.
 
+The project menu has **X · Remove from sidebar**. This preserves its folder, saved work and running agents; reopening the folder restores the entry. See [project removal](codemods.md#remove-a-project-from-the-sidebar).
+
 Switching projects keeps their agents running. Background projects show **•** while working or **!** when they need attention. Select the project to inspect its work or respond to a request. Quitting stops all projects owned by that terminal session.
 
 The header shows **‹ Back Alt←** and **› Forward Alt→** when a destination is available. Click an arrow or use its shortcut to revisit a codemod or unsent creation. At narrow widths, the controls show the glyph and shortcut. [Navigation history](codemods.md#create-and-manage-work) preserves both drafts and retains each project's history until you quit. Finish or cancel an open confirmation before navigating; read-only inspections are safe to leave.
@@ -205,6 +207,8 @@ Letters type normally in the composer. Close, delete and publication keep their 
 | --- | --- |
 | `sprowt-harness` | Open the current project |
 | `sprowt-harness setup` | Configure optional host-only Jev routing |
+| `sprowt-harness projects` | List saved sidebar projects as JSON without starting workers |
+| `sprowt-harness projects --remove PROJECT_ID` | Hide one sidebar entry and keep its files and saved work |
 | `sprowt-harness --no-motion` | Disable animation |
 | `sprowt-harness --closed-worktree-days 0` | Keep closed worktrees indefinitely; default is 30 days |
 | `sprowt-harness --help` | Show CLI help |

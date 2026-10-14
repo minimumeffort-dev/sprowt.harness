@@ -12,7 +12,7 @@ Press **N** or click the project header's **✎** to start a codemod there. **.*
 
 Selecting another project's codemod switches the visible workspace while agents, preparation, checks and Git jobs keep running in every opened project. Returning reuses the same worker sessions and restores the project's draft and navigation. A background project shows a small activity mark, or **!** when it needs attention. Select it to inspect a failure or answer an approval request; background work never approves requests automatically. A failed switch keeps the current workspace and drafts. A project already controlled by another app or terminal window stays locked there.
 
-Quitting the interface stops workers in all its opened projects. Each codemod keeps the existing two-executor limit, and VM admission still shares the host-wide CPU and memory budget.
+Quitting the interface stops workers in all its opened projects. Each codemod uses its configured [worker team](workers.md#choose-a-worker-team), and VM admission still shares the host-wide CPU and memory budget.
 
 Use **Alt+←** and **Alt+→** to revisit codemods or an unfinished creation draft in the current session. The [macOS app](macos.md#work-on-a-project) provides **Back** and **Forward** with **⌘[** and **⌘]**. Both preserve instruction drafts and the unsent creation description. Choosing another destination after going back replaces the forward path. Closed codemods remain readable; deleted codemods leave the history. Each project keeps its navigation history until you quit. Creation descriptions are saved per project and survive restarting, alongside codemod instruction drafts.
 
@@ -34,6 +34,26 @@ The request can use Markdown headings, emphasis, lists, checklists and code. In 
 The [macOS creation editor](macos.md#work-on-a-project) displays the supported formats and provides system dictation. Terminal dictation depends on the terminal application's macOS support. Dictated or pasted multiline text only edits the draft; it never submits automatically.
 
 See [Git workflow](git-workflow.md) for starting files, publication and checkpoint recovery. After a PR is merged or closed, create a new codemod from the updated project.
+
+## Remove a project from the sidebar
+
+Open the project's **…** menu in the app and choose **Remove from sidebar**. In the terminal, open **Ctrl+P**, select the project, and press **.**, then **X**.
+
+The project disappears from both interfaces. Its folder, codemods and drafts remain saved, and its running agents continue. The current workspace stays open. Choose the folder again to restore the sidebar entry.
+
+To inspect the saved catalog without opening a workspace, run:
+
+```sh
+sprowt-harness projects
+```
+
+The command returns JSON with visible projects, their codemods and the saved appearance. To hide one entry, replace `PROJECT_ID` with its numeric `id` from that output:
+
+```sh
+sprowt-harness projects --remove PROJECT_ID
+```
+
+These commands also accept `--data-dir /path/to/test-state` for an isolated catalog.
 
 ## Send an instruction
 

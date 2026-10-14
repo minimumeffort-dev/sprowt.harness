@@ -52,6 +52,7 @@ struct WorkerSettingsView: View {
                 Spacer()
                 Text("\(settings.capacity) execution workers").foregroundStyle(Theme.muted)
             }
+            // Leave room for native focus rings without shifting the controls.
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
                     VStack(alignment: .leading, spacing: 10) {
@@ -82,8 +83,8 @@ struct WorkerSettingsView: View {
                         Text("Replace the blocked worker using another selected model. Changes apply to new assignments.")
                             .foregroundStyle(Theme.muted).fixedSize(horizontal: false, vertical: true)
                     }
-                }
-            }.frame(maxHeight: 520)
+                }.padding(.horizontal, 4)
+            }.padding(.horizontal, -4).frame(maxHeight: 520)
             if let error = session.error { Text(error).foregroundStyle(Theme.red).textSelection(.enabled) }
             ForEach(session.snapshot?.modelCatalog.errors ?? [], id: \.self) { Text($0).foregroundStyle(Theme.red).textSelection(.enabled) }
             HStack {
