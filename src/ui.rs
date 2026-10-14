@@ -382,7 +382,7 @@ pub fn draw(
                 ..dialog_area
             },
         );
-    } else if app.view.details_tab().is_some() {
+    } else if app.view.is_details() {
         inspector::draw(
             frame,
             app,

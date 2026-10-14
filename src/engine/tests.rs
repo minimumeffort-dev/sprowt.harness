@@ -555,6 +555,38 @@ fn desktop_fix_pr_feedback_rejects_unknown_and_empty_selections() {
 }
 
 #[test]
+fn desktop_inspections_do_not_block_commands_but_confirmations_do() {
+    let (_data, mut engine, _first, second) = session();
+    engine.view = View::Failure(0);
+    assert!(engine.dialog().is_some_and(|d| d.is_inspection()));
+    engine
+        .command(Command::SetDraft {
+            mod_id: engine.mods[0].id,
+            text: "Typed while inspecting".into(),
+        })
+        .unwrap();
+    assert_eq!(engine.mods[0].draft, "Typed while inspecting");
+    engine
+        .command(Command::SelectMod { mod_id: second })
+        .unwrap();
+    assert_eq!(engine.mods[engine.active.unwrap()].id, second);
+    assert!(matches!(engine.view, View::Chat));
+    engine
+        .command(Command::SelectMod {
+            mod_id: engine.mods[0].id,
+        })
+        .unwrap();
+    assert_eq!(engine.composer, "Typed while inspecting");
+    engine.view = View::DeleteMod(0);
+    let error = engine
+        .command(Command::SelectMod {
+            mod_id: engine.mods[0].id,
+        })
+        .unwrap_err();
+    assert_eq!(error, "Finish or cancel the open dialog first.");
+}
+
+#[test]
 fn ownership_excludes_a_separate_process() {
     const PROBE: &str = "SPROWT_OWNERSHIP_PROBE";
     if let Some(directory) = std::env::var_os(PROBE) {

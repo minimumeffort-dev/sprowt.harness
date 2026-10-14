@@ -75,16 +75,16 @@ Keep a repair selected as it finishes: its evidence changes to the completed res
 
 ## Details
 
-Choose **Inspect** or press **Ctrl+T** to open full Details. These sections include all tasks and results, beyond the selected workbench stage. Use **1–4**, **Tab** or **Shift+Tab** to switch sections.
+Choose **Inspect** or press **Ctrl+T** to open the full view that matters now. Each view stands alone and includes all tasks and results, beyond the selected workbench stage; **Esc** or **Ctrl+T** returns to the workbench.
 
-| Section | What to look for |
+| View | What to look for |
 | --- | --- |
-| **1 · Tasks** | Status, owner, model and dependencies; Enter opens one task |
-| **2 · Checks** | Failed checks first, then passing groups and commands not run |
-| **3 · Review** | Finding IDs, severity, owner, evidence, proposed fix and decision history |
-| **4 · Activity** | Time by phase, failed attempts, worker updates and handoffs |
+| **Tasks** | Status, owner, model and dependencies; Enter opens one task |
+| **Checks** | Failed checks first, then passing groups and commands not run |
+| **Review** | Finding IDs, severity, owner, evidence, proposed fix and decision history |
+| **Activity** | Time by phase, failed attempts, worker updates and handoffs |
 
-Details opens Review when findings need attention, Checks after a combined failure, and otherwise Tasks. Before tasks exist, it opens Activity. Opening evidence does not start work.
+Details opens Review when findings need attention, Checks after a combined failure, and otherwise Tasks. Before tasks exist, it opens Activity. Reach the other views by drilling in from the matching workbench stage. Opening evidence does not start work.
 
 | Evidence label | Read it as |
 | --- | --- |

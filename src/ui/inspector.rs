@@ -1,43 +1,13 @@
 use super::*;
 
 pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
-    let state = app.state_summary();
-    let mut heading = vec![
-        Line::from(format!("Details · {}", state.status))
-            .fg(ACCENT)
-            .bold(),
-    ];
-    if !state.evidence.is_empty() {
-        heading.push(Line::from(state.evidence).fg(KEY_HINT));
-    }
-    let selected = app.view.details_tab().unwrap_or(0);
-    let mut tabs = Vec::new();
-    for (i, label) in ["Tasks", "Checks", "Review", "Activity"].iter().enumerate() {
-        if i > 0 {
-            tabs.push(Span::raw("   "));
-        }
-        let span = Span::raw(format!("{} {label}", i + 1));
-        tabs.push(if i == selected {
-            span.fg(ACCENT).bg(CONTROL).bold()
-        } else {
-            span.fg(KEY_HINT)
-        });
-    }
-    heading.extend(wrap_line(Line::from(tabs), area.width, 0));
-    let header = Paragraph::new(heading).wrap(Wrap { trim: false });
-    let [header_area, body] = Layout::vertical([
-        Constraint::Length(header.line_count(area.width) as u16),
-        Constraint::Min(1),
-    ])
-    .areas(area);
-    frame.render_widget(header, header_area);
     match app.view {
-        View::Tasks(index) => tasks::draw_tasks(frame, app, index, body),
-        View::Task(id, scroll) => tasks::draw_task(frame, app, id, scroll, body),
-        View::Checks(scroll) => draw_checks(frame, app, scroll, body),
-        View::Findings(scroll) => findings::draw(frame, app, scroll, body),
-        View::History(scroll) => draw_history(frame, app, scroll, body, None),
-        View::TaskHistory(id, scroll) => draw_history(frame, app, scroll, body, Some(id)),
+        View::Tasks(index) => tasks::draw_tasks(frame, app, index, area),
+        View::Task(id, scroll) => tasks::draw_task(frame, app, id, scroll, area),
+        View::Checks(scroll) => draw_checks(frame, app, scroll, area),
+        View::Findings(scroll) => findings::draw(frame, app, scroll, area),
+        View::History(scroll) => draw_history(frame, app, scroll, area, None),
+        View::TaskHistory(id, scroll) => draw_history(frame, app, scroll, area, Some(id)),
         _ => {}
     }
 }
@@ -56,7 +26,6 @@ fn draw_checks(frame: &mut Frame, app: &mut App, scroll: u16, area: Rect) {
                 "show evidence"
             },
         ),
-        ("tab", "section"),
         ("esc", "back"),
     ]);
     let inner = tasks::panel(frame, area, "checks".into(), &hints);

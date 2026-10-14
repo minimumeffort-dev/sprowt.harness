@@ -33,12 +33,14 @@ final class Session {
     var active: CodemodDetail? { snapshot?.activeMod }
     var dialog: EngineDialog? { connection == .ready ? snapshot?.dialog : nil }
     var editable: Bool { connection == .ready }
-    var interactive: Bool { editable && dialog == nil }
+    var interactive: Bool { editable && (dialog == nil || dialog?.isInspection == true) }
     var busy: Bool {
         current.map { $0.request.command.type != "set_draft" } == true ||
         pending.contains { $0.request.command.type != "set_draft" }
     }
-    var canBeginCreation: Bool { interactive && !busy }
+    // Inspections stay open for everything except starting a new codemod;
+    // creation replaces the whole workspace, so finish the inspection first.
+    var canBeginCreation: Bool { interactive && !busy && dialog == nil }
     private var changingDestination: Bool {
         ([current].compactMap { $0 } + pending).contains {
             ["select_mod", "begin_creation", "go_back", "go_forward"].contains($0.request.command.type)

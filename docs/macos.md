@@ -27,7 +27,7 @@ Choose a codemod in the sidebar to open its workspace. The feed shows the plan o
 
 Select a task or a connected worker to read its current attempt, latest update and check output in the side pane. The **Changes**, **Checks**, **Findings** and **Activity** tabs switch the side pane's evidence; it is the one place for diffs, check output, review findings and the work log. Hide the pane when you want more room.
 
-In **Changes**, choose the offered inspection action to read the actual diff. Choose **Done** to finish an inspection before sending instructions or changing codemods. Opening evidence never starts a worker.
+In **Changes**, choose the offered inspection action to read the actual diff. Inspections are ordinary side-pane content: keep typing, switch tabs or codemods, and choose **Done** whenever you finish reading. Only starting a new codemod asks you to finish an inspection first, since it replaces the workspace. Opening evidence never starts a worker.
 
 The header button shows Rust's recommended action; **More** holds the other available actions. A partial review with confirmed findings offers **Fix review issues**, while publication waits for a complete, clean review. See [review and repairs](review.md).
 

@@ -75,7 +75,22 @@ impl Navigation {
 
 impl Engine {
     fn navigation_allowed(&self) -> bool {
-        matches!(self.view, View::Chat | View::NewMod)
+        // Read-only evidence views are safe to leave; navigation saves the
+        // draft and lands on Chat, like selecting another codemod does.
+        matches!(
+            self.view,
+            View::Chat
+                | View::NewMod
+                | View::Review(_)
+                | View::Findings(_)
+                | View::Failure(_)
+                | View::Sync(_)
+                | View::Tasks(_)
+                | View::Task(_, _)
+                | View::TaskHistory(_, _)
+                | View::Checks(_)
+                | View::History(_)
+        )
     }
 
     pub fn navigation_snapshot(&self) -> NavigationSnapshot {
@@ -91,7 +106,11 @@ impl Engine {
             || self.composer_view() == View::NewMod
         {
             self.creation_draft = self.composer.clone();
-        } else if !self.read_only() {
+        } else if !self.read_only()
+            && matches!(self.composer_view(), View::Chat | View::EditQueue(_))
+        {
+            // Inspection views do not edit the composer; persisting it here
+            // would replace the saved draft with stale text.
             self.save_draft()?;
         }
         Ok(())
@@ -169,7 +188,7 @@ impl Engine {
     }
 
     pub(crate) fn save_before_selection(&mut self) -> Result<()> {
-        if !matches!(self.view, View::Chat | View::NewMod | View::Mods(_)) {
+        if !self.navigation_allowed() && !matches!(self.view, View::Mods(_)) {
             return Err(navigation_blocked());
         }
         self.save_navigation_input()

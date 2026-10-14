@@ -343,7 +343,7 @@ impl Engine {
     }
 
     fn require_no_confirmation(&self) -> Result<(), String> {
-        if self.dialog().is_some() {
+        if self.dialog().is_some_and(|dialog| !dialog.is_inspection()) {
             Err("Finish or cancel the open dialog first.".into())
         } else {
             Ok(())

@@ -2977,7 +2977,7 @@ mod tests {
         assert!(app.action_dock().primary == Some(Action::Retry));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
         assert!(matches!(app.engine.view, View::Checks(0)));
-        key(&mut app, KeyCode::Char('1'), KeyModifiers::NONE);
+        app.engine.view = View::Tasks(0);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         let text = rows(&screen(&mut app, 100, 30)).join("\n");
         assert!(
@@ -4754,7 +4754,7 @@ mod tests {
     }
 
     #[test]
-    fn details_tabs_evidence_and_mouse_scroll_preserve_the_draft() {
+    fn details_views_stand_alone_and_preserve_the_draft() {
         let (_data, mut app, _) = execution_app();
         let e = app.engine.mods[0].execution.as_mut().unwrap();
         e.checks[0].output = "A saved successful check output".into();
@@ -4762,22 +4762,19 @@ mod tests {
             app.engine.view = View::Chat;
             key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
             assert!(matches!(app.engine.view, View::Tasks(0)));
+            // There is no section tab shell: Tab and digits stay in the view.
             key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-            assert!(matches!(app.engine.view, View::Checks(0)));
+            assert!(matches!(app.engine.view, View::Tasks(0)));
+            key(&mut app, KeyCode::Char('3'), KeyModifiers::NONE);
+            assert!(matches!(app.engine.view, View::Tasks(0)));
+            app.engine.view = View::Checks(0);
             let text = rows(&screen(&mut app, width, 40)).join("\n");
-            assert!(
-                text.contains("Checks") && text.contains("Review") && text.contains("Activity")
-            );
+            assert!(text.contains("checks"));
+            assert!(!text.contains("Details ·"));
             assert!(!text.contains("/usr/bin/true"));
             key(&mut app, KeyCode::Char('e'), KeyModifiers::NONE);
             let text = rows(&screen(&mut app, width, 40)).join("\n");
             assert!(text.contains("/usr/bin/true") && text.contains("saved successful"));
-            key(&mut app, KeyCode::Char('3'), KeyModifiers::NONE);
-            assert!(matches!(app.engine.view, View::Findings(0)));
-            key(&mut app, KeyCode::Char('4'), KeyModifiers::NONE);
-            assert!(matches!(app.engine.view, View::History(0)));
-            key(&mut app, KeyCode::BackTab, KeyModifiers::SHIFT);
-            assert!(matches!(app.engine.view, View::Findings(0)));
             key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
             assert!(matches!(app.engine.view, View::Chat));
             assert_eq!(app.input.lines(), ["keep this draft"]);

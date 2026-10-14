@@ -49,7 +49,7 @@ struct WorkspaceView: View {
             }
             GlyphButton(symbol: "sidebar.right", label: session.workspace.inspectorTab == nil ? "Show workspace" : "Hide workspace", selected: session.workspace.inspectorTab != nil) {
                 session.workspace.toggleInspector()
-            }.disabled(session.dialog?.isInspection == true)
+            }
             if let actions = session.snapshot?.actions, actions.count > 1 {
                 Menu {
                     ForEach(Array(actions.dropFirst()), id: \.identity) { action in

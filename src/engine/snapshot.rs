@@ -131,6 +131,13 @@ pub struct Dialog {
     repository_create: bool,
 }
 impl Dialog {
+    // Read-only evidence the user can click away from; it never blocks the
+    // composer, actions or navigation the way a confirmation does.
+    pub fn is_inspection(&self) -> bool {
+        ["diff", "failure", "sync_details", "findings"].contains(&self.kind)
+            && self.confirm_label.is_none()
+    }
+
     fn new(
         kind: &'static str,
         title: impl Into<String>,

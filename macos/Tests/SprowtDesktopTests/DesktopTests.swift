@@ -484,7 +484,7 @@ private func installExecutable(_ source: String, at url: URL) throws {
     #expect(editor.text == "Second instruction")
 }
 
-@Test @MainActor func informationalInspectionBlocksInputAndNewCodemodUntilDone() async throws {
+@Test @MainActor func informationalInspectionKeepsInputUsableUntilDone() async throws {
     let directory = try temporaryDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }
     let executable = directory.appendingPathComponent("engine")
@@ -509,21 +509,21 @@ private func installExecutable(_ source: String, at url: URL) throws {
     defer { session.close {} }
     session.start(project: directory, executable: executable)
     try await waitUntil { session.dialog?.kind == "diff" }
-    session.beginCreation()
-    session.editDraft("Must not replace the draft")
-    #expect(!session.showingNew)
-    #expect(!session.interactive)
-    #expect(!session.canCompose)
+    #expect(session.interactive)
+    #expect(session.canCompose)
+    #expect(!session.canBeginCreation)
     #expect(session.draft == "Saved draft")
     #expect(session.workspace.inspectorTab == .changes)
+    session.editDraft("Edited while inspecting")
+    #expect(session.draft == "Edited while inspecting")
     session.workspace.show(.checks, target: .task("implement_cli"))
     session.enqueue(Command(type: "snapshot"))
     try await waitUntil { !session.busy }
     #expect(session.workspace.inspectorTab == .checks)
     #expect(session.workspace.target == .task("implement_cli"))
     session.enqueue(Command(type: "cancel"))
-    try await waitUntil { session.interactive }
-    #expect(session.canCompose)
+    try await waitUntil { session.dialog == nil && !session.busy }
+    #expect(session.canBeginCreation)
     #expect(session.draft == "Saved draft")
     session.beginCreation()
     try await waitUntil { session.showingNew }
@@ -649,11 +649,12 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     try Data().write(to: URL(fileURLWithPath: executable.path + ".release"))
     try await waitUntil { session.dialog?.kind == "diff" }
     #expect(!session.showingNew)
+    #expect(session.interactive)
     #expect(session.workspace.inspectorTab == .changes)
     #expect(session.draft == "Saved draft")
     #expect(session.newDescription == "Keep this unfinished description")
     session.enqueue(Command(type: "cancel"))
-    try await waitUntil { session.interactive }
+    try await waitUntil { session.dialog == nil && !session.busy }
     session.beginCreation()
     try await waitUntil { session.showingNew }
     #expect(session.showingNew)

@@ -44,7 +44,7 @@ pub(super) fn draw_tasks(frame: &mut Frame, app: &mut App, selected: usize, area
     if ids.get(selected).is_some_and(|id| app.can_retry_task(*id)) {
         keys.push(("r", "retry task"));
     }
-    keys.extend([("tab", "section"), ("h", "activity"), ("esc", "back")]);
+    keys.extend([("h", "activity"), ("esc", "back")]);
     let inner = panel(frame, area, format!("tasks ({})", ids.len()), &keys);
     let items: Vec<_> = ids
         .iter()

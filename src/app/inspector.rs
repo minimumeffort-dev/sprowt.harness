@@ -2,49 +2,31 @@ use super::{Action, App, View};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 impl View {
-    pub fn details_tab(self) -> Option<usize> {
-        match self {
-            Self::Tasks(_) | Self::Task(_, _) => Some(0),
-            Self::Checks(_) => Some(1),
-            Self::Findings(_) => Some(2),
-            Self::History(_) | Self::TaskHistory(_, _) => Some(3),
-            _ => None,
-        }
+    // Full-screen evidence reached by drilling in from the workbench or
+    // Ctrl+T. Each view stands alone; Esc or Ctrl+T returns to the feed.
+    pub fn is_details(self) -> bool {
+        matches!(
+            self,
+            Self::Tasks(_)
+                | Self::Task(_, _)
+                | Self::Checks(_)
+                | Self::Findings(_)
+                | Self::History(_)
+                | Self::TaskHistory(_, _)
+        )
     }
 }
 
 impl App {
     pub(super) fn inspector_key(&mut self, key: KeyEvent) -> rusqlite::Result<bool> {
-        let Some(tab) = self.engine.view.details_tab() else {
+        if !self.engine.view.is_details() {
             return Ok(false);
-        };
+        }
         if key.kind == KeyEventKind::Release {
             return Ok(false);
         }
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('t') {
             self.engine.view = View::Chat;
-            return Ok(true);
-        }
-        let next = match key.code {
-            KeyCode::Char('1'..='4') if key.modifiers.is_empty() => {
-                if let KeyCode::Char(c) = key.code {
-                    Some(c as usize - '1' as usize)
-                } else {
-                    None
-                }
-            }
-            KeyCode::Tab => Some((tab + 1) % 4),
-            KeyCode::BackTab => Some((tab + 3) % 4),
-            _ => None,
-        };
-        if let Some(next) = next {
-            self.engine.view = [
-                View::Tasks(0),
-                View::Checks(0),
-                View::Findings(0),
-                View::History(0),
-            ][next];
-            self.history_origin = None;
             return Ok(true);
         }
         if key.code == KeyCode::Char('e')
