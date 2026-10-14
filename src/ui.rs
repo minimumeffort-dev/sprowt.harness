@@ -4,6 +4,7 @@ mod findings;
 mod formatting;
 mod inspector;
 mod navigation;
+mod projects;
 mod tasks;
 pub(crate) mod theme;
 mod workbench;
@@ -337,7 +338,7 @@ fn draw_contents(
     } else if let View::Network(id, scroll) = app.view {
         draw_network(frame, app, id, scroll, dialog_area);
     } else if let View::Mods(index) = app.view {
-        draw_mod_picker(frame, app, index, dialog_area);
+        projects::draw(frame, app, index, dialog_area);
     } else if let View::DeleteMod(index) = app.view {
         draw_delete_mod(frame, app, index, dialog_area);
     } else if let View::CloseMod(index) = app.view {
@@ -716,98 +717,6 @@ fn draw_mod_selector(frame: &mut Frame, name: &str, area: Rect, open: bool) -> R
         shortcut,
     );
     selector
-}
-
-fn draw_mod_picker(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {
-    let indices = app.picker_indices();
-    let count = indices.len();
-    let mut hints = Vec::new();
-    if count > 0 {
-        hints.push(("↑↓", "select"));
-    }
-    hints.push(("↵", if index < count { "open" } else { "new" }));
-    if index < count {
-        if !app.show_closed {
-            hints.push(("c", "close"));
-        }
-        if app.show_closed && app.mods[indices[index]].git_root.is_some() {
-            hints.push(("r", "reopen"));
-        }
-        hints.push(("d", "delete"));
-    }
-    hints.push(("tab", if app.show_closed { "active" } else { "closed" }));
-    hints.push(("esc", "back"));
-    let (list_area, new_mod) = draw_dialog(
-        frame,
-        area,
-        &format!(
-            "{} codemods ({count})",
-            if app.show_closed { "closed" } else { "active" }
-        ),
-        count,
-        true,
-        &hints,
-    );
-    app.scroll.content = list_area.union(new_mod);
-    let items = indices.iter().map(|&i| {
-        let code_mod = &app.mods[i];
-        let active = app
-            .current_mod()
-            .is_some_and(|active| active.id == code_mod.id);
-        Line::from(vec![
-            format!("{} ", if code_mod.closed { "□" } else { MOD_GLYPH }).fg(ACCENT),
-            Span::raw(fit_name(&code_mod.name, list_area.width.saturating_sub(4))),
-            (if active { " ✓" } else { "" }).fg(ACCENT),
-        ])
-    });
-    let selected = dialog_selection();
-    let highlight = if index < count {
-        selected
-    } else {
-        Style::new()
-    };
-    if count == 0 {
-        frame.render_widget(
-            Line::from(if app.show_closed {
-                "No closed codemods"
-            } else {
-                "No active codemods"
-            })
-            .fg(KEY_HINT),
-            list_area,
-        );
-    } else {
-        let mut state = ListState::default().with_selected(Some(index.min(count - 1)));
-        frame.render_stateful_widget(
-            List::new(items).highlight_style(highlight),
-            list_area,
-            &mut state,
-        );
-        for (row, entry) in (state.offset()..count)
-            .take(list_area.height as usize)
-            .enumerate()
-        {
-            app.controls.add(
-                Rect {
-                    y: list_area.y + row as u16,
-                    height: 1,
-                    ..list_area
-                },
-                crate::app::controls::Control::PickMod(entry),
-            );
-        }
-    }
-    app.controls
-        .add(new_mod, crate::app::controls::Control::PickMod(count));
-    let action = Line::from(vec!["+ ".fg(ACCENT), "new codemod".into()]);
-    frame.render_widget(
-        if index == count {
-            action.style(selected)
-        } else {
-            action
-        },
-        new_mod,
-    );
 }
 
 fn draw_delete_mod(frame: &mut Frame, app: &mut App, index: usize, area: Rect) {

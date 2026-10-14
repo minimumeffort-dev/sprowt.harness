@@ -18,12 +18,15 @@ mod appearance;
 pub mod controls;
 pub mod formatting;
 mod inspector;
+pub mod projects;
 mod scroll;
 mod tasks;
 pub mod workspace_navigation;
 pub use scroll::Scroll;
 
 pub struct App {
+    pub(crate) project_picker: projects::PickerPanel,
+    pub(crate) project_picker_error: Option<String>,
     pub(crate) appearance_picker: Option<crate::appearance::Appearance>,
     pub(crate) appearance_error: Option<String>,
     system_appearance: ui::theme::SystemAppearance,
@@ -70,6 +73,8 @@ impl App {
     }
     fn from_engine(engine: Engine, motion: bool) -> Self {
         let mut app = Self {
+            project_picker: projects::PickerPanel::Projects,
+            project_picker_error: None,
             appearance_picker: None,
             appearance_error: None,
             system_appearance: ui::theme::SystemAppearance::default(),
@@ -137,9 +142,12 @@ impl App {
         let before = self.engine.celebrations;
         let previous_view = self.engine.view;
         let previous_destination = self.engine.navigation.current();
-        let context = self.composer_context();
+        let previous_project = self.engine.project_id;
+        let picker_focus = self.project_picker_focus();
+        let context = (self.engine.project_id, self.composer_context());
         let result = operation(&mut self.engine);
-        if context != self.composer_context() {
+        self.reconcile_project_picker(picker_focus);
+        if context != (self.engine.project_id, self.composer_context()) {
             self.history_offset = 0;
             self.plan_details = false;
             self.focus_plan = false;
@@ -170,7 +178,8 @@ impl App {
         self.sync_editor(
             before,
             previous_view,
-            previous_destination != self.engine.navigation.current(),
+            previous_project != self.engine.project_id
+                || previous_destination != self.engine.navigation.current(),
         );
         result
     }
@@ -215,13 +224,14 @@ impl App {
                 Ok(())
             }
             Action::Mods => {
-                self.show_closed = self.current_mod().is_some_and(|m| m.closed);
-                self.engine.view = View::Mods(
-                    self.picker_indices()
-                        .iter()
-                        .position(|i| Some(*i) == self.engine.active)
-                        .unwrap_or(0),
-                );
+                self.show_closed = self.current_mod().is_some_and(|m| m.closed)
+                    && self.navigation.current() != crate::engine::Destination::NewCodemod;
+                self.projects = self.store.projects()?;
+                self.project_picker = projects::PickerPanel::Projects;
+                self.project_picker_error = None;
+                self.engine.view = View::Mods(self.project_rows().iter().position(|row| {
+                    matches!(row, crate::app::projects::ProjectRow::Codemod { id, .. } if self.current_mod().is_some_and(|m| m.id == *id))
+                }).unwrap_or(0));
                 Ok(())
             }
             Action::History => {
@@ -259,15 +269,6 @@ impl App {
         }
         dock
     }
-    pub fn picker_indices(&self) -> Vec<usize> {
-        self.mods
-            .iter()
-            .enumerate()
-            .filter(|(_, m)| m.closed == self.show_closed)
-            .map(|(i, _)| i)
-            .collect()
-    }
-
     fn start_repository(&mut self, request: git_mod::RepositoryRequest) {
         self.with_engine(|engine| engine.start_repository(request));
     }
@@ -355,6 +356,9 @@ impl App {
     }
 
     fn handle(&mut self, event: Event) -> Result<()> {
+        if matches!(self.engine.view, View::Mods(_)) && self.project_prompt_event(&event) {
+            return Ok(());
+        }
         if self.appearance_picker.is_some() {
             self.appearance_event(event);
             return Ok(());
@@ -476,12 +480,8 @@ impl App {
                         KeyCode::Esc => {
                             self.engine.view =
                                 self.engine.action_origin.take().unwrap_or_else(|| {
-                                    View::Mods(
-                                        self.picker_indices()
-                                            .iter()
-                                            .position(|i| *i == index)
-                                            .unwrap_or(0),
-                                    )
+                                    View::Mods(self.project_rows().iter().position(|row| matches!(row,
+                                        projects::ProjectRow::Codemod { id, .. } if *id == self.mods[index].id)).unwrap_or(0))
                                 });
                         }
                         KeyCode::Enter
@@ -639,7 +639,7 @@ impl App {
                     },
                     View::NewMod => match key.code {
                         KeyCode::Char('g') if ctrl => self.open_actions(),
-                        KeyCode::Char('p') if ctrl => self.engine.view = View::Mods(0),
+                        KeyCode::Char('p') if ctrl => self.perform_action(Action::Mods)?,
                         KeyCode::Esc => {
                             if self.engine.active.is_some() {
                                 let index = self.engine.active.unwrap();
@@ -660,6 +660,9 @@ impl App {
         }
         if matches!(self.engine.view, View::Chat) && !self.read_only() {
             self.save_draft()?;
+        } else if self.engine.view == View::NewMod {
+            let text = self.input.lines().join("\n");
+            self.engine.set_creation_draft(text)?;
         }
         Ok(())
     }
@@ -688,52 +691,6 @@ impl App {
                     self.input.input(key);
                 }
             }
-        }
-        Ok(())
-    }
-
-    fn picker_key(&mut self, key: KeyEvent, index: usize) -> Result<()> {
-        let indices = self.picker_indices();
-        let selected = indices.get(index).copied();
-        let count = indices.len();
-        match key.code {
-            KeyCode::Up => self.engine.view = View::Mods(index.saturating_sub(1)),
-            KeyCode::Down => self.engine.view = View::Mods((index + 1).min(count)),
-            KeyCode::Tab => {
-                self.show_closed = !self.show_closed;
-                self.engine.view = View::Mods(0);
-            }
-            KeyCode::Esc => {
-                self.with_engine(Engine::dismiss_picker)?;
-            }
-            KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.with_engine(Engine::dismiss_picker)?;
-            }
-            KeyCode::Char('d') if key.modifiers.is_empty() && selected.is_some() => {
-                self.engine.view = View::DeleteMod(selected.unwrap());
-            }
-            KeyCode::Char('c')
-                if key.modifiers.is_empty() && !self.show_closed && selected.is_some() =>
-            {
-                self.engine.view = View::CloseMod(selected.unwrap());
-            }
-            KeyCode::Char('r')
-                if key.modifiers.is_empty()
-                    && selected.is_some_and(|i| self.engine.mods[i].closed) =>
-            {
-                self.reopen_mod(selected.unwrap());
-            }
-            KeyCode::Enter if index == count => {
-                self.with_engine(Engine::begin_creation)?;
-            }
-            KeyCode::Enter => {
-                let index = selected.unwrap();
-                self.with_engine(|engine| engine.select_mod(index))?;
-                self.history_offset = 0;
-                self.plan_details = false;
-                self.focus_plan = false;
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -986,6 +943,7 @@ mod tests {
     mod formatting;
     mod git_errors;
     mod navigation;
+    mod projects;
     mod workbench;
     use super::*;
     use crate::store::test_support::TestData;
@@ -2217,6 +2175,14 @@ mod tests {
                 .create_mod(app.engine.project_id, &format!("Codemod {i}"))
                 .unwrap();
             code_mod.name = format!("Codemod {i}");
+            app.engine
+                .store
+                .0
+                .execute(
+                    "UPDATE code_mods SET name=?1 WHERE id=?2",
+                    rusqlite::params![code_mod.name, code_mod.id],
+                )
+                .unwrap();
             app.engine.mods.push(code_mod);
         }
         let queue = queued(&app)
@@ -2234,6 +2200,7 @@ mod tests {
         assert_ne!(first, screen(&mut app, 80, 24));
         assert_eq!(queued(&app), queue);
         assert!(app.queue_selection.is_empty() && app.engine.mods[0].steering.is_empty());
+        app.projects = app.store.projects().unwrap();
         app.engine.view = View::Mods(0);
         for _ in 0..25 {
             screen(&mut app, 80, 24);
@@ -2243,7 +2210,7 @@ mod tests {
         let last = rows(&screen(&mut app, 80, 24)).join("\n");
         assert!(matches!(app.engine.view, View::Mods(21)));
         assert!(
-            last.contains("Codemod 19") && last.contains("new codemod"),
+            last.contains("Codemod 19") && last.contains("n\u{a0}new"),
             "{last}"
         );
         let content = app.scroll.content;
@@ -5216,10 +5183,11 @@ mod tests {
         for width in [48, 100] {
             let display = rows(&screen(&mut app, width, 30)).join("\n");
             assert!(display.contains("No closed codemods"));
-            assert!(display.contains("new codemod"));
-            assert!(!display.contains("↑↓ select") && !display.contains("↵ open"));
+            assert!(display.contains("n\u{a0}new"));
+            assert!(display.contains("projects"));
         }
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         key(&mut app, KeyCode::Char('c'), KeyModifiers::NONE);
         assert!(matches!(app.engine.view, View::CloseMod(0)));
         assert!(
@@ -5238,19 +5206,26 @@ mod tests {
         let mut app = App::load(project, false, data.store()).unwrap();
         assert!(app.current_mod().is_none());
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
-        assert!(app.picker_indices().is_empty());
+        assert!(
+            !app.project_rows()
+                .iter()
+                .any(|row| matches!(row, crate::app::projects::ProjectRow::Codemod { .. }))
+        );
         assert!(
             rows(&screen(&mut app, 100, 30))
                 .join("\n")
-                .contains("No active codemods")
+                .contains("No codemods")
         );
         key(&mut app, KeyCode::Tab, KeyModifiers::NONE);
-        assert_eq!(app.picker_indices(), [0]);
+        assert!(
+            matches!(app.project_rows().get(1), Some(crate::app::projects::ProjectRow::Codemod { id: selected, .. }) if *selected == id)
+        );
         assert!(
             rows(&screen(&mut app, 100, 30))
                 .join("\n")
-                .contains("closed codemods (1)")
+                .contains("projects · closed codemods")
         );
+        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.current_mod().unwrap().id, id);
         assert_eq!(
@@ -6581,8 +6556,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         paste(&mut app, "draft A\nsecond line");
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
-        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
         paste(&mut app, "feature B");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         assert_eq!(app.input.lines(), [""]);
@@ -6612,8 +6586,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         paste(&mut app, "keep this draft");
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
-        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
         paste(&mut app, "discard this name");
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert!(matches!(app.engine.view, View::Chat));
@@ -6730,10 +6703,10 @@ mod tests {
         .unwrap();
         assert!(matches!(app.engine.view, View::DeleteMod(0)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
-        assert!(matches!(app.engine.view, View::Mods(0)));
-        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
         assert!(matches!(app.engine.view, View::Mods(1)));
+        key(&mut app, KeyCode::Up, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('d'), KeyModifiers::NONE);
+        assert!(matches!(app.engine.view, View::Mods(0)));
         key(&mut app, KeyCode::Esc, KeyModifiers::NONE);
         assert_eq!(app.input.lines(), ["keep draft"]);
         assert_eq!(queued(&app), ["keep queue"]);
@@ -6751,8 +6724,7 @@ mod tests {
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         paste(&mut app, "draft a");
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
-        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
         paste(&mut app, "b");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         paste(&mut app, "draft b");
@@ -6767,8 +6739,7 @@ mod tests {
         assert_eq!(queued(&app), ["queue a"]);
         assert_eq!(app.input.lines(), ["draft a"]);
         key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
-        key(&mut app, KeyCode::Down, KeyModifiers::NONE);
-        key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
+        key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
         paste(&mut app, "c");
         key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
         paste(&mut app, "draft c");

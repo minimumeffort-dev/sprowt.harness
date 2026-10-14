@@ -14,7 +14,15 @@ final class Session {
     private(set) var snapshot: Snapshot?
     private(set) var connection = Connection.disconnected
     private(set) var error: String?
-    var newDescription = ""
+    private var creationDrafts = Drafts()
+    var newDescription: String {
+        get { snapshot.map { creationDrafts.text(for: $0.projectId, fallback: $0.creationDraft) } ?? "" }
+        set {
+            guard let id = snapshot?.projectId else { return }
+            let revision = creationDrafts.edit(newValue, for: id)
+            enqueue(Command(type: "set_creation_draft", text: newValue, projectId: id), revision: revision)
+        }
+    }
     var showingNew: Bool { snapshot?.navigation.destination == .newCodemod }
     var showClosed = false
     var workspace = WorkspaceSelection()
@@ -35,15 +43,15 @@ final class Session {
     var editable: Bool { connection == .ready }
     var interactive: Bool { editable && (dialog == nil || dialog?.isInspection == true) }
     var busy: Bool {
-        current.map { $0.request.command.type != "set_draft" } == true ||
-        pending.contains { $0.request.command.type != "set_draft" }
+        current.map { !["set_draft", "set_creation_draft"].contains($0.request.command.type) } == true ||
+        pending.contains { !["set_draft", "set_creation_draft"].contains($0.request.command.type) }
     }
     // Inspections stay open for everything except starting a new codemod;
     // creation replaces the whole workspace, so finish the inspection first.
     var canBeginCreation: Bool { interactive && !busy && dialog == nil }
     private var changingDestination: Bool {
         ([current].compactMap { $0 } + pending).contains {
-            ["select_mod", "begin_creation", "go_back", "go_forward"].contains($0.request.command.type)
+            ["select_mod", "begin_creation", "go_back", "go_forward", "select_project", "open_project", "begin_project_creation"].contains($0.request.command.type)
         }
     }
     var canCompose: Bool { interactive && !showingNew && active?.closed == false && !changingDestination }
@@ -86,12 +94,29 @@ final class Session {
         panel.prompt = "Open project"
         if let project { panel.directoryURL = project }
         guard panel.runModal() == .OK, let folder = panel.url else { return }
-        close { [weak self] in
-            guard let self else { return }
-            self.snapshot = nil
-            self.drafts = Drafts()
-            self.start(project: folder, dataDirectory: self.dataDirectory)
-        }
+        if editable { openProject(folder) }
+        else if connection == .disconnected { start(project: folder, dataDirectory: dataDirectory) }
+    }
+
+    func openProject(_ folder: URL) {
+        guard interactive && !busy else { return }
+        enqueue(Command(type: "open_project", path: folder.path))
+    }
+
+    func toggleProject(_ id: Int64) {
+        guard editable && !busy else { return }
+        enqueue(Command(type: "toggle_project", projectId: id))
+    }
+
+    func selectProject(_ id: Int64) {
+        guard interactive && !busy else { return }
+        enqueue(Command(type: "select_project", projectId: id))
+    }
+
+    func beginCreation(in project: Int64) {
+        guard canBeginCreation else { return }
+        showClosed = false
+        enqueue(Command(type: "begin_project_creation", projectId: project))
     }
 
     func close(completion: @escaping () -> Void) {
@@ -149,8 +174,9 @@ final class Session {
         nextId += 1
         let item = Pending(request: Request(id: nextId, command: command), draftRevision: revision)
         if beforePending { pending.insert(item, at: 0) }
-        else if command.type == "set_draft", let last = pending.last,
-           last.request.command.type == "set_draft", last.request.command.modId == command.modId {
+        else if ["set_draft", "set_creation_draft"].contains(command.type), let last = pending.last,
+           last.request.command.type == command.type, last.request.command.modId == command.modId,
+           last.request.command.projectId == command.projectId {
             pending[pending.count - 1] = item
         } else { pending.append(item) }
         sendNext()
@@ -217,9 +243,10 @@ final class Session {
         var restored: Pending?
         var navigated = false
         if let request = current, response.requestId == request.request.id {
-            navigated = response.error == nil && ["go_back", "go_forward", "select_mod"].contains(request.request.command.type)
-            if response.error == nil, let revision = request.draftRevision, let id = request.request.command.modId {
-                drafts.acknowledge(id: id, revision: revision)
+            navigated = response.error == nil && ["go_back", "go_forward", "select_mod", "select_project", "open_project", "begin_project_creation"].contains(request.request.command.type)
+            if response.error == nil, let revision = request.draftRevision {
+                if let id = request.request.command.modId { drafts.acknowledge(id: id, revision: revision) }
+                if let id = request.request.command.projectId { creationDrafts.acknowledge(id: id, revision: revision) }
             }
             if response.error != nil, request.request.command.type == "submit",
                let revision = request.draftRevision, let id = request.request.command.modId,
@@ -230,9 +257,11 @@ final class Session {
             if request.request.command.type == "cancel" ||
                (request.request.command.type == "new_mod" && response.error != nil) { creation = nil }
             current = nil
-            if request.request.command.type != "set_draft" || response.error != nil { error = response.error }
+            if !["set_draft", "set_creation_draft"].contains(request.request.command.type) || response.error != nil { error = response.error }
         } else if let message = response.error { error = message }
         snapshot = response.snapshot
+        project = URL(fileURLWithPath: response.snapshot.project)
+        creationDrafts.receive(id: response.snapshot.projectId, text: response.snapshot.creationDraft)
         workspace.reconcile(response.snapshot)
         if navigated { showClosed = active?.closed == true && !showingNew }
         if let creation, let active, active.id != creation.previousMod, response.snapshot.dialog == nil {

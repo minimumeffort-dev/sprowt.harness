@@ -6,13 +6,17 @@ A codemod is one goal in one project. It keeps its own plan, conversation, queue
 
 ## Create and manage work
 
-Open **Ctrl+P** to select a codemod.
+Open **Ctrl+P** to browse projects and their indented codemods. Click a project row or press **Enter** to expand or collapse it. Only one project is expanded at a time; folding a project leaves the current workspace and draft untouched. **← / →** also fold or expand the focused project.
 
-Use **Alt+←** and **Alt+→** to revisit codemods or an unfinished creation draft in the current session. The [macOS app](macos.md#work-on-a-project) provides **Back** and **Forward** with **⌘[** and **⌘]**. Both preserve instruction drafts and the unsent creation description. Choosing another destination after going back replaces the forward path. Closed codemods remain readable; deleted codemods leave the history. Opening a project starts fresh navigation history.
+Press **N** or click the project header's **✎** to start a codemod there. **.** opens the project's menu; **+** opens a folder path prompt. **Tab** switches active and closed codemods. In the [macOS sidebar](macos.md#work-on-a-project), the compose icon beside **…** starts a codemod in that project, and the rail's folder-plus button opens another folder.
+
+Selecting another project's codemod switches the active project. Pause running work in the current project first, and wait for any Git or preparation operation to finish. A failed switch keeps the current workspace and drafts. A project already controlled by another app or terminal window stays locked there.
+
+Use **Alt+←** and **Alt+→** to revisit codemods or an unfinished creation draft in the current session. The [macOS app](macos.md#work-on-a-project) provides **Back** and **Forward** with **⌘[** and **⌘]**. Both preserve instruction drafts and the unsent creation description. Choosing another destination after going back replaces the forward path. Closed codemods remain readable; deleted codemods leave the history. Each project keeps its navigation history until you quit. Creation descriptions are saved per project and survive restarting, alongside codemod instruction drafts.
 
 | Action | How | Result |
 | --- | --- | --- |
-| Create | Choose **New codemod**, describe it, press Enter | Planning and execution start after any required Git confirmation |
+| Create | Press **N** on a project or codemod row, describe it, press Enter | Planning and execution start after any required Git confirmation |
 | Switch | Select an active codemod, press Enter | Its conversation and draft return |
 | Read closed history | Tab to closed codemods, press Enter | Opens saved work without reopening |
 | Close | Select an active codemod, press `c`, confirm | Checkpoints source and removes its VM; history stays |

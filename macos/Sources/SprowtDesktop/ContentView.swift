@@ -5,46 +5,49 @@ struct ContentView: View {
     @Binding var sidebarVisible: Bool
 
     var body: some View {
-        HSplitView {
-            // Keep both panes mounted to preserve native editor focus and undo.
-            SidebarView(session: session)
-                .frame(minWidth: sidebarVisible ? 190 : 0,
-                       idealWidth: sidebarVisible ? 220 : 0,
-                       maxWidth: sidebarVisible ? 240 : 0)
-                .clipped().allowsHitTesting(sidebarVisible).disabled(!sidebarVisible)
-                .accessibilityHidden(!sidebarVisible)
-            VStack(spacing: 0) {
-                if let error = session.error ?? session.snapshot?.error {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Image(systemName: "exclamationmark.triangle").symbolBaseline(textSize: 12)
-                        Text(error).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                        if session.connection == .disconnected {
-                            Button("Open project…") { session.chooseProject() }
-                        }
-                    }.font(Theme.font(12)).foregroundStyle(Theme.red).padding(12)
-                        .background(Theme.red.opacity(0.06))
-                    WorkspaceDivider()
-                }
-                if session.connection == .starting || session.connection == .stopping {
-                    HStack(spacing: 10) {
-                        ProgressView().controlSize(.small)
-                        Text(session.connection == .starting ? "Opening project…" : "Saving and stopping workers…")
-                        Spacer()
-                    }.padding(16).foregroundStyle(Theme.muted)
-                }
-                if session.showingNew || (session.editable && session.active == nil) {
-                    NewCodemodView(session: session)
-                } else if let active = session.active {
-                    WorkspaceView(session: session, mod: active)
-                } else {
-                    VStack(spacing: 16) {
-                        Image(systemName: "folder").font(.system(size: 28)).foregroundStyle(Theme.muted)
-                        Text("Open a project").font(Theme.font(20, weight: .semibold))
-                        Button("Choose folder…") { session.chooseProject() }
-                            .buttonStyle(WorkspaceButtonStyle(prominent: true))
-                    }.frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-            }.frame(minWidth: 650, maxWidth: .infinity, maxHeight: .infinity).background(Theme.paper)
+        HStack(spacing: 0) {
+            NavigationRail(session: session, sidebarVisible: $sidebarVisible)
+            HSplitView {
+                // Keep both panes mounted to preserve native editor focus and undo.
+                SidebarView(session: session)
+                    .frame(minWidth: sidebarVisible ? 210 : 0,
+                           idealWidth: sidebarVisible ? 242 : 0,
+                           maxWidth: sidebarVisible ? 320 : 0)
+                    .clipped().allowsHitTesting(sidebarVisible).disabled(!sidebarVisible)
+                    .accessibilityHidden(!sidebarVisible)
+                VStack(spacing: 0) {
+                    if let error = session.error ?? session.snapshot?.error {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle").symbolBaseline(textSize: 12)
+                            Text(error).textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+                            if session.connection == .disconnected {
+                                Button("Open project…") { session.chooseProject() }
+                            }
+                        }.font(Theme.font(12)).foregroundStyle(Theme.red).padding(12)
+                            .background(Theme.red.opacity(0.06))
+                        WorkspaceDivider()
+                    }
+                    if session.connection == .starting || session.connection == .stopping {
+                        HStack(spacing: 10) {
+                            ProgressView().controlSize(.small)
+                            Text(session.connection == .starting ? "Opening project…" : "Saving and stopping workers…")
+                            Spacer()
+                        }.padding(16).foregroundStyle(Theme.muted)
+                    }
+                    if session.showingNew || (session.editable && session.active == nil) {
+                        NewCodemodView(session: session)
+                    } else if let active = session.active {
+                        WorkspaceView(session: session, mod: active)
+                    } else {
+                        VStack(spacing: 16) {
+                            Image(systemName: "folder").font(.system(size: 28)).foregroundStyle(Theme.muted)
+                            Text("Open a project").font(Theme.font(20, weight: .semibold))
+                            Button("Choose folder…") { session.chooseProject() }
+                                .buttonStyle(WorkspaceButtonStyle(prominent: true))
+                        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }.frame(minWidth: 650, maxWidth: .infinity, maxHeight: .infinity).background(Theme.paper)
+            }
         }
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {

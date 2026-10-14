@@ -68,6 +68,16 @@ pub(crate) struct Preparations {
 }
 
 impl Preparations {
+    pub(crate) fn empty_peer(&self) -> Self {
+        Self::with_backend(self.backend.clone())
+    }
+
+    pub(crate) fn warming(&self) -> bool {
+        self.entries
+            .values()
+            .any(|entry| matches!(entry.state, State::Warming(_)))
+    }
+
     pub fn production() -> Self {
         Self::with_backend(Arc::new(|root, cancelled, events| {
             let emit = |observation| {

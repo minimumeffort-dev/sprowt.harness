@@ -348,12 +348,13 @@ fn workbench_picker_rows_are_clickable_and_preserve_the_draft() {
     screen(&mut app, 100, 42);
     click(&mut app, Control::Action(Action::Mods));
     screen(&mut app, 100, 42);
-    click(&mut app, Control::PickMod(0));
+    click(&mut app, Control::PickMod(1));
     assert!(app.engine.view == View::Chat);
     screen(&mut app, 100, 42);
     click(&mut app, Control::Action(Action::Mods));
     screen(&mut app, 100, 42);
-    click(&mut app, Control::PickMod(1));
+    let project = app.project_id;
+    click(&mut app, Control::ProjectNew(project));
     assert!(app.engine.view == View::NewMod);
     assert_eq!(app.engine.mods[0].draft, "keep this draft");
 }

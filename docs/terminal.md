@@ -22,9 +22,13 @@ Choose the shared light or dark theme with **Ctrl+G → A · Appearance**. See [
 
 Each view uses the available width. **Conversation** shows the request once and adds numbered plan tasks when they exist. Task details contain file scopes, dependencies, required checks and observed preparation receipts.
 
-The header's **◇** selector opens codemods with **Ctrl+P**. The planner supplies each new codemod's short title; its complete request stays in **Conversation**.
+The header's **◇** selector opens the project accordion with **Ctrl+P**. Click a project row or press **Enter** to fold or expand its codemods. Press **N** for a new codemod in the focused project, **.** for its menu, or **+** to open another folder. The planner supplies each new codemod's short title; its complete request stays in **Conversation**.
 
-The header shows **‹ Back Alt←** and **› Forward Alt→** when a destination is available. Click an arrow or use its shortcut to revisit a codemod or unsent creation. At narrow widths, the controls show the glyph and shortcut. [Navigation history](codemods.md#create-and-manage-work) preserves both drafts and resets when you open a project. Finish an open dialog or inspection before navigating.
+![Terminal project accordion with indented codemods and project actions](assets/terminal-projects.svg)
+
+Actual terminal output with disposable example projects.
+
+The header shows **‹ Back Alt←** and **› Forward Alt→** when a destination is available. Click an arrow or use its shortcut to revisit a codemod or unsent creation. At narrow widths, the controls show the glyph and shortcut. [Navigation history](codemods.md#create-and-manage-work) preserves both drafts and retains each project's history until you quit. Finish an open dialog or inspection before navigating.
 
 ## Read the evidence
 
@@ -170,7 +174,7 @@ Shortcuts are contextual. **Ctrl+G · More** lists actions available in the curr
 | Ctrl+D | View diff when available |
 | Ctrl+Q | Manage pending instructions |
 | Ctrl+N | Decide a pending network request |
-| Ctrl+P | Switch or manage codemods |
+| Ctrl+P | Browse projects and switch or manage codemods |
 | Alt+← / Alt+→ | Back / forward through codemods and creation |
 | Ctrl+U | Sync project and check target updates |
 | Page Up / Down | Scroll the focused view |

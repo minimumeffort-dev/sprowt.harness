@@ -180,6 +180,7 @@ impl Engine {
             }
             _ => {}
         }
+        self.projects = self.store.projects()?;
         Ok(())
     }
 

@@ -39,7 +39,8 @@ fn terminal_navigation_keys_preserve_drafts_creation_and_selection_branches() {
     assert_eq!(app.input.lines(), ["Second draft"]);
     key(&mut app, KeyCode::Right, KeyModifiers::ALT);
     assert_eq!(app.current_mod().unwrap().id, third);
-    next_mod(&mut app);
+    key(&mut app, KeyCode::Char('p'), KeyModifiers::CONTROL);
+    key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE);
     assert!(app.engine.view == View::NewMod);
     paste(&mut app, "Unsent **new change**\nwith details");
     key(&mut app, KeyCode::Left, KeyModifiers::ALT);

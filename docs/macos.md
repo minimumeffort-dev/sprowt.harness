@@ -33,11 +33,11 @@ In **Changes**, choose the offered inspection action to read the actual diff. Ke
 
 The header button shows Rust's recommended action; **More** holds the other available actions. A partial review with confirmed findings offers **Fix review issues**, while publication waits for a complete, clean review. See [review and repairs](review.md).
 
-Choose **New codemod** or press **⌘N** to describe the change in the compact creation editor. **Create codemod** or **⌘Return** starts the same planning and execution flow as the terminal app. The planner supplies a short title while the complete request stays in the conversation. Setup, network access, publication, closing and deletion retain their explicit confirmation steps.
+Click the compose icon beside **…** in a project header, or press **⌘N** for the current project, to describe the change in the compact creation editor. **Create codemod** or **⌘Return** starts the same planning and execution flow as the terminal app. The planner supplies a short title while the complete request stays in the conversation. Setup, network access, publication, closing and deletion retain their explicit confirmation steps.
 
-![Native creation editor](assets/macos-appearance-light.png)
+![Native creation editor](assets/macos-sidebar-light.jpg)
 
-Actual native creation editor using a disposable project. No plan was created.
+Actual native project accordion and creation editor in a seeded disposable project session. No plan was started.
 
 The creation editor shows headings, emphasis, lists, checklists and code as formatted text. Choose **Format**, or type `/` at the start of an empty line, to select a format. Use **↑**, **↓** and **Return**, or click a choice. **Esc** closes the menu and preserves its slash; continuing a path such as `/Users/...` closes the menu and preserves the path. **⌘B**, **⌘I** and **⌘E** toggle bold, italic and inline code. **⌘Z** and **⇧⌘Z** undo and redo edits.
 
@@ -45,15 +45,17 @@ The creation editor shows headings, emphasis, lists, checklists and code as form
 
 The editor sends Markdown through the existing Rust command. Supported formatting appears in the app; unsupported Markdown remains literal, with its source preserved. Code blocks contain literal text, so inline emphasis does not apply inside them. The full request is stored in both interfaces.
 
-The **Sprowt** menu at the top of the sidebar contains **Open project…** and the switch between active and closed codemods. **⌘O** opens a project folder directly. Each codemod has a diamond glyph and a short title. The workspace header shows the selected codemod's status and next action.
+The left icon rail contains **Projects**, **Open project** and **Closed codemods**, with the local profile at the bottom. **⌘O** opens a project folder directly. Click a project name to expand or collapse its indented codemods; there is no disclosure caret. Only one project is expanded at a time. Folding a project preserves the workspace, editor and draft.
 
-Use the title bar's sidebar button or the sidebar command in **View** to hide or show the sidebar. **⌃⌘S** works while the sidebar is hidden. Your codemod selection and composer drafts stay in place.
+The **…** menu opens that project or switches between active and closed codemods. The adjacent compose icon creates a codemod in that project. Choosing another project's codemod switches the active project after pending drafts are saved. Pause current work first; Git and preparation operations must finish before switching. Failed or locked destinations leave the current workspace intact. See [projects and codemods](codemods.md#create-and-manage-work).
 
-Use the title bar's **Back** and **Forward** arrows, **View → Back / Forward**, or **⌘[** and **⌘]** to revisit codemods and unfinished creation. [Navigation history](codemods.md#create-and-manage-work) lasts for the current project session. Inspections do not block navigation; confirmations still do.
+Use the title bar's sidebar button or the sidebar command in **View** to hide or show the sidebar. **⌃⌘S** works while the sidebar is hidden. The icon rail remains visible. Your codemod selection and composer drafts stay in place.
+
+Use the title bar's **Back** and **Forward** arrows, **View → Back / Forward**, or **⌘[** and **⌘]** to revisit codemods and unfinished creation. [Navigation history](codemods.md#create-and-manage-work) is retained separately for each project until you quit. Inspections do not block navigation; confirmations still do.
 
 Press **⌘1** through **⌘5** for **Conversation**, **Changes**, **Checks**, **Findings** and **Agents**, respectively. These shortcuts preserve the composer draft.
 
-Choose **System**, **Light** or **Dark** from **Appearance** at the bottom of the sidebar. The preference is shared with the terminal. See [Appearance](appearance.md) for controls and status colors.
+Choose **System**, **Light** or **Dark** from **Appearance** in the bottom profile menu. The preference is shared with the terminal. See [Appearance](appearance.md) for controls and status colors.
 
 Use the composer to answer a question or queue an instruction. Expand the attached queue to edit, reorder, remove or steer pending instructions. Save an edit before choosing **Steer**. These actions preserve the composer draft. Removing the last queued instruction closes the queue and returns focus to the composer. Steering without connected workers saves instructions as waiting for workers; it does not claim delivery.
 
@@ -70,6 +72,8 @@ Both interfaces use the same plans, task inspection, check results and action ru
 | Changes, Checks, Findings and Agents | **2** through **5** while exploring |
 | Attached queue | **Ctrl+Q · Queue** |
 | Contextual actions | Action dock or **Ctrl+G · More** |
+| Project row / compose icon / **…** | **Ctrl+P**, then **Enter / N / .** |
+| Open project / **⌘O** | **Ctrl+P → +**, then enter the folder path |
 | Back / Forward or **⌘[ / ⌘]** | Header arrows or **Alt+← / Alt+→** |
 | Creation editor's Format menu | **F2 · Format** in the new codemod composer |
 | Dictate | Host terminal's dictation or paste, when supported |
@@ -90,7 +94,7 @@ Run the native tests from the harness repository:
 swift test --package-path macos
 ```
 
-The native app communicates with its bundled engine over local stdin/stdout. Typed commands carry a request ID; responses contain the protocol version, an acknowledgement or error, and the current snapshot. The snapshot includes the navigation destination, available directions and typed appearance preference. `set_appearance` accepts `system`, `light` or `dark`; Rust acknowledges the new value only after saving it. Swift owns rendering and editing focus. Rust owns navigation history, scheduling, permissions, persistence and workflow transitions.
+The native app communicates with its bundled engine over local stdin/stdout. Typed commands carry a request ID; responses contain the protocol version, an acknowledgement or error, and the current snapshot. The snapshot includes the project catalog, active and expanded project IDs, per-project creation draft, navigation destination, available directions and typed appearance preference. `toggle_project` changes only expansion; `open_project`, `select_project` and `begin_project_creation` share Rust's ownership and running-work guards. `set_creation_draft` saves the identified project's unsent description. Draft writes drain before project selection. `set_appearance` accepts `system`, `light` or `dark`; Rust acknowledges the new value only after saving it. Swift owns rendering and editing focus. Rust owns navigation history, scheduling, permissions, persistence and workflow transitions.
 
 Native system typography and evergreen colors cover the workspace, editors, dialogs and window chrome. No font files or downloads are required.
 

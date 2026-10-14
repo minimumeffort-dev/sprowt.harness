@@ -9,6 +9,7 @@ pub enum Destination {
     NewCodemod,
 }
 
+#[derive(Clone)]
 pub(crate) struct Navigation {
     entries: Vec<Destination>,
     cursor: usize,
@@ -52,6 +53,22 @@ impl Navigation {
             .get(index)
             .copied()
             .map(|destination| (index, destination))
+    }
+
+    pub(crate) fn retain_mods(&mut self, mods: &[crate::store::CodeMod]) {
+        let removed: Vec<_> = self
+            .entries
+            .iter()
+            .filter_map(|destination| match destination {
+                Destination::Codemod { mod_id } if !mods.iter().any(|m| m.id == *mod_id) => {
+                    Some(*mod_id)
+                }
+                _ => None,
+            })
+            .collect();
+        for id in removed {
+            self.forget(id);
+        }
     }
 
     pub(crate) fn forget(&mut self, mod_id: i64) {
@@ -101,11 +118,11 @@ impl Engine {
         }
     }
 
-    fn save_navigation_input(&mut self) -> Result<()> {
+    pub(crate) fn save_navigation_input(&mut self) -> Result<()> {
         if self.navigation.current() == Destination::NewCodemod
             || self.composer_view() == View::NewMod
         {
-            self.creation_draft = self.composer.clone();
+            self.set_creation_draft(self.composer.clone())?;
         } else if !self.read_only()
             && matches!(self.composer_view(), View::Chat | View::EditQueue(_))
         {
@@ -195,7 +212,7 @@ impl Engine {
     }
 }
 
-fn navigation_blocked() -> rusqlite::Error {
+pub(super) fn navigation_blocked() -> rusqlite::Error {
     rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::other(
         "Finish or cancel the open dialog first.",
     )))

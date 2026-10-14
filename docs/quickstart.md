@@ -78,7 +78,7 @@ Use one harness instance per project. Empty folders, existing projects and Git r
 
 ## 4. Describe a small outcome
 
-Open **Ctrl+P → New codemod**, or use the creation view shown on first launch. For example:
+Open **Ctrl+P → N · New codemod**, or use the creation view shown on first launch. For example:
 
 ```text
 Add a --version option to this CLI.

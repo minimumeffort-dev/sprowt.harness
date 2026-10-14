@@ -16,6 +16,22 @@ pub enum Command {
     SetAppearance {
         appearance: crate::appearance::Appearance,
     },
+    ToggleProject {
+        project_id: i64,
+    },
+    OpenProject {
+        path: String,
+    },
+    SelectProject {
+        project_id: i64,
+    },
+    BeginProjectCreation {
+        project_id: i64,
+    },
+    SetCreationDraft {
+        project_id: i64,
+        text: String,
+    },
     BeginCreation {},
     GoBack {},
     GoForward {},
@@ -158,7 +174,30 @@ impl Engine {
     }
 
     pub fn command(&mut self, command: Command) -> Result<(), String> {
+        let result = self.execute_command(command);
+        self.projects = self.store.projects().map_err(|e| e.to_string())?;
+        result
+    }
+
+    fn execute_command(&mut self, command: Command) -> Result<(), String> {
         match command {
+            Command::ToggleProject { project_id } => self.toggle_project(project_id),
+            Command::OpenProject { path } => self.open_project(std::path::Path::new(&path)),
+            Command::SelectProject { project_id } => self.select_project(project_id, None),
+            Command::BeginProjectCreation { project_id } => {
+                if !self.can_begin_creation() {
+                    return Err(super::navigation::navigation_blocked().to_string());
+                }
+                self.select_project(project_id, None)?;
+                self.expanded_project = Some(project_id);
+                self.begin_creation().map_err(|e| e.to_string())
+            }
+            Command::SetCreationDraft { project_id, text } => {
+                if project_id != self.project_id {
+                    return Err("Project changed; keep the draft and try again.".into());
+                }
+                self.set_creation_draft(text).map_err(|e| e.to_string())
+            }
             Command::Snapshot {} | Command::Shutdown {} => Ok(()),
             Command::SetAppearance { appearance } => self
                 .set_appearance(appearance)
@@ -174,11 +213,18 @@ impl Engine {
             Command::GoForward {} => self.navigate(false).map_err(|e| e.to_string()),
             Command::SelectMod { mod_id } => {
                 self.require_no_confirmation()?;
+                let project_id = self
+                    .store
+                    .mod_project(mod_id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("Codemod no longer exists.")?;
+                self.select_project(project_id, Some(mod_id))?;
                 let index = self
                     .mods
                     .iter()
                     .position(|m| m.id == mod_id)
                     .ok_or("Codemod no longer exists.")?;
+                self.expanded_project = Some(project_id);
                 self.select_mod(index).map_err(|e| e.to_string())
             }
             Command::NewMod { description } => {

@@ -3,7 +3,6 @@
   "protocol_version": 1,
   "request_id": 7,
   "snapshot": {
-    "appearance": "system",
     "actions": [
       {
         "id": "retry_task",
@@ -202,6 +201,8 @@
       ],
       "workers": []
     },
+    "appearance": "system",
+    "creation_draft": "",
     "detail": "0 resolved · 1 remaining · 1 new · 1/2 tasks finished",
     "dialog": {
       "body": "Delete “Add native controls”, its conversation, queued instructions and local working folder?",
@@ -215,6 +216,7 @@
     },
     "error": "Preserve the native composer draft.",
     "evidence": "Checks · 0 passed · 1 failed · 0 not run · Review outdated · GitHub PR · 1 feedback item to review",
+    "expanded_project": 1,
     "mods": [
       {
         "closed": false,
@@ -251,6 +253,26 @@
     },
     "phase": "needs_you",
     "project": "/example/project",
+    "project_id": 1,
+    "projects": [
+      {
+        "id": 1,
+        "mods": [
+          {
+            "closed": false,
+            "id": 1,
+            "name": "Add native controls"
+          },
+          {
+            "closed": false,
+            "id": 2,
+            "name": "New codemod"
+          }
+        ],
+        "name": "project",
+        "path": "/example/project"
+      }
+    ],
     "status": "Task 2 needs attention",
     "workspace_views": [
       "conversation",

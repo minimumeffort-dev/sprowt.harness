@@ -9,6 +9,7 @@ fn add_other_mod(app: &mut App, root: &std::path::Path) -> i64 {
     code_mod.git_root = Some(root.to_path_buf());
     let id = code_mod.id;
     app.engine.mods.push(code_mod);
+    app.projects = app.store.projects().unwrap();
     id
 }
 
@@ -37,7 +38,7 @@ fn background_git_failure_stays_with_its_codemod_when_switching() {
     assert!(!active.contains("Other publication failed"), "{active}");
     assert_eq!(app.input.lines(), ["keep this draft"]);
 
-    app.engine.view = View::Mods(1);
+    app.engine.view = View::Mods(2);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     let other = rows(&screen(&mut app, 120, 36)).join("\n");
     assert_eq!(
@@ -46,11 +47,11 @@ fn background_git_failure_stays_with_its_codemod_when_switching() {
     );
     assert!(other.contains("Other publication failed"), "{other}");
 
-    app.engine.view = View::Mods(0);
+    app.engine.view = View::Mods(1);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert!(app.worker_error().is_none());
     assert_eq!(app.input.lines(), ["keep this draft"]);
-    app.engine.view = View::Mods(1);
+    app.engine.view = View::Mods(2);
     key(&mut app, KeyCode::Enter, KeyModifiers::NONE);
     assert_eq!(
         app.worker_error(),

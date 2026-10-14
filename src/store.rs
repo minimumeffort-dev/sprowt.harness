@@ -121,6 +121,9 @@ pub struct ProjectState {
     pub mods: Vec<CodeMod>,
 }
 
+mod projects;
+pub use projects::ProjectSummary;
+
 pub struct Store(pub(crate) Connection);
 
 impl Store {
@@ -161,6 +164,10 @@ impl Store {
                  id INTEGER PRIMARY KEY,
                  path TEXT NOT NULL UNIQUE,
                  active_mod_id INTEGER REFERENCES code_mods(id)
+             );
+             CREATE TABLE IF NOT EXISTS project_drafts (
+                 project_id INTEGER PRIMARY KEY REFERENCES projects(id),
+                 text TEXT NOT NULL DEFAULT ''
              );
              CREATE TABLE IF NOT EXISTS code_mods (
                  id INTEGER PRIMARY KEY,
@@ -513,6 +520,10 @@ impl Store {
             params![project_id, title, name],
         )?;
         let id = transaction.last_insert_rowid();
+        transaction.execute(
+            "DELETE FROM project_drafts WHERE project_id=?1",
+            [project_id],
+        )?;
         transaction.execute(
             "UPDATE projects SET active_mod_id = ?1 WHERE id = ?2",
             params![id, project_id],

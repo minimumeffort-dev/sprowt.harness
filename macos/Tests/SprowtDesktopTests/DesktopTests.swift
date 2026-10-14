@@ -4,8 +4,8 @@ import SwiftUI
 import Testing
 @testable import SprowtDesktop
 
-private let snapshotJSON = #"""
-{"appearance":"system","project":"/tmp/project","navigation":{"destination":{"kind":"codemod","mod_id":1},"can_go_back":false,"can_go_forward":false},"phase":"building","mods":[{"id":1,"name":"Example","closed":false,"status":"Building","workers":[]}],"active_mod":{"id":1,"name":"Example","description":"Change the CLI","closed":false,"user_paused":false,"draft":"Saved draft","messages":[{"role":"user","body":"Change the CLI","model":null,"effort":null,"author":"user"},{"role":"planner","body":"Ready","model":"codex","effort":"high","author":"Codex · planner"}],"history":[],"queue":[{"id":7,"body":"Keep tests"}],"steering":["Preserve the interface"],"plan":{"status":"ready","summary":"One task","tasks":[{"id":"implement_cli","title":"Change command","outcome":"CLI works","depends_on":["design"],"status":"pending","detail":"Ready","files":["src/main.rs"],"checks":["cargo test"],"run_id":12,"identity":"codex executor","source":"task:12:attempt:1","error":null,"latest":null,"results":[],"checks_label":"Checks","completed":false,"preparation":null,"actions":[]}]},"checks":[{"id":"task:12:check:0","task_id":"implement_cli","kind":"check","label":"cargo test","status":"passed","output":"3 passed"}],"findings":[{"id":"F1","title":"Handle EOF","detail":"Keep draft","status":"open","imported":false}],"pr_feedback":[{"id":"thread:30","title":"src/main.rs:42 · rev","detail":"This drops the error.","status":"unresolved thread","imported":false}],"pr_feedback_error":null,"workers":["codex executor running"],"worker_details":[{"id":4,"provider":"codex","identity":"codex executor","role":"executor","task_id":"implement_cli","state":"running","activity":"Running cargo test"}],"timings":""},"status":"Ready","detail":"Run plan","evidence":"3 checks","error":null,"actions":[{"id":"retry_task","label":"Retry task","task_id":12}],"dialog":null,"workspace_views":["conversation","changes","checks","findings","agents"]}
+let snapshotJSON = #"""
+{"appearance":"system","project":"/tmp/project","project_id":1,"projects":[{"id":1,"path":"/tmp/project","name":"project","mods":[{"id":1,"name":"Example","closed":false}]}],"expanded_project":1,"creation_draft":"","navigation":{"destination":{"kind":"codemod","mod_id":1},"can_go_back":false,"can_go_forward":false},"phase":"building","mods":[{"id":1,"name":"Example","closed":false,"status":"Building","workers":[]}],"active_mod":{"id":1,"name":"Example","description":"Change the CLI","closed":false,"user_paused":false,"draft":"Saved draft","messages":[{"role":"user","body":"Change the CLI","model":null,"effort":null,"author":"user"},{"role":"planner","body":"Ready","model":"codex","effort":"high","author":"Codex · planner"}],"history":[],"queue":[{"id":7,"body":"Keep tests"}],"steering":["Preserve the interface"],"plan":{"status":"ready","summary":"One task","tasks":[{"id":"implement_cli","title":"Change command","outcome":"CLI works","depends_on":["design"],"status":"pending","detail":"Ready","files":["src/main.rs"],"checks":["cargo test"],"run_id":12,"identity":"codex executor","source":"task:12:attempt:1","error":null,"latest":null,"results":[],"checks_label":"Checks","completed":false,"preparation":null,"actions":[]}]},"checks":[{"id":"task:12:check:0","task_id":"implement_cli","kind":"check","label":"cargo test","status":"passed","output":"3 passed"}],"findings":[{"id":"F1","title":"Handle EOF","detail":"Keep draft","status":"open","imported":false}],"pr_feedback":[{"id":"thread:30","title":"src/main.rs:42 · rev","detail":"This drops the error.","status":"unresolved thread","imported":false}],"pr_feedback_error":null,"workers":["codex executor running"],"worker_details":[{"id":4,"provider":"codex","identity":"codex executor","role":"executor","task_id":"implement_cli","state":"running","activity":"Running cargo test"}],"timings":""},"status":"Ready","detail":"Run plan","evidence":"3 checks","error":null,"actions":[{"id":"retry_task","label":"Retry task","task_id":12}],"dialog":null,"workspace_views":["conversation","changes","checks","findings","agents"]}
 """#
 
 @Test func decodesGoldenFixtureProducedByRust() throws {
@@ -53,6 +53,7 @@ private let snapshotJSON = #"""
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'set_creation_draft': snapshot['creation_draft'] = request['command']['text']
         command = request['command']
         kind = command['type']
         with open(sys.argv[0] + '.commands', 'a') as f: f.write(json.dumps(command) + '\n')
@@ -292,6 +293,7 @@ private let snapshotJSON = #"""
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'set_creation_draft': snapshot['creation_draft'] = request['command']['text']
         if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         command = request['command']
         kind = command['type']
@@ -371,6 +373,7 @@ private let snapshotJSON = #"""
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'set_creation_draft': snapshot['creation_draft'] = request['command']['text']
         if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         respond(request['id'])
     """, at: executable)
@@ -393,18 +396,18 @@ private let snapshotJSON = #"""
     await withCheckedContinuation { continuation in session.close { continuation.resume() } }
 }
 
-private func temporaryDirectory() throws -> URL {
+func temporaryDirectory() throws -> URL {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("sprowt-desktop-\(UUID().uuidString)")
     try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
     return url
 }
 
-private func installExecutable(_ source: String, at url: URL) throws {
+func installExecutable(_ source: String, at url: URL) throws {
     try source.write(to: url, atomically: true, encoding: .utf8)
     try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: url.path)
 }
 
-@MainActor private func waitUntil(line: UInt = #line, _ condition: () -> Bool) async throws {
+@MainActor func waitUntil(line: UInt = #line, _ condition: () -> Bool) async throws {
     let deadline = ContinuousClock.now + .seconds(8)
     while !condition() {
         if ContinuousClock.now > deadline {
@@ -505,6 +508,7 @@ private func installExecutable(_ source: String, at url: URL) throws {
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'set_creation_draft': snapshot['creation_draft'] = request['command']['text']
         if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         if request['command']['type'] == 'cancel': snapshot['dialog'] = None
         respond(request['id'])
@@ -624,6 +628,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'set_creation_draft': snapshot['creation_draft'] = request['command']['text']
         if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         if request['command']['type'] == 'action':
             open(sys.argv[0] + '.entered', 'w').close()
@@ -673,6 +678,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'set_creation_draft': snapshot['creation_draft'] = request['command']['text']
         if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         if request['command']['type'] == 'set_draft':
             open(sys.argv[0] + '.entered', 'w').close()
@@ -734,6 +740,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     respond()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'set_creation_draft': snapshot['creation_draft'] = request['command']['text']
         if request['command']['type'] == 'begin_creation': snapshot['navigation']['destination'] = dict(kind='new_codemod')
         kind = request['command']['type']
         if kind == 'set_draft': snapshot['active_mod']['draft'] = request['command']['text']
@@ -805,6 +812,7 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     emit()
     for line in sys.stdin:
         request = json.loads(line)
+        if request['command']['type'] == 'set_creation_draft': snapshot['creation_draft'] = request['command']['text']
         command = request['command']
         error = None
         if command['type'] == 'set_draft':

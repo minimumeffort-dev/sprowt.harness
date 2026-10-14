@@ -41,6 +41,8 @@ SPROWT_APPEARANCE_BUFFERS=/tmp/sprowt-appearance-captures \
 
 **Expected:** light and dark text and JSON cell buffers at 40, 80 and 160 columns, with explicit foreground and background colors.
 
+Project navigation tests exercise the real engine commands, native draft bridge and terminal keys/clicks. They cover accordion expansion without navigation, cross-project draft restoration, stale history pruning and rejected switches.
+
 For native interface changes, [build the macOS bundle](macos.md#build-and-open) and exercise the changed flow in the app. The Rust and Swift protocol checks must agree before a shared boundary change is complete.
 
 To inspect CLI help without starting the interactive app:

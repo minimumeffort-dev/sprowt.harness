@@ -37,6 +37,10 @@ enum Appearance: String, Codable, CaseIterable, Sendable {
 struct Snapshot: Decodable, Sendable {
     let appearance: Appearance
     let project: String
+    let projectId: Int64
+    let projects: [ProjectSummary]
+    let expandedProject: Int64?
+    let creationDraft: String
     let navigation: NavigationState
     let workspaceViews: [WorkspaceTab]
     let phase: WorkflowPhase
@@ -69,6 +73,19 @@ struct NavigationState: Decodable, Sendable {
     let destination: NavigationDestination
     let canGoBack: Bool
     let canGoForward: Bool
+}
+
+struct ProjectSummary: Decodable, Identifiable, Sendable {
+    let id: Int64
+    let path: String
+    let name: String
+    let mods: [ProjectCodemod]
+}
+
+struct ProjectCodemod: Decodable, Identifiable, Sendable {
+    let id: Int64
+    let name: String
+    let closed: Bool
 }
 
 struct CodemodSummary: Decodable, Identifiable, Sendable {
@@ -234,6 +251,8 @@ struct Command: Encodable, Sendable {
     var slug: String?
     var create: Bool?
     var appearance: Appearance?
+    var projectId: Int64?
+    var path: String?
 }
 
 struct Request: Encodable, Sendable {

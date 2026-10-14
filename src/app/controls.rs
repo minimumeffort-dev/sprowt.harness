@@ -14,6 +14,8 @@ pub enum Control {
     Action(Action),
     MenuAction(Action),
     PickMod(usize),
+    ProjectNew(i64),
+    ProjectMenu(i64),
     Format,
     FormatItem(super::formatting::Format),
     Submit,
@@ -74,10 +76,18 @@ impl App {
                 }
             }
             Control::PickMod(index) => {
-                if matches!(self.engine.view, View::Mods(_)) && index <= self.picker_indices().len()
-                {
+                if matches!(self.engine.view, View::Mods(_)) && index < self.project_rows().len() {
+                    self.engine.view = View::Mods(index);
                     self.picker_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), index)?;
                 }
+            }
+            Control::ProjectNew(id) => {
+                self.project_command(crate::engine::api::Command::BeginProjectCreation {
+                    project_id: id,
+                })
+            }
+            Control::ProjectMenu(id) => {
+                self.project_picker = super::projects::PickerPanel::ProjectMenu(id);
             }
             Control::Format => self.open_formatting(),
             Control::FormatItem(format) => self.choose_format(format),

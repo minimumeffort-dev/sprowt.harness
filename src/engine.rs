@@ -23,6 +23,7 @@ mod navigation;
 mod ownership;
 mod poll;
 pub(crate) mod preparation;
+mod projects;
 mod review;
 mod snapshot;
 pub(crate) mod state;
@@ -62,6 +63,9 @@ pub enum View {
 }
 
 pub struct Engine {
+    pub(crate) projects: Vec<crate::store::ProjectSummary>,
+    pub(crate) expanded_project: Option<i64>,
+    project_navigation: BTreeMap<i64, navigation::Navigation>,
     pub(crate) appearance: crate::appearance::Appearance,
     pub(crate) network_requests: Vec<crate::network::Access>,
     pub(crate) muse: bool,
@@ -192,9 +196,12 @@ impl Engine {
             store.select_mod(state.id, state.mods[index].id)?;
         }
         let mut app = Self {
+            projects: store.projects()?,
+            expanded_project: Some(state.id),
+            project_navigation: BTreeMap::new(),
             appearance: store.appearance()?,
             composer: String::new(),
-            creation_draft: String::new(),
+            creation_draft: store.creation_draft(state.id)?,
             navigation: navigation::Navigation::new(active.map_or(
                 Destination::NewCodemod,
                 |index| Destination::Codemod {

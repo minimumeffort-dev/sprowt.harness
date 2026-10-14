@@ -458,12 +458,8 @@ impl Engine {
                         };
 
                         self.restore_input();
-                    } else if let View::Mods(focused) | View::DeleteMod(focused) = self.view {
-                        self.view = View::Mods(
-                            focused
-                                .saturating_sub(usize::from(index < focused))
-                                .min(self.mods.len()),
-                        );
+                    } else if matches!(self.view, View::DeleteMod(_)) {
+                        self.view = View::Mods(0);
                     }
                     self.notice = std::fs::remove_dir_all(root)
                         .err()

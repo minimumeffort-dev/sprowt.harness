@@ -4,7 +4,9 @@
 
 The harness saves work automatically in SQLite and private source checkpoints. Run from the same project root to restore its codemods, drafts, queue and history.
 
-The terminal and [macOS app](macos.md) use the same database. Only one controller can open a project at a time; close the active interface before switching. The project lock is released after worker cleanup on exit.
+The terminal and [macOS app](macos.md) use the same database. Only one controller can open a project at a time; close the active interface before switching. The project lock is released after worker cleanup on exit, or after a successful idle project switch. Switching requires current work to be paused and active Git or preparation jobs to finish.
+
+Unsent creation descriptions are saved separately per project. The project catalog lists previously opened folders; expansion is local to the running interface.
 
 The global [appearance preference](appearance.md) is also saved in this database and applies across projects.
 
