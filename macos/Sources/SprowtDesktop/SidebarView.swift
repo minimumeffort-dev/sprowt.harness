@@ -55,6 +55,7 @@ struct SidebarView: View {
                                 Spacer(minLength: 0)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.buttonStyle(WorkspaceButtonStyle(selected: selected)).disabled(!session.interactive)
+                            .accessibilityLabel("\(mod.name), \(mod.status)\(mod.workers.isEmpty ? "" : ", \(mod.workers.count) agents")")
                         if selected && !mod.workers.isEmpty {
                             VStack(alignment: .leading, spacing: 1) {
                                 ForEach(mod.workers) { worker in

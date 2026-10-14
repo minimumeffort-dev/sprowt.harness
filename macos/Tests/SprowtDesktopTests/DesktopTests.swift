@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 import Testing
 @testable import SprowtDesktop
 
@@ -588,6 +589,21 @@ private func decodeSnapshot(_ edit: (inout [String: Any]) -> Void = { _ in }) th
     #expect(task.hasCurrentFailure)
     #expect(task.results.first?.kind.caption == "Observed task checks")
     #expect(task.results.first?.output == "Observed command: exit 1")
+}
+
+@Test func themePaletteResolvesDifferentlyInDarkAppearance() {
+    func resolved(_ color: Color, dark: Bool) -> CGColor? {
+        var result: CGColor?
+        (dark ? NSAppearance(named: .darkAqua) : NSAppearance(named: .aqua))?.performAsCurrentDrawingAppearance {
+            result = NSColor(color).usingColorSpace(.sRGB)?.cgColor
+        }
+        return result
+    }
+    let light = resolved(Theme.paper, dark: false)
+    let dark = resolved(Theme.paper, dark: true)
+    #expect(light != nil && dark != nil && light != dark)
+    #expect(WorkflowPhase.needsYou.color != WorkflowPhase.building.color)
+    #expect(InspectorTab.allCases.map(\.rawValue) == ["Changes", "Checks", "Findings", "Activity"])
 }
 
 @Test func packagedFontResourcesResolveInsideTheAppWithoutBuildFallback() throws {

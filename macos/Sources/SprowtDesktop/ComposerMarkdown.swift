@@ -70,9 +70,9 @@ private final class MarkdownOrigin: NSObject {
 @MainActor
 enum ComposerMarkdown {
     private static let escapable = Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
-    static var baseFont: NSFont { NSFont(name: "Manrope", size: 14) ?? .systemFont(ofSize: 14) }
+    static var baseFont: NSFont { Theme.composerFont }
     static var attributes: [NSAttributedString.Key: Any] {
-        [.font: baseFont, .foregroundColor: NSColor(white: 0.09, alpha: 1), .composerInline: 0, .composerBlock: ""]
+        [.font: baseFont, .foregroundColor: Theme.nsText, .composerInline: 0, .composerBlock: ""]
     }
 
     static func decode(_ source: String) -> NSAttributedString {
@@ -156,9 +156,9 @@ enum ComposerMarkdown {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineSpacing = 4
             if marker(block) != nil { paragraph.headIndent = 18 }
-            text.addAttributes([.font: font, .paragraphStyle: paragraph, .foregroundColor: NSColor(white: 0.09, alpha: 1)], range: range)
+            text.addAttributes([.font: font, .paragraphStyle: paragraph, .foregroundColor: Theme.nsText], range: range)
             if bits & 4 != 0 || block.hasPrefix("code:") {
-                text.addAttribute(.backgroundColor, value: NSColor(white: 0.93, alpha: 1), range: range)
+                text.addAttribute(.backgroundColor, value: Theme.nsCodeBackground, range: range)
             } else {
                 text.removeAttribute(.backgroundColor, range: range)
             }

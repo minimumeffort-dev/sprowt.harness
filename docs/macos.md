@@ -47,7 +47,9 @@ The **Sprowt** menu at the top of the sidebar contains **Open project…** and t
 
 Use the title bar's sidebar button or the sidebar command in **View** to hide or show the sidebar. **⌃⌘S** works while the sidebar is hidden. Your codemod selection and composer drafts stay in place.
 
-Use the title bar's **Back** and **Forward** arrows, **View → Back / Forward**, or **⌘[** and **⌘]** to revisit codemods and unfinished creation. [Navigation history](codemods.md#create-and-manage-work) lasts for the current project session. Finish or dismiss an open inspection or confirmation before navigating.
+Use the title bar's **Back** and **Forward** arrows, **View → Back / Forward**, or **⌘[** and **⌘]** to revisit codemods and unfinished creation. [Navigation history](codemods.md#create-and-manage-work) lasts for the current project session. Inspections do not block navigation; confirmations still do.
+
+Press **⌘1**–**⌘4** to open the **Changes**, **Checks**, **Findings** and **Activity** side-pane tabs. The app follows your system appearance and text size in both light and dark mode, and status is always shown as text as well as color — blue while work runs, gold when Sprowt needs you, green when ready or published.
 
 Use the composer to answer a question or queue an instruction. Expand the attached queue to edit, reorder, remove or steer pending instructions. Save an edit before choosing **Steer**. These actions preserve the composer draft. Removing the last queued instruction closes the queue and returns focus to the composer. Steering without connected workers saves instructions as waiting for workers; it does not claim delivery.
 

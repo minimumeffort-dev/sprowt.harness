@@ -13,7 +13,6 @@ struct SprowtApp: App {
         Window("Sprowt", id: "main") {
             ContentView(session: session, sidebarVisible: $sidebarVisible)
                 .frame(minWidth: 900, minHeight: 650)
-                .preferredColorScheme(.light)
                 .task {
                     delegate.session = session
                     let arguments = ProcessInfo.processInfo.arguments
@@ -38,6 +37,12 @@ struct SprowtApp: App {
                     .keyboardShortcut("[").disabled(!session.canGoBack)
                 Button("Forward") { session.navigate(back: false) }
                     .keyboardShortcut("]").disabled(!session.canGoForward)
+                Divider()
+                ForEach(Array(InspectorTab.allCases.enumerated()), id: \.element.rawValue) { index, tab in
+                    Button(tab.rawValue) { session.workspace.show(tab, target: session.workspace.target) }
+                        .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")), modifiers: .command)
+                        .disabled(session.active == nil)
+                }
             }
             CommandGroup(replacing: .newItem) {
                 Button("New codemod") { session.beginCreation() }
