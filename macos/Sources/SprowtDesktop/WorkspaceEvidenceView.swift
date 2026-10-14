@@ -29,7 +29,8 @@ struct WorkspaceEvidenceView: View {
             } else {
                 panel(selectedTab)
             }
-        }.padding(Theme.inset).frame(maxWidth: .infinity, alignment: .leading)
+        }.padding(Theme.inset).frame(maxWidth: 790, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder private func panel(_ tab: WorkspaceTab) -> some View {
@@ -149,17 +150,17 @@ struct TaskInspectorView: View {
             MessageText(source: task.outcome)
             if !task.detail.isEmpty && task.detail != task.error { MessageText(source: task.detail) }
             if let error = task.error, !task.preparationOwnsError { EvidenceNotice(text: error) }
-            if let latest = task.latest { MessageView(message: latest) }
+            if let latest = task.latest { MessageView(message: latest, toggles: $session.workspace.messageToggles) }
             DisclosureGroup {
                 VStack(alignment: .leading, spacing: 18) {
                     if !task.identity.isEmpty {
-                        Text(task.identity).font(Theme.font(13, weight: .medium)).foregroundStyle(Theme.muted)
+                        Text(task.identity).font(Theme.font(13, weight: .medium)).foregroundStyle(Theme.ink)
                     }
                     if let source = task.source { SourceReference(source: source) }
                     if !task.files.isEmpty {
                         VStack(alignment: .leading, spacing: 10) {
                             evidenceHeading("File scope", count: task.files.count == 1 ? "1 file" : "\(task.files.count) files")
-                            CodeText(text: task.files.joined(separator: "\n"))
+                            FileScopeView(files: task.files)
                         }
                     }
                     if !task.checks.isEmpty {
@@ -194,6 +195,31 @@ struct TaskInspectorView: View {
             Text(title).font(Theme.font(13, weight: .semibold)).foregroundStyle(Theme.ink)
             Text(count).font(Theme.font(12)).foregroundStyle(Theme.muted)
         }
+    }
+}
+
+private struct FileScopeView: View {
+    let files: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            ForEach(Array(files.enumerated()), id: \.offset) { _, path in
+                Text(styledPath(path)).frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }.font(.system(size: Theme.scaledSize(12), design: .monospaced))
+            .lineSpacing(4).textSelection(.enabled).padding(.vertical, 12).padding(.horizontal, 14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.codeBackground, in: RoundedRectangle(cornerRadius: Theme.radius))
+    }
+
+    private func styledPath(_ path: String) -> AttributedString {
+        var result = AttributedString(path)
+        result.foregroundColor = Theme.ink
+        if let slash = path.lastIndex(of: "/"),
+           let prefix = result.range(of: String(path[...slash])) {
+            result[prefix].foregroundColor = Theme.muted
+        }
+        return result
     }
 }
 

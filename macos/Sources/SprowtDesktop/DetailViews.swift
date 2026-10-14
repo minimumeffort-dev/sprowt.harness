@@ -6,13 +6,13 @@ struct FeedView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            ForEach(Array(mod.messages.enumerated()), id: \.offset) { _, message in MessageView(message: message) }
+            ForEach(mod.messages, id: \.content.id) { message in MessageView(message: message, toggles: $session.workspace.messageToggles) }
             if let plan = mod.plan, !plan.tasks.isEmpty {
                 TaskListView(tasks: plan.tasks, selected: session.workspace.target) { task in
                     session.workspace.show(.conversation, target: .task(task.id))
                 }
             }
-            SavedHistoryView(mod: mod)
+            SavedHistoryView(mod: mod, toggles: $session.workspace.messageToggles)
         }
     }
 }
@@ -53,12 +53,13 @@ struct TaskListView: View {
 
 struct SavedHistoryView: View {
     let mod: CodemodDetail
+    @Binding var toggles: Set<String>
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             if !mod.history.isEmpty {
                 DisclosureGroup("Saved history") {
                     VStack(alignment: .leading, spacing: 24) {
-                        ForEach(Array(mod.history.enumerated()), id: \.offset) { _, message in MessageView(message: message) }
+                        ForEach(mod.history, id: \.content.id) { message in MessageView(message: message, toggles: $toggles) }
                     }.padding(.top, 16)
                 }.font(Theme.font(11)).foregroundStyle(Theme.muted)
             }
@@ -68,9 +69,15 @@ struct SavedHistoryView: View {
 
 struct MessageView: View {
     let message: ConversationMessage
+    @Binding var toggles: Set<String>
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if message.role != "user" {
+            if message.role == "user" {
+                HStack(alignment: .firstTextBaseline, spacing: 9) {
+                    Text(">").font(.system(size: Theme.scaledSize(14), weight: .medium, design: .monospaced)).foregroundStyle(Theme.accent)
+                    Text("You").font(Theme.font(12)).foregroundStyle(Theme.muted)
+                }
+            } else {
                 HStack(alignment: .firstTextBaseline, spacing: 7) {
                     Image(systemName: "leaf").font(.system(size: 12)).frame(width: 21, height: 21)
                         .background(Theme.accent.opacity(0.16), in: RoundedRectangle(cornerRadius: 5))
@@ -79,13 +86,13 @@ struct MessageView: View {
                         .font(Theme.font(11, weight: .medium)).foregroundStyle(Theme.muted)
                 }
             }
-            HStack(alignment: .firstTextBaseline, spacing: 7) {
-                if message.role == "user" { Text(">").font(Theme.font(14)).foregroundStyle(Theme.ink) }
-                MessageText(source: message.body)
-            }
-        }.padding(message.role == "user" ? 12 : 0)
+            MessagePresentation(content: message.content, toggles: $toggles)
+        }.frame(maxWidth: 72 * ("0" as NSString).size(withAttributes: [.font: Theme.composerFont]).width, alignment: .leading)
+            .padding(.horizontal, message.role == "user" ? 16 : 0)
+            .padding(.vertical, message.role == "user" ? 14 : 0)
             .background(message.role == "user" ? Theme.panel : .clear,
                         in: RoundedRectangle(cornerRadius: Theme.radius))
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

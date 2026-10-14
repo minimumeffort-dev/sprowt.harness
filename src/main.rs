@@ -12,6 +12,7 @@ mod execution;
 mod git_mod;
 mod git_sync;
 mod mailbox;
+mod message_content;
 mod mod_sync;
 mod muse;
 mod network;

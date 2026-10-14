@@ -10,6 +10,7 @@ struct WorkspaceSelection: Equatable {
     private(set) var tab = WorkspaceTab.conversation
     private(set) var target: Target?
     var queue = Queue.closed
+    var messageToggles: Set<String> = []
 
     mutating func show(_ tab: WorkspaceTab, target: Target? = nil) {
         self.tab = tab

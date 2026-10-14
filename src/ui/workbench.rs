@@ -83,15 +83,6 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         x += width + 1;
     }
-    frame.render_widget(
-        Line::from(if app.workspace.focus == Focus::Composer {
-            "tab Explore"
-        } else {
-            "tab Write · ↑↓ Scroll"
-        })
-        .fg(KEY_HINT),
-        hint,
-    );
     app.workspace.inspector.select(app.workspace.selected);
     if app.workspace.selected.is_some()
         && !app
@@ -114,6 +105,37 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     let document = document(app, app.workspace.selected, body.width.saturating_sub(2));
+    app.workspace.message_controls = document
+        .controls
+        .iter()
+        .filter_map(|(row, control)| {
+            if let Control::Message(message, segment) = control {
+                Some((*message, *segment, *row))
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !app
+        .workspace
+        .message_controls
+        .iter()
+        .any(|(message, segment, _)| app.workspace.message_cursor == Some((*message, *segment)))
+    {
+        app.workspace.message_cursor = None;
+    }
+    let hint_text = if app.workspace.focus == Focus::Composer {
+        "tab Explore"
+    } else if tab == WorkspaceView::Conversation && !app.workspace.message_controls.is_empty() {
+        if hint.width < 60 {
+            "tab Write · [ ] Details · ↵ Toggle"
+        } else {
+            "tab Write · ↑↓ Scroll · [ ] Message details · ↵ Toggle"
+        }
+    } else {
+        "tab Write · ↑↓ Scroll"
+    };
+    frame.render_widget(Line::from(hint_text).fg(KEY_HINT), hint);
     let (offset, maximum) = draw_text(
         frame,
         Paragraph::new(document.lines),

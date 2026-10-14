@@ -35,6 +35,14 @@ The [macOS creation editor](macos.md#work-on-a-project) displays the supported f
 
 See [Git workflow](git-workflow.md) for starting files, publication and checkpoint recovery. After a PR is merged or closed, create a new codemod from the updated project.
 
+## Read long messages
+
+Conversation, saved history and the workspace's latest task update keep prose in a readable column. Long prose starts with a four-line preview; **Show full message** reveals it and **Show less** folds it again.
+
+Valid JSON objects and arrays on their own lines appear as a separate **JSON** row, including pasted JSON without Markdown fences. The row shows its line count and size. **Show source** reveals the complete source with its original indentation and syntax colors; **Hide source** folds it. Other fenced code keeps its language label. Short code starts open; long code starts folded. Malformed JSON stays literal.
+
+In the terminal, press **Tab** to explore Conversation, then **[ / ]** to select a message control and **Enter** to toggle it, or click the control. The app uses standard buttons with the same actions. Expanding prose and source are independent. These controls only affect the current interface; they preserve saved message text, your draft and running work. Expansion follows a message as it moves into saved history and resets when you switch codemods.
+
 ## Remove a project from the sidebar
 
 Open the project's **…** menu in the app and choose **Remove from sidebar**. In the terminal, open **Ctrl+P**, select the project, and press **.**, then **X**.

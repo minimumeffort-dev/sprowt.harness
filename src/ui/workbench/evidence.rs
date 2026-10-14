@@ -43,6 +43,107 @@ impl Document {
                 .bg(if selected { SELECTED } else { CONTROL }),
         );
     }
+
+    fn message(
+        &mut self,
+        app: &App,
+        message: &crate::store::Message,
+        content: &crate::message_content::MessageContent,
+    ) {
+        use crate::message_content::Content;
+        let start = self.lines.len();
+        let width = self.width;
+        self.width = width.min(76);
+        if message.role == "user" {
+            self.lines
+                .push(Line::from(vec!["> ".fg(ACCENT), "You".fg(MUTED)]));
+        } else {
+            self.heading(&message.author());
+        }
+        for (index, segment) in content.segments.iter().enumerate() {
+            if index > 0 {
+                self.gap();
+            }
+            let key = (content.key, segment.id);
+            let collapsed =
+                segment.initially_collapsed() != app.workspace.message_toggles.contains(&key);
+            let selected = app.workspace.message_cursor == Some(key)
+                && app.workspace.focus == crate::app::workspace_navigation::Focus::Content;
+            match &segment.content {
+                Content::Prose { text, preview } => {
+                    if collapsed {
+                        let mut lines =
+                            rich_text::lines(preview.as_ref().unwrap_or(text), self.width);
+                        lines.truncate(4);
+                        if let Some(last) = lines.last_mut() {
+                            *last = Line::from(format!(
+                                "{}…",
+                                fit_name(&last.to_string(), self.width.saturating_sub(1))
+                            ));
+                        }
+                        self.lines.extend(lines);
+                    } else {
+                        self.text(text);
+                    }
+                    if preview.is_some() {
+                        self.control(
+                            if collapsed {
+                                "Show full message"
+                            } else {
+                                "Show less"
+                            }
+                            .into(),
+                            Control::Message(key.0, key.1),
+                            selected,
+                        );
+                        if !selected {
+                            self.lines.last_mut().unwrap().style.bg = None;
+                        }
+                    }
+                }
+                Content::Code {
+                    source,
+                    summary,
+                    tokens,
+                    ..
+                } => {
+                    self.lines
+                        .push(Line::from("─".repeat(usize::from(self.width))).fg(BORDER));
+                    self.control(
+                        format!(
+                            "{} {summary} · {}",
+                            if collapsed { "▸" } else { "▾" },
+                            if collapsed {
+                                "Show source"
+                            } else {
+                                "Hide source"
+                            }
+                        ),
+                        Control::Message(key.0, key.1),
+                        selected,
+                    );
+                    if !selected {
+                        self.lines.last_mut().unwrap().style.bg = None;
+                    }
+                    if !collapsed {
+                        self.lines.extend(if tokens.is_empty() {
+                            rich_text::code(source, self.width)
+                        } else {
+                            rich_text::tokens(tokens, self.width)
+                        });
+                    }
+                }
+            }
+        }
+        if message.role == "user" {
+            for line in self.lines[start..].iter_mut() {
+                if line.style.bg.is_none() {
+                    line.style.bg = Some(USER_BACKGROUND);
+                }
+            }
+        }
+        self.width = width;
+    }
 }
 
 pub(super) fn document(app: &App, item: Option<Key>, width: u16) -> Document {
@@ -76,29 +177,14 @@ pub(super) fn document(app: &App, item: Option<Key>, width: u16) -> Document {
 
 fn conversation(app: &App, d: &mut Document) {
     let Some(m) = app.current_mod() else { return };
-    for message in m
+    let contents = crate::message_content::messages(&m.messages);
+    for (message, content) in m
         .messages
         .iter()
-        .filter(|message| m.shows_conversation_message(message))
+        .zip(&contents)
+        .filter(|(message, _)| m.shows_conversation_message(message))
     {
-        if message.role == "user" {
-            d.lines.extend(
-                rich_text::lines(&message.body, d.width.saturating_sub(2))
-                    .into_iter()
-                    .enumerate()
-                    .map(|(index, mut line)| {
-                        line.spans
-                            .insert(0, Span::raw(if index == 0 { "> " } else { "  " }));
-                        if line.style.bg.is_none() {
-                            line = line.bg(USER_BACKGROUND);
-                        }
-                        line
-                    }),
-            );
-        } else {
-            d.heading(&message.author());
-            d.text(&message.body);
-        }
+        d.message(app, message, content);
         d.gap();
     }
     if let Some(question) = m.question() {
@@ -169,13 +255,13 @@ fn conversation(app: &App, d: &mut Document) {
         );
         if app.workspace.history {
             d.gap();
-            for message in m
+            for (message, content) in m
                 .messages
                 .iter()
-                .filter(|message| !m.shows_conversation_message(message))
+                .zip(&contents)
+                .filter(|(message, _)| !m.shows_conversation_message(message))
             {
-                d.heading(&message.author());
-                d.text(&message.body);
+                d.message(app, message, content);
                 d.gap();
             }
         }
@@ -260,8 +346,7 @@ fn summary(app: &App, key: Key, d: &mut Document) {
         d.gap();
         if !task.files.is_empty() {
             d.heading("File scope");
-            d.lines
-                .extend(rich_text::code(&task.files.join("\n"), d.width));
+            d.lines.extend(rich_text::paths(&task.files, d.width));
             d.gap();
         }
         d.heading("Required checks");
@@ -297,7 +382,24 @@ fn task(app: &App, id: i64, d: &mut Document) {
     let Some(task) = app.inspect_task(id) else {
         return;
     };
-    d.lines.extend(tasks::task_lines(app, id, d.width));
+    d.lines.extend(tasks::task_lines(app, id, d.width, false));
+    if let Some(latest) = task.latest {
+        let messages = &app.current_mod().unwrap().messages;
+        if let Some(index) = messages
+            .iter()
+            .position(|message| std::ptr::eq(message, latest))
+        {
+            d.heading(tasks::latest_heading(latest, task.check_origin));
+            d.message(
+                app,
+                latest,
+                &crate::message_content::messages(messages)[index]
+                    .clone()
+                    .task_report(latest),
+            );
+            d.gap();
+        }
+    }
     if let Some(feedback) = task.run.review_feedback.as_ref() {
         d.gap();
         d.lines.extend(findings::saved_lines(feedback, d.width));

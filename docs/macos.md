@@ -29,9 +29,11 @@ The main area switches between **Conversation**, **Changes**, **Checks**, **Find
 
 Select a plan task or an agent to inspect its current attempt, model, files and results. Use **Back to Conversation** or **Back to Agents** to return. Selecting a main tab shows that view for the whole codemod.
 
-Expand **Files, checks and worker** for the file scope and individual required checks. **Source reference** reveals the complete saved identifier. Preparation stays aligned with the task details; pending network access is amber, and failures are red. A current preparation failure opens its evidence automatically. The same failure is shown once in task details, with the full saved output available under each check.
+Expand **Files, checks and worker** for the file scope and individual required checks. File names stand out from muted directories; the full paths stay intact. Evidence uses a bounded, left-aligned reading width. **Source reference** reveals the complete saved identifier. Preparation stays aligned with the task details; pending network access is amber, and failures are red. A current preparation failure opens its evidence automatically. The same failure is shown once in task details, with the full saved output available under each check.
 
 Messages distinguish headings, emphasis, lists, inline code and fenced code. Unsupported Markdown remains literal. Paths and saved command output use a monospace background; output preserves its original text and indentation.
+
+[Long messages](codemods.md#read-long-messages) show compact prose and separate source disclosures. **Show full message** and **Show source** expand independently without changing the saved message or composer draft. The Rust snapshot supplies the same prose/code segments, stable message identities and JSON syntax tokens used by the CLI; the app keeps expansion state locally.
 
 In **Changes**, choose the offered inspection action to read the actual diff. Keep typing, switch tabs or codemods, and choose **Done** when you finish the inspection. Starting a new codemod asks you to finish an inspection first, since it replaces the workspace. Opening evidence never starts a worker.
 

@@ -58,6 +58,9 @@ pub struct Workspace {
     pub inspector: Inspector,
     pub selected: Option<Key>,
     pub history: bool,
+    pub message_toggles: std::collections::HashSet<(u128, usize)>,
+    pub message_cursor: Option<(u128, usize)>,
+    pub message_controls: Vec<(u128, usize, usize)>,
 }
 
 impl Workspace {
@@ -121,6 +124,28 @@ impl App {
                 self.activate_control(Control::History)?
             }
             KeyCode::Char('e') => self.show_evidence = !self.show_evidence,
+            KeyCode::Char('[' | ']')
+                if self.workspace.inspector.tab == WorkspaceView::Conversation =>
+            {
+                let controls = &self.workspace.message_controls;
+                let current = controls.iter().position(|(message, segment, _)| {
+                    self.workspace.message_cursor == Some((*message, *segment))
+                });
+                let next = match (current, key.code) {
+                    (Some(index), KeyCode::Char('[')) => index.saturating_sub(1),
+                    (Some(index), _) => (index + 1).min(controls.len().saturating_sub(1)),
+                    _ => 0,
+                };
+                if let Some(&(message, segment, row)) = controls.get(next) {
+                    self.workspace.message_cursor = Some((message, segment));
+                    let inspector = &mut self.workspace.inspector;
+                    if row < usize::from(inspector.offset)
+                        || row >= usize::from(inspector.offset) + usize::from(inspector.area.height)
+                    {
+                        inspector.offset = (row as u16).min(inspector.maximum);
+                    }
+                }
+            }
             KeyCode::Char('[' | ']') if self.workspace.inspector.tab == WorkspaceView::Findings => {
                 let ids = self.review_finding_ids();
                 let index = ids
@@ -152,6 +177,19 @@ impl App {
                 self.activate_control(Control::Back)?
             }
             KeyCode::Esc => self.workspace.focus = Focus::Composer,
+            KeyCode::Enter
+                if self.workspace.inspector.tab == WorkspaceView::Conversation
+                    && self
+                        .workspace
+                        .message_controls
+                        .iter()
+                        .any(|(message, segment, _)| {
+                            self.workspace.message_cursor == Some((*message, *segment))
+                        }) =>
+            {
+                let (message, segment) = self.workspace.message_cursor.unwrap();
+                self.activate_control(Control::Message(message, segment))?;
+            }
             KeyCode::Enter => self.open_workspace_details()?,
             _ => {
                 self.workspace.focus = Focus::Composer;

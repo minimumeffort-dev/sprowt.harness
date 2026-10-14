@@ -63,6 +63,7 @@ pub struct ModDetail {
 }
 #[derive(Serialize)]
 pub struct Message {
+    content: crate::message_content::MessageContent,
     role: String,
     author: String,
     body: String,
@@ -165,9 +166,13 @@ impl Dialog {
     }
 }
 
-impl From<&crate::store::Message> for Message {
-    fn from(message: &crate::store::Message) -> Self {
+impl Message {
+    fn new(
+        message: &crate::store::Message,
+        content: crate::message_content::MessageContent,
+    ) -> Self {
         Self {
+            content,
             role: message.role.clone(),
             author: message.author(),
             body: message.body.clone(),
@@ -414,157 +419,181 @@ impl Engine {
                     workers: self.worker_summaries(m),
                 })
                 .collect(),
-            active_mod: self.current_mod().map(|m| ModDetail {
-                id: m.id,
-                name: m.name.clone(),
-                description: m.description.clone(),
-                closed: m.closed,
-                user_paused: m.user_paused,
-                draft: m.draft.clone(),
-                messages: m
-                    .messages
-                    .iter()
-                    .filter(|v| m.shows_conversation_message(v))
-                    .map(Message::from)
-                    .chain(
-                        m.coordination
-                            .iter()
-                            .filter(|v| m.needs_answer(v))
-                            .map(|v| Message {
-                                role: "question".into(),
-                                author: "question".into(),
-                                body: format!("{}: {}", v.from_task, v.body),
-                                model: None,
-                                effort: None,
-                            }),
-                    )
-                    .collect(),
-                history: m
-                    .messages
-                    .iter()
-                    .filter(|v| !m.shows_conversation_message(v))
-                    .map(Message::from)
-                    .collect(),
-                queue: m
-                    .queue
-                    .iter()
-                    .map(|v| Queued {
-                        id: v.id,
-                        body: v.body.clone(),
-                    })
-                    .collect(),
-                steering: m.steering.clone(),
-                plan: m.planning.as_ref().map(|p| Plan {
-                    status: p.status.clone(),
-                    summary: p
-                        .plan
-                        .as_ref()
-                        .map(|p| p.summary.clone())
-                        .unwrap_or_default(),
-                    tasks: p
-                        .plan
+            active_mod: self.current_mod().map(|m| {
+                let contents = crate::message_content::messages(&m.messages);
+                ModDetail {
+                    id: m.id,
+                    name: m.name.clone(),
+                    description: m.description.clone(),
+                    closed: m.closed,
+                    user_paused: m.user_paused,
+                    draft: m.draft.clone(),
+                    messages: m
+                        .messages
                         .iter()
-                        .flat_map(|p| &p.tasks)
-                        .map(|task| {
-                            let run = m
-                                .execution
-                                .as_ref()
-                                .and_then(|e| e.tasks.iter().find(|r| r.task_id == task.id));
-                            let inspection = run.and_then(|r| self.inspect_task(r.id));
-                            Task {
-                                id: task.id.clone(),
-                                title: task.title.clone(),
-                                outcome: task.outcome.clone(),
-                                depends_on: task.depends_on.clone(),
-                                status: inspection
-                                    .as_ref()
-                                    .map(|i| i.state.into())
-                                    .or_else(|| run.map(|r| r.status.clone()))
-                                    .unwrap_or_else(|| "pending".into()),
-                                detail: inspection
-                                    .as_ref()
-                                    .map(|i| i.note.clone())
-                                    .or_else(|| run.map(|r| r.summary.clone()))
-                                    .unwrap_or_default(),
-                                files: task.files.clone(),
-                                checks: task.checks.clone(),
-                                run_id: run.map(|r| r.id),
-                                identity: inspection
-                                    .as_ref()
-                                    .map(|i| i.identity.clone())
-                                    .unwrap_or_else(|| "Worker not assigned".into()),
-                                source: run.map(|r| r.source.clone()),
-                                error: inspection.as_ref().and_then(|i| i.error.map(Into::into)),
-                                latest: inspection
-                                    .as_ref()
-                                    .and_then(|i| i.latest.map(Message::from)),
-                                results: inspection
-                                    .as_ref()
-                                    .map(|i| self.task_results(m, i))
-                                    .unwrap_or_default(),
-                                checks_label: inspection
-                                    .as_ref()
-                                    .map_or("Checks", |i| i.check_origin.label()),
-                                completed: run.is_some_and(|r| r.status == "done"),
-                                preparation: run.and_then(|r| self.preparation_evidence(r.id)),
-                                actions: run
-                                    .into_iter()
-                                    .flat_map(|r| self.task_desktop_actions(r.id))
-                                    .filter_map(|a| {
-                                        a.action.desktop_id().map(|(id, task_id)| AvailableAction {
-                                            id,
-                                            task_id,
-                                            label: a.label,
-                                        })
-                                    })
-                                    .collect(),
-                            }
+                        .zip(&contents)
+                        .filter(|(v, _)| m.shows_conversation_message(v))
+                        .map(|(v, content)| Message::new(v, content.clone()))
+                        .chain(
+                            m.coordination
+                                .iter()
+                                .filter(|v| m.needs_answer(v))
+                                .map(|v| Message {
+                                    content: crate::message_content::MessageContent::new(
+                                        &format!("{}: {}", v.from_task, v.body),
+                                        format!("question:{}", v.id).as_bytes(),
+                                        0,
+                                    ),
+                                    role: "question".into(),
+                                    author: "question".into(),
+                                    body: format!("{}: {}", v.from_task, v.body),
+                                    model: None,
+                                    effort: None,
+                                }),
+                        )
+                        .collect(),
+                    history: m
+                        .messages
+                        .iter()
+                        .zip(&contents)
+                        .filter(|(v, _)| !m.shows_conversation_message(v))
+                        .map(|(v, content)| Message::new(v, content.clone()))
+                        .collect(),
+                    queue: m
+                        .queue
+                        .iter()
+                        .map(|v| Queued {
+                            id: v.id,
+                            body: v.body.clone(),
                         })
                         .collect(),
-                }),
-                checks: self.snapshot_checks(m),
-                findings: m
-                    .agent_review
-                    .iter()
-                    .flat_map(|r| &r.issues)
-                    .map(|f| Finding {
-                        id: f.id.to_string(),
-                        title: f.finding.title.clone(),
-                        detail: format!(
-                            "{}:{}\n{}\n{}",
-                            f.finding.file, f.finding.line, f.finding.evidence, f.finding.fix
-                        ),
-                        status: f.status.clone(),
-                        imported: false,
-                    })
-                    .collect(),
-                pr_feedback: self
-                    .targets
-                    .get(&m.id)
-                    .map(|target| {
-                        target
-                            .pr_feedback
+                    steering: m.steering.clone(),
+                    plan: m.planning.as_ref().map(|p| Plan {
+                        status: p.status.clone(),
+                        summary: p
+                            .plan
+                            .as_ref()
+                            .map(|p| p.summary.clone())
+                            .unwrap_or_default(),
+                        tasks: p
+                            .plan
                             .iter()
-                            .map(|item| Finding {
-                                id: item.id.clone(),
-                                title: item.title.clone(),
-                                detail: item.detail.clone(),
-                                status: item.status.clone(),
-                                imported: m
-                                    .agent_review
+                            .flat_map(|p| &p.tasks)
+                            .map(|task| {
+                                let run = m
+                                    .execution
                                     .as_ref()
-                                    .is_some_and(|r| r.pr_feedback_imported(&item.id)),
+                                    .and_then(|e| e.tasks.iter().find(|r| r.task_id == task.id));
+                                let inspection = run.and_then(|r| self.inspect_task(r.id));
+                                Task {
+                                    id: task.id.clone(),
+                                    title: task.title.clone(),
+                                    outcome: task.outcome.clone(),
+                                    depends_on: task.depends_on.clone(),
+                                    status: inspection
+                                        .as_ref()
+                                        .map(|i| i.state.into())
+                                        .or_else(|| run.map(|r| r.status.clone()))
+                                        .unwrap_or_else(|| "pending".into()),
+                                    detail: inspection
+                                        .as_ref()
+                                        .map(|i| i.note.clone())
+                                        .or_else(|| run.map(|r| r.summary.clone()))
+                                        .unwrap_or_default(),
+                                    files: task.files.clone(),
+                                    checks: task.checks.clone(),
+                                    run_id: run.map(|r| r.id),
+                                    identity: inspection
+                                        .as_ref()
+                                        .map(|i| i.identity.clone())
+                                        .unwrap_or_else(|| "Worker not assigned".into()),
+                                    source: run.map(|r| r.source.clone()),
+                                    error: inspection
+                                        .as_ref()
+                                        .and_then(|i| i.error.map(Into::into)),
+                                    latest: inspection.as_ref().and_then(|i| i.latest).and_then(
+                                        |latest| {
+                                            m.messages
+                                                .iter()
+                                                .position(|message| std::ptr::eq(message, latest))
+                                                .map(|index| {
+                                                    Message::new(
+                                                        latest,
+                                                        contents[index].clone().task_report(latest),
+                                                    )
+                                                })
+                                        },
+                                    ),
+                                    results: inspection
+                                        .as_ref()
+                                        .map(|i| self.task_results(m, i))
+                                        .unwrap_or_default(),
+                                    checks_label: inspection
+                                        .as_ref()
+                                        .map_or("Checks", |i| i.check_origin.label()),
+                                    completed: run.is_some_and(|r| r.status == "done"),
+                                    preparation: run.and_then(|r| self.preparation_evidence(r.id)),
+                                    actions: run
+                                        .into_iter()
+                                        .flat_map(|r| self.task_desktop_actions(r.id))
+                                        .filter_map(|a| {
+                                            a.action.desktop_id().map(|(id, task_id)| {
+                                                AvailableAction {
+                                                    id,
+                                                    task_id,
+                                                    label: a.label,
+                                                }
+                                            })
+                                        })
+                                        .collect(),
+                                }
                             })
-                            .collect()
-                    })
-                    .unwrap_or_default(),
-                pr_feedback_error: self
-                    .targets
-                    .get(&m.id)
-                    .and_then(|target| target.pr_feedback_error.clone()),
-                workers: self.worker_activity(),
-                worker_details: self.worker_summaries(m),
-                timings: m.diagnostics.timing_packet(None),
+                            .collect(),
+                    }),
+                    checks: self.snapshot_checks(m),
+                    findings: m
+                        .agent_review
+                        .iter()
+                        .flat_map(|r| &r.issues)
+                        .map(|f| Finding {
+                            id: f.id.to_string(),
+                            title: f.finding.title.clone(),
+                            detail: format!(
+                                "{}:{}\n{}\n{}",
+                                f.finding.file, f.finding.line, f.finding.evidence, f.finding.fix
+                            ),
+                            status: f.status.clone(),
+                            imported: false,
+                        })
+                        .collect(),
+                    pr_feedback: self
+                        .targets
+                        .get(&m.id)
+                        .map(|target| {
+                            target
+                                .pr_feedback
+                                .iter()
+                                .map(|item| Finding {
+                                    id: item.id.clone(),
+                                    title: item.title.clone(),
+                                    detail: item.detail.clone(),
+                                    status: item.status.clone(),
+                                    imported: m
+                                        .agent_review
+                                        .as_ref()
+                                        .is_some_and(|r| r.pr_feedback_imported(&item.id)),
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                    pr_feedback_error: self
+                        .targets
+                        .get(&m.id)
+                        .and_then(|target| target.pr_feedback_error.clone()),
+                    workers: self.worker_activity(),
+                    worker_details: self.worker_summaries(m),
+                    timings: m.diagnostics.timing_packet(None),
+                }
             }),
             status: dock.status,
             phase: match phase {

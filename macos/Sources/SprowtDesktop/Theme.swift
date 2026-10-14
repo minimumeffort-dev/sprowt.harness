@@ -4,6 +4,7 @@ import SwiftUI
 enum Theme {
     static let paper = Color(light: 0xfafbf8, dark: 0x181c1a)
     static let sidebar = Color(light: 0xf0f3ee, dark: 0x212723)
+    static let rail = Color(light: 0xe9eee7, dark: 0x1c221e)
     static let panel = Color(light: 0xeef3ed, dark: 0x252f28)
     static let ink = Color(light: 0x202923, dark: 0xedf1eb)
     static let muted = Color(light: 0x5b685e, dark: 0xaab6ad)

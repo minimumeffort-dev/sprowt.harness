@@ -23,6 +23,7 @@ pub enum Control {
     More,
     Inspect,
     History,
+    Message(u128, usize),
     FullEvidence,
     Current,
     Drill(Key),
@@ -110,6 +111,14 @@ impl App {
             Control::More => self.open_actions(),
             Control::Inspect => self.perform_action(Action::History)?,
             Control::History => self.workspace.history = !self.workspace.history,
+            Control::Message(message, segment) => {
+                let key = (message, segment);
+                if !self.workspace.message_toggles.remove(&key) {
+                    self.workspace.message_toggles.insert(key);
+                }
+                self.workspace.message_cursor = Some(key);
+                self.workspace.focus = Focus::Content;
+            }
             Control::FullEvidence => self.open_workspace_details()?,
             Control::Current => self.workspace.jump(),
             Control::Drill(key) => {

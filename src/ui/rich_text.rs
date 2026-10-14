@@ -93,7 +93,7 @@ pub(super) fn inline(mut text: &str) -> Vec<Span<'static>> {
             if marker == '`' {
                 spans.push(Span::styled(
                     body.to_owned(),
-                    Style::new().fg(INK).bg(CONTROL),
+                    Style::new().fg(ACCENT).bg(CODE),
                 ));
             } else {
                 spans.extend(inline(body).into_iter().map(|span| {
@@ -136,7 +136,61 @@ pub(super) fn code(source: &str, width: u16) -> Vec<Line<'static>> {
         .map(|line| {
             Line::from(vec!["│ ".fg(MUTED), Span::raw(line)])
                 .fg(INK)
-                .bg(CONTROL)
+                .bg(CODE)
+        })
+        .collect()
+}
+
+pub(super) fn tokens(tokens: &[crate::message_content::Token], width: u16) -> Vec<Line<'static>> {
+    use crate::message_content::TokenKind;
+    let capacity = width.saturating_sub(2).max(1) as usize;
+    let mut lines = Vec::new();
+    let mut row = vec!["│ ".fg(MUTED)];
+    let mut used = 0;
+    for token in tokens {
+        let color = match token.kind {
+            TokenKind::Key => BLUE,
+            TokenKind::String => ACCENT,
+            TokenKind::Number | TokenKind::Literal => AMBER,
+            TokenKind::Punctuation => MUTED,
+            TokenKind::Plain => INK,
+        };
+        for glyph in Span::raw(token.text.replace('\t', "    ")).styled_graphemes(Style::new()) {
+            let size = Span::raw(glyph.symbol).width();
+            let newline = matches!(glyph.symbol, "\n" | "\r\n");
+            if newline || used + size > capacity && used > 0 {
+                lines.push(Line::from(std::mem::replace(&mut row, vec!["│ ".fg(MUTED)])).bg(CODE));
+                used = 0;
+            }
+            if !newline && glyph.symbol != "\r" {
+                row.push(Span::styled(
+                    glyph.symbol.to_owned(),
+                    Style::new().fg(color),
+                ));
+                used += size;
+            }
+        }
+    }
+    if row.len() > 1 || lines.is_empty() {
+        lines.push(Line::from(row).bg(CODE));
+    }
+    lines
+}
+
+pub(super) fn paths(paths: &[String], width: u16) -> Vec<Line<'static>> {
+    paths
+        .iter()
+        .flat_map(|path| {
+            let split = path.rfind('/').map_or(0, |index| index + 1);
+            wrap_line(
+                Line::from(vec![
+                    path[..split].to_owned().fg(MUTED),
+                    path[split..].to_owned().fg(INK).bold(),
+                ])
+                .bg(CODE),
+                width,
+                0,
+            )
         })
         .collect()
 }
@@ -174,8 +228,8 @@ mod tests {
             palette.paint(&mut buffer);
             assert!(buffer[(0, 0)].modifier.contains(Modifier::BOLD));
             assert!(buffer[(5, 2)].modifier.contains(Modifier::BOLD));
-            assert_eq!(buffer[(23, 2)].bg, palette.foreground(CONTROL));
-            assert_eq!(buffer[(4, 6)].bg, palette.foreground(CONTROL));
+            assert_eq!(buffer[(23, 2)].bg, palette.foreground(CODE));
+            assert_eq!(buffer[(4, 6)].bg, palette.foreground(CODE));
             assert_eq!(buffer[(4, 6)].symbol(), "c");
         }
     }
@@ -219,6 +273,43 @@ mod tests {
         Paragraph::new(rendered).render(buffer.area, &mut buffer);
         assert!(buffer[(5, 2)].modifier.contains(Modifier::ITALIC));
         assert!(buffer[(15, 2)].modifier.contains(Modifier::BOLD));
-        assert_eq!(buffer[(28, 2)].bg, CONTROL);
+        assert_eq!(buffer[(28, 2)].bg, CODE);
+    }
+
+    #[test]
+    fn json_wrapping_keeps_unicode_and_crlf_content_with_semantic_colors() {
+        let source = "{\r\n  \"界\": \"👩🏽‍💻 café\",\r\n  \"count\": 3\r\n}\r\n";
+        let content = crate::message_content::MessageContent::new(source, b"unicode", 0);
+        let crate::message_content::Content::Code { tokens: syntax, .. } =
+            &content.segments[0].content
+        else {
+            panic!("JSON")
+        };
+        let rendered = tokens(syntax, 9);
+        assert!(rendered.iter().all(|line| line.width() <= 9));
+        assert_eq!(
+            rendered
+                .iter()
+                .map(|line| line.to_string().strip_prefix("│ ").unwrap().to_owned())
+                .collect::<String>(),
+            source.replace("\r\n", "")
+        );
+        assert!(
+            rendered
+                .iter()
+                .flat_map(|line| &line.spans)
+                .any(|span| span.content == "界" && span.style.fg == Some(BLUE))
+        );
+    }
+
+    #[test]
+    fn file_scope_keeps_paths_and_distinguishes_names_from_directories() {
+        let rendered = paths(&["app/static/storage-contract.mjs".into()], 80);
+        assert_eq!(rendered[0].to_string(), "app/static/storage-contract.mjs");
+        let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 1));
+        Paragraph::new(rendered).render(buffer.area, &mut buffer);
+        assert_eq!(buffer[(0, 0)].fg, MUTED);
+        assert_eq!(buffer[(11, 0)].fg, INK);
+        assert!(buffer[(11, 0)].modifier.contains(Modifier::BOLD));
     }
 }

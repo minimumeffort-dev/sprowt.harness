@@ -381,7 +381,7 @@ fn desktop_contract_matches_the_native_fixture() {
         task: None,
         item_id: None,
         role: "planner".into(),
-        body: "I will split this into two tasks.".into(),
+        body: "I will split this into two tasks.\n\n{\"path\": \"src/engine.rs\", \"checks\": 3, \"ready\": false}\n\nKeep the existing source.".into(),
         model: Some("gpt-6.1-sol".into()),
         effort: Some("high".into()),
     });

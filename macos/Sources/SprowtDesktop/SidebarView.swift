@@ -97,6 +97,7 @@ struct NavigationRail: View {
             Button { sidebarVisible = session.showClosed || !sidebarVisible; session.showClosed = false } label: {
                 Image(systemName: "folder").frame(width: 34, height: 34)
             }.help("Projects").accessibilityLabel("Projects")
+                .foregroundStyle(sidebarVisible && !session.showClosed ? Theme.accent : Theme.muted)
                 .background(sidebarVisible && !session.showClosed ? Theme.selected : .clear, in: RoundedRectangle(cornerRadius: 7))
             Button { session.chooseProject() } label: {
                 Image(systemName: "folder.badge.plus").frame(width: 34, height: 34)
@@ -105,6 +106,7 @@ struct NavigationRail: View {
             Button { session.showClosed.toggle(); sidebarVisible = true } label: {
                 Image(systemName: "archivebox").frame(width: 34, height: 34)
             }.help("Closed codemods").accessibilityLabel("Closed codemods")
+                .foregroundStyle(session.showClosed ? Theme.accent : Theme.muted)
                 .background(session.showClosed ? Theme.selected : .clear, in: RoundedRectangle(cornerRadius: 7))
                 .disabled(!session.canBrowseProjects)
             Spacer(minLength: 12)
@@ -122,7 +124,7 @@ struct NavigationRail: View {
                 .help("Local profile and appearance").accessibilityLabel("Local profile and appearance")
         }.buttonStyle(.plain).font(.system(size: 15)).foregroundStyle(Theme.muted)
             .padding(.vertical, 14).frame(width: 52).frame(maxHeight: .infinity)
-            .background(Theme.sidebar)
+            .background(Theme.rail)
             .overlay(alignment: .trailing) { Rectangle().fill(Theme.line).frame(width: 1) }
     }
 }

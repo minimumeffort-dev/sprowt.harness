@@ -20,7 +20,7 @@ Choose the shared light or dark theme with **Ctrl+G → A · Appearance**. See [
 | **Workspace** | Conversation, changes, checks, findings or agents |
 | **Dock** | Current state, the next useful action and your message |
 
-Each view uses the available width. **Conversation** shows the request once and adds numbered plan tasks when they exist. Task details contain file scopes, dependencies, required checks and observed preparation receipts.
+Each view uses the available width. Conversation messages use a readable column capped at 76 cells. **Conversation** shows the request once and adds numbered plan tasks when they exist. Task details contain file scopes, dependencies, required checks and observed preparation receipts.
 
 The header's **◇** selector opens the project accordion with **Ctrl+P**. Click a project row or press **Enter** to fold or expand its codemods. Press **N** for a new codemod in the focused project, **.** for its menu, or **+** to open another folder. The planner supplies each new codemod's short title; its complete request stays in **Conversation**.
 
@@ -73,6 +73,8 @@ Keep a repair selected as it finishes: its evidence changes to the completed res
 
 **Latest update** belongs to the current attempt. Earlier narration remains in saved history. In Conversation, click **Saved history** or press **h** while exploring to show older messages. Worker elapsed time measures the current connected turn; last activity measures observed events. Neither is a completion estimate or proof of progress.
 
+[Long messages and pasted JSON](codemods.md#read-long-messages) start compact. While exploring Conversation, use **[ / ]** to select **Show full message** or a source row, then **Enter** to expand or fold it. Mouse clicks work too; the draft stays untouched.
+
 ## Details
 
 Choose **Inspect** or press **Ctrl+T** to open the full view that matters now. Each view includes all tasks and results; **Esc** or **Ctrl+T** returns to the workspace.
@@ -95,7 +97,7 @@ Details opens Review when findings need attention, Checks after a combined failu
 
 Press **e** to expand commands, full preparation output, elapsed time and limits. Saved setup failures remain visible in the dock and Checks after restart. Choose **Inspect failure** to open the affected task. Worker narration and elapsed time do not prove progress.
 
-Evidence uses separate headings for files and required checks, with each check on its own bullet. Commands, paths and raw output have a shaded monospace treatment. Messages render headings, emphasis, lists and code while preserving unsupported Markdown literally. Pending network access is amber; failed checks are red. Repeated copies of the same current preparation failure are consolidated in task details; the full receipt and output remain available with **e**.
+Evidence uses separate headings for files and required checks, with each check on its own bullet. Commands, paths and raw output have a shaded monospace treatment. File names stand out from muted directories without shortening the original paths. Messages render headings, emphasis, lists and code while preserving unsupported Markdown literally. Pending network access is amber; failed checks are red. Repeated copies of the same current preparation failure are consolidated in task details; the full receipt and output remain available with **e**.
 
 Failed tasks include recovery guidance when the cause is known. Three attempts with identical saved failure evidence recommend **Revise repair plan**, carrying that history forward. New checks and review are still required.
 
@@ -168,6 +170,8 @@ Shortcuts are contextual. **Ctrl+G · More** lists actions available in the curr
 | 1–5 while exploring | Conversation / Changes / Checks / Findings / Agents |
 | h in Conversation while exploring | Show or hide saved history |
 | [ / ] in review evidence | Previous / next finding |
+| [ / ] in Conversation while exploring | Previous / next message disclosure |
+| Enter on a selected message disclosure | Expand or fold prose/source |
 | e while exploring | Expand command evidence |
 | Ctrl+L | Return to Conversation at the top |
 | Home / End | Top / bottom of the workspace while exploring |

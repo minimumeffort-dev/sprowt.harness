@@ -13,6 +13,7 @@ pub(super) const ACCENT: Color = Color::Indexed(22);
 pub(super) const BLUE: Color = Color::Indexed(24);
 pub(super) const AMBER: Color = Color::Indexed(25);
 pub(super) const RED: Color = Color::Indexed(26);
+pub(super) const CODE: Color = Color::Indexed(32);
 pub(super) const KEY_HINT: Color = MUTED;
 pub(crate) const PET_BODY: Color = Color::Indexed(27);
 pub(crate) const PET_INK: Color = Color::Indexed(28);
@@ -21,7 +22,7 @@ pub(crate) const PET_SHADE: Color = Color::Indexed(30);
 pub(crate) const PET_LEAF: Color = Color::Indexed(31);
 
 const PAPER: (u32, u32) = (0xfafbf8, 0x181c1a);
-const COLORS: [(u32, u32); 16] = [
+const COLORS: [(u32, u32); 17] = [
     (0x202923, 0xedf1eb), // ink
     (0x5b685e, 0xaab6ad), // muted
     (0x7d8b80, 0x728477), // control border
@@ -38,6 +39,7 @@ const COLORS: [(u32, u32); 16] = [
     (0x87b994, 0xc4e7cd), // pet highlight
     (0x467753, 0x79ab8b), // pet shade
     (0x296746, 0x86ba97), // pet leaf
+    (0xe9eee6, 0x242d27), // code background
 ];
 
 pub(super) fn status_color(status: &str) -> Color {
@@ -85,7 +87,7 @@ impl Palette {
     pub fn foreground(self, color: Color) -> Color {
         match color {
             Color::Reset => self.rgb(COLORS[0]),
-            Color::Indexed(index @ 16..=31) => self.rgb(COLORS[(index - 16) as usize]),
+            Color::Indexed(index @ 16..=32) => self.rgb(COLORS[(index - 16) as usize]),
             other => other,
         }
     }

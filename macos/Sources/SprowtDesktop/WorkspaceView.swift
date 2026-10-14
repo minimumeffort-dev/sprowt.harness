@@ -98,7 +98,7 @@ struct WorkspaceView: View {
             }
             VStack(alignment: .leading, spacing: 8) {
                 TextEditor(text: Binding(get: { session.draft }, set: { session.editDraft($0) }))
-                    .font(Theme.font(14)).frame(height: 62).scrollContentBackground(.hidden)
+                    .font(Theme.font(14)).frame(height: 42).scrollContentBackground(.hidden)
                     .accessibilityLabel("Instruction").focused($composerFocused).disabled(!session.canCompose)
                 HStack(spacing: 8) {
                     if !mod.queue.isEmpty {

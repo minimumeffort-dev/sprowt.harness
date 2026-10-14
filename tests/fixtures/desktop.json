@@ -66,7 +66,110 @@
       "history": [
         {
           "author": "Codex · planner",
-          "body": "I will split this into two tasks.",
+          "body": "I will split this into two tasks.\n\n{\"path\": \"src/engine.rs\", \"checks\": 3, \"ready\": false}\n\nKeep the existing source.",
+          "content": {
+            "id": "b54b56d69bd30d58643959909d136fb5",
+            "segments": [
+              {
+                "id": 0,
+                "kind": "prose",
+                "preview": null,
+                "text": "I will split this into two tasks."
+              },
+              {
+                "collapsed": true,
+                "id": 35,
+                "kind": "code",
+                "language": "JSON",
+                "source": "{\"path\": \"src/engine.rs\", \"checks\": 3, \"ready\": false}\n",
+                "summary": "JSON · 1 line · 55 B",
+                "tokens": [
+                  {
+                    "kind": "punctuation",
+                    "text": "{"
+                  },
+                  {
+                    "kind": "key",
+                    "text": "\"path\""
+                  },
+                  {
+                    "kind": "punctuation",
+                    "text": ":"
+                  },
+                  {
+                    "kind": "plain",
+                    "text": " "
+                  },
+                  {
+                    "kind": "string",
+                    "text": "\"src/engine.rs\""
+                  },
+                  {
+                    "kind": "punctuation",
+                    "text": ","
+                  },
+                  {
+                    "kind": "plain",
+                    "text": " "
+                  },
+                  {
+                    "kind": "key",
+                    "text": "\"checks\""
+                  },
+                  {
+                    "kind": "punctuation",
+                    "text": ":"
+                  },
+                  {
+                    "kind": "plain",
+                    "text": " "
+                  },
+                  {
+                    "kind": "number",
+                    "text": "3"
+                  },
+                  {
+                    "kind": "punctuation",
+                    "text": ","
+                  },
+                  {
+                    "kind": "plain",
+                    "text": " "
+                  },
+                  {
+                    "kind": "key",
+                    "text": "\"ready\""
+                  },
+                  {
+                    "kind": "punctuation",
+                    "text": ":"
+                  },
+                  {
+                    "kind": "plain",
+                    "text": " "
+                  },
+                  {
+                    "kind": "literal",
+                    "text": "false"
+                  },
+                  {
+                    "kind": "punctuation",
+                    "text": "}"
+                  },
+                  {
+                    "kind": "plain",
+                    "text": "\n"
+                  }
+                ]
+              },
+              {
+                "id": 90,
+                "kind": "prose",
+                "preview": null,
+                "text": "Keep the existing source."
+              }
+            ]
+          },
           "effort": "high",
           "model": "gpt-6.1-sol",
           "role": "planner"
@@ -74,6 +177,17 @@
         {
           "author": "codex · executor · wexecutor",
           "body": "Native controls are ready; draft persistence needs repair.",
+          "content": {
+            "id": "57eb41c962f94488aa85abddda96787c",
+            "segments": [
+              {
+                "id": 0,
+                "kind": "prose",
+                "preview": null,
+                "text": "Native controls are ready; draft persistence needs repair."
+              }
+            ]
+          },
           "effort": "high",
           "model": "gpt-6.1-sol",
           "role": "codex:executor"
@@ -84,6 +198,17 @@
         {
           "author": "user",
           "body": "Add native controls",
+          "content": {
+            "id": "6969eef3c4d2438b9cdbc02aca6ac1e9",
+            "segments": [
+              {
+                "id": 0,
+                "kind": "prose",
+                "preview": null,
+                "text": "Add native controls"
+              }
+            ]
+          },
           "effort": null,
           "model": null,
           "role": "user"
@@ -144,6 +269,17 @@
             "latest": {
               "author": "codex · executor · wexecutor",
               "body": "Native controls are ready; draft persistence needs repair.",
+              "content": {
+                "id": "57eb41c962f94488aa85abddda96787c",
+                "segments": [
+                  {
+                    "id": 0,
+                    "kind": "prose",
+                    "preview": null,
+                    "text": "Native controls are ready; draft persistence needs repair."
+                  }
+                ]
+              },
               "effort": "high",
               "model": "gpt-6.1-sol",
               "role": "codex:executor"

@@ -111,7 +111,7 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
         ("ctrl+t", "conversation"),
     ]);
     let inner = panel(frame, area, format!("task {}", task.number), &keys);
-    let lines = task_lines(app, id, inner.width.saturating_sub(2));
+    let lines = task_lines(app, id, inner.width.saturating_sub(2), true);
     let (scroll, _) = draw_text(
         frame,
         Paragraph::new(lines).wrap(Wrap { trim: false }),
@@ -124,7 +124,31 @@ pub(super) fn draw_task(frame: &mut Frame, app: &mut App, id: i64, scroll: u16, 
     app.view = View::Task(id, scroll);
 }
 
-pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
+pub(super) fn latest_heading(
+    message: &crate::store::Message,
+    origin: crate::engine::CheckOrigin,
+) -> &'static str {
+    if message
+        .item_id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("result:"))
+    {
+        if origin == crate::engine::CheckOrigin::Final {
+            "Earlier task report · before combined checks"
+        } else {
+            "Worker report"
+        }
+    } else {
+        "Latest update"
+    }
+}
+
+pub(super) fn task_lines(
+    app: &App,
+    id: i64,
+    width: u16,
+    include_latest: bool,
+) -> Vec<Line<'static>> {
     let Some(task) = app.inspect_task(id) else {
         return Vec::new();
     };
@@ -142,7 +166,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         if !task.task.files.is_empty() {
             lines.push(Line::default());
             lines.push(Line::from("File scope").bold());
-            lines.extend(rich_text::code(&task.task.files.join("\n"), width));
+            lines.extend(rich_text::paths(&task.task.files, width));
         }
         lines.push(Line::default());
     }
@@ -261,23 +285,15 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         lines.extend(rich_text::code(&output, width));
         lines.push(Line::default());
     }
-    if let Some(latest) = task.latest {
+    if let Some(latest) = task.latest.filter(|_| include_latest) {
         let result = latest
             .item_id
             .as_deref()
             .is_some_and(|id| id.starts_with("result:"));
         lines.push(
-            Line::from(
-                if result && task.check_origin == crate::engine::CheckOrigin::Final {
-                    "Earlier task report · before combined checks"
-                } else if result {
-                    "Worker report"
-                } else {
-                    "Latest update"
-                },
-            )
-            .fg(ACCENT)
-            .bold(),
+            Line::from(latest_heading(latest, task.check_origin))
+                .fg(ACCENT)
+                .bold(),
         );
         let body = if result {
             latest
@@ -289,7 +305,7 @@ pub(super) fn task_lines(app: &App, id: i64, width: u16) -> Vec<Line<'static>> {
         };
         lines.extend(rich_text::lines(body, width));
         lines.push(Line::default());
-    } else if task.run.status == "done" && !task.run.summary.is_empty() {
+    } else if task.latest.is_none() && task.run.status == "done" && !task.run.summary.is_empty() {
         lines.extend(wrap_line(
             Line::from(if task.check_origin == crate::engine::CheckOrigin::Final {
                 "Earlier task report · before combined checks"

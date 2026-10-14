@@ -10,6 +10,8 @@ Choose Codex or Muse models for planning, execution and independent review. Exec
 
 In the macOS app, open **More → Workers**, or **Workers** in the creation editor. In the terminal, use **Ctrl+G → w**. Choose a model and effort for the planner and reviewer, then add execution rows and counts.
 
+Both interfaces group settings under **Planner**, **Executors** and **Reviewer**. The app keeps the role controls in compact sections; larger teams scroll while **Cancel** and **Save team** remain available.
+
 For example, one Codex executor and two Muse executors allow **three simultaneous execution workers**. Connecting, running and checking consume that limit. A planner and reviewer use their separate role selections. The total execution count can be 1–16; increasing it does not increase the [host VM resource budget](performance.md#vm-resource-budget).
 
 **Save team** applies to new assignments. Running workers keep their model and continue uninterrupted. Reducing the limit waits for existing work to finish. Settings in the creation editor belong to that project's next codemods, so the planner can be selected before its first run. Cancel preserves the saved team, composer draft and caret.

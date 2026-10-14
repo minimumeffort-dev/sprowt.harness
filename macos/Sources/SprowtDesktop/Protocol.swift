@@ -180,6 +180,7 @@ struct PreparationEvidence: Decodable, Sendable {
 }
 
 struct ConversationMessage: Decodable, Sendable {
+    let content: MessageContent
     let role: String
     let author: String
     let body: String
