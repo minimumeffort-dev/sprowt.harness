@@ -119,6 +119,8 @@ Select it in Tasks and press Enter. You can read its latest update, checks, depe
 
 A targeted retry preserves completed peers and waits if the configured worker slots are occupied. Older messages without a saved task identity remain in all activity.
 
+If a required check exposes an existing file omitted from every task, the worker can request a [missing file assignment](execution.md#missing-file-assignments). The shared engine records the verified addition and resumes the affected work, retaining completed peers and your draft. **Ctrl+O** shows the updated scope.
+
 ### Inspect the plan
 
 **Ctrl+O** opens contracts, assumptions, task outcomes, dependencies, scopes, coordination topics, checks and routing. Press it again to return to the workspace. Plans use numbered tasks; the numbering follows display order.

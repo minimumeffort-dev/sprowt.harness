@@ -17,6 +17,138 @@ fn contents(snapshot: &Snapshot, path: &str) -> Vec<u8> {
 }
 
 #[test]
+#[ignore = "uses a cached image and disposable VM; no provider inference or downloads"]
+fn missing_assignment_preserves_completed_peer_draft_and_runtime_through_checks() {
+    let (_data, mut store, root, contexts, sources, workers) = fixture();
+    let (_, mod_id) = contexts[0].execution_identity().unwrap();
+    let plan = store.planning(mod_id).unwrap().unwrap().plan.unwrap();
+    let ids = sources
+        .iter()
+        .map(|source| crate::task_worktree::task_id(source).unwrap())
+        .collect::<Vec<_>>();
+    let flag = AtomicBool::new(false);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> io::Result<()> {
+        let mut controller = Sandbox::prepare(&root, &flag, |_| {})?;
+        controller.prepare_tasks(&ids, &flag)?;
+        let vm = Arc::new(Mutex::new(controller));
+        let mut peer = prepare_task(&vm, &contexts[0], &sources[0], &flag)?;
+        assert_eq!(
+            peer.command(&shell("printf completed > a.txt"), &flag)
+                .exit_code,
+            Some(0)
+        );
+        drop(peer);
+        let (_, checks) = vm.lock().unwrap().verify_execution(
+            &sources[0],
+            &[shell("test \"$(cat a.txt)\" = completed")],
+            &flag,
+        )?;
+        store
+            .finish_task(mod_id, &sources[0], "done", "Completed peer", &checks)
+            .unwrap();
+        let mut reporter = prepare_task(&vm, &contexts[1], &sources[1], &flag)?;
+        assert_eq!(
+            reporter
+                .command(
+                    &shell(
+                        "printf retained > b.txt; mkdir -p .venv; printf installed > .venv/proof"
+                    ),
+                    &flag
+                )
+                .exit_code,
+            Some(0)
+        );
+        drop(reporter);
+        store
+            .task_status(mod_id, &sources[1], "running", None)
+            .unwrap();
+        let check = shell("test \"$(cat source.txt)\" = corrected");
+        let observed = Dispatcher::shared(&contexts[1], Some(&vm), &flag)
+            .worker_call(
+                checks::TOOL,
+                json!({
+                    "source":sources[1],"checks":[check],"scripts":null
+                }),
+                |_| {},
+            )?
+            .message();
+        assert_eq!(serde_json::from_str::<Value>(&observed)?["passed"], false);
+        let repair = crate::repair::Repair {
+            task: "b".into(),
+            files: vec!["source.txt".into()],
+            check: check.check.clone(),
+            command: check.command.clone(),
+            evidence: "Declared source check failed; source.txt is missing from every task scope."
+                .into(),
+        };
+        assert_eq!(
+            store.request_repair(mod_id, &sources[1], &repair).unwrap(),
+            Ok(())
+        );
+        assert!(store.resume_repairs(mod_id).unwrap());
+        let amended = store.planning(mod_id).unwrap().unwrap().plan.unwrap();
+        assert_eq!(amended.tasks[1].files, ["b.txt", "source.txt"]);
+        assert_eq!(amended.tasks[0].files, plan.tasks[0].files);
+        let next = store
+            .task_input(mod_id, workers[1], &amended)
+            .unwrap()
+            .unwrap();
+        let mut retry = prepare_task(&vm, &contexts[1], &next.source, &flag)?;
+        let snapshot = retry.snapshot(&flag)?;
+        assert_eq!(contents(&snapshot, "a.txt"), b"completed");
+        assert_eq!(contents(&snapshot, "b.txt"), b"retained");
+        assert_eq!(contents(&snapshot, "source.txt"), b"original");
+        assert_eq!(
+            retry
+                .command(
+                    &shell(
+                        "test \"$(cat .venv/proof)\" = installed && printf corrected > source.txt"
+                    ),
+                    &flag
+                )
+                .exit_code,
+            Some(0)
+        );
+        drop(retry);
+        let observed = Dispatcher::shared(&contexts[1], Some(&vm), &flag)
+            .worker_call(
+                checks::TOOL,
+                json!({
+                    "source":next.source,"checks":[check],"scripts":null
+                }),
+                |_| {},
+            )?
+            .message();
+        assert_eq!(serde_json::from_str::<Value>(&observed)?["passed"], true);
+        let (_, checked) = vm.lock().unwrap().verify_execution(
+            &next.source,
+            std::slice::from_ref(&check),
+            &flag,
+        )?;
+        assert_eq!(checked[0].exit_code, Some(0));
+        store
+            .finish_task(
+                mod_id,
+                &next.source,
+                "done",
+                "Missing assignment repaired",
+                &checked,
+            )
+            .unwrap();
+        let execution = store.execution(mod_id).unwrap().unwrap();
+        assert_eq!(execution.tasks[0].source, sources[0]);
+        assert_eq!(execution.tasks[0].summary, "Completed peer");
+        assert_eq!(execution.tasks[0].checks[0].output, checks[0].output);
+        assert!(execution.complete());
+        let (_, combined) = vm.lock().unwrap().verify_execution("final:missing-assignment", &[shell("test \"$(cat a.txt)\" = completed && test \"$(cat b.txt)\" = retained && test \"$(cat source.txt)\" = corrected")], &flag)?;
+        assert_eq!(combined[0].exit_code, Some(0));
+        Ok(())
+    }));
+    super::super::delete(&root).unwrap();
+    result.unwrap().unwrap();
+}
+
+#[test]
 #[ignore = "uses a cached image and disposable VM; no provider inference or dependency downloads"]
 fn dependent_delivery_refreshes_upfront_branch_and_preserves_draft_across_retry_and_restart() {
     let (_data, mut store, root, contexts, sources, workers) = fixture();

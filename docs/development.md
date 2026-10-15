@@ -98,6 +98,7 @@ Use the [supported provider versions](workers.md#supported-versions), sign in an
 | Prepared assets, private HOMEs and locked dependencies (no inference or downloads) | `cargo test --locked live_prepared_assets_are_private_and_locked_dependencies_reuse_only_exact_inputs -- --ignored --nocapture` |
 | Independent checks, private paths, package waits and stale receipt rejection (no inference or downloads; cached image required) | `cargo test --locked shared_dispatcher_overlaps_isolated_checks_and_rejects_stale_receipts -- --ignored --nocapture` |
 | Saved-check repair, peer source and fresh combined verification (no inference or downloads; cached image required) | `cargo test --locked requested_check_repair_preserves_combined_source_and_saved_scripts -- --ignored --nocapture` |
+| Missing file assignment, retained peer source/draft/runtime and fresh checks (cached image required) | `cargo test --locked missing_assignment_preserves_completed_peer_draft_and_runtime_through_checks -- --ignored --nocapture` |
 | Dependent source handoff, retained edits/scripts, retry and restart (no inference or downloads; cached image required) | `cargo test --locked dependent_delivery_refreshes_upfront_branch_and_preserves_draft_across_retry_and_restart -- --ignored --nocapture` |
 | Saved check scripts and restart | `cargo test shared_check_runner_recovers_and_survives_restart -- --ignored` |
 | Task worktree isolation and cleanup | `cargo test task_worktrees_isolate_combine_restore_and_clean -- --ignored` |

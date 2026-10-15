@@ -1603,6 +1603,7 @@ impl Worker {
             Ok(report) if report.repair.is_some() => {
                 match store.request_repair(self.mod_id, &source, report.repair.as_ref().unwrap())? {
                     Ok(()) => {
+                        code_mod.planning = store.planning(self.mod_id)?;
                         save_message(
                             store,
                             code_mod,
@@ -3533,6 +3534,82 @@ mod tests {
                     && message.body.contains("Repair requested"))
         );
         assert!(store.resume_repairs(mod_id).unwrap());
+    }
+
+    #[test]
+    fn missing_assignment_refreshes_plan_before_codex_and_muse_dispatch() {
+        for provider in ["codex", "muse"] {
+            let (_data, mut store, mod_id, mut plan, ids, _, repair) =
+                crate::repair::missing_scope_tests::fixture();
+            let mut record = store.worker_at(mod_id, Role::Executor, 0).unwrap();
+            record.provider = provider.into();
+            store
+                .0
+                .execute(
+                    "UPDATE workers SET provider=?2 WHERE id=?1",
+                    rusqlite::params![record.id, provider],
+                )
+                .unwrap();
+            plan.tasks[2].worker = provider.into();
+            let planning = store.planning(mod_id).unwrap().unwrap();
+            store.save_plan(mod_id, &planning.source, &plan).unwrap();
+            let mut code_mod = store
+                .load_project(Path::new("/repair-test"))
+                .unwrap()
+                .mods
+                .remove(0);
+            let mut worker = Worker::start_with_muse(
+                Path::new("/repair-test"),
+                &code_mod,
+                record,
+                Role::Planner,
+                None,
+                provider == "muse",
+            )
+            .unwrap();
+            let (client, actions) = Client::recording();
+            worker.client = Some(client);
+            worker.role = Role::Executor;
+            worker.status = Status::Ready;
+            worker.task_source = Some(crate::store::task_source(ids[2], 1));
+            worker.item(&store, &mut code_mod, &report_item(&json!({"status":"blocked","summary":"Missing test assignment","checks":[],"repair":repair})), false).unwrap();
+            worker.complete_task(&mut store, &mut code_mod).unwrap();
+            let files = json!(["tests", crate::repair::missing_scope_tests::MISSED_FILE]);
+            assert_eq!(
+                serde_json::to_value(
+                    &code_mod
+                        .planning
+                        .as_ref()
+                        .unwrap()
+                        .plan
+                        .as_ref()
+                        .unwrap()
+                        .tasks[2]
+                        .files
+                )
+                .unwrap(),
+                files
+            );
+            assert!(store.resume_repairs(mod_id).unwrap());
+            worker.enabled = true;
+            worker
+                .poll(&mut store, &mut code_mod, true, Path::new("/repair-test"))
+                .unwrap();
+            let Action::Run {
+                source,
+                text,
+                routing: Some(context),
+            } = actions.try_recv().unwrap()
+            else {
+                panic!("Expected next task delivery for {provider}");
+            };
+            assert_eq!(source, crate::store::task_source(ids[2], 2));
+            assert_eq!(context["task"]["files"], files);
+            assert_eq!(context["plan"]["tasks"][2]["files"], files);
+            assert!(text.contains("only those exact additions are authorized"));
+            assert!(text.contains(crate::repair::missing_scope_tests::MISSED_FILE));
+            assert_eq!(context["task"]["worker"], provider);
+        }
     }
 
     #[test]

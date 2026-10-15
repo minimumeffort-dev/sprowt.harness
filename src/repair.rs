@@ -9,7 +9,9 @@ use crate::{
     store::Store,
 };
 
-#[derive(Clone, Deserialize, Serialize)]
+mod missing_scope;
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct Repair {
     pub task: String,
@@ -164,10 +166,14 @@ impl Store {
             .find(|run| run.source == source)
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
         // A recovered completed turn must not queue the same request twice.
-        if run.status == "repair_wait" {
-            return Ok(Ok(()));
+        if matches!(run.status.as_str(), "repair_wait" | "repair_paused") {
+            return Ok(if run.repair.as_ref() == Some(repair) {
+                Ok(())
+            } else {
+                Err("A different repair is already saved for this task attempt.".into())
+            });
         }
-        let plan = self
+        let mut plan = self
             .planning(mod_id)?
             .and_then(|planning| planning.plan)
             .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
@@ -182,12 +188,17 @@ impl Store {
         let Some(owner) = plan.tasks.iter().find(|task| task.id == repair.task) else {
             return Ok(Err("Repair owner is not in the current plan.".into()));
         };
-        if affected(&plan, &reporter.id, &reporter.id).contains(&owner.id) {
+        let missing_assignment = owner.id == reporter.id;
+        let owner_title = owner.title.clone();
+        if missing_assignment {
+            if let Err(error) = missing_scope::validate(&execution, run, &plan, repair) {
+                return Ok(Err(error));
+            }
+        } else if affected(&plan, &reporter.id, &reporter.id).contains(&owner.id) {
             return Ok(Err(
                 "Plan dependency needs revision: the repair owner is waiting for this reporting task. Preserve the reproduction and replan diagnosis and repair together; do not retry the same blocked prerequisite.".into(),
             ));
-        }
-        if !execution
+        } else if !execution
             .tasks
             .iter()
             .any(|run| run.task_id == owner.id && run.status == "done")
@@ -214,8 +225,20 @@ impl Store {
             )));
         }
         let transaction = self.0.transaction()?;
+        if missing_assignment {
+            plan.tasks
+                .iter_mut()
+                .find(|task| task.id == repair.task)
+                .unwrap()
+                .files
+                .extend(repair.files.iter().cloned());
+            transaction.execute(
+                "UPDATE plans SET body=?2 WHERE mod_id=?1",
+                params![mod_id, serde_json::to_string(&plan).unwrap()],
+            )?;
+        }
         transaction.execute("UPDATE task_runs SET status='repair_wait',repair=?3,summary=?4,checks='[]' WHERE mod_id=?1 AND source=?2",
-            params![mod_id,source,serde_json::to_string(repair).unwrap(),format!("Repair requested from {} · {}", owner.title,repair.evidence)])?;
+            params![mod_id,source,serde_json::to_string(repair).unwrap(),format!("Repair requested from {} · {}", owner_title,repair.evidence)])?;
         transaction.execute("UPDATE executions SET status='repairing',repair_count=repair_count+1,checks='[]',fingerprint=NULL WHERE mod_id=?1", [mod_id])?;
         transaction.commit()?;
         Ok(Ok(()))
@@ -249,10 +272,11 @@ impl Store {
             .ok_or(rusqlite::Error::InvalidQuery)?;
         let ids = affected(&plan, &repair.task, &reporter.task_id);
         // Wait for a prior repair's owner; concurrent requests share the two-attempt budget.
-        if !execution
-            .tasks
-            .iter()
-            .any(|run| run.task_id == repair.task && run.status == "done")
+        if repair.task != reporter.task_id
+            && !execution
+                .tasks
+                .iter()
+                .any(|run| run.task_id == repair.task && run.status == "done")
         {
             return Ok(false);
         }
@@ -280,6 +304,9 @@ impl Store {
         Ok(true)
     }
 }
+
+#[cfg(test)]
+pub(crate) mod missing_scope_tests;
 
 #[cfg(test)]
 pub(crate) mod tests {

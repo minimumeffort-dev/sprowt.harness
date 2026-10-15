@@ -41,6 +41,8 @@ In **Changes**, choose the offered inspection action to read the actual diff. Ke
 
 The header button shows Rust's recommended action; **More** holds the other available actions. A partial review with confirmed findings offers **Fix review issues**, while publication waits for a complete, clean review. See [review and repairs](review.md).
 
+Workers can recover [missing file assignments](execution.md#missing-file-assignments) through the same engine as the terminal. Verified additions appear under **Files, checks and worker**; completed tasks and your draft stay saved. For an earlier blocked run, **Retry task** resumes that task with the current recovery rules.
+
 Click the compose icon beside **…** in a project header, or press **⌘N** for the current project, to describe the change in the compact creation editor. **Create codemod** or **⌘Return** starts the same planning and execution flow as the terminal app. The planner supplies a short title while the complete request stays in the conversation. Setup, network access, publication, closing and deletion retain their explicit confirmation steps.
 
 ![Native creation editor](assets/macos-sidebar-light.jpg)

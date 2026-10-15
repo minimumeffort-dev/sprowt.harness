@@ -203,9 +203,19 @@ An integration worker can return a repair request for a completed peer's defect.
 
 Rust validates the request and waits for active turns and checks to finish. The owner repairs current combined source; the verifier's unfinished changes are preserved and merged back. Affected dependent tasks and all combined checks run again. Unrelated completed tasks stay done.
 
-Repair requests cannot expand ownership or approve access. Invalid fields, missing access, uncertainty and product decisions pause. Two unsuccessful handoffs offer **Revise repair plan** with saved evidence; blind retries cannot restart an exhausted repair.
+Repair requests cannot take another task's ownership or approve access. Invalid fields, missing access, uncertainty and product decisions pause. Two unsuccessful handoffs offer **Revise repair plan** with saved evidence; blind retries cannot restart an exhausted repair.
 
 For finding IDs, closure and automatic continuation after review, see [Review and repairs](review.md).
+
+### Missing file assignments
+
+If a declared check exposes an existing source file omitted from every task, the worker requests that exact file using its own task ID in the repair report. For example, a new backup version may require an existing integration test that the plan missed.
+
+Rust requires a failed `run_task_checks` result matching the current attempt, saved source, declared check and exact command. The requested file must exist unchanged in the task's starting source and current draft. Directories, new files, generated files, credentials, symlinks and overlapping ownership are rejected. A later passing run or source edit requires reproducing the failure again.
+
+The controller adds only the verified paths to that task in the saved plan and records the repair in one transaction. Contracts, environment preparation and checks remain unchanged. After active work finishes, the task resumes its saved edits; unrelated completed tasks keep their results and owners. The worker must preserve check coverage, pass fresh task checks and then all combined checks. This uses the same two-attempt repair allowance and survives pause or restart without applying an assignment twice.
+
+Both interfaces show the updated file scope and saved repair evidence. No manual replanning is needed for this narrow case. Unsupported requests still pause with the reason and retained work.
 
 ## Source and generated files
 

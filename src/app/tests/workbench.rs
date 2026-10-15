@@ -2,6 +2,7 @@ use super::*;
 mod agents;
 mod contextual_tabs;
 mod messages;
+mod missing_scope;
 mod preparation;
 mod typography;
 use crate::app::{
