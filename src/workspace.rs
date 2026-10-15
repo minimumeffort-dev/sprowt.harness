@@ -306,7 +306,7 @@ fn review_inner(root: &Path, snapshot: bool) -> io::Result<Review> {
             path,
         });
     }
-    let patch = String::from_utf8(run_git(
+    let patch = run_git(
         root,
         &[
             "diff",
@@ -316,8 +316,7 @@ fn review_inner(root: &Path, snapshot: bool) -> io::Result<Review> {
             "--no-renames",
             "HEAD",
         ],
-    )?)
-    .map_err(io::Error::other)?;
+    )?;
     let summary = String::from_utf8(run_git(
         root,
         &["diff", "--cached", "--stat", "--no-renames", "HEAD"],
@@ -325,7 +324,8 @@ fn review_inner(root: &Path, snapshot: bool) -> io::Result<Review> {
     .map_err(io::Error::other)?;
     fs::write(root.join("review.patch"), &patch)?;
     Ok(Review {
-        patch,
+        // Display text only; saved patches and applied changes retain their exact bytes.
+        patch: String::from_utf8_lossy(&patch).into_owned(),
         summary,
         changes,
         fingerprint: fingerprint(&read_state(&root.join("work"), snapshot)?)?,
