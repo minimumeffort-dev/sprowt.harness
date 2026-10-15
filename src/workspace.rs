@@ -618,6 +618,7 @@ fn checked(output: &Output) -> io::Result<()> {
 mod tests {
     use super::*;
     use crate::store::test_support::TestData;
+    mod binary;
     mod replay;
 
     fn project(data: &TestData) -> PathBuf {

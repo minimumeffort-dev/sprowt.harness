@@ -974,6 +974,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     mod appearance;
+    mod binary_review;
     mod formatting;
     mod git_errors;
     mod navigation;
