@@ -16,6 +16,12 @@ enum Theme {
     static let green = accent
     static let blue = Color(light: 0x30668d, dark: 0x9bc5e2)
     static let amber = Color(light: 0x825b12, dark: 0xebc477)
+    static let timingBar = Color(light: 0x8cae97, dark: 0x60826c)
+    static let timingTrack = Color(light: 0xe7ece5, dark: 0x2c382f)
+    static let preparing = Color(light: 0xe9f1f5, dark: 0x23343e)
+    static let terminalBackground = Color(hex: 0x17221b)
+    static let terminalInk = Color(hex: 0xdce9df)
+    static let terminalMuted = Color(hex: 0x718a7a)
     static let red = Color(light: 0xa13730, dark: 0xefa39d)
     static func statusColor(_ status: String) -> Color {
         switch status.lowercased() {

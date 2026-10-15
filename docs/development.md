@@ -78,6 +78,20 @@ SPROWT_WORKSPACE_BUFFERS=/tmp/sprowt-workspace-captures \
 
 **Expected:** interaction tests pass; the output directory contains JSON cell buffers with symbols, colors and positions. The captures use sample tasks and saved results, including all five workspace views. Render and inspect these buffers before updating the documentation visual. Verify tab changes, task drilldown, saved history and queue dismissal preserve the composer draft and caret.
 
+### Check the Agents layout
+
+Export the same active-task and failure evidence used by the native and terminal views:
+
+```sh
+SPROWT_TASK_FOCUS_FIXTURE=/tmp/sprowt-task-focus.json \
+SPROWT_AGENTS_FIXTURE=/tmp/sprowt-agents-failure.json \
+  cargo test --locked engine::agents
+SPROWT_TASK_FOCUS_BUFFERS=/tmp/sprowt-task-focus-buffers \
+  cargo test --locked export_task_focus_agents_buffers -- --ignored
+```
+
+**Expected:** the JSON snapshots contain actual shared presentation data. The buffer directory contains light/dark captures at 40, 120 and 160 columns, with activity expanded, hidden and all timings shown. Inspect these and the native view at wide and minimum window sizes. Check long output scrolling, model/reasoning ribbon wrapping, hour-long durations and preservation of the composer draft. These fixtures do not start provider sessions or stop running workers.
+
 ## Live checks
 
 Use the [supported provider versions](workers.md#supported-versions), sign in and start Apple Container first. Run the check relevant to the boundary you changed.

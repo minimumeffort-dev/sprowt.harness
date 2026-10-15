@@ -53,11 +53,8 @@ impl Inspector {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AgentDetail {
-    Failure(i64),
-    Activity(i64),
-    Worker(i64),
-    Timings,
-    TimingSource,
+    ActivityHidden(i64),
+    AllTimings,
 }
 
 #[derive(Default)]

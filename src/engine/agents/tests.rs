@@ -104,10 +104,7 @@ fn agents_present_current_task_failure_instead_of_retained_runtime_ready() {
     assert_eq!(agents.timings[0].duration, "5m 16s");
     assert_eq!(agents.timings[0].duration_ms, 316_000);
     if let Ok(path) = std::env::var("SPROWT_AGENTS_FIXTURE") {
-        let mut snapshot = serde_json::to_value(engine.snapshot()).unwrap();
-        snapshot["projects"] = serde_json::json!([{"id":engine.project_id,"path":engine.project,"name":"todo","activity":"working","mods":[{"id":engine.mods[0].id,"name":engine.mods[0].name,"closed":false}]}]);
-        snapshot["expanded_project"] = serde_json::json!(engine.project_id);
-        std::fs::write(path, serde_json::to_vec_pretty(&serde_json::json!({"protocol_version":1,"request_id":null,"error":null,"snapshot":snapshot})).unwrap()).unwrap();
+        export_snapshot(&engine, &path);
     }
 }
 
@@ -179,4 +176,128 @@ fn agents_distinguish_current_failed_checks_from_previous_attempt_feedback() {
     assert_eq!(agents.workers[0].state, "Ready");
     assert!(agents.workers[0].failure.is_none());
     assert!(!agents.owns_error("Error: PDF did not survive reopening"));
+}
+
+pub(crate) fn active_fixture() -> (TestData, Engine) {
+    let (data, mut engine) = fixture();
+    let mut record = engine
+        .store
+        .worker_at(engine.mods[0].id, Role::Executor, 1)
+        .unwrap();
+    record.id = 80;
+    let (mut worker, events, _actions) =
+        Worker::recording(&engine.project, &engine.mods[0], record).unwrap();
+    worker.role = Role::Executor;
+    worker.status = Status::Starting;
+    worker.model = Some("gpt-6.1-sol".into());
+    worker.effort = Some("xhigh".into());
+    let execution = engine.mods[0].execution.as_mut().unwrap();
+    for (index, task) in execution.tasks.iter_mut().enumerate() {
+        task.status = if index == 1 { "running" } else { "done" }.into();
+        task.summary.clear();
+        task.worker = (index == 1).then_some(80);
+    }
+    worker.bind_test_task(execution.tasks[1].source.clone());
+    events
+        .send(crate::codex::Event::Preparing(
+            "Preflight · baseline · Existing source-only Node baseline".into(),
+        ))
+        .unwrap();
+    worker
+        .poll(
+            &mut engine.store,
+            &mut engine.mods[0],
+            false,
+            &engine.project,
+        )
+        .unwrap();
+    engine.workers.clear();
+    engine.workers.insert(worker.id, worker);
+    engine.mods[0].diagnostics.timings.clear();
+    use crate::diagnostics::timing::{Observation, Phase};
+    for (phase, duration_ms) in [
+        (Phase::DependencySetup, 409000),
+        (Phase::Source, 166000),
+        (Phase::SlotWait, 162000),
+        (Phase::StartupWait, 95000),
+        (Phase::FirstResponse, 71000),
+        (Phase::Baseline, 34700),
+        (Phase::ProviderConnection, 31200),
+        (Phase::Capabilities, 16400),
+        (Phase::Boot, 4200),
+        (Phase::BaseSetup, 1400),
+        (Phase::ImageWait, 0),
+    ] {
+        engine.mods[0].diagnostics.timings.push((
+            80,
+            Observation {
+                phase,
+                duration_ms,
+                source: "fixture".into(),
+                environment: None,
+                completed: true,
+                attempt: None,
+            },
+        ));
+    }
+    (data, engine)
+}
+
+#[test]
+fn agents_share_task_focus_metadata_activity_and_relative_timings() {
+    let (_data, mut engine) = active_fixture();
+    let agents = engine.agents().unwrap();
+    let agent = &agents.workers[0];
+    assert_eq!(agent.task_number, Some(2));
+    assert_eq!(agent.state, "Preparing");
+    assert_eq!(agent.worker_label, "Codex · w80");
+    assert_eq!(agent.model, "gpt-6.1-sol");
+    assert_eq!(agent.reasoning, "Extra high");
+    assert_eq!(agent.activity_preview, "Checking the existing baseline");
+    assert_eq!(
+        agent.output,
+        "Preflight · baseline · Existing source-only Node baseline"
+    );
+    assert_eq!(agents.timings[0].relative_duration, 1.0);
+    assert_eq!(agents.timings[0].duration, "6m 49s");
+    assert_eq!(agents.timings[1].relative_duration, 166.0 / 409.0);
+    assert_eq!(agents.timings.last().unwrap().relative_duration, 0.0);
+    if let Ok(path) = std::env::var("SPROWT_TASK_FOCUS_FIXTURE") {
+        export_snapshot(&engine, &path);
+    }
+    let worker = engine.workers.get_mut(&80).unwrap();
+    worker.status = Status::Ready;
+    worker.model = None;
+    worker.effort = None;
+    let agent = engine.agents().unwrap().workers.remove(0);
+    assert_eq!(agent.model, "Not reported");
+    assert_eq!(agent.reasoning, "Not reported");
+    assert!(agent.output.is_empty());
+}
+
+fn export_snapshot(engine: &Engine, path: &str) {
+    let mut snapshot = serde_json::to_value(engine.snapshot()).unwrap();
+    snapshot["projects"] = serde_json::json!([{"id":engine.project_id,"path":engine.project,"name":"todo","activity":"working","mods":[{"id":engine.mods[0].id,"name":engine.mods[0].name,"closed":false}]}]);
+    snapshot["expanded_project"] = serde_json::json!(engine.project_id);
+    std::fs::write(path, serde_json::to_vec_pretty(&serde_json::json!({"protocol_version":1,"request_id":null,"error":null,"snapshot":snapshot})).unwrap()).unwrap();
+}
+
+#[test]
+fn activity_labels_only_translate_known_preflight_phases() {
+    assert_eq!(
+        activity_summary("Preflight · capabilities · Browser OPFS"),
+        "Checking environment capabilities"
+    );
+    assert_eq!(
+        activity_summary("Preflight · setup · npm ci"),
+        "Preparing dependencies"
+    );
+    assert_eq!(
+        activity_summary("Waiting for a provider response"),
+        "Waiting for a provider response"
+    );
+    assert_eq!(
+        activity_summary("Custom status\nfull diagnostic below"),
+        "Custom status"
+    );
 }

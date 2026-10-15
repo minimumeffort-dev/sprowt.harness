@@ -44,11 +44,13 @@ Click a tab, or press **Tab** to explore and choose **1** through **5**.
 | **2 · Changes** | Access to the current diff when available |
 | **3 · Checks** | Saved setup failures and observed task results, with failed checks first |
 | **4 · Findings** | Review findings, evidence, proposed fixes and GitHub PR feedback |
-| **5 · Agents** | Task assignments and current worker states, with failure details and setup timings folded |
+| **5 · Agents** | Task assignments, worker/model/reasoning ribbons, raw activity and the longest setup operations |
 
 Use **[ / ]** to move between review findings. **e** expands command evidence. Selecting a main tab clears a task-specific inspection and shows that view for the whole codemod.
 
-In **Agents**, use **[ / ]** to select a disclosure and **Enter** to expand it, or click its label. **Failure details** preserves the full diagnostic; **Worker details** includes model information and any previous diagnostic. **Setup timings** follows the workers, with readable durations and optional **Exact timing evidence**. Opening these details preserves your draft and never retries work. A current worker failure appears once in Agents; unrelated errors remain in the dock.
+In **Agents**, each task has one panel with its current state and activity. The attached ribbon always shows the worker, model and reasoning. **Hide activity** folds the numbered raw output; **Show activity** restores it. A current failure has one concise summary and its complete diagnostic in that output. Earlier worker diagnostics are labelled separately.
+
+**Setup timings** shows the three longest recorded operations with comparison bars and durations. **Show all** reveals the remaining operations. These durations may overlap; the bars are comparisons, not progress or a total. Use **[ / ]** to select a control and **Enter** to toggle it, or click its label. These controls preserve your draft and never retry work. Unrelated errors remain in the dock.
 
 Letters and numbers type normally when the composer is focused.
 

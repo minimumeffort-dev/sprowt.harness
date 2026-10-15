@@ -29,7 +29,7 @@ struct WorkspaceEvidenceView: View {
             } else {
                 panel(selectedTab)
             }
-        }.padding(Theme.inset).frame(maxWidth: selectedTab == .agents ? 880 : 790, alignment: .leading)
+        }.padding(Theme.inset).frame(maxWidth: selectedTab == .agents ? 828 : 790, alignment: .leading)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -98,7 +98,7 @@ struct WorkspaceEvidenceView: View {
     }
 
     private var agents: some View {
-        AgentsView(agents: mod.agents, rawTimings: mod.timings, selection: $session.workspace, selectedWorker: selectedWorker?.id)
+        AgentsView(agents: mod.agents, selection: $session.workspace, selectedWorker: selectedWorker?.id)
     }
 }
 

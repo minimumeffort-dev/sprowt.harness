@@ -368,6 +368,10 @@ struct AgentEvidence: Decodable, Identifiable, Sendable {
     let tone: String
     let activity: String
     let activityPreview: String
+    let workerLabel: String
+    let model: String
+    let reasoning: String
+    let output: String
     let previousDiagnostic: String?
     let failure: AgentFailure?
     var id: Int64 { worker.id }
@@ -380,4 +384,5 @@ struct TimingEvidence: Decodable, Sendable {
     let label: String
     let durationMs: UInt64
     let duration: String
+    let relativeDuration: Double
 }

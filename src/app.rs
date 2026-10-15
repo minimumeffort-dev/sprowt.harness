@@ -5725,12 +5725,10 @@ mod tests {
         app.activate_control(controls::Control::Tab(controls::WorkspaceView::Agents))
             .unwrap();
         let folded = rows(&overview_screen(&mut app, 116, 40)).join("\n");
-        assert!(folded.contains("Worker details"));
-        assert!(!folded.contains("current-model"));
-        app.activate_control(controls::Control::AgentDetail(
-            workspace_navigation::AgentDetail::Worker(id),
-        ))
-        .unwrap();
+        assert!(
+            folded.contains("Worker") && folded.contains("Model") && folded.contains("Reasoning")
+        );
+        assert!(folded.contains("current-model"));
         for (elapsed, glyph) in [(0, "⠋"), (80, "⠙"), (160, "⠹")] {
             let screen = rows(&overview_screen_at(
                 &mut app,
@@ -5739,14 +5737,19 @@ mod tests {
                 Some(Duration::from_millis(elapsed)),
             ))
             .join("\n");
-            assert!(screen.contains(&format!("codex · executor · w{id} · current-model · high")));
+            assert!(screen.contains(&format!("Codex · w{id}")));
+            assert!(screen.contains("current-model") && screen.contains("High"));
             assert!(!screen.contains("Previous reply."));
             assert!(screen.contains(&format!("{glyph} Working")));
-            assert!(screen.contains("1  Greeting"));
+            assert!(screen.contains("Task 1") && screen.contains("Greeting"));
         }
         let still = rows(&overview_screen(&mut app, 116, 40)).join("\n");
-        assert!(still.contains(&format!("codex · executor · w{id} · current-model · high")));
-        assert!(still.contains("1  Greeting"));
+        assert!(
+            still.contains(&format!("Codex · w{id}"))
+                && still.contains("current-model")
+                && still.contains("High")
+        );
+        assert!(still.contains("Task 1") && still.contains("Greeting"));
         app.engine.workers.values_mut().next().unwrap().status = Status::Checking;
         app.engine.mods[0].execution.as_mut().unwrap().tasks[0].status = "checking".into();
         let checking = rows(&overview_screen_at(
@@ -5756,7 +5759,11 @@ mod tests {
             Some(Duration::from_millis(80)),
         ))
         .join("\n");
-        assert!(checking.contains("Checking") && checking.contains("1  Greeting"));
+        assert!(
+            checking.contains("Checking")
+                && checking.contains("Task 1")
+                && checking.contains("Greeting")
+        );
         let execution = app.engine.mods[0].execution.as_mut().unwrap();
         execution.tasks[0].status = "done".into();
         execution.status = "verifying".into();
@@ -5773,7 +5780,11 @@ mod tests {
             Some(Duration::from_millis(80)),
         ))
         .join("\n");
-        assert!(idle.contains(&format!("codex · executor · w{id} · current-model · high")));
+        assert!(
+            idle.contains(&format!("Codex · w{id}"))
+                && idle.contains("current-model")
+                && idle.contains("High")
+        );
         assert!(!idle.contains('⠙'));
         key(&mut app, KeyCode::Char('t'), KeyModifiers::CONTROL);
         key(&mut app, KeyCode::Char('h'), KeyModifiers::NONE);
@@ -5786,7 +5797,11 @@ mod tests {
         app.activate_control(controls::Control::Tab(controls::WorkspaceView::Agents))
             .unwrap();
         let planner = rows(&overview_screen(&mut app, 116, 40)).join("\n");
-        assert!(planner.contains("codex · planner · current-model · high"));
+        assert!(
+            planner.contains(&format!("Codex · w{id}"))
+                && planner.contains("current-model")
+                && planner.contains("High")
+        );
     }
 
     #[test]
@@ -5991,13 +6006,7 @@ mod tests {
         app.activate_control(controls::Control::Tab(controls::WorkspaceView::Agents))
             .unwrap();
         let folded = rows(&overview_screen(&mut app, 120, 44)).join("\n");
-        assert!(!folded.contains("test-model"));
-        for worker in &workers {
-            app.activate_control(controls::Control::AgentDetail(
-                workspace_navigation::AgentDetail::Worker(*worker),
-            ))
-            .unwrap();
-        }
+        assert!(folded.contains("test-model"));
         let view = rows(&overview_screen_at(
             &mut app,
             120,
@@ -6005,22 +6014,15 @@ mod tests {
             Some(Duration::from_millis(80)),
         ))
         .join("\n");
-        assert!(view.contains(&format!("codex · executor · w{}", workers[0])));
-        assert!(view.contains(&format!("muse · executor · w{}", workers[1])));
-        assert!(view.contains(&format!(
-            "codex · executor · w{} · test-model · high",
-            workers[0]
-        )));
-        assert!(view.contains(&format!(
-            "muse · executor · w{} · test-model · high",
-            workers[1]
-        )));
+        assert!(view.contains(&format!("Codex · w{}", workers[0])));
+        assert!(view.contains(&format!("Muse · w{}", workers[1])));
+        assert!(view.contains("test-model") && view.contains("High"));
         let narrow = rows(&overview_screen(&mut app, 90, 36)).join("\n");
         assert!(narrow.contains("Agents 2"));
-        let first = view.find("1  Greeting").expect(&view);
-        let second = view.find("2  Second task").expect(&view);
-        assert!(view[first..second].contains(&format!("codex · executor · w{}", workers[0])));
-        assert!(view[second..].contains(&format!("muse · executor · w{}", workers[1])));
+        let first = view.find("Task 1").expect(&view);
+        let second = view.find("Task 2").expect(&view);
+        assert!(view[first..second].contains(&format!("Codex · w{}", workers[0])));
+        assert!(view[second..].contains(&format!("Muse · w{}", workers[1])));
         let queued = app
             .engine
             .store

@@ -29,7 +29,9 @@ The main area always shows **Conversation**. **Changes**, **Checks**, **Findings
 
 Select a plan task to inspect its current attempt, model, files and results. Use **Back to Conversation** to return. Selecting a main tab shows that view for the whole codemod.
 
-**Agents** puts each task assignment and worker state first. Expand **Failure details** for the complete diagnostic or **Worker details** for its model and previous diagnostic. **Setup timings** appears below the workers, folded by default; expand it for durations or the original timing evidence. A current failure appears beside its worker without a duplicate banner. Unrelated errors remain visible. These disclosures preserve your draft and never retry work.
+**Agents** puts each task in a connected panel: its state and current activity above an always-visible worker, model and reasoning ribbon. **Hide activity** folds the terminal-style output; **Show activity** restores it. Long output scrolls within the panel and remains selectable. Current failures have one concise summary with the complete diagnostic below; earlier diagnostics are labelled.
+
+Below the tasks, **Setup timings** compares the three longest recorded operations. **Show all** reveals the rest. Durations may overlap, so these bars do not represent overall progress. These controls preserve your draft and never retry work. Unrelated errors remain visible. See [reading evidence](terminal.md#read-the-evidence) for the matching terminal controls.
 
 Expand **Files, checks and worker** for the file scope and individual required checks. File names stand out from muted directories; the full paths stay intact. Evidence uses a bounded, left-aligned reading width. **Source reference** reveals the complete saved identifier. Preparation stays aligned with the task details; pending network access is amber, and failures are red. A current preparation failure opens its evidence automatically. The same failure is shown once in task details, with the full saved output available under each check.
 

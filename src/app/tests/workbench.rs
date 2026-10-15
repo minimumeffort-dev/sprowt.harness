@@ -891,19 +891,15 @@ fn agents_display_persisted_operation_timings_with_the_draft_intact() {
         output.contains("Setup timings") && output.contains("1.2s"),
         "{output}"
     );
-    click(
-        &mut app,
-        Control::AgentDetail(workspace_navigation::AgentDetail::Timings),
-    );
-    screen(&mut app, 160, 44);
-    click(
-        &mut app,
-        Control::AgentDetail(workspace_navigation::AgentDetail::TimingSource),
-    );
-    let expanded = rows(&screen(&mut app, 160, 44)).join("\n");
     assert!(
-        expanded.contains("VM boot: 1.234s") && expanded.contains("Recorded setup timings"),
-        "{expanded}"
+        output.contains("VM boot") && output.contains("may overlap"),
+        "{output}"
+    );
+    assert!(
+        !app.workspace
+            .agent_controls
+            .iter()
+            .any(|(detail, _)| *detail == workspace_navigation::AgentDetail::AllTimings)
     );
     assert_eq!(app.workspace.inspector.tab, WorkspaceView::Agents);
     assert_eq!(app.input.lines(), ["keep this draft"]);

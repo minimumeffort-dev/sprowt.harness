@@ -49,7 +49,10 @@
             "activity": "",
             "activity_preview": "",
             "failure": null,
+            "model": "gpt-6.1-sol",
+            "output": "",
             "previous_diagnostic": null,
+            "reasoning": "High",
             "state": "Ready",
             "task_number": null,
             "title": "codex planner",
@@ -62,7 +65,8 @@
               "role": "planner",
               "state": "ready",
               "task_id": null
-            }
+            },
+            "worker_label": "Codex · w1"
           }
         ]
       },

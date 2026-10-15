@@ -17,6 +17,10 @@ pub struct Agent {
     pub tone: &'static str,
     pub activity: String,
     pub activity_preview: String,
+    pub worker_label: String,
+    pub model: String,
+    pub reasoning: String,
+    pub output: String,
     pub previous_diagnostic: Option<String>,
     pub failure: Option<Failure>,
 }
@@ -30,6 +34,7 @@ pub struct Timing {
     pub label: &'static str,
     pub duration_ms: u64,
     pub duration: String,
+    pub relative_duration: f64,
 }
 
 impl Agents {
@@ -106,6 +111,13 @@ impl Engine {
                         Status::Routing if worker.enabled => ("Assigning", "working"),
                         Status::Routing | Status::Ready => ("Ready", "quiet"),
                         Status::Connecting => ("Connecting", "working"),
+                        Status::Starting
+                            if worker
+                                .progress()
+                                .is_some_and(|activity| activity.starts_with("Preflight · ")) =>
+                        {
+                            ("Preparing", "working")
+                        }
                         Status::Starting => ("Starting", "working"),
                         Status::Running => ("Working", "working"),
                         Status::Stopping => ("Stopping", "quiet"),
@@ -119,18 +131,33 @@ impl Engine {
                 } else {
                     String::new()
                 };
+                let previous_diagnostic = (!worker.busy() && failure.is_none())
+                    .then(|| worker.error.clone())
+                    .flatten()
+                    .filter(|error| !error.trim().is_empty());
+                let output = if let Some(failure) = &failure {
+                    failure.detail.clone()
+                } else if let Some(diagnostic) = &previous_diagnostic {
+                    format!("Previous worker diagnostic\n{diagnostic}")
+                } else {
+                    activity.clone()
+                };
                 Agent {
                     task_number: task.as_ref().map(|task| task.number),
                     title: task.as_ref().map_or_else(
                         || format!("{} {}", worker.provider(), worker.role.name()),
                         |task| task.task.title.clone(),
                     ),
-                    activity_preview: compact(&activity, 180),
+                    activity_preview: activity_summary(&activity),
                     activity,
-                    previous_diagnostic: (!worker.busy() && failure.is_none())
-                        .then(|| worker.error.clone())
-                        .flatten()
-                        .filter(|error| !error.trim().is_empty()),
+                    worker_label: format!("{} · w{}", provider_label(worker.provider()), worker.id),
+                    model: worker
+                        .model
+                        .clone()
+                        .unwrap_or_else(|| "Not reported".into()),
+                    reasoning: reasoning_label(worker.effort.as_deref()),
+                    output,
+                    previous_diagnostic,
                     state,
                     tone,
                     failure,
@@ -175,6 +202,40 @@ fn compact(text: &str, limit: usize) -> String {
         format!("{}…", line.chars().take(limit).collect::<String>())
     }
 }
+fn provider_label(provider: &str) -> &str {
+    match provider {
+        "codex" => "Codex",
+        "muse" => "Muse",
+        other => other,
+    }
+}
+fn reasoning_label(effort: Option<&str>) -> String {
+    match effort {
+        Some("xhigh") => "Extra high",
+        Some("high") => "High",
+        Some("medium") => "Medium",
+        Some("low") => "Low",
+        Some("minimal") => "Minimal",
+        Some("none") => "None",
+        Some("max") => "Maximum",
+        Some("ultra") => "Ultra",
+        Some(other) => other,
+        None => "Not reported",
+    }
+    .into()
+}
+fn activity_summary(activity: &str) -> String {
+    let summary = if activity.starts_with("Preflight · baseline · ") {
+        "Checking the existing baseline"
+    } else if activity.starts_with("Preflight · setup · ") {
+        "Preparing dependencies"
+    } else if activity.starts_with("Preflight · capabilities · ") {
+        "Checking environment capabilities"
+    } else {
+        activity
+    };
+    compact(summary, 180)
+}
 fn failure_summary(detail: &str) -> String {
     if detail.contains("Source file exceeds") {
         return if detail.contains("ms-playwright/") {
@@ -203,9 +264,18 @@ fn timings(m: &CodeMod) -> Vec<Timing> {
             label,
             duration_ms,
             duration: duration(duration_ms),
+            relative_duration: 0.0,
         })
         .collect();
     rows.sort_by(|a, b| b.duration_ms.cmp(&a.duration_ms).then(a.label.cmp(b.label)));
+    let longest = rows.first().map_or(0, |row| row.duration_ms);
+    for row in &mut rows {
+        row.relative_duration = if longest == 0 {
+            0.0
+        } else {
+            row.duration_ms as f64 / longest as f64
+        };
+    }
     rows
 }
 fn duration(ms: u64) -> String {
